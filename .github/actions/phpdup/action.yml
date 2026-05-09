@@ -1,0 +1,159 @@
+name: 'phpdup'
+description: 'Run php-dup-finder against a PHP codebase and surface duplicate-logic findings via CI artifacts (SARIF, JSON, HTML, Checkstyle).'
+author: 'Joe Huss <detain@interserver.net>'
+
+branding:
+  icon: 'copy'
+  color: 'purple'
+
+inputs:
+  paths:
+    description: 'Space-separated paths to scan'
+    required: false
+    default: 'src'
+  min-impact:
+    description: 'Minimum cluster impact to report (passed to --min-impact)'
+    required: false
+    default: '20'
+  config:
+    description: 'Optional path to phpdup.json (passed via --config). Use this to specify excludes, normalization mode, etc.'
+    required: false
+    default: ''
+  workers:
+    description: 'Worker count (-j). 0 = auto, 1 = serial.'
+    required: false
+    default: '0'
+  exact-only:
+    description: 'When true, runs phpdup with --exact-only for faster scans on huge corpora'
+    required: false
+    default: 'false'
+  upload-sarif:
+    description: 'Upload the SARIF report to GitHub Code Scanning (default true)'
+    required: false
+    default: 'true'
+  fail-on-impact:
+    description: 'When set to a positive integer N, the action exits non-zero if any cluster has impact >= N. 0 disables.'
+    required: false
+    default: '0'
+  php-version:
+    description: 'PHP version to install via shivammathur/setup-php'
+    required: false
+    default: '8.3'
+  cache-dir:
+    description: 'phpdup AST/index cache directory (cached across runs via actions/cache; configure via phpdup.json if non-default)'
+    required: false
+    default: '.phpdup-cache'
+
+outputs:
+  json:
+    description: 'Path to the JSON report (relative to the workspace)'
+    value: ${{ steps.run.outputs.json }}
+  sarif:
+    description: 'Path to the SARIF report'
+    value: ${{ steps.run.outputs.sarif }}
+  html:
+    description: 'Path to the HTML report directory'
+    value: ${{ steps.run.outputs.html }}
+  clusters:
+    description: 'Cluster count from the run'
+    value: ${{ steps.run.outputs.clusters }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: ${{ inputs.php-version }}
+        extensions: hash, mbstring
+        coverage: none
+        tools: composer:v2
+
+    - name: Get composer cache dir
+      id: composer-cache
+      shell: bash
+      run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+    - name: Cache composer dependencies
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.composer-cache.outputs.dir }}
+        key: phpdup-composer-${{ inputs.php-version }}-${{ hashFiles('**/composer.json') }}
+        restore-keys: |
+          phpdup-composer-${{ inputs.php-version }}-
+
+    - name: Cache phpdup AST/index
+      uses: actions/cache@v4
+      with:
+        path: ${{ inputs.cache-dir }}
+        key: phpdup-cache-${{ runner.os }}-${{ github.sha }}
+        restore-keys: |
+          phpdup-cache-${{ runner.os }}-
+
+    - name: Install dependencies
+      shell: bash
+      run: composer install --no-interaction --no-progress --prefer-dist
+
+    - name: Run phpdup
+      id: run
+      shell: bash
+      run: |
+        set -e
+        ARGS=()
+        for p in ${{ inputs.paths }}; do ARGS+=("$p"); done
+        ARGS+=(--min-impact "${{ inputs.min-impact }}")
+        ARGS+=(--workers "${{ inputs.workers }}")
+        ARGS+=(--json phpdup-report.json)
+        ARGS+=(--sarif phpdup-report.sarif)
+        ARGS+=(--html phpdup-report)
+        ARGS+=(--checkstyle phpdup-checkstyle.xml)
+        ARGS+=(--csv phpdup-report.csv)
+        ARGS+=(--prometheus phpdup-metrics.prom)
+        ARGS+=(--timeseries phpdup-history.jsonl)
+        if [ -n "${{ inputs.config }}" ]; then ARGS+=(--config "${{ inputs.config }}"); fi
+        if [ "${{ inputs.exact-only }}" = "true" ]; then ARGS+=(--exact-only); fi
+
+        php bin/phpdup analyze "${ARGS[@]}" --plain | tee phpdup-stdout.txt
+        echo "json=phpdup-report.json"   >> "$GITHUB_OUTPUT"
+        echo "sarif=phpdup-report.sarif" >> "$GITHUB_OUTPUT"
+        echo "html=phpdup-report"        >> "$GITHUB_OUTPUT"
+        if command -v jq >/dev/null; then
+          echo "clusters=$(jq '.summary.clusters' phpdup-report.json)" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Upload reports as workflow artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: phpdup-reports
+        path: |
+          phpdup-report.json
+          phpdup-report.sarif
+          phpdup-report/
+          phpdup-checkstyle.xml
+          phpdup-report.csv
+          phpdup-metrics.prom
+          phpdup-history.jsonl
+
+    - name: Upload SARIF to GitHub Code Scanning
+      if: ${{ inputs.upload-sarif == 'true' }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: phpdup-report.sarif
+        category: phpdup
+      continue-on-error: true
+
+    - name: Enforce impact threshold
+      if: ${{ inputs.fail-on-impact != '0' }}
+      shell: bash
+      run: |
+        if ! command -v jq >/dev/null; then
+          echo "jq required for fail-on-impact gating; install via apt-get install jq."
+          exit 0
+        fi
+        MAX=$(jq '[.clusters[].impact] | (max // 0)' phpdup-report.json)
+        echo "phpdup max cluster impact: $MAX (threshold ${{ inputs.fail-on-impact }})"
+        if [ "$MAX" -ge "${{ inputs.fail-on-impact }}" ]; then
+          echo "::error::phpdup found a cluster with impact $MAX >= ${{ inputs.fail-on-impact }}"
+          exit 1
+        fi
