@@ -1,14 +1,25 @@
 {
-    "name": "phpdup/phpdup",
+    "name": "detain/php-dup-finder",
     "description": "AST-based PHP duplicate-logic detector and refactoring assistant.",
     "type": "library",
     "license": "MIT",
+    "authors": [
+        { "name": "Joe Huss", "email": "detain@interserver.net", "role": "Maintainer" }
+    ],
+    "support": {
+        "issues": "https://github.com/detain/php-dup-finder/issues",
+        "source": "https://github.com/detain/php-dup-finder"
+    },
     "require": {
         "php": "^8.1",
         "ext-hash": "*",
         "nikic/php-parser": "^5.0",
         "symfony/console": "^6.4 || ^7.0",
-        "sebastian/diff": "^5.1 || ^6.0"
+        "sebastian/diff": "^5.1 || ^6.0",
+        "sugarcraft/candy-core": "dev-master",
+        "sugarcraft/candy-kit": "dev-master",
+        "sugarcraft/candy-sprinkles": "dev-master",
+        "sugarcraft/candy-palette": "dev-master"
     },
     "require-dev": {
         "phpunit/phpunit": "^10.5"
@@ -24,6 +35,14 @@
         }
     },
     "bin": ["bin/phpdup"],
+    "minimum-stability": "dev",
+    "prefer-stable": true,
+    "repositories": [
+        { "type": "vcs", "url": "https://github.com/sugarcraft/candy-core" },
+        { "type": "vcs", "url": "https://github.com/sugarcraft/candy-kit" },
+        { "type": "vcs", "url": "https://github.com/sugarcraft/candy-sprinkles" },
+        { "type": "vcs", "url": "https://github.com/sugarcraft/candy-palette" }
+    ],
     "config": {
         "sort-packages": true,
         "optimize-autoloader": true
