@@ -82,8 +82,28 @@ final class ConfigLoader
             optionalBlocksMaxPerCluster:  (int)($overrides['optional_blocks_max_per_cluster'] ?? $optBlock['max_per_cluster'] ?? $base->optionalBlocksMaxPerCluster),
             optionalBlocksMinSegmentLength: (int)($overrides['optional_blocks_min_segment_length'] ?? $optBlock['min_segment_length'] ?? $base->optionalBlocksMinSegmentLength),
             sort: (string)($overrides['sort'] ?? $data['sort'] ?? $base->sort),
+            normalizationPlugins: $this->extractNormalizationPlugins($data),
             perDirectoryOverrides: $this->discoverPerDirectoryOverrides($resolvedPaths),
         );
+    }
+
+    /**
+     * @param array<string,mixed> $data
+     * @return list<string>
+     */
+    private function extractNormalizationPlugins(array $data): array
+    {
+        $norm = $data['normalization'] ?? null;
+        if (!is_array($norm)) return [];
+        $list = $norm['plugins'] ?? null;
+        if (!is_array($list)) return [];
+        $out = [];
+        foreach ($list as $entry) {
+            if (is_string($entry) && $entry !== '') {
+                $out[] = $entry;
+            }
+        }
+        return $out;
     }
 
     /**
@@ -186,6 +206,7 @@ final class ConfigLoader
             'optional_blocks',
             'sort',
             'report',
+            'normalization',
         ];
         foreach (array_keys($data) as $k) {
             if (!in_array($k, $known, true)) {
@@ -334,6 +355,19 @@ final class ConfigLoader
                 \Phpdup\Reporting\ClusterSort::parse($data['sort']);
             } catch (\InvalidArgumentException $e) {
                 throw new \RuntimeException("sort: {$e->getMessage()}$where");
+            }
+        }
+        if (array_key_exists('normalization', $data)) {
+            if (!is_array($data['normalization'])) {
+                throw new \RuntimeException("normalization must be an object$where");
+            }
+            foreach ($data['normalization'] as $k => $v) {
+                if ($k !== 'plugins') {
+                    throw new \RuntimeException("Unknown config key 'normalization.$k'$where");
+                }
+            }
+            if (isset($data['normalization']['plugins'])) {
+                $assertListOfStrings($data['normalization']['plugins'], 'normalization.plugins');
             }
         }
         if (array_key_exists('report', $data)) {

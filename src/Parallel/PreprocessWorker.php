@@ -9,6 +9,7 @@ use Phpdup\Extraction\BlockExtractor;
 use Phpdup\Fingerprint\NgramFingerprint;
 use Phpdup\Fingerprint\SubtreeHasher;
 use Phpdup\Normalization\Normalizer;
+use Phpdup\Normalization\PluginRegistry;
 use Phpdup\Parsing\AstCache;
 use Phpdup\Parsing\AstParser;
 
@@ -47,17 +48,24 @@ final class PreprocessWorker
         // config don't pay reconstruction cost. Keyed by a small fingerprint
         // of the fields the extractor / normalizer / fingerprinter read.
         $tooling = [];
-        $toolFor = static function (Config $cfg) use (&$tooling): array {
+        // Build the plugin registry once per worker (plugin classes are
+        // typically cheap to instantiate; we pass the same registry into
+        // every Normalizer below).
+        $pluginRegistry = $this->config->normalizationPlugins !== []
+            ? PluginRegistry::fromClassNames($this->config->normalizationPlugins)
+            : null;
+        $toolFor = static function (Config $cfg) use (&$tooling, $pluginRegistry): array {
             $key = sprintf(
-                '%d|%d|%s|%d|%s',
+                '%d|%d|%s|%d|%s|%s',
                 $cfg->minBlockSize, $cfg->maxBlockSize,
                 $cfg->normalizationMode, $cfg->ngramSize,
                 implode(',', $cfg->allowedKinds),
+                implode(',', $cfg->normalizationPlugins),
             );
             if (!isset($tooling[$key])) {
                 $tooling[$key] = [
                     'extractor'  => new BlockExtractor($cfg->minBlockSize, $cfg->maxBlockSize, $cfg->allowedKinds),
-                    'normalizer' => new Normalizer($cfg->normalizationMode),
+                    'normalizer' => new Normalizer($cfg->normalizationMode, $pluginRegistry),
                     'fp'         => new NgramFingerprint($cfg->ngramSize),
                 ];
             }

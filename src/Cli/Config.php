@@ -55,6 +55,10 @@ final class Config
         // Format: KEY[:DIRECTION]. See \Phpdup\Reporting\ClusterSort::ALL_KEYS.
         // Default preserves the long-standing "biggest impact first" ordering.
         public readonly string $sort = 'impact:desc',
+        /** @var list<string> Fully-qualified class names that implement
+         *                    {@see \Phpdup\Normalization\NormalizationPlugin}.
+         *                    Resolved at preprocess-stage time. */
+        public readonly array $normalizationPlugins = [],
         // Per-directory overrides discovered by ConfigLoader from
         // `.phpdup.json` files placed inside the scanned tree. Keys are
         // **realpath()-resolved** absolute directory paths (no trailing
@@ -179,6 +183,7 @@ final class Config
             optionalBlocksMaxPerCluster:    $this->optionalBlocksMaxPerCluster,
             optionalBlocksMinSegmentLength: $this->optionalBlocksMinSegmentLength,
             sort:                           $this->sort,
+            normalizationPlugins:           $this->normalizationPlugins,
             perDirectoryOverrides:          $this->perDirectoryOverrides,
         );
     }

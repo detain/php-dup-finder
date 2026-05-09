@@ -39,15 +39,17 @@ use Phpdup\Extraction\Block;
  */
 final class Normalizer
 {
-    public function __construct(private readonly string $mode = 'aggressive')
-    {
+    public function __construct(
+        private readonly string $mode = 'aggressive',
+        private readonly ?PluginRegistry $plugins = null,
+    ) {
     }
 
     public function normalize(Block $block): void
     {
         $clone = self::deepClone($block->ast);
         $traverser = new NodeTraverser();
-        $traverser->addVisitor(new CanonicalizingVisitor($this->mode));
+        $traverser->addVisitor(new CanonicalizingVisitor($this->mode, $this->plugins));
         $stmts = $traverser->traverse([$clone]);
         $block->canonical = $stmts[0];
     }
@@ -78,8 +80,10 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
     private array $classRenames = [];
     private int $classCounter = 0;
 
-    public function __construct(private readonly string $mode)
-    {
+    public function __construct(
+        private readonly string $mode,
+        private readonly ?PluginRegistry $plugins = null,
+    ) {
     }
 
     public function enterNode(Node $node)
@@ -96,6 +100,14 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
         }
         $this->canonicalizeNames($node);
         $this->canonicalizeAttributes($node);
+
+        // User-defined passes run last so they see the canonical form
+        // produced by the built-in passes.
+        if ($this->plugins !== null) {
+            foreach ($this->plugins->plugins() as $plugin) {
+                $plugin->visit($node, $this->mode);
+            }
+        }
         return null;
     }
 
