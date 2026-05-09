@@ -29,6 +29,9 @@ final class Config
         public readonly string $parallelism = 'auto',
         public readonly ?string $htmlReportDir = null,
         public readonly ?string $jsonReportFile = null,
+        public readonly int $workers = 0,
+        public readonly bool $incremental = true,
+        public readonly bool $lazyAst = true,
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");

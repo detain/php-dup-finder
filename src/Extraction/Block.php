@@ -13,6 +13,10 @@ use Phpdup\Util\LineRange;
  * canonical AST, hole map, structural hash, and fingerprint. Mutability
  * is intentional — the pipeline mutates blocks in-place to avoid
  * copying potentially large ASTs.
+ *
+ * Memory note: $ast is nullable. After fingerprinting, callers may
+ * `unloadAst()` to drop the original tree from memory; AntiUnifier
+ * reconstructs it on demand via {@see BlockAstLoader}.
  */
 final class Block
 {
@@ -27,6 +31,8 @@ final class Block
     /** @var array<string,mixed> bookkeeping for normalization holes */
     public array $holeMap = [];
 
+    public ?Node $ast;
+
     public function __construct(
         public string $file,
         public LineRange $range,
@@ -34,8 +40,19 @@ final class Block
         public ?string $namespace,
         public ?string $class,
         public ?string $name,
-        public Node $ast,
+        Node $ast,
     ) {
+        $this->ast = $ast;
+    }
+
+    public function unloadAst(): void
+    {
+        $this->ast = null;
+    }
+
+    public function isAstUnloaded(): bool
+    {
+        return $this->ast === null;
     }
 
     public function location(): string

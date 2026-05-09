@@ -51,6 +51,9 @@ final class ConfigLoader
             parallelism: (string)$get('parallelism', $base->parallelism),
             htmlReportDir: $htmlOverride !== null ? (string)$htmlOverride : null,
             jsonReportFile: $jsonOverride !== null ? (string)$jsonOverride : null,
+            workers: (int)$get('workers', $base->workers),
+            incremental: (bool)$get('incremental', $base->incremental),
+            lazyAst: (bool)$get('lazy_ast', $base->lazyAst),
         );
     }
 }

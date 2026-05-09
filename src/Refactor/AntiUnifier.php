@@ -6,6 +6,8 @@ namespace Phpdup\Refactor;
 use PhpParser\Node;
 use PhpParser\PrettyPrinter\Standard;
 use Phpdup\Clustering\Cluster;
+use Phpdup\Extraction\Block;
+use Phpdup\Extraction\BlockAstLoader;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Util\AstSerializer;
 
@@ -31,7 +33,7 @@ final class AntiUnifier
 {
     private Standard $printer;
 
-    public function __construct()
+    public function __construct(private readonly ?BlockAstLoader $astLoader = null)
     {
         $this->printer = new Standard();
     }
@@ -43,18 +45,32 @@ final class AntiUnifier
             return;
         }
         if (count($members) === 1) {
-            $cluster->generalizedAst = Normalizer::deepClone($members[0]->ast);
+            $cluster->generalizedAst = Normalizer::deepClone($this->astOf($members[0]));
             $cluster->holes = [];
             return;
         }
 
         $ctx = new UnifyContext();
+        $first = $this->astOf($members[0]);
         for ($i = 1; $i < count($members); $i++) {
-            $this->walk($members[0]->ast, $members[$i]->ast, $i, $ctx, []);
+            $this->walk($first, $this->astOf($members[$i]), $i, $ctx, []);
         }
 
-        $cluster->generalizedAst = Normalizer::deepClone($members[0]->ast);
+        $cluster->generalizedAst = Normalizer::deepClone($first);
         $cluster->holes = array_values($ctx->holes);
+    }
+
+    private function astOf(Block $block): Node
+    {
+        if (!$block->isAstUnloaded()) {
+            return $block->ast;
+        }
+        if ($this->astLoader === null) {
+            throw new \RuntimeException(sprintf(
+                'AntiUnifier: block %s has unloaded AST and no loader was supplied', $block->qualifiedName()
+            ));
+        }
+        return $this->astLoader->resolve($block);
     }
 
     /**

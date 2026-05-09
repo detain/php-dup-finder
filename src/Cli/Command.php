@@ -4,14 +4,15 @@ declare(strict_types=1);
 namespace Phpdup\Cli;
 
 use Phpdup\Clustering\Clusterer;
-use Phpdup\Extraction\BlockExtractor;
-use Phpdup\Fingerprint\NgramFingerprint;
-use Phpdup\Fingerprint\SubtreeHasher;
+use Phpdup\Extraction\Block;
+use Phpdup\Extraction\BlockAstLoader;
 use Phpdup\Index\BlockIndex;
-use Phpdup\Index\NgramInvertedIndex;
-use Phpdup\Normalization\Normalizer;
+use Phpdup\Parallel\PairScoreWorker;
+use Phpdup\Parallel\PreprocessWorker;
+use Phpdup\Parallel\WorkerPool;
 use Phpdup\Parsing\AstCache;
 use Phpdup\Parsing\AstParser;
+use Phpdup\Persistence\IndexStore;
 use Phpdup\Refactor\AntiUnifier;
 use Phpdup\Refactor\ParameterSynthesizer;
 use Phpdup\Refactor\PatternRecognizer;
@@ -47,7 +48,10 @@ final class Command extends SymfonyCommand
             ->addOption('exact-only', null, InputOption::VALUE_NONE, 'Skip near-duplicate detection (faster)')
             ->addOption('limit', null, InputOption::VALUE_REQUIRED, 'Show at most N clusters in CLI output', 50)
             ->addOption('stats', null, InputOption::VALUE_NONE, 'Show pipeline statistics')
-            ->addOption('no-cache', null, InputOption::VALUE_NONE, 'Disable AST cache for this run');
+            ->addOption('no-cache', null, InputOption::VALUE_NONE, 'Disable AST cache for this run')
+            ->addOption('workers', 'j', InputOption::VALUE_REQUIRED, 'Worker count for parallel preprocess + pair scoring (0 = auto, 1 = serial)')
+            ->addOption('no-incremental', null, InputOption::VALUE_NONE, 'Disable per-file index reuse')
+            ->addOption('no-lazy-ast', null, InputOption::VALUE_NONE, 'Keep all original ASTs in memory (higher RSS, faster anti-unification)');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -65,7 +69,10 @@ final class Command extends SymfonyCommand
             'min_cluster_impact'   => $input->getOption('min-impact'),
             'html'                 => $input->getOption('html'),
             'json'                 => $input->getOption('json'),
+            'workers'              => $input->getOption('workers'),
         ], fn($v) => $v !== null);
+        if ($input->getOption('no-incremental')) $overrides['incremental'] = false;
+        if ($input->getOption('no-lazy-ast'))    $overrides['lazy_ast']   = false;
 
         $config = (new ConfigLoader())->load(
             paths: $paths,
@@ -73,57 +80,94 @@ final class Command extends SymfonyCommand
             overrides: $overrides,
         );
 
-        $useCache = !$input->getOption('no-cache');
+        $useCache  = !$input->getOption('no-cache');
         $exactOnly = (bool)$input->getOption('exact-only');
         $showStats = (bool)$input->getOption('stats');
-        $limit = (int)$input->getOption('limit');
+        $limit     = (int)$input->getOption('limit');
 
         $scanner = new FileScanner($config->exclude);
-        $cache = $useCache ? new AstCache($config->cacheDir) : new AstCache('');
-        $parser = new AstParser();
-        $extractor = new BlockExtractor($config->minBlockSize, $config->maxBlockSize);
-        $normalizer = new Normalizer($config->normalizationMode);
-        $hasher = new SubtreeHasher();
-        $fingerprinter = new NgramFingerprint($config->ngramSize);
 
-        $files = 0;
-        $parseErrors = 0;
-        $blocks = [];
-        $timings = ['parse' => 0.0, 'normalize' => 0.0, 'fingerprint' => 0.0, 'cluster' => 0.0, 'refactor' => 0.0];
-
-        $output->writeln("<info>phpdup</info> scanning " . count($config->paths) . " path(s)...");
-
+        $files = [];
         foreach ($config->paths as $root) {
             foreach ($scanner->scan($root) as $path) {
-                $files++;
-                $tParse = microtime(true);
-                $stmts = $cache->get($path);
-                if ($stmts === null) {
-                    $stmts = $parser->parseFile($path);
-                    if ($stmts === null) {
-                        $parseErrors++;
-                        continue;
+                $files[] = $path;
+            }
+        }
+        sort($files);
+
+        $output->writeln(sprintf(
+            "<info>phpdup</info> scanning %d path(s) → %d files",
+            count($config->paths), count($files)
+        ));
+
+        $timings = ['preprocess' => 0.0, 'cluster' => 0.0, 'refactor' => 0.0];
+        $blocks = [];
+        $parseErrors = 0;
+        $reusedFiles = 0;
+        $processedFiles = 0;
+
+        $configKey = sha1(serialize([
+            $config->minBlockSize, $config->maxBlockSize,
+            $config->normalizationMode, $config->ngramSize,
+        ]));
+        $store = ($useCache && $config->incremental) ? new IndexStore($config->cacheDir, $configKey) : null;
+
+        // Phase 1: split files into "reuse" (incremental index hit) and "process" (need work).
+        $toProcess = [];
+        if ($store !== null) {
+            foreach ($files as $f) {
+                $cached = $store->load($f);
+                if ($cached !== null) {
+                    foreach ($cached as $b) {
+                        $blocks[] = $b;
                     }
-                    $cache->put($path, $stmts);
+                    $reusedFiles++;
+                } else {
+                    $toProcess[] = $f;
                 }
-                $timings['parse'] += microtime(true) - $tParse;
-                foreach ($extractor->extract($path, $stmts) as $block) {
-                    $tNorm = microtime(true);
-                    $normalizer->normalize($block);
-                    $timings['normalize'] += microtime(true) - $tNorm;
-                    $tFp = microtime(true);
-                    $block->structuralHash = $hasher->hash($block->canonical);
-                    $block->ngramBag = $fingerprinter->fingerprint($block->canonical);
-                    $timings['fingerprint'] += microtime(true) - $tFp;
-                    $block->id = substr($block->structuralHash, 0, 8) . '_' . count($blocks);
-                    $blocks[] = $block;
+            }
+        } else {
+            $toProcess = $files;
+        }
+
+        // Phase 2: process the rest, in parallel when possible.
+        $tPre = microtime(true);
+        if ($toProcess) {
+            $worker = new PreprocessWorker($config);
+            $workerCount = $config->workers > 0 ? $config->workers : WorkerPool::detectCpuCount();
+            $pool = new WorkerPool(workers: $workerCount);
+            $task = static fn(array $batch): array => $worker->process($batch);
+            $rows = $pool->run($toProcess, $task);
+            $perFileBlocks = [];
+            foreach ($rows as $row) {
+                if ($row['type'] === 'error') {
+                    $parseErrors++;
+                    continue;
+                }
+                if ($row['type'] === 'block') {
+                    /** @var Block $b */
+                    $b = $row['block'];
+                    $perFileBlocks[$row['file']][] = $b;
+                    $blocks[] = $b;
+                }
+            }
+            $processedFiles = count(array_unique(array_column($rows, 'file')));
+            if ($store !== null) {
+                foreach ($perFileBlocks as $file => $list) {
+                    $store->save($file, $list);
                 }
             }
         }
 
+        // Assign IDs (after collecting from all sources).
+        foreach ($blocks as $i => $b) {
+            $b->id = substr($b->structuralHash, 0, 8) . '_' . $i;
+        }
+        $timings['preprocess'] = microtime(true) - $tPre;
+
         $output->writeln(sprintf(
-            "<info>phpdup</info> scanned %d files, %d blocks (%d parse errors)",
-            $files, count($blocks), $parseErrors,
+            "<info>phpdup</info> %d files (%d reused · %d processed) → %d blocks · %d parse errors",
+            count($files), $reusedFiles, $processedFiles, count($blocks), $parseErrors,
         ));
 
         if ($showStats) {
@@ -139,6 +183,14 @@ final class Command extends SymfonyCommand
             $index->add($b);
         }
 
+        // Optional: drop original ASTs to free memory; reload lazily during refactor.
+        if ($config->lazyAst) {
+            foreach ($blocks as $b) {
+                $b->unloadAst();
+            }
+        }
+
+        // Phase 3: cluster.
         $tCluster = microtime(true);
         $clusterer = new Clusterer(
             similarity: new JaccardSimilarity(),
@@ -148,11 +200,29 @@ final class Command extends SymfonyCommand
             maxDocumentFrequency: $config->maxDocumentFrequency,
             exactOnly: $exactOnly,
         );
-        $clusters = $clusterer->cluster($index);
+
+        $edges = null;
+        if (!$exactOnly) {
+            $candidatePairs = $clusterer->generateCandidatePairs($index);
+            $workers = $config->workers > 0 ? $config->workers : WorkerPool::detectCpuCount();
+            if (count($candidatePairs) >= 64 && $workers > 1) {
+                $scoreWorker = new PairScoreWorker(
+                    $index, $config->similarityThreshold, $config->treeThreshold,
+                );
+                $pool = new WorkerPool(workers: $workers);
+                $task = static fn(array $pairs): array => $scoreWorker->score($pairs);
+                $edges = $pool->run($candidatePairs, $task);
+            }
+        }
+        $clusters = $clusterer->cluster($index, $edges);
         $timings['cluster'] = microtime(true) - $tCluster;
 
+        // Phase 4: refactor synthesis (deserialised blocks may have unloaded ASTs).
         $tRefactor = microtime(true);
-        $antiUnifier = new AntiUnifier();
+        $loader = $config->lazyAst
+            ? new BlockAstLoader(new AstCache($useCache ? $config->cacheDir : ''), new AstParser())
+            : null;
+        $antiUnifier = new AntiUnifier($loader);
         $synth = new ParameterSynthesizer();
         $sigBuilder = new SignatureBuilder();
         $patterns = new PatternRecognizer();
@@ -165,18 +235,21 @@ final class Command extends SymfonyCommand
         $timings['refactor'] = microtime(true) - $tRefactor;
 
         if ($showStats) {
-            $out = $output;
-            $out->writeln('  timings (s):');
+            $output->writeln('  timings (s):');
             foreach ($timings as $k => $v) {
-                $out->writeln(sprintf('    %-12s %6.2f', $k, $v));
+                $output->writeln(sprintf('    %-12s %6.2f', $k, $v));
             }
+            $output->writeln(sprintf(
+                '  workers: %d (pcntl %s)',
+                $config->workers > 0 ? $config->workers : WorkerPool::detectCpuCount(),
+                WorkerPool::isAvailable() ? 'available' : 'unavailable',
+            ));
         }
 
-        $ranker = new Ranker($config->minClusterImpact);
-        $clusters = $ranker->rank($clusters);
+        $clusters = (new Ranker($config->minClusterImpact))->rank($clusters);
 
         $report = new Report(
-            files: $files,
+            files: count($files),
             blocks: count($blocks),
             parseErrors: $parseErrors,
             clusters: $clusters,
@@ -193,7 +266,6 @@ final class Command extends SymfonyCommand
             (new HtmlReporter())->writeTo($report, $config->htmlReportDir);
             $output->writeln("<info>phpdup</info> html report → {$config->htmlReportDir}/index.html");
         }
-
         return 0;
     }
 
