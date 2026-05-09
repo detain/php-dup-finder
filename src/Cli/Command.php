@@ -67,6 +67,7 @@ final class Command extends SymfonyCommand
             ->addOption('limit', null, InputOption::VALUE_REQUIRED, 'Show at most N clusters in CLI output', 50)
             ->addOption('summary-only', null, InputOption::VALUE_NONE, 'Render only the top banner + final summary line (skip per-cluster details)')
             ->addOption('clusters', null, InputOption::VALUE_NONE, 'Render a one-line-per-cluster table instead of the full per-cluster breakdown')
+            ->addOption('pager', null, InputOption::VALUE_REQUIRED, 'Page CLI report through $PAGER (default `less -R`). Modes: auto|never|always. auto pages when stdout is a TTY and the rendered output exceeds ~60 lines.', 'never')
             ->addOption('sort', null, InputOption::VALUE_REQUIRED, 'Cluster sort: KEY[:asc|desc]. Keys: impact|members|block-size|lines|similarity|confidence|name|file|id. Aliases: size→members, count→members. Default impact:desc.')
             ->addOption('stats', null, InputOption::VALUE_NONE, 'Show pipeline statistics');
 
@@ -316,7 +317,12 @@ HELP;
             'plantumlFile'   => $input->getOption('plantuml'),
             'cliVerbosity'   => $cliVerbosity,
             'minSafety'      => $input->getOption('min-safety') !== null ? (float)$input->getOption('min-safety') : 0.0,
+            'pagerMode'      => (string)($input->getOption('pager') ?? Pager::MODE_NEVER),
         ];
+        if (!in_array($reportArgs['pagerMode'], Pager::MODES, true)) {
+            $output->writeln('<error>phpdup: --pager must be one of ' . implode('|', Pager::MODES) . '</error>');
+            return 2;
+        }
         if ($reportArgs['minSafety'] < 0.0 || $reportArgs['minSafety'] > 1.0) {
             $output->writeln('<error>phpdup: --min-safety must be in [0, 1]</error>');
             return 2;
@@ -345,6 +351,7 @@ HELP;
                         minSafety:      $reportArgs['minSafety'],
                         graphvizFile:   $reportArgs['graphvizFile'],
                         plantumlFile:   $reportArgs['plantumlFile'],
+                        pagerMode:      $reportArgs['pagerMode'],
                     ),
                 ],
                 stopAfter: $stopAfter,
