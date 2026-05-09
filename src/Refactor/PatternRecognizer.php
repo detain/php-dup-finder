@@ -82,8 +82,8 @@ final class PatternRecognizer
                 $stmts = $if->stmts;
                 $last = end($stmts);
                 if (!$last) { $allShortCircuit = false; break; }
-                if (!($last instanceof Node\Stmt\Throw_)
-                    && !($last instanceof Node\Stmt\Return_)
+                // PHP-Parser 5 only has Node\Expr\Throw_ wrapped in Stmt\Expression — Stmt\Throw_ no longer exists.
+                if (!($last instanceof Node\Stmt\Return_)
                     && !($last instanceof Node\Stmt\Expression && $last->expr instanceof Node\Expr\Throw_)
                 ) {
                     $allShortCircuit = false; break;

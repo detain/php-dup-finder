@@ -86,6 +86,12 @@ final class AptedDistance
      * Forest-distance DP for the (key_root_a, key_root_b) pair.
      * Mutates $treedist in place. Returns the minimum entry written
      * to the matrix on this iteration so the caller can early-abort.
+     *
+     * @param list<int>             $LL1
+     * @param list<int>             $LL2
+     * @param list<string>          $L1
+     * @param list<string>          $L2
+     * @param array<int,array<int,int>> $treedist
      */
     private function forestDp(
         int $i,

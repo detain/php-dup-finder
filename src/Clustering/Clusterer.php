@@ -140,8 +140,8 @@ final class Clusterer
                 }
             }
             $merged[] = new Cluster(
-                id: 'C' . substr(md5($root), 0, 8),
-                members: array_values($members),
+                id: 'C' . substr(md5((string)$root), 0, 8),
+                members: $members,
                 similarity: $allIdenticalHash ? 1.0 : $minSim,
                 exact: $allIdenticalHash,
             );

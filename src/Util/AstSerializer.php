@@ -132,14 +132,12 @@ final class AstSerializer
         if ($node instanceof Node\Expr\Variable && is_string($node->name)) {
             return 'v:' . $node->name;
         }
+        // Identifier covers VarLikeIdentifier (its subclass); both serialise via the 'id:' prefix here.
         if ($node instanceof Node\Identifier) {
             return 'id:' . $node->name;
         }
         if ($node instanceof Node\Name) {
             return 'n:' . $node->toString();
-        }
-        if ($node instanceof Node\VarLikeIdentifier) {
-            return 'vi:' . $node->name;
         }
 
         return null;

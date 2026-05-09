@@ -21,6 +21,7 @@ final class JsonReporter
         file_put_contents($file, json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
     }
 
+    /** @return array<string, mixed> */
     public function build(Report $report): array
     {
         return [
@@ -45,6 +46,7 @@ final class JsonReporter
         ];
     }
 
+    /** @return array<string, mixed> */
     private function clusterPayload(Cluster $c): array
     {
         return [

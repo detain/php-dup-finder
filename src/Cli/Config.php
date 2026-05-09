@@ -44,6 +44,7 @@ final class Config
         }
     }
 
+    /** @param list<string> $paths */
     public static function defaults(array $paths): self
     {
         return new self(

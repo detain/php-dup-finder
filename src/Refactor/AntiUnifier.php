@@ -171,9 +171,9 @@ final class AntiUnifier
         if ($template instanceof Node\Scalar\Float_)             return 'literal';
         if ($template instanceof Node\Scalar\InterpolatedString) return 'literal';
         if ($template instanceof Node\Expr\Variable)             return 'identifier';
+        // VarLikeIdentifier extends Identifier, so the Identifier check below already covers it.
         if ($template instanceof Node\Identifier)                return 'name';
         if ($template instanceof Node\Name)                      return 'name';
-        if ($template instanceof Node\VarLikeIdentifier)         return 'name';
         return 'subtree';
     }
 
@@ -205,9 +205,9 @@ final class AntiUnifier
         if ($node instanceof Node\Scalar\Int_)        return (string)$node->value;
         if ($node instanceof Node\Scalar\Float_)      return (string)$node->value;
         if ($node instanceof Node\Expr\Variable && is_string($node->name)) return '$' . $node->name;
+        // Identifier covers VarLikeIdentifier (its subclass); they're rendered without the $ prefix in this branch.
         if ($node instanceof Node\Identifier)         return $node->name;
         if ($node instanceof Node\Name)               return $node->toString();
-        if ($node instanceof Node\VarLikeIdentifier)  return '$' . $node->name;
 
         try {
             if ($node instanceof Node\Expr) {
