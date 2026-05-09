@@ -8,72 +8,34 @@
 [![PHP Version](https://img.shields.io/badge/php-%5E8.1-blue.svg)](https://www.php.net)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-![phpdup demo](docs/media/phpdup-demo.gif)
-
-The demo above is rendered from [`docs/phpdup-demo.tape`](docs/phpdup-demo.tape) with [VHS](https://github.com/charmbracelet/vhs) — `vhs docs/phpdup-demo.tape`. It shows a top-2 cluster summary, the SARIF / GitLab SAST / diff / checkstyle outputs going to disk in one run, the SARIF payload, and a `--kinds=method,closure` filter pass.
-
-`phpdup` indexes a PHP codebase, parses every file into an Abstract Syntax
-Tree, normalizes those ASTs into a canonical form, and finds clusters of
-**parameterizable duplication** — places where the *shape* of the code
-repeats and only literals, identifiers, method names, or table names vary.
+`phpdup` parses every file in a PHP codebase into an Abstract Syntax
+Tree, normalizes those ASTs into a canonical form, and finds clusters
+of **parameterizable duplication** — places where the *shape* of the
+code repeats and only literals, identifiers, method names, table
+names, or *whole optional segments of code* vary.
 
 For each cluster it doesn't just point at the duplicates, it tells you
-**what the abstraction would look like**:
+**what the abstraction would look like** — its parameter list, types,
+and a suggested function name — ready to drop into a refactor.
 
-```
-╭─────────────────────────────────────────────────────────────────╮
-│  phpdup                                                         │
-│  4 files · 20 blocks · 6 clusters · 84 dup lines · 194 impact   │
-╰─────────────────────────────────────────────────────────────────╯
+![phpdup CLI scanning a fixture corpus](docs/media/cli-basic.gif)
 
-ℹ 6 cluster(s); showing top 1 (sorted by impact)
-
-── Cluster #2   similarity 1.00   impact 44   members 3   EXACT ──
-╭────────────────────────────────────────┬────────┬──────────────────────╮
-│ LOCATION                               │ KIND   │ QUALIFIED NAME       │
-├────────────────────────────────────────┼────────┼──────────────────────┤
-│ src/Notify.php:10-15                   │ method │ App\Notify::high     │
-│ src/Notify.php:17-22                   │ method │ App\Notify::mid      │
-│ src/Notify.php:24-29                   │ method │ App\Notify::low      │
-╰────────────────────────────────────────┴────────┴──────────────────────╯
-
-── Suggested abstraction ─────────────────────────────────────────
-┌──────────────────────────────┐
-│  function notifyByThreshold( │
-│      int $threshold,         │
-│      string $value,          │
-│  ): mixed                    │
-└──────────────────────────────┘
-
-── Holes ─────────────────────────────────────────────────────────
-╭────────────┬────────┬─────────┬───────────────────────────────╮
-│ PARAM      │ TYPE   │ KIND    │ OBSERVED                      │
-├────────────┼────────┼─────────┼───────────────────────────────┤
-│ $threshold │ int    │ literal │ 10, 20, 30                    │
-│ $value     │ string │ literal │ 'admin', 'moderator', 'editor'│
-╰────────────┴────────┴─────────┴───────────────────────────────╯
-
-  patterns  config-driven
-  ✓ confidence 1.00
-```
-
-Compare that with classic copy/paste detectors that would only highlight
-that the three methods share text. `phpdup` tells you the threshold and
-the role string are the parameters of the abstraction, with their
-inferred types and observed values, ready to drop into a refactor.
+A run on `tests/Fixtures` returns its top 2 clusters by impact. Each
+cluster's "Suggested abstraction" box is the function signature
+phpdup is recommending you extract; the "Holes" table lists every
+parameter with its inferred type and the values observed across cluster
+members. Compare with classic copy/paste detectors that only highlight
+the duplication; phpdup tells you the threshold and the role string
+*are the parameters of the abstraction* with their inferred types and
+observed values, ready to apply.
 
 ---
 
 ## Table of contents
 
-- [What's new in v0.5](#whats-new-in-v05)
-- [What's new in v0.4](#whats-new-in-v04)
-- [What's new in v0.3](#whats-new-in-v03)
-- [What's new in v0.2](#whats-new-in-v02)
 - [Features](#features)
 - [Installation](#installation)
 - [Quick start](#quick-start)
-- [Configuration](#configuration)
 - [How it works](#how-it-works)
   - [Pipeline](#pipeline)
   - [Normalization modes](#normalization-modes)
@@ -84,18 +46,15 @@ inferred types and observed values, ready to drop into a refactor.
   - [Parallelism](#parallelism)
   - [Incremental indexing](#incremental-indexing)
   - [Lazy AST loading](#lazy-ast-loading)
-- [Output formats](#output-formats)
-  - [SARIF (GitHub / GitLab PR annotations)](#sarif)
-  - [GitLab SAST report](#gitlab-sast-report)
-  - [Diff and patch](#diff-and-patch)
-  - [Checkstyle XML](#checkstyle-xml)
 - [Type-3 / optional-segment detection](#type-3--optional-segment-detection)
 - [TUI mode](#tui-mode)
 - [Watch mode](#watch-mode)
-- [Static analysis & config validation](#static-analysis--config-validation)
+- [Output formats](#output-formats)
+- [Configuration](#configuration)
 - [CLI reference](#cli-reference)
 - [Programmatic use](#programmatic-use)
 - [Examples](#examples)
+- [Static analysis & config validation](#static-analysis--config-validation)
 - [Benchmarks](#benchmarks)
 - [Architecture](#architecture)
 - [Testing](#testing)
@@ -106,158 +65,33 @@ inferred types and observed values, ready to drop into a refactor.
 
 ---
 
-## What's new in v0.5
-
-v0.5 adds **type-3 / "optional-segment" clone detection** — phpdup
-now clusters blocks whose statements differ in length but share a
-common skeleton, and synthesizes a default-`false` boolean parameter
-for each segment that's present in some members and absent in others.
-
-Given two blocks like:
-
-```php
-// block 1
-if ($something == $somethingelse) {
-    base64_encode($stuff);
-    $ret = other_stuff($blah);
-    some_other_logic($here);   // ← extra in block 1
-    and_more($f);              // ← extra in block 1
-} else {
-    return false;
-}
-
-// block 2
-if ($something == $somethingelse) {
-    base64_encode($stuff);
-    $ret = other_stuff($blah);
-} else {
-    return false;
-}
-```
-
-phpdup now produces:
-
-```
-function extractedFunction(
-    bool $includeSomeOtherLogic = false,
-    bool $includeAndMore = false,
-): mixed
-```
-
-…with the cluster tagged `optional-segments`. See
-[Type-3 / optional-segment detection](#type-3--optional-segment-detection)
-for the algorithm and tunables.
-
-| Area                       | v0.4                                                           | v0.5                                                                                                                                            |
-|----------------------------|----------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------|
-| Clone detection scope      | Type-1 (exact) and type-2 (renamed-variables) only             | + Type-3 — clusters blocks whose stmt arrays differ in length when one is a near-subset of the other.                                            |
-| New similarity metric      | Jaccard only                                                   | + ContainmentSimilarity — asymmetric `\|A∩B\|min / min(sum(A), sum(B))`. Used as a fallback when Jaccard fails for Type-3 clones.               |
-| Anti-unification           | Whole-array hole when stmt arrays differed in length           | LCS over per-statement structural hashes. Matched positions recurse normally; unmatched template positions become `optional_block` holes.       |
-| Synthesized parameters     | One typed param per disagreement                               | + `bool $includeFooBar = false` per optional segment, named from the first identifier in the missing code.                                       |
-| Pattern recognition        | 6 archetypes                                                   | + `optional-segments` tag.                                                                                                                       |
-| Reporters                  | —                                                              | JSON adds `holes[].present_in_members` (per-member presence list); SARIF adds `properties.optionalSegmentCount` + `hasOptionalSegments`; HTML highlights optional rows in amber with a "type-3" badge. |
-| New CLI flags              | —                                                              | `--max-df`, `--optional-blocks=on\|off`, `--optional-blocks-containment`.                                                                        |
-| Config knobs               | —                                                              | `optional_blocks: { enabled, containment, min_overlap, max_per_cluster, min_segment_length }` in `phpdup.json`.                                  |
-| Tests                      | 125                                                            | 133 (added: ContainmentSimilarity, optional-block end-to-end, type-3-disabled-via-config).                                                       |
-
-The legacy "stmt arrays differ in length → whole-array subtree hole"
-behaviour is still there as the fallback when type-3 detection is
-disabled or when an alignment would exceed the per-cluster cap. Type-1
-and type-2 cluster output is unchanged.
-
----
-
-## What's new in v0.4
-
-v0.4 lands the three architectural items v0.3's docs called out as
-deferred: the worker pool now streams, the pipeline cooperatively
-yields, and the TUI works alongside the file watcher.
-
-| Area                       | v0.3                                                   | v0.4                                                                                                  |
-|----------------------------|--------------------------------------------------------|-------------------------------------------------------------------------------------------------------|
-| WorkerPool                 | `run()` returns one big array once every child exits   | `runStreaming()` returns a `\Generator` — children emit length-prefixed serialized records over `stream_socket_pair`s; parent multiplexes via `stream_select` and yields each record live. `run()` is now a thin drain over the streaming version. |
-| Pipeline                   | Synchronous `run()` only                               | Cooperative `iter()` Generator yielding pre/post-stage and (for stages implementing `CooperativeStageInterface`) at every checkpoint inside the stage. ScanningStage yields every 16 files, PreprocessStage every 32 records. |
-| TUI mid-stage updates      | Pipeline ran, then TUI booted — counts appeared post-hoc | TUI drives the pipeline iterator from inside the runtime via `StagePumpedMsg`. Panes, sparkline, and OSC 9;4 progress now build up frame-by-frame as work progresses. |
-| `--watch --tui`            | Rejected with an error                                 | Supported — the watcher and the SugarCraft `Program` share a single `React\EventLoop`. Changes fire a `RestartPipelineMsg` that resets state and rebuilds the cooperative generator from its factory. |
-| Tests                      | 112                                                    | 125+ (Pipeline iter, streaming pool, live model pump/restart, watch+tui).                              |
-
-The cooperative pipeline is a pure addition; the synchronous `run()` is
-still the path used by CI / non-TUI mode and produces byte-identical
-output to v0.3.
-
----
-
-## What's new in v0.3
-
-v0.3 turns phpdup into a CI-grade tool. The 295-line `Command::execute()`
-is now five composable pipeline stages, the same pipeline drives an
-optional interactive SugarCraft TUI, and four new machine-readable
-output formats land alongside the existing CLI/JSON/HTML.
-
-| Area                       | v0.2                              | v0.3                                                                                          |
-|----------------------------|-----------------------------------|-----------------------------------------------------------------------------------------------|
-| Architecture               | One monolithic `execute()` method | `Pipeline` orchestrator + `Scanning`/`Preprocessing`/`Clustering`/`Refactoring`/`Reporting` stages, each with its own tests. |
-| Output formats             | CLI, JSON, HTML                   | + **SARIF 2.1.0** (`--sarif`), **GitLab SAST v15** (`--gitlab-sast`), **unified diffs** (`--diff` dir / `--patch` file), **Checkstyle XML** (`--checkstyle`). |
-| TUI                        | —                                 | SugarCraft dashboard (`--tui`) with FlexBox panes, sparkline of stage timings, OSC 9;4 taskbar progress, six themes (`--theme=ansi\|plain\|charm\|dracula\|nord\|catppuccin`). |
-| Watch                      | —                                 | `--watch` polls mtimes via React\\EventLoop and re-runs on change; `Ctrl+C` exits cleanly.    |
-| Static analysis            | `php -l` only                     | PHPStan **level 6** (clean) + Psalm with a tracked baseline, both in CI.                      |
-| Config validation          | Field-level checks at construction | Full `phpdup.json` schema validation in `ConfigLoader::validate()`; `--validate-config` flag exits with the field-path on the first violation. |
-| Block-kind filter          | All kinds always extracted        | `--kinds=method,closure` (also accepted in `phpdup.json` as `"kinds"`) filters at extraction time before fingerprinting. |
-| Memory                     | Soft RSS unbounded                | `--max-memory=MB` warns when peak RSS exceeds the ceiling and suggests `--exact-only`. Intermediate arrays are unset early. |
-| Pipeline observability     | —                                 | `ProgressListener` interface stages emit per-file / per-pair events to; the TUI is a listener.|
-| Incremental halt           | —                                 | `--stage=NAME` halts after `scanning`, `preprocessing`, `clustering`, `refactoring`, or `reporting` for incremental debugging. |
-| HTML report                | Static, sort-by-impact only       | Client-side column sort, live filter input, copy-signature button, mini-map of cluster-impact distribution, syntax-highlighted code. |
-| Tests                      | 31                                | 112+                                                                                          |
-
-Cluster output (count, members, signatures, impact, similarity) remains
-byte-identical with v0.2 — none of the new features change clustering
-math.
-
----
-
-## What's new in v0.2
-
-v0.2 closes the four "known limitations" listed in v0.1's BENCHMARKS.md.
-The headline change for users: phpdup is now multi-process by default
-and re-runs reuse work from earlier runs.
-
-| Area                      | v0.1                            | v0.2                                                                                       |
-|---------------------------|---------------------------------|--------------------------------------------------------------------------------------------|
-| Concurrency               | Single-threaded                 | `pcntl_fork` worker pool. Auto-detects CPU count. Serial fallback when pcntl unavailable. |
-| Tree edit distance        | Bounded top-down (homebrew)     | Zhang-Shasha forest DP with APTED-style heavy-path child ordering. Correctness-tested.     |
-| Re-run cost               | Full re-analysis every time     | Per-file index snapshots; only changed/added files are re-processed.                       |
-| Memory                    | All ASTs held in RAM throughout | Original ASTs dropped after fingerprinting; reloaded on demand inside the anti-unifier.    |
-| Terminal output           | Plain ANSI                      | SugarCraft (lipgloss-port) styled banner, tables, status lines, pattern-tag chips.         |
-| New CLI flags             | —                               | `--workers/-j`, `--no-incremental`, `--no-lazy-ast`.                                       |
-| Tests                     | 19                              | 31 (added APTED correctness, worker-pool semantics, IndexStore round-trip).                |
-
-Cluster output (count, members, signatures, impact, similarity) is
-byte-identical between v0.1 and v0.2 within rounding — the speedups
-don't come from skipping work.
-
-For raw numbers and an honest discussion of where the wins came from
-(spoiler: parallelism, not APTED itself) see [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
-
----
-
 ## Features
 
 - **Semantic, not textual.** Compares AST structure, not source text — so
   whitespace, comments, and identifier renames don't fool it.
+- **Three clone types.** Type-1 (exact), type-2 (renamed variables /
+  literals), and **type-3** (statements present in some members but
+  absent from others — see
+  [Type-3 / optional-segment detection](#type-3--optional-segment-detection)).
 - **Parameter discovery.** For every cluster, identifies the literals,
-  identifiers, method names, and class names that vary, and proposes
-  them as parameters of a suggested abstraction with inferred types
-  and named placeholders.
+  identifiers, method names, class names, *and entire optional code
+  segments* that vary, and proposes them as parameters of a suggested
+  abstraction with inferred types and named placeholders.
 - **Three normalization modes.** From `strict` (variable rename
   tolerant only) to `aggressive` (also collapses literal values, method
   names, property names, and class names) — pick the precision/recall
   trade-off you want.
-- **Two-phase clustering.**
-  - **Hash buckets** for exact canonical matches — O(N) work.
-  - **N-gram inverted index + Jaccard + APTED-style tree-edit-distance**
-    for near-duplicates — never quadratic in practice.
-- **Anti-unification.** Computes the most-specific generalization of a
-  cluster's members and turns disagreements into typed parameter holes.
+- **Three-phase clustering.**
+  - **Hash buckets** for exact canonical matches — O(N).
+  - **N-gram inverted index + Jaccard + APTED tree-edit-distance** for
+    near-duplicates — never quadratic in practice.
+  - **Containment fallback** for type-3 clones whose Jaccard would fail
+    because one block is a near-subset of another.
+- **Anti-unification with statement-array LCS.** For every cluster
+  phpdup computes the most-specific generalization of its members,
+  using LCS over per-statement structural hashes when stmt arrays
+  differ in length. Disagreements become typed parameter holes;
+  per-statement gaps become defaulted boolean parameters.
 - **Pattern recognition.** Tags clusters that match well-known refactor
   archetypes:
   - `sql-builder`        — string concat feeding `query`/`prepare`/`exec`/`fetch`
@@ -265,39 +99,59 @@ For raw numbers and an honest discussion of where the wins came from
   - `validation-chain`   — short-circuit `if`-then-throw/return chains
   - `strategy`           — single hole on a method/function name
   - `config-driven`      — only literal holes
-  - `state-machine`      — switch/match block
+  - `state-machine`      — `switch`/`match` block
+  - `optional-segments`  — at least one optional_block hole (type-3)
 - **Impact-ranked output.** Clusters sorted by how many lines disappear
   if the abstraction is applied, with a separate confidence score that
   flags risky refactors (subtree-level holes, cross-namespace spans).
-- **Seven output formats.** SugarCraft-styled colorized CLI, structured
-  JSON, an interactive HTML site (sortable, filterable, with a
-  cluster-impact mini-map and copy-signature buttons), **SARIF 2.1.0**
-  for GitHub/GitLab PR annotations, **GitLab SAST v15** for the MR
-  security widget, **unified diffs** for human review, and
-  **Checkstyle XML** for Jenkins/Sonar/Bitbucket.
-- **Optional SugarCraft TUI** (`--tui`). Four-pane FlexBox dashboard,
-  sparkline of stage durations, OSC 9;4 taskbar progress in
-  ConEmu/WezTerm/Windows Terminal, six built-in themes, ←/→ to cycle
-  cluster details, q to quit. Works from a real PipelineState — no
-  mocked data.
+- **Seven output formats.**
+  - SugarCraft-styled colorized **CLI** (with a `--plain` switch).
+  - Structured **JSON** (machine-readable, full cluster + hole metadata
+    including `present_in_members[]` for type-3 holes).
+  - Interactive **HTML** site (sortable/filterable index, mini-map of
+    cluster impact, copy-signature buttons, syntax-highlighted code,
+    optional-segment rows tinted amber).
+  - **SARIF 2.1.0** (GitHub Code Scanning / GitLab Code Quality, with
+    grouping fingerprints + `optionalSegmentCount`).
+  - **GitLab SAST v15.x** (MR security widget, severity-bucketed by
+    impact).
+  - **Unified diffs** per cluster + cumulative `--patch` file.
+  - **Checkstyle XML** (Jenkins/Sonar/Bitbucket consumers).
+- **Optional SugarCraft TUI** (`--tui`). Four-pane FlexBox dashboard
+  driven by the cooperative pipeline — counts, sparkline, OSC 9;4
+  taskbar progress all build up live frame-by-frame as work
+  progresses. Six themes, full keyboard, ←/→ to cycle clusters in
+  detail view.
 - **Watch mode** (`--watch`). Re-runs analysis on file changes via a
-  poll-based `React\EventLoop` timer; SIGINT/SIGTERM tear down cleanly.
+  poll-based `React\EventLoop` timer; `Ctrl+C` exits cleanly. Combines
+  with `--tui` for a live dashboard that resets and rebuilds on every
+  change.
 - **Block-kind filter** (`--kinds=method,closure`). Drops non-matching
-  block kinds at extraction time so clustering only sees what you asked
-  for.
-- **Schema-validated config.** `phpdup.json` is checked against the
-  documented schema (`docs/config-schema.json`) at load time;
-  `--validate-config` exits with a field-path error before any analysis
-  runs, so CI can gate on config drift.
-- **Composable pipeline.** Five stages (`Scanning`,
-  `Preprocessing`, `Clustering`, `Refactoring`, `Reporting`) all
-  implement a tiny `StageInterface` and share a `PipelineState`. A
-  `ProgressListener` interface lets observers (the TUI, future
-  watchers) hook in without touching the stages.
-- **Parallelized preprocessing and pair scoring.** `pcntl_fork` worker
-  pool batches files for parse + extract + normalize + fingerprint, and
-  candidate pairs for Jaccard + tree-edit-distance scoring. Auto CPU
-  detection, serial fallback when pcntl is unavailable.
+  block kinds at extraction time so clustering only sees what you
+  asked for.
+- **Schema-validated config.** `phpdup.json` is checked against
+  [`docs/config-schema.json`](docs/config-schema.json) at load time;
+  `--validate-config` exits with the field path on the first violation
+  before any analysis runs.
+- **Composable pipeline** with cooperative iteration. Five stages
+  (`Scanning`, `Preprocessing`, `Clustering`, `Refactoring`,
+  `Reporting`) all implement a tiny `StageInterface` and share a
+  `PipelineState`; cooperative stages additionally yield
+  mid-execution so the TUI can repaint while parallel work is in
+  flight. A `ProgressListener` interface lets observers (the TUI,
+  watchers) hook in without touching stages.
+- **Streaming worker pool.** `WorkerPool::runStreaming()` returns a
+  `\Generator` that yields each child-process result as soon as it
+  arrives — multiplexing children's per-process socketpairs via
+  `stream_select` — so `PreprocessStage` can drive the dashboard live
+  instead of blocking on the slowest worker. The classic
+  collect-and-return `run()` is now a thin synchronous drain over the
+  same code path.
+- **Parallelized preprocessing and pair scoring.** `pcntl_fork`
+  worker pool batches files for parse + extract + normalize +
+  fingerprint, and candidate pairs for Jaccard + tree-edit-distance
+  scoring. Auto CPU detection, serial fallback when pcntl is
+  unavailable.
 - **APTED-style tree edit distance.** Zhang-Shasha forest-distance DP
   with heavy-path child ordering and bounded early termination —
   correct on all tree shapes.
@@ -309,15 +163,14 @@ For raw numbers and an honest discussion of where the wins came from
   scales sub-linearly with corpus size.
 - **AST cache.** SHA-1 keyed disk cache (versioned to the parser
   release) so warm-cache runs skip parsing entirely.
-- **Configurable thresholds.** Min block size, similarity floor, n-gram
-  size, document-frequency cutoff — all tunable per project.
-- **Modular architecture.** Scanner, parser, extractor, normalizer,
-  fingerprinter, indexer, clusterer, anti-unifier, refactor synthesizer,
-  pattern recognizer, and reporters are independent modules with
-  small, testable interfaces.
+- **Memory ceiling.** `--max-memory=MB` warns and suggests
+  `--exact-only` if peak RSS exceeds the threshold mid-pipeline.
+- **`--stage` halt point.** `--stage=clustering` runs the pipeline only
+  up to (and including) clustering and stops — useful for debugging
+  incremental cache hits or profiling individual stages.
 - **Production-ready PHP.** Strict types throughout, PSR-4 autoloaded,
-  PHPStan level 6 clean + Psalm baseline-tracked, PHPUnit 10 test
-  suite (112+ tests), requires PHP 8.1+.
+  PHPStan level 6 clean, Psalm baseline-tracked, **165+** PHPUnit
+  tests, requires PHP 8.1+.
 
 ---
 
@@ -355,23 +208,24 @@ bin/phpdup analyze /path/to/your/code
 ```
 
 Requirements:
+
 - PHP 8.1 or newer
 - ext-hash (for `xxh128`)
-- ext-pcntl + ext-posix (optional, for parallelism — without them
-  phpdup runs serially with no other change)
+- ext-pcntl + ext-posix (optional — without them phpdup runs serially
+  with no other change)
 - Composer
 
 ---
 
 ## Quick start
 
-Scan a single directory and print the top duplicates (auto-parallelized):
+Scan a directory and print the top duplicates (auto-parallelized):
 
 ```bash
 bin/phpdup analyze src
 ```
 
-Scan multiple directories with both JSON and HTML reports:
+Multiple directories with both reports:
 
 ```bash
 bin/phpdup analyze src lib \
@@ -392,18 +246,6 @@ Quick exact-clones-only pass for CI (very fast, ~6 s on a 3,300-block corpus):
 bin/phpdup analyze src --exact-only --min-impact 50
 ```
 
-Force serial execution (debugging or constrained env):
-
-```bash
-bin/phpdup analyze src --workers 1
-```
-
-Pin a specific worker count:
-
-```bash
-bin/phpdup analyze src --workers 8       # or -j 8
-```
-
 Emit every CI-relevant format in one shot:
 
 ```bash
@@ -416,16 +258,10 @@ bin/phpdup analyze src \
     --html        phpdup-report
 ```
 
-Filter to a single block kind and gate on impact:
+Filter to one block kind and gate on impact:
 
 ```bash
 bin/phpdup analyze src --kinds=method --min-impact=50 --exact-only
-```
-
-Validate a config file before pushing it to CI:
-
-```bash
-bin/phpdup analyze --config phpdup.json --validate-config
 ```
 
 Live-reload while you refactor:
@@ -434,11 +270,534 @@ Live-reload while you refactor:
 bin/phpdup analyze src --watch
 ```
 
-Show the interactive dashboard once analysis completes:
+Show the interactive dashboard while analysis runs:
 
 ```bash
 bin/phpdup analyze src --tui --theme=dracula
 ```
+
+---
+
+## How it works
+
+### Pipeline
+
+```mermaid
+flowchart TB
+    subgraph Scan["Scanning"]
+        A[Scanner walks paths] -->|absolute file paths| B[FileScanner]
+    end
+
+    subgraph Preprocess["Preprocessing — parallel via WorkerPool::runStreaming"]
+        C[AstParser + AstCache] --> D[BlockExtractor with --kinds filter]
+        D --> E[Normalizer<br/>strict / default / aggressive]
+        E --> F[SubtreeHasher + NgramFingerprint]
+        F --> G[(IndexStore<br/>per-file snapshot)]
+    end
+
+    subgraph Cluster["Clustering"]
+        H[BlockIndex] --> I[NgramInvertedIndex]
+        I -->|candidate pairs| J{Pair scoring}
+        J -->|hash-bucket: exact match| K[Edge weight = 1.0]
+        J -->|Jaccard >= threshold| L[APTED tree-edit-distance]
+        J -->|Jaccard < threshold<br/>+ optional_blocks_enabled| M[ContainmentSimilarity<br/>type-3 fallback]
+        L --> N[Edge weight = min<br/>jaccard, ted]
+        M --> O[Edge weight = containment]
+        K --> P[Union-find]
+        N --> P
+        O --> P
+        P --> Q[Clusters]
+    end
+
+    subgraph Refactor["Refactoring"]
+        R[AntiUnifier seed = max-size member] --> S{stmt arrays<br/>differ in length?}
+        S -->|yes + type-3 enabled| T[LCS on stmt hashes<br/>→ optional_block holes]
+        S -->|no| U[Recurse normally<br/>→ literal/identifier/name holes]
+        T --> V[ParameterSynthesizer]
+        U --> V
+        V --> W[bool $includeFooBar = false<br/>or typed required param]
+        W --> X[SignatureBuilder + PatternRecognizer]
+    end
+
+    subgraph Report["Reporting"]
+        Y[Ranker by impact] --> Z[CLI / JSON / HTML / SARIF<br/>GitLab SAST / Diff / Checkstyle]
+    end
+
+    B --> C
+    G --> H
+    Q --> R
+    X --> Y
+
+    %% Observer overlay
+    PL[ProgressListener<br/>e.g. PhpdupModel TUI] -.observes.-> Scan
+    PL -.observes.-> Preprocess
+    PL -.observes.-> Cluster
+    PL -.observes.-> Refactor
+```
+
+The whole pipeline is also driven cooperatively as a `\Generator`
+(`Pipeline::iter()`) — each yield point is a chance for the TUI runtime
+to repaint or for a watcher to inject a `RestartPipelineMsg`.
+
+| Stage          | Output                                     |
+|----------------|--------------------------------------------|
+| Scanning       | absolute file paths (glob include/exclude) |
+| Preprocessing  | annotated blocks (canonical AST + n-gram bag + structural hash) per file |
+| Clustering     | clusters with similarity scores + edge weights |
+| Refactoring    | generalized AST, holes, signature, pattern tags |
+| Reporting      | CLI / JSON / HTML / SARIF / GitLab SAST / diff / Checkstyle output |
+
+### Normalization modes
+
+| Mode          | Variable rename | Literal collapse | Name collapse |
+|---------------|:---------------:|:----------------:|:-------------:|
+| `strict`      | yes             | no               | no            |
+| `default`     | yes             | yes              | no            |
+| `aggressive`  | yes             | yes              | yes           |
+
+In `aggressive` mode (default), two functions with different table
+names, different method names, and different literal values can still
+cluster together.
+
+### Clustering
+
+Three phases:
+
+1. **Exact canonical clones.** All blocks sharing the same Merkle hash
+   over the canonical AST land in the same bucket. O(N) work.
+2. **Near-duplicates.** For each block, candidates are pulled from a
+   rare-n-gram inverted index (ignoring n-grams that occur in more than
+   `max_df` × N blocks). Each candidate is scored by Jaccard similarity
+   on the canonical n-gram multiset; survivors are refined with APTED-style
+   bounded tree-edit-distance.
+3. **Type-3 fallback.** When Jaccard fails but `ContainmentSimilarity`
+   shows the smaller block is mostly contained in the larger
+   (`containment ≥ 0.85` AND `size_ratio ≥ 0.6`), the pair is accepted
+   anyway. See [Type-3 / optional-segment detection](#type-3--optional-segment-detection).
+
+Surviving edges feed a union-find that merges them into clusters.
+
+### Anti-unification
+
+For every cluster phpdup computes the most-specific generalization of
+its members. The classic recursion:
+
+```
+au(t1, t2) =
+    if root(t1) == root(t2) and arity matches:
+        Node(root(t1), [au(c1_i, c2_i) for i in children])
+    else:
+        Hole(observed=[t1, t2])
+```
+
+Extensions in phpdup:
+
+- **Seed = max-size member.** Cluster member with the most AST nodes
+  is used as the template, so the "maximal" version drives the
+  abstraction and shorter members get optional segments highlighted
+  (instead of the alignment failing because the seed happened to be
+  short).
+- **LCS for stmt arrays.** When two stmts/cases/catches arrays differ
+  in length, phpdup runs LCS over per-statement structural hashes;
+  matched positions recurse, unmatched template positions become
+  `optional_block` holes.
+
+The resulting template has Hole markers at every position where
+members disagreed. Each hole tracks its observed values across all
+members (in cluster order), so reports show
+`threshold ∈ {10, 20, 30}` and
+`role ∈ {'admin', 'moderator', 'editor'}`.
+
+### Pattern recognition
+
+After anti-unification, each cluster is checked against a small
+catalog of refactor archetypes (sql-builder, crud-handler,
+validation-chain, strategy, config-driven, state-machine,
+optional-segments). Tags are advisory; they don't change clustering,
+just label the cluster in the report.
+
+### Ranking
+
+Each cluster gets two scores:
+
+- **Impact** ≈ `(members - 1) × avgBlockSize - holesPenalty`. How many
+  lines of code disappear if the abstraction is applied.
+- **Confidence** in `[0,1]`. Cluster similarity, penalized for
+  subtree-level holes (large variable subtrees) and cross-namespace
+  spans, bumped for same-class cohesion.
+
+Clusters below `min_cluster_impact` are dropped. Survivors are sorted by
+descending impact, breaking ties by member count and similarity.
+
+### Parallelism
+
+`Phpdup\Parallel\WorkerPool` partitions a list of items into N batches,
+forks one child per batch via `pcntl_fork`, runs the closure in the
+child, and the parent reaps results. There are two collection modes:
+
+- **`run()`** — collect-and-return. Each child writes its full result
+  to a temp file when finished; the parent reads them all once every
+  child has exited.
+- **`runStreaming()`** — yield-as-results-arrive. Children write
+  length-prefixed serialized records (4-byte big-endian uint32 +
+  payload) to per-child `stream_socket_pair`s; the parent multiplexes
+  via `stream_select` and the returned `\Generator` yields each
+  record live. `PreprocessStage` consumes this so the cooperative
+  pipeline gets mid-stage progress events instead of blocking until
+  every fork exits.
+
+Two phases use the pool:
+
+- **`PreprocessWorker`** — each child does parse + extract + normalize
+  + hash + n-gram fingerprint for its file batch.
+- **`PairScoreWorker`** — once candidate pairs are generated from the
+  inverted index, the master batches them across workers; each child
+  runs Jaccard + bounded TED + (when enabled) the type-3 containment
+  fallback on its batch and emits surviving edges.
+
+CPU count is auto-detected (`nproc` / `/proc/cpuinfo`) or overridable
+via `--workers N` / `PHPDUP_WORKERS=N`. When `pcntl_*` is unavailable
+(Windows, sandboxed PHP), the pool detects this at runtime and falls
+back to a serial code path with the same closure interface — callers
+don't branch.
+
+### Incremental indexing
+
+`Phpdup\Persistence\IndexStore` snapshots each file's extracted +
+normalized + fingerprinted blocks under
+`<cache_dir>/<sha1(path)>.idx`. Each snapshot stores:
+
+- `file_hash` — `sha1_file()` of the source.
+- `parser_version` — bumped together with the AST cache key.
+- `config_key` — sha1 of the relevant config fields (block size,
+  normalization mode, n-gram size). Changing any of these invalidates
+  the snapshot automatically.
+- `blocks` — serialized `Block[]` ready to pour into the index.
+
+On re-runs the master splits files into "reuse" (snapshot hit) and
+"process" (snapshot miss) buckets and only the latter goes through the
+worker pool. Editing one file leaves the other snapshots intact.
+
+Disable with `--no-incremental` for benchmarking or when paranoid
+about cache poisoning.
+
+### Lazy AST loading
+
+After fingerprinting we drop `Block::$ast` (the original PhpParser
+subtree) and reload it on demand inside `AntiUnifier` via
+`BlockAstLoader`. The loader walks the file's parse-cached statement
+list looking for the unique
+(kind, start_line, end_line, declared_name) tuple; matches are
+populated back into the Block.
+
+The AST cache is consulted first so on warm runs no parsing happens at
+all. Disable with `--no-lazy-ast` if you have RAM to spare and want
+maximum speed (the reload overhead is roughly equal to the RSS savings
+on small corpora — see BENCHMARKS.md).
+
+---
+
+## Type-3 / optional-segment detection
+
+A "type-3" clone is one where the structures match, but some members
+have extra (or missing) statements relative to others. phpdup detects
+these in two coordinated stages.
+
+![phpdup detecting an optional-segment cluster](docs/media/optional-blocks.gif)
+
+The fixture run shows phpdup pulling in two blocks whose statements
+share a common prefix but where the longer block has two extra calls
+(`some_other_logic($here)` and `and_more($f)`). The "Suggested
+abstraction" box ends up with two **defaulted boolean** parameters
+named after the absent code:
+
+```php
+function extractedFunction(
+    bool $includeSomeOtherLogic = false,
+    bool $includeAndMore = false,
+): mixed
+```
+
+…and the cluster is tagged `optional-segments`. Each row in the Holes
+table is marked `optional_block` with the literal `<absent>` sentinel
+showing which members lacked the segment.
+
+### Clustering: containment fallback
+
+When the n-gram Jaccard between two candidate blocks falls below
+`similarity_threshold`, the clusterer tries
+`ContainmentSimilarity = |A ∩ B|min / min(sum(A), sum(B))`, which
+returns 1.0 whenever the smaller bag is fully contained in the larger
+regardless of size disparity. The pair is accepted with the
+containment score as the edge weight only when:
+
+```
+containment ≥ optional_blocks_containment   (default 0.85)  AND
+size_ratio  ≥ optional_blocks_min_overlap    (default 0.6)
+```
+
+The size-ratio guard prevents a 1-line block from clustering with a
+100-line block on a single shared n-gram.
+
+### Anti-unification: LCS over statement arrays
+
+The seed (template) is the cluster member with the most AST nodes.
+When `walk()` reaches a `stmts` / `cases` / `catches` array whose
+length differs from the seed's, phpdup runs LCS over each statement's
+structural hash:
+
+- Matched template positions recurse via the normal walk — variables,
+  literals, names inside the matched statement still produce regular
+  holes.
+- Unmatched template positions become **`optional_block`** holes —
+  one per missing statement, capped at
+  `optional_blocks_max_per_cluster` (default 3) so over-flexible
+  clusters don't explode into seven-boolean signatures.
+
+Each `optional_block` hole becomes a default-`false` `bool` parameter.
+The name is derived from the first non-stop-word identifier in the
+segment, e.g. a missing `some_other_logic($here);` becomes
+`bool $includeSomeOtherLogic = false`. `SignatureBuilder` groups
+required parameters first then defaulted booleans so the resulting
+signature is syntactically valid PHP.
+
+### Tunables
+
+```json
+{
+  "optional_blocks": {
+    "enabled": true,
+    "containment": 0.85,
+    "min_overlap": 0.6,
+    "max_per_cluster": 3,
+    "min_segment_length": 1
+  }
+}
+```
+
+CLI overrides:
+
+```bash
+bin/phpdup analyze src \
+    --optional-blocks=on \
+    --optional-blocks-containment=0.85
+```
+
+To disable type-3 detection completely: `optional_blocks.enabled =
+false` (or `--optional-blocks=off`); the clusterer reverts to
+Jaccard-only and AntiUnifier falls back to whole-array subtree holes
+when stmt arrays differ in length.
+
+### How it surfaces in reporters
+
+- **CLI** — Holes table shows `kind = optional_block`, observed values
+  include the literal `<absent>` marker for members where the segment
+  was missing.
+- **JSON** — every optional_block hole carries
+  `present_in_members: [int, ...]` listing the cluster-member indices
+  that *did* include the segment.
+- **SARIF** — each result's `properties` adds `optionalSegmentCount`
+  and `hasOptionalSegments` so PR-annotation tooling can flag type-3
+  clusters distinctly.
+- **HTML** — optional rows are tinted amber, get a "type-3" badge, and
+  italicize the `<absent>` sentinel.
+
+---
+
+## TUI mode
+
+`--tui` opens a SugarCraft dashboard that drives the analysis pipeline
+from inside the runtime — counts and timings tick up as work
+progresses instead of appearing post-hoc.
+
+![phpdup TUI dashboard with live spinner and progress](docs/media/tui-live.gif)
+
+What you get:
+
+- **Four-pane FlexBox dashboard** with live counts for Scanning /
+  Preprocessing / Clustering / Refactoring.
+- **SugarCraft spinner** in the running pane (one of 12 animation
+  styles) plus a real elapsed-time stopwatch.
+- **Sparkline of stage durations** as each stage completes.
+- **OSC 9;4 taskbar progress** — ConEmu, WezTerm, and Windows Terminal
+  pin a progress indicator on the OS taskbar.
+- **Six themes**: `ansi` (default), `plain`, `charm`, `dracula`,
+  `nord`, `catppuccin` — pick via `--theme=NAME`.
+- **Keyboard**: `q` / `Ctrl+C` quit, `Ctrl+Z` suspend, `↑/↓` cycle
+  pane focus, `Enter` open detail, `←/→` cycle clusters in detail
+  view, `t` toggle sort (impact / similarity / name), `h` toggle
+  help, `Esc` dismiss detail.
+- **`--plain`** forces plain CLI output even when `--tui` would
+  otherwise fire (handy for CI and pipes).
+
+The pipeline runs *inside* the runtime via a cooperative
+`Pipeline::iter()` generator. Each `next()` advances to the next
+yield point — pre-stage, post-stage, every 16 files in
+`ScanningStage`, every 32 records streamed back from the parallel
+preprocess pool. Between yields the runtime renders, so the
+sparkline, file counts, parse-error totals, and taskbar progress
+build up frame-by-frame.
+
+---
+
+## Watch mode
+
+`--watch` keeps phpdup running and re-analyzes on every file change.
+
+![phpdup watch mode reacting to a file edit](docs/media/watch-mode.gif)
+
+A `React\EventLoop` periodic timer (default 1.5 s) polls
+`filemtime()` for every scanned file, with `clearstatcache()` before
+each read to defeat PHP's stat cache. When any mtime changes, phpdup
+re-runs the full pipeline and reports `change detected (N files) —
+reload #X`.
+
+Polling instead of `inotify` / FSEvents keeps the watcher
+dependency-free and portable to macOS / Linux without an extension —
+at the cost of a small (≤ 1.5 s) reload latency.
+
+`Ctrl+C` (or `SIGTERM`) triggers a clean teardown via
+`Loop::addSignal`. **`--watch --tui` is supported** — the watcher's
+periodic timer registers on the same `React\EventLoop` instance the
+SugarCraft `Program` runs on, so the dashboard stays interactive
+while polling. On change, the watcher dispatches a
+`RestartPipelineMsg` to the program; the model resets state, rebuilds
+the cooperative generator via its factory, and the live counts in the
+panes drop to zero before climbing back up.
+
+---
+
+## Output formats
+
+```bash
+bin/phpdup analyze src \
+    --json        phpdup.json \
+    --html        phpdup-report \
+    --sarif       phpdup.sarif \
+    --gitlab-sast phpdup.gitlab.json \
+    --diff        ./phpdup-diffs \
+    --patch       phpdup.patch \
+    --checkstyle  phpdup.xml
+```
+
+![phpdup emitting all five machine-readable formats in one run](docs/media/output-formats.gif)
+
+### CLI
+
+SugarCraft-styled colorized terminal output. Honors `--no-ansi` /
+non-TTY: switches to `Theme::plain()` and skips the styled box / chips,
+producing clean ASCII.
+
+### JSON (`--json=FILE`)
+
+```json
+{
+  "phpdup_version": "0.1.0",
+  "summary": { "files": 1888, "blocks": 12340, "clusters": 87 },
+  "clusters": [
+    {
+      "id": "Xaeb0e34a",
+      "kind": "method",
+      "exact": true,
+      "similarity": 1.0,
+      "confidence": 1.0,
+      "impact": 74,
+      "pattern_tags": ["config-driven", "crud-handler", "sql-builder"],
+      "signature": "function findById(string $value): mixed",
+      "members": [ ... ],
+      "holes": [
+        {
+          "placeholder": "__P0",
+          "kind": "literal",
+          "inferred_type": "string",
+          "suggested_name": "$value",
+          "observed": [
+            "'SELECT * FROM users WHERE id = ?'",
+            "'SELECT * FROM products WHERE id = ?'"
+          ]
+        },
+        {
+          "placeholder": "__O0",
+          "kind": "optional_block",
+          "inferred_type": "bool",
+          "suggested_name": "$includeAudit",
+          "observed": ["audit($id);", "<absent>"],
+          "present_in_members": [0]
+        }
+      ]
+    }
+  ]
+}
+```
+
+`holes[].present_in_members` is unique to `optional_block` holes — it
+lists the cluster-member indices that *did* include the segment.
+
+### HTML (`--html=DIR`)
+
+A static-site report with:
+
+- Index page sorted by impact, with an **interactive mini-map** of
+  cluster-impact distribution (green bars exact, blue bars
+  near-duplicate; click to jump).
+- Client-side **column sort** (click any header) and a **search
+  filter** input.
+- **Copy-suggested-signature** button per cluster (Clipboard API + an
+  `execCommand` fallback for non-secure contexts).
+- Per-cluster page with member sources side-by-side, **inline syntax
+  highlighting** (no external dep, no build step), holes table,
+  unified diff between the first two members.
+- Optional rows tinted amber, with a "type-3" badge and italicized
+  `<absent>` sentinel.
+
+JS lives in `app.js` next to `style.css` — both inlined into the
+build, no external deps, no build step.
+
+### SARIF (`--sarif=FILE`)
+
+[SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/sarif-v2.1.0-os.html)
+output for GitHub Code Scanning and GitLab Code Quality. Each
+duplicate block becomes a `result` with rule
+`phpdup/duplicate-logic`, level `warning` for exact / `note` for
+near-duplicate, the cluster's suggested signature in
+`properties.suggestedSignature`, and shared
+`partialFingerprints.clusterId` so SARIF consumers can group sibling
+results into a single cluster annotation. Type-3 clusters add
+`properties.optionalSegmentCount` and `properties.hasOptionalSegments`.
+
+In a GitHub Actions workflow:
+
+```yaml
+- run: vendor/bin/phpdup analyze src --sarif=phpdup.sarif --min-impact=50
+- uses: github/codeql-action/upload-sarif@v3
+  if: always()
+  with:
+    sarif_file: phpdup.sarif
+```
+
+### GitLab SAST (`--gitlab-sast=FILE`)
+
+[GitLab SAST report v15.x](https://gitlab.com/gitlab-org/security-products/security-report-schemas).
+Severity is impact-bucketed (`>100` High, `>=50` Medium, `>=20` Low,
+otherwise Info). Confidence is `High` for exact clones, otherwise
+derived from the cluster confidence score. Wire it into
+`.gitlab-ci.yml` as a `report.sast` artifact so the MR security
+widget surfaces duplicates.
+
+### Diff and patch (`--diff=DIR`, `--patch=FILE`)
+
+`--diff=DIR` writes one `.diff` file per cluster — pairwise unified
+diffs from member[0] to each subsequent member, with a header comment
+showing the suggested abstraction and anchor location. `--patch=FILE`
+concatenates every cluster's diff into one cumulative patch file.
+
+### Checkstyle XML (`--checkstyle=FILE`)
+
+Consumable by Jenkins Warnings NG, Bitbucket Reports, Sonar, Detekt
+— anything that parses Checkstyle. Each duplicate is an `<error>`
+with `source="phpdup.duplicate-logic"`, severity `warning` for exact
+/ `info` for near-duplicate, and a descriptive message linking back
+to the cluster id.
 
 ---
 
@@ -477,504 +836,462 @@ Drop a `phpdup.json` next to your code, or pass `--config`:
 }
 ```
 
-Keys added in v0.2:
+The full schema lives at
+[`docs/config-schema.json`](docs/config-schema.json) and is validated
+by `ConfigLoader::validate()` whenever a config file is loaded.
 
-- `workers` — parallelism level. `0` (default) auto-detects from
-  `nproc` / `/proc/cpuinfo`. `1` forces serial.
-- `incremental` — `true` (default) reuses per-file block snapshots
-  across runs.
-- `lazy_ast` — `true` (default) drops original ASTs after
-  fingerprinting; reloads them only for blocks in clusters.
+CLI flags override config values. Run `bin/phpdup analyze --help` for
+the full list, or see [CLI reference](#cli-reference) below for
+per-flag details and effect snippets.
 
-Keys added in v0.3:
+![phpdup --validate-config rejecting a bad phpdup.json](docs/media/validate-config.gif)
 
-- `kinds` — list of block kinds to extract. Empty / omitted means
-  all of `function`, `method`, `closure`, `arrow`, `if`, `for`,
-  `foreach`, `while`, `do`, `try`, `switch`, `match`. Overridable per-run
-  with `--kinds=method,closure`.
-
-The full schema lives at [`docs/config-schema.json`](docs/config-schema.json)
-and is validated by `ConfigLoader::validate()` whenever a config file is
-loaded. `bin/phpdup analyze --config phpdup.json --validate-config`
-runs validation in isolation and exits with `0` (OK) or `2` (with the
-field-path error message).
-
-CLI flags override config values. Run `bin/phpdup analyze --help` for the
-full list.
+`bin/phpdup analyze --config phpdup.json --validate-config` runs
+validation in isolation and exits with `0` (OK) or `2` (with the
+field-path error message), so CI can gate on config drift before any
+analysis runs.
 
 ---
 
-## How it works
-
-### Pipeline
+## CLI reference
 
 ```
-sources ─► [Scanner] ─► [Parser] ─► [BlockExtractor] ─► [Normalizer]
-                                                              │
-            ┌─────────────────────────────────────────────────┘
-            │            (parallelized per file batch)
-            ▼
-     [Fingerprinter] ─► [IndexStore snapshot]
-            │
-            ▼
-   [BlockIndex] ─► [NgramInvertedIndex]
-                          │
-                          ▼
-                  [candidate pairs]
-                          │
-                          ▼   (parallelized per pair batch)
-                 [Jaccard + APTED]
-                          │
-                          ▼
-                 [union-find clusters]
-                          │
-                          ▼
-   [Reports] ◄─ [RefactorSynthesizer] ─► [BlockAstLoader]
+Usage: phpdup analyze <paths...> [options]
 ```
 
-| Stage               | Output                                     |
-|---------------------|--------------------------------------------|
-| Scanner             | absolute file paths (glob include/exclude) |
-| Parser              | annotated AST per file (with line metadata)|
-| BlockExtractor      | function/method/closure/loop/if/switch     |
-| Normalizer          | canonical AST + hole map                   |
-| Fingerprinter       | structural hash + n-gram bag               |
-| IndexStore          | per-file snapshot (incremental cache)      |
-| BlockIndex          | hash → blocks                               |
-| NgramInvertedIndex  | n-gram → block ids                          |
-| Clusterer           | clusters with similarity scores            |
-| RefactorSynthesizer | generalized AST, holes, signature, tags    |
-| Reports             | CLI / JSON / HTML output                   |
+### Tuning
 
-### Normalization modes
+#### `--min-block-size N` (default: `8`)
 
-| Mode          | Variable rename | Literal collapse | Name collapse |
-|---------------|:---------------:|:----------------:|:-------------:|
-| `strict`      | yes             | no               | no            |
-| `default`     | yes             | yes              | no            |
-| `aggressive`  | yes             | yes              | yes           |
+Minimum AST node count for a block to be considered. Lower picks up
+small fragments (often noisy); higher quiets the report by ignoring
+short blocks.
 
-In `aggressive` mode, two functions with different table names, different
-method names, and different literal values can still cluster together.
-
-### Clustering
-
-Two phases:
-
-1. **Exact canonical clones.** All blocks sharing the same Merkle hash
-   over the canonical AST land in the same bucket. O(N) work.
-2. **Near-duplicates.** For each block, candidates are pulled from a
-   rare-n-gram inverted index (ignoring n-grams that occur in more than
-   `max_df` × N blocks). Each candidate is scored by Jaccard similarity
-   on the canonical n-gram multiset; survivors are refined with APTED-style
-   bounded tree-edit-distance. A union-find merges all pairs above the
-   configured thresholds into clusters.
-
-### Anti-unification
-
-For every cluster `phpdup` computes the most-specific generalization of
-its members. The classic recursion:
-
-```
-au(t1, t2) =
-    if root(t1) == root(t2) and arity matches:
-        Node(root(t1), [au(c1_i, c2_i) for i in children])
-    else:
-        Hole(observed=[t1, t2])
+```bash
+bin/phpdup analyze src --min-block-size=4   # very chatty — short snippets clustered
+bin/phpdup analyze src --min-block-size=20  # only meaningful methods
 ```
 
-Extended for clusters of size > 2 by sequential pairwise folding. The
-resulting template has Hole markers at exactly the positions where
-members disagreed — those are the suggested parameters. Each hole tracks
-its observed values across all members so the report can show
-`threshold ∈ {10, 20, 30}` and `role ∈ {'admin', 'moderator', 'editor'}`.
+#### `--mode strict|default|aggressive` (default: `aggressive`)
 
-### Pattern recognition
+Normalization mode. See [Normalization modes](#normalization-modes).
 
-After anti-unification, each cluster is checked against a small catalog
-of refactor archetypes (sql-builder, crud-handler, validation-chain,
-strategy, config-driven, state-machine). Tags are advisory; they don't
-change clustering, just label the cluster in the report.
-
-### Ranking
-
-Each cluster gets two scores:
-
-- **Impact** ≈ `(members - 1) × avgBlockSize - holesPenalty`. How many
-  lines of code disappear if the abstraction is applied.
-- **Confidence** in `[0,1]`. Cluster similarity, penalized for
-  subtree-level holes (large variable subtrees) and cross-namespace
-  spans, bumped for same-class cohesion.
-
-Clusters below `min_cluster_impact` are dropped. Survivors are sorted by
-descending impact, breaking ties by member count and similarity.
-
-### Parallelism
-
-`Phpdup\Parallel\WorkerPool` partitions a list of items into N batches,
-forks one child per batch via `pcntl_fork`, runs the closure in the
-child, returns the serialized result via a temp file, and reaps the
-children in the parent.
-
-Two phases use it:
-
-- **`PreprocessWorker`** — each child does parse + extract + normalize
-  + hash + n-gram fingerprint for its file batch.
-- **`PairScoreWorker`** — once candidate pairs are generated from the
-  inverted index, the master batches them across workers; each child
-  runs Jaccard + bounded TED on its batch and emits surviving edges.
-
-CPU count is auto-detected (`nproc` / `/proc/cpuinfo`) or overridable
-via `--workers N` / `PHPDUP_WORKERS=N`. When `pcntl_*` is unavailable
-(Windows, sandboxed PHP), the pool detects this at runtime and falls
-back to a serial code path with the same closure interface — callers
-don't branch.
-
-`WorkerPool::runStreaming()` (v0.4) is the streaming variant: each
-child writes length-prefixed serialized records to a per-child
-`stream_socket_pair` as it produces them, and the parent multiplexes
-via `stream_select` and `yield`s each record live. `PreprocessStage`
-consumes the resulting `\Generator` so the cooperative pipeline gets
-mid-stage progress events instead of waiting for every child to exit.
-The collect-and-return `run()` is now a thin synchronous drain over
-the streaming version.
-
-### Incremental indexing
-
-`Phpdup\Persistence\IndexStore` snapshots each file's extracted +
-normalized + fingerprinted blocks under
-`<cache_dir>/<sha1(path)>.idx`. Each snapshot stores:
-
-- `file_hash` — `sha1_file()` of the source.
-- `parser_version` — bumped together with the AST cache key.
-- `config_key` — sha1 of the relevant config fields (block size,
-  normalization mode, n-gram size). Changing any of these invalidates
-  the snapshot automatically.
-- `blocks` — serialized `Block[]` ready to pour into the index.
-
-On re-runs the master splits files into "reuse" (snapshot hit) and
-"process" (snapshot miss) buckets and only the latter goes through the
-worker pool. Editing one file leaves the other snapshots intact.
-
-Disable with `--no-incremental` for benchmarking or when paranoid
-about cache poisoning.
-
-### Lazy AST loading
-
-After fingerprinting we drop `Block::$ast` (the original PhpParser
-subtree) and reload it on demand inside `AntiUnifier` via
-`BlockAstLoader`. The loader walks the file's parse-cached statement
-list looking for the unique
-(kind, start_line, end_line, declared_name) tuple; matches are
-populated back into the Block.
-
-The AST cache is consulted first so on warm runs no parsing happens at
-all. Disable with `--no-lazy-ast` if you have RAM to spare and want
-maximum speed (the reload overhead in v0.2 is roughly equal to the
-RSS savings on small corpora — see BENCHMARKS.md).
-
----
-
-## Output formats
-
-### CLI
-
-SugarCraft-styled colorized terminal output (see the box at the top of
-this README). Powered by:
-
-- `SugarCraft\Kit\Banner` for the bordered summary header.
-- `SugarCraft\Kit\Section` for cluster and sub-section rules.
-- `SugarCraft\Kit\StatusLine` for ✓/✗/⚠/ℹ status messages.
-- `SugarCraft\Sprinkles\Table` for member and hole tables.
-- `SugarCraft\Sprinkles\Style` + `Border` for the suggested-signature
-  box and pattern-tag chips.
-
-Honors `--no-ansi` / non-TTY: switches to `Theme::plain()` and skips
-the styled box / chips, producing clean ASCII the same code path can
-emit.
-
-### JSON
-
-```json
-{
-  "phpdup_version": "0.2.0",
-  "summary": { "files": 1888, "blocks": 12340, "clusters": 87, ... },
-  "clusters": [
-    {
-      "id": "Xaeb0e34a",
-      "exact": true,
-      "similarity": 1.0,
-      "confidence": 1.0,
-      "impact": 74,
-      "pattern_tags": ["config-driven", "crud-handler", "sql-builder"],
-      "signature": "function findById(\n    string $value,\n): mixed",
-      "members": [ ... ],
-      "holes": [
-        {
-          "placeholder": "__P0",
-          "kind": "literal",
-          "inferred_type": "string",
-          "suggested_name": "$value",
-          "observed": [
-            "'SELECT * FROM users WHERE id = ?'",
-            "'SELECT * FROM products WHERE id = ?'",
-            "'SELECT * FROM orders WHERE id = ?'"
-          ]
-        }
-      ]
-    }
-  ]
-}
+```bash
+bin/phpdup analyze src --mode=strict       # variable rename only — fewer false positives
+bin/phpdup analyze src --mode=aggressive   # also collapse names + literals — more findings
 ```
 
-### HTML
+#### `--similarity N` (default: `0.80`)
 
-A static-site report with:
+Jaccard similarity threshold for the near-duplicate phase. Below
+this, the type-3 fallback may still apply.
 
-- Index page sorted by impact, with an interactive **mini-map** of
-  cluster-impact distribution (green bars exact, blue bars near-duplicate;
-  click to jump).
-- Client-side **column sort** (click any header to toggle asc/desc) and a
-  **search filter** input that hides rows whose data-search blob doesn't
-  match.
-- **Copy-suggested-signature** button per cluster (Clipboard API with an
-  `execCommand` fallback for non-secure contexts).
-- Per-cluster page with member sources side-by-side, **inline syntax
-  highlighting** for keywords / strings / comments / numbers (no external
-  dep, no build step).
-- Holes table showing placeholder, suggested name, type, and observed values.
-- Sebastian-Bergmann unified diff between the first two members, colorized
-  by hunk header / add / del.
+```bash
+bin/phpdup analyze src --similarity=0.95   # strict — very obvious clones only
+bin/phpdup analyze src --similarity=0.65   # loose — many type-2 clones surfaced
+```
 
-JS lives in `app.js` next to `style.css` — both inlined into the build,
-no external deps, no build step.
+#### `--max-df N` (default: `0.01`)
 
-### SARIF
+Maximum document-frequency for an n-gram to be used as a
+candidate-pair seed. Tuned for large codebases; bump for tiny
+fixtures where every n-gram is "common" by ratio.
 
-[SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/sarif-v2.1.0-os.html)
-output for GitHub Code Scanning and GitLab Code Quality:
+```bash
+bin/phpdup analyze tests/Fixtures --max-df=0.5    # tiny corpus needs higher cutoff
+bin/phpdup analyze big-codebase --max-df=0.001    # very strict on a 50k-block corpus
+```
+
+#### `--min-impact N` (default: `20`)
+
+Minimum cluster impact (≈ duplicated-line count) to include in
+output. Quiets the report; doesn't change clustering.
+
+```bash
+bin/phpdup analyze src --min-impact=50    # only show big wins
+bin/phpdup analyze src --min-impact=1     # show everything that clustered
+```
+
+#### `--exact-only`
+
+Skip the near-duplicate phase entirely. ~6× faster on large corpora;
+emits only Type-1 (canonical-hash-equal) clusters.
+
+```bash
+bin/phpdup analyze src --exact-only --min-impact=50
+```
+
+#### `--kinds K1,K2,...`
+
+Comma-separated block kinds to extract. Default = all of:
+`function|method|closure|arrow|if|for|foreach|while|do|try|switch|match`.
+
+```bash
+bin/phpdup analyze src --kinds=method                # methods only
+bin/phpdup analyze src --kinds=method,closure        # methods + closures
+bin/phpdup analyze src --kinds=if,foreach,switch     # control structures only
+```
+
+![phpdup --kinds=method narrowing scope](docs/media/kinds-filter.gif)
+
+#### `--max-memory MB`
+
+Soft memory ceiling. When peak RSS exceeds this mid-pipeline,
+phpdup logs `phpdup: peak RSS X MB exceeded --max-memory=Y` and
+suggests `--exact-only`. `0` (default) disables.
+
+```bash
+bin/phpdup analyze huge-monorepo --max-memory=1024   # warn if RSS > 1 GB
+```
+
+#### `--optional-blocks on|off` (default: `on`)
+
+Type-3 / "optional-segment" detection master switch. See
+[Type-3 / optional-segment detection](#type-3--optional-segment-detection).
+
+```bash
+bin/phpdup analyze src --optional-blocks=off    # legacy Jaccard-only behaviour
+```
+
+#### `--optional-blocks-containment N` (default: `0.85`)
+
+Containment-fallback threshold for the type-3 path.
+
+```bash
+bin/phpdup analyze src --optional-blocks-containment=0.95   # very strict
+bin/phpdup analyze src --optional-blocks-containment=0.7    # permissive
+```
+
+### Output
+
+#### `--html DIR`
+
+Write the interactive HTML report into DIR.
+
+```bash
+bin/phpdup analyze src --html=phpdup-report
+# open phpdup-report/index.html in a browser
+```
+
+#### `--json FILE`
+
+Structured JSON dump.
+
+```bash
+bin/phpdup analyze src --json=phpdup.json
+jq '.clusters | length' phpdup.json
+```
+
+#### `--sarif FILE`
+
+SARIF 2.1.0 output for GitHub PR annotations.
 
 ```bash
 bin/phpdup analyze src --sarif=phpdup.sarif
+gh codeql-action upload-sarif phpdup.sarif       # in CI
 ```
 
-Each duplicate block becomes a `result` with rule
-`phpdup/duplicate-logic`, level `warning` for exact / `note` for
-near-duplicate, the cluster's suggested signature in
-`properties.suggestedSignature`, and shared
-`partialFingerprints.clusterId` so SARIF consumers can group sibling
-results into a single cluster annotation.
+#### `--gitlab-sast FILE`
 
-In a GitHub Actions workflow:
-
-```yaml
-- run: vendor/bin/phpdup analyze src --sarif=phpdup.sarif --min-impact=50
-- uses: github/codeql-action/upload-sarif@v3
-  if: always()
-  with:
-    sarif_file: phpdup.sarif
-```
-
-### GitLab SAST report
-
-[GitLab SAST report v15.x](https://gitlab.com/gitlab-org/security-products/security-report-schemas):
+GitLab SAST report v15.x for the MR security widget.
 
 ```bash
 bin/phpdup analyze src --gitlab-sast=gl-sast-report.json
 ```
 
-Severity is impact-bucketed (`>100` High, `>=50` Medium, `>=20` Low,
-otherwise Info). Confidence is `High` for exact clones, otherwise
-derived from the cluster confidence score. Wire it into `.gitlab-ci.yml`
-as a `report.sast` artifact so the MR security widget surfaces
-duplicates.
+#### `--diff DIR`
 
-### Diff and patch
-
-`--diff=DIR` writes one `.diff` file per cluster — pairwise unified
-diffs from member[0] to each subsequent member, with a header comment
-showing the suggested abstraction and anchor location. Helps reviewers
-see the duplication and judge whether the abstraction captures the
-variation.
-
-`--patch=FILE` concatenates every cluster's diff into one cumulative
-patch file.
+One `.diff` file per cluster (pairwise unified diffs from member[0]).
 
 ```bash
-bin/phpdup analyze src --diff=./diffs --patch=phpdup.patch
+bin/phpdup analyze src --diff=./phpdup-diffs
+ls phpdup-diffs/*.diff | wc -l
 ```
 
-### Checkstyle XML
+#### `--patch FILE`
 
-`--checkstyle=FILE` produces a Checkstyle-format XML report consumable
-by Jenkins Warnings NG, Bitbucket Reports, Sonar, Detekt — anything that
-parses Checkstyle:
+Single cumulative patch file containing every cluster diff.
+
+```bash
+bin/phpdup analyze src --patch=phpdup.patch
+```
+
+#### `--checkstyle FILE`
+
+Checkstyle XML for Jenkins / Sonar / Bitbucket consumers.
 
 ```bash
 bin/phpdup analyze src --checkstyle=phpdup.xml
 ```
 
-Each duplicate is an `<error>` with `source="phpdup.duplicate-logic"`,
-severity `warning` for exact / `info` for near-duplicate, and a
-descriptive message linking back to the cluster id and similarity.
+#### `--limit N` (default: `50`)
 
----
-
-## Type-3 / optional-segment detection
-
-A "type-3" clone is one where the structures match, but some members
-have extra (or missing) statements relative to others. phpdup detects
-these in two stages.
-
-### Clustering: containment fallback
-
-When the n-gram Jaccard between two candidate blocks falls below
-`similarity_threshold`, the clusterer tries an asymmetric
-`ContainmentSimilarity`:
-
-```
-C(A, B) = |A ∩ B|min / min(sum(A), sum(B))
-```
-
-…which returns 1.0 whenever the smaller bag is fully contained in the
-larger, regardless of size disparity. The pair is accepted with the
-containment score as the edge weight only when:
-
-```
-containment ≥ optional_blocks_containment   (default 0.85)  AND
-size_ratio  ≥ optional_blocks_min_overlap    (default 0.6)
-```
-
-The size-ratio guard prevents a 1-line block from clustering with a
-100-line block on the basis of a single shared n-gram.
-
-### Anti-unification: LCS over statement arrays
-
-The seed (template) is now the cluster member with the most AST nodes
-— the "maximal" version of the abstraction. When `walk()` reaches a
-`stmts` / `cases` / `catches` array whose length differs from the
-seed's, phpdup runs LCS over each statement's structural hash:
-
-- Matched template positions recurse via the normal walk — variables,
-  literals, names inside the matched statement still produce regular
-  holes.
-- Unmatched template positions become **`optional_block`** holes —
-  one per missing statement (capped at `optional_blocks_max_per_cluster`,
-  default 3, to prevent pathological seven-boolean signatures).
-
-Each optional_block hole is materialised by `ParameterSynthesizer` as
-a default-`false` `bool` parameter. The name is derived from the first
-non-stop-word identifier in the segment, e.g. a missing
-`some_other_logic($here);` becomes `bool $includeSomeOtherLogic = false`.
-
-`SignatureBuilder` groups required parameters first, then optional
-booleans, so the resulting signature is syntactically valid PHP.
-
-### Tunables
-
-```json
-{
-  "optional_blocks": {
-    "enabled": true,
-    "containment": 0.85,
-    "min_overlap": 0.6,
-    "max_per_cluster": 3,
-    "min_segment_length": 1
-  }
-}
-```
-
-CLI overrides:
+Maximum number of clusters to print to the terminal. Doesn't affect
+file outputs.
 
 ```bash
-bin/phpdup analyze src \
-    --optional-blocks=on \
-    --optional-blocks-containment=0.85
+bin/phpdup analyze src --limit=10        # top 10 in the CLI
+bin/phpdup analyze src --limit=1000      # show everything
 ```
 
-To disable type-3 detection completely, set `optional_blocks.enabled` to
-`false` (or pass `--optional-blocks=off`); the clusterer reverts to
-Jaccard-only and AntiUnifier falls back to whole-array subtree holes
-when stmt arrays differ in length.
+#### `--stats`
 
-### How it surfaces in reporters
-
-- **CLI** — the Holes table shows `kind = optional_block` and observed
-  values include the literal `<absent>` marker for members where the
-  segment was missing.
-- **JSON** — every optional_block hole carries a
-  `present_in_members: [int, ...]` array listing the cluster-member
-  indices that *did* include the segment.
-- **SARIF** — each result's `properties` adds `optionalSegmentCount`
-  and `hasOptionalSegments` so PR-annotation tooling can flag type-3
-  clusters distinctly.
-- **HTML** — optional rows are tinted amber, get a "type-3" badge, and
-  italicize the `<absent>` sentinel.
-
----
-
-## TUI mode
-
-`--tui` opts in to an interactive SugarCraft dashboard rendered after
-analysis completes:
+Print pipeline stage timings, block-kind histogram, and worker info
+after the report.
 
 ```bash
+bin/phpdup analyze src --stats
+```
+
+### Runtime
+
+#### `-c, --config FILE`
+
+Load settings from a `phpdup.json` file. CLI flags override file
+values.
+
+```bash
+bin/phpdup analyze --config=phpdup.json src
+```
+
+#### `-j, --workers N` (default: `0` = auto)
+
+Worker count for parallel preprocess + pair scoring. `0` autodetects
+from `nproc` / `/proc/cpuinfo`. `1` forces serial.
+
+```bash
+bin/phpdup analyze src --workers=8       # explicit
+bin/phpdup analyze src -j 1              # serial — debugging
+```
+
+#### `--no-cache`
+
+Don't read or write the AST cache for this run.
+
+```bash
+bin/phpdup analyze src --no-cache    # benchmarking, or after upgrading php-parser
+```
+
+#### `--no-incremental`
+
+Disable per-file index reuse. Forces re-fingerprinting every file
+even when the IndexStore has a hit.
+
+```bash
+bin/phpdup analyze src --no-incremental    # benchmarking, or paranoid about cache
+```
+
+#### `--no-lazy-ast`
+
+Keep all original ASTs in memory throughout the run. Higher RSS,
+slightly faster anti-unification.
+
+```bash
+bin/phpdup analyze src --no-lazy-ast    # have RAM, want speed
+```
+
+#### `--stage NAME`
+
+Halt the pipeline after STAGE (one of `scanning`, `preprocessing`,
+`clustering`, `refactoring`, `reporting`). Useful for debugging
+incremental cache hits or profiling individual stages.
+
+```bash
+bin/phpdup analyze src --stage=preprocessing --stats   # measure how long parsing takes
+bin/phpdup analyze src --stage=clustering              # see clusters before refactor synthesis
+```
+
+### TUI / watch
+
+#### `--tui`
+
+Show the interactive SugarCraft dashboard while analysis runs.
+Requires a real TTY.
+
+```bash
+bin/phpdup analyze src --tui
+```
+
+#### `--theme NAME` (default: `ansi`)
+
+TUI theme: `ansi` | `plain` | `charm` | `dracula` | `nord` |
+`catppuccin`.
+
+```bash
+bin/phpdup analyze src --tui --theme=dracula
 bin/phpdup analyze src --tui --theme=catppuccin
 ```
 
-What you get:
+#### `--plain`
 
-- **Four-pane FlexBox dashboard** showing Scanning / Preprocessing /
-  Clustering / Refactoring with live counts and timing.
-- **Sparkline of stage durations** at the bottom of the screen, plus a
-  real elapsed timer.
-- **OSC 9;4 taskbar progress** — ConEmu, WezTerm, and Windows Terminal
-  pin a progress indicator on the OS taskbar.
-- **Six themes**: `ansi` (default), `plain`, `charm`, `dracula`, `nord`,
-  `catppuccin` — pick via `--theme=NAME`.
-- **Keyboard**: `q` / `Ctrl+C` quit, `Ctrl+Z` suspend, `↑/↓` cycle pane
-  focus, `Enter` open detail, `←/→` cycle clusters in detail view, `t`
-  toggle sort (impact / similarity / name), `h` toggle help, `Esc`
-  dismiss detail.
-- `--plain` forces plain CLI output even when `--tui` would otherwise
-  fire (handy for CI and pipes).
+Force plain CLI output (no TUI, no ANSI colours). Useful when a CI
+shell reports `isatty()=true` but you want non-coloured output.
 
-**Live mid-stage refresh.** The pipeline runs *inside* the SugarCraft
-runtime via a cooperative `Pipeline::iter()` generator. Each `next()`
-advances to the next yield point — pre-stage, post-stage, every 16
-files in `ScanningStage`, every 32 records streamed back from the
-parallel preprocess pool. Between yields the runtime renders, so the
-sparkline, file counts, parse-error totals, and taskbar progress all
-build up frame-by-frame instead of appearing post-hoc.
+```bash
+bin/phpdup analyze src --plain
+```
+
+#### `--watch`
+
+Stay running and re-analyze on file changes via a poll-based
+`React\EventLoop` timer. Combines with `--tui` for a live dashboard.
+
+```bash
+bin/phpdup analyze src --watch              # plain mode, prints reload messages
+bin/phpdup analyze src --watch --tui        # interactive dashboard, resets on change
+```
+
+### Validation
+
+#### `--validate-config`
+
+Validate the `--config` file against the documented schema and exit
+without running analysis. Exit `0` = OK, `2` = error (with field
+path).
+
+```bash
+bin/phpdup analyze --config=phpdup.json --validate-config && echo OK
+```
+
+### Exit codes
+
+| Code | Meaning                                              |
+|------|------------------------------------------------------|
+| `0`  | Analysis ran. Note: phpdup does NOT exit non-zero    |
+|      | when clusters are found. Use the JSON report to gate |
+|      | CI; an empty `clusters` array means clean.           |
+| `1`  | Internal error.                                      |
+| `2`  | Missing required argument or invalid configuration.  |
+
+### Environment variables
+
+| Variable          | Effect                                                |
+|-------------------|-------------------------------------------------------|
+| `PHPDUP_WORKERS`  | Override worker count (lower precedence than `-j`).   |
+| `COLUMNS`         | Override terminal width detection for the CLI report. |
 
 ---
 
-## Watch mode
+## Programmatic use
 
-`--watch` keeps phpdup running and re-analyzes on every file change:
+The pipeline is fully composable from PHP. The simplest entrypoint is
+`Pipeline` itself; everything else is plugged into it via stage
+constructors:
 
-```bash
-bin/phpdup analyze src --watch --min-impact=30
+```php
+use Phpdup\Cli\Config;
+use Phpdup\Pipeline\Pipeline;
+use Phpdup\Pipeline\PipelineState;
+use Phpdup\Pipeline\Stages\ScanningStage;
+use Phpdup\Pipeline\Stages\PreprocessStage;
+use Phpdup\Pipeline\Stages\ClusterStage;
+use Phpdup\Pipeline\Stages\RefactorStage;
+use Phpdup\Pipeline\Stages\ReportStage;
+use Symfony\Component\Console\Output\NullOutput;
+
+$config = new Config(
+    paths: ['src'],
+    exclude: ['vendor/**'],
+    optionalBlocksEnabled: true,
+);
+$state = new PipelineState($config);
+
+(new Pipeline([
+    new ScanningStage(),
+    new PreprocessStage(useCache: true),
+    new ClusterStage(exactOnly: false),
+    new RefactorStage(useCache: true),
+    new ReportStage(limit: 50, showStats: false),
+]))->run($state, new NullOutput());
+
+foreach ($state->clusters as $c) {
+    echo "{$c->size()} members, signature: {$c->signature}\n";
+}
 ```
 
-How it works: a `React\EventLoop` periodic timer (default 1.5 s)
-polls `filemtime()` for every scanned file, with `clearstatcache()`
-before each read to defeat PHP's stat cache. When any mtime changes,
-phpdup re-runs the full pipeline and reports `change detected (N
-files) — reload #X`.
+For finer-grained control — e.g. to run preprocessing without
+clustering, or to drive the pipeline cooperatively from your own
+event loop — use `Pipeline::iter()` and pump the generator yourself.
+That's exactly how the TUI works.
 
-Polling instead of `inotify` / FSEvents keeps the watcher
-dependency-free and portable to macOS / Linux without an extension —
-at the cost of a small (≤ 1.5 s) reload latency.
+---
 
-`Ctrl+C` (or `SIGTERM`) triggers a clean teardown via
-`Loop::addSignal`. **`--watch --tui` is supported** — the watch poller
-and the SugarCraft `Program` share a single `React\EventLoop` instance
-so the dashboard stays interactive while the watcher polls in the
-background. On change, the watcher dispatches a
-`RestartPipelineMsg` to the program; the model resets state, rebuilds
-the cooperative generator via its factory, and the live counts in the
-panes drop to zero before climbing back up.
+## Examples
+
+### Threshold-gated notification (type-2)
+
+Input:
+
+```php
+public function notifyHigh($user, int $score): void {
+    if ($score > 10) { $this->mailer->send('admin', $user); }
+}
+public function notifyMid($user, int $score): void {
+    if ($score > 20) { $this->mailer->send('moderator', $user); }
+}
+```
+
+Output:
+
+```
+function notifyByThresholdAndStrategy(
+    int $threshold,
+    string $value,
+): mixed
+```
+
+Holes:
+
+| Param        | Type    | Observed                          |
+|--------------|---------|-----------------------------------|
+| `$threshold` | int     | `10, 20`                          |
+| `$value`     | string  | `'admin', 'moderator'`            |
+
+Patterns: `config-driven`.
+
+### Repository CRUD (type-1 / type-2)
+
+Three classes with `findById($db, $id)` differing only in table name.
+
+```
+function findById(string $value): mixed
+```
+
+| Param    | Type   | Observed                                                |
+|----------|--------|---------------------------------------------------------|
+| `$value` | string | `'SELECT * FROM users WHERE id = ?'`,                   |
+|          |        | `'SELECT * FROM products WHERE id = ?'`,                |
+|          |        | `'SELECT * FROM orders WHERE id = ?'`                   |
+
+Patterns: `config-driven, crud-handler, sql-builder`.
+
+### Optional segments (type-3)
+
+The user-asked-for case — see
+[Type-3 / optional-segment detection](#type-3--optional-segment-detection)
+for the algorithm. Two `if` bodies share the same first three
+statements; the longer one has two extra calls at the tail.
+
+```
+function extractedFunction(
+    bool $includeSomeOtherLogic = false,
+    bool $includeAndMore = false,
+): mixed
+```
+
+| Param                     | Type | Kind             | Observed                              |
+|---------------------------|------|------------------|---------------------------------------|
+| `$includeSomeOtherLogic`  | bool | `optional_block` | `some_other_logic($here);`, `<absent>` |
+| `$includeAndMore`         | bool | `optional_block` | `and_more($f);`, `<absent>`            |
+
+Patterns: `optional-segments`.
+
+### Strategy dispatch
+
+A chain of `if (...)` calls each invoking a different validator, all
+with the same shape. Cluster tagged `strategy`, single hole on the
+call name, with the list of method names as observed values — a
+clear hint to extract an interface and an array of strategies.
 
 ---
 
@@ -992,9 +1309,7 @@ CI runs three layers of static checks on every push and PR:
   [`phpstan.neon`](phpstan.neon).
 - **Psalm** runs at error level 6 with a tracked baseline
   (`psalm-baseline.xml`) for legacy `InvalidArrayOffset` /
-  `MissingParamType` findings in the APTED implementation. New code is
-  expected to land without baseline entries; the baseline ratchets
-  down over time.
+  `MissingParamType` findings in the APTED implementation.
 - **Config schema validation** — `ConfigLoader::validate()` mirrors
   [`docs/config-schema.json`](docs/config-schema.json) and throws a
   `RuntimeException` whose message names the offending field on the
@@ -1003,230 +1318,23 @@ CI runs three layers of static checks on every push and PR:
 
 ---
 
-## CLI reference
-
-```
-Usage: phpdup analyze <paths...> [options]
-
-Arguments:
-  paths                    One or more paths to scan
-
-Tuning options:
-  -c, --config FILE        Path to phpdup.json
-      --min-block-size N   Minimum AST node count for a block (default 8)
-      --mode MODE          Normalization mode: strict|default|aggressive
-      --similarity N       Jaccard similarity threshold (0..1, default 0.80)
-      --max-df N           Max document-frequency cutoff for n-grams used as
-                           candidate-pair seeds (0..1, default 0.01).
-      --min-impact N       Minimum cluster impact to report (default 20)
-      --exact-only         Skip near-duplicate detection (very fast)
-      --kinds K1,K2,...    Block kinds to extract: function|method|closure|
-                           arrow|if|for|foreach|while|do|try|switch|match
-      --max-memory MB      Soft RSS ceiling; warns and suggests --exact-only
-                           when peak RSS exceeds.
-      --optional-blocks=on|off
-                           Type-3 / optional-segment detection (default on).
-      --optional-blocks-containment N
-                           Containment threshold for the type-3 fallback
-                           (0..1, default 0.85).
-
-Output options:
-      --html DIR           Write HTML report to this directory
-      --json FILE          Write JSON report to this file
-      --sarif FILE         Write SARIF 2.1.0 report (PR annotations)
-      --gitlab-sast FILE   Write GitLab SAST v15 report
-      --diff DIR           Write per-cluster unified diffs into DIR
-      --patch FILE         Write a single cumulative patch file
-      --checkstyle FILE    Write Checkstyle XML report
-      --limit N            Show at most N clusters in CLI output (default 50)
-      --stats              Show pipeline statistics + worker info
-
-Runtime options:
-  -j, --workers N          Worker count for parallel preprocess + pair scoring
-                           (0 = auto-detect CPU count, 1 = serial)
-      --no-cache           Disable AST cache for this run
-      --no-incremental     Disable per-file index snapshot reuse
-      --no-lazy-ast        Keep all original ASTs in memory throughout the run
-      --stage NAME         Halt pipeline after STAGE (scanning|preprocessing|
-                           clustering|refactoring|reporting) — debugging.
-
-TUI / watch:
-      --tui                Show interactive SugarCraft dashboard once analysis
-                           completes.
-      --plain              Force plain CLI output (no TUI, no ANSI colours).
-      --theme NAME         TUI theme: ansi|plain|charm|dracula|nord|catppuccin
-                           (default ansi).
-      --watch              Stay running and re-analyze on file changes.
-
-Validation:
-      --validate-config    Validate the --config file against the documented
-                           schema and exit (no analysis is run).
-```
-
-### Exit codes
-
-| Code | Meaning                                              |
-|------|------------------------------------------------------|
-| `0`  | Analysis ran. **Note:** phpdup does NOT exit non-zero |
-|      | when clusters are found. Use the JSON report to gate |
-|      | CI; an empty `clusters` array means clean.           |
-| `1`  | Internal error.                                      |
-| `2`  | Missing required argument.                           |
-
-### Environment variables
-
-| Variable          | Effect                                                |
-|-------------------|-------------------------------------------------------|
-| `PHPDUP_WORKERS`  | Override worker count (lower precedence than `-j`).   |
-| `COLUMNS`         | Override terminal width detection for the CLI report. |
-
----
-
-## Programmatic use
-
-The pipeline is fully composable from PHP:
-
-```php
-use Phpdup\Cli\Config;
-use Phpdup\Scanning\FileScanner;
-use Phpdup\Parsing\AstParser;
-use Phpdup\Parsing\AstCache;
-use Phpdup\Extraction\BlockExtractor;
-use Phpdup\Extraction\BlockAstLoader;
-use Phpdup\Normalization\Normalizer;
-use Phpdup\Fingerprint\SubtreeHasher;
-use Phpdup\Fingerprint\NgramFingerprint;
-use Phpdup\Index\BlockIndex;
-use Phpdup\Clustering\Clusterer;
-use Phpdup\Similarity\JaccardSimilarity;
-use Phpdup\Similarity\TreeEditDistance;
-use Phpdup\Refactor\AntiUnifier;
-use Phpdup\Refactor\ParameterSynthesizer;
-use Phpdup\Refactor\SignatureBuilder;
-use Phpdup\Parallel\WorkerPool;
-use Phpdup\Parallel\PreprocessWorker;
-use Phpdup\Parallel\PairScoreWorker;
-
-$config = new Config(
-    paths: ['src'],
-    exclude: ['vendor/**'],
-);
-
-// Phase 1: parallel preprocessing.
-$scanner = new FileScanner($config->exclude);
-$files = [];
-foreach ($scanner->scan('src') as $f) { $files[] = $f; }
-
-$worker = new PreprocessWorker($config);
-$pool = new WorkerPool(workers: 0);                      // auto
-$rows = $pool->run($files, fn(array $batch) => $worker->process($batch));
-
-$index = new BlockIndex();
-foreach ($rows as $row) {
-    if ($row['type'] !== 'block') continue;
-    $b = $row['block'];
-    $b->id = $b->structuralHash . '_' . $index->size();
-    $index->add($b);
-    $b->unloadAst();   // free RAM; we'll reload lazily later
-}
-
-// Phase 2: cluster (with parallel pair scoring).
-$clusterer = new Clusterer(
-    new JaccardSimilarity(), new TreeEditDistance(),
-);
-$pairs = $clusterer->generateCandidatePairs($index);
-$scoreWorker = new PairScoreWorker($index, 0.80, 0.85);
-$edges = $pool->run($pairs, fn(array $batch) => $scoreWorker->score($batch));
-$clusters = $clusterer->cluster($index, $edges);
-
-// Phase 3: refactor synthesis with lazy AST reload.
-$loader = new BlockAstLoader(new AstCache('.phpdup-cache'), new AstParser());
-$au = new AntiUnifier($loader);
-foreach ($clusters as $c) {
-    $au->unify($c);
-    (new ParameterSynthesizer())->synthesize($c);
-    (new SignatureBuilder())->buildSignature($c);
-    echo "{$c->size()} members, signature: {$c->signature}\n";
-}
-```
-
----
-
-## Examples
-
-### Threshold-gated notification
-
-Input:
-
-```php
-public function notifyHigh($user, int $score): void {
-    if ($score > 10) { $this->mailer->send('admin', $user); }
-}
-public function notifyMid($user, int $score): void {
-    if ($score > 20) { $this->mailer->send('moderator', $user); }
-}
-```
-
-Output:
-
-```
-Suggested abstraction:
-  function notifyByThreshold(int $threshold, string $value): mixed
-
-Holes:
-  $threshold   int    observed: 10, 20
-  $value       string observed: 'admin', 'moderator'
-
-Pattern: config-driven
-```
-
-### Repository CRUD
-
-Input: three classes with `findById($db, $id)` differing only in table name.
-
-Output:
-
-```
-Suggested abstraction:
-  function findById(string $value): mixed
-
-Holes:
-  $value  string  observed: 'SELECT * FROM users WHERE id = ?',
-                            'SELECT * FROM products WHERE id = ?',
-                            'SELECT * FROM orders WHERE id = ?'
-
-Pattern: config-driven, crud-handler, sql-builder
-```
-
-### Strategy dispatch
-
-Input: a chain of `if (...)` calls each invoking a different validator,
-all with the same shape.
-
-Output: cluster tagged `strategy`, single hole on the call name, with the
-list of method names as observed values — a clear hint to extract an
-interface and an array of strategies.
-
----
-
 ## Benchmarks
 
 Same corpus, same config, on a real PHP application's `include/Api/`
 directory: 530 files, 3,295 comparable blocks, 96 clusters reported.
 
-| Configuration                                          | Wall time | vs v0.1 |
-|--------------------------------------------------------|----------:|--------:|
-| **v0.1 — top-down TED, single thread**                | 35.13 s   | 1.00×   |
-| v0.2 — serial (`--workers 1`), cold cache              | 61.13 s   | 0.57×   |
-| v0.2 — 4 workers, cold cache                           | 30.39 s   | 1.16×   |
-| v0.2 — 8 workers, cold cache                           | 21.11 s   | 1.66×   |
-| v0.2 — 16 workers, cold cache                          | 17.47 s   | 2.01×   |
-| v0.2 — 8 workers, `--exact-only`                       |  5.74 s   | 6.12×   |
+| Configuration                                          | Wall time | vs serial |
+|--------------------------------------------------------|----------:|----------:|
+| serial (`--workers 1`), cold cache                     | 61.13 s   | 1.00×     |
+| 4 workers, cold cache                                  | 30.39 s   | 2.01×     |
+| 8 workers, cold cache                                  | 21.11 s   | 2.90×     |
+| 16 workers, cold cache                                 | 17.47 s   | 3.50×     |
+| 8 workers, `--exact-only`                              |  5.74 s   | 10.65×    |
 
 Cluster output is byte-identical across configurations — the speedups
-don't come from skipping work. APTED alone is *slower* than the v0.1
-top-down (it does correct Zhang-Shasha work where v0.1 was a bounded
-heuristic); the user-facing win is parallelism stacking on top.
+don't come from skipping work. APTED does correct Zhang-Shasha work
+(slower per pair than a bounded heuristic would be); the user-visible
+win comes from parallelism stacking on top.
 
 For a full breakdown including stage timings, the honest discussion of
 diminishing returns past 8 workers, and tuning recommendations for
@@ -1245,8 +1353,9 @@ The project is organized as:
 ```
 src/
   Cli/            CLI entry point, ConfigLoader (with schema validation), Command
-  Pipeline/       Stage enum, PipelineState, ProgressListener, Pipeline
-                  orchestrator, and the five Stage classes.
+  Pipeline/       Stage enum, PipelineState, ProgressListener,
+                  CooperativeStageInterface, Pipeline orchestrator,
+                  five Stage classes (Scanning/Preprocess/Cluster/Refactor/Report).
   Scanning/       File walking and glob filtering
   Parsing/        nikic/php-parser wrapper + AST cache
   Extraction/     Block selection (with --kinds filter) + lazy AST loader
@@ -1254,21 +1363,25 @@ src/
   Fingerprint/    Structural hash + n-gram bag
   Index/          In-memory + inverted index
   Persistence/    IndexStore (per-file block snapshots)
-  Similarity/     Jaccard + APTED tree-edit-distance
-  Clustering/     Hash-bucket + union-find
-  Parallel/       WorkerPool + Preprocess/PairScore workers
-  Refactor/       Anti-unification + parameter/signature synth + patterns
+  Similarity/     Jaccard, ContainmentSimilarity (type-3), APTED tree-edit-distance
+  Clustering/     Hash-bucket + union-find with type-3 containment fallback
+  Parallel/       WorkerPool (run + runStreaming) + Preprocess/PairScore workers
+  Refactor/       Anti-unification with statement-array LCS,
+                  parameter/signature synth (incl. optional_block bools),
+                  pattern recognition.
   Reporting/      CLI / JSON / HTML / SARIF / GitLab SAST / Diff / Checkstyle
                   reporters + ranker
   Tui/            PhpdupModel (SugarCraft Model + ProgressListener), ViewState,
-                  TuiRunner (theme resolution + Program boot)
+                  Msg types (StagePumpedMsg, RestartPipelineMsg),
+                  TuiRunner (theme resolution + Program boot, with
+                  shared-loop support for --watch + --tui)
   Watch/          WatchRunner (poll-based React\EventLoop watcher)
   Util/           AST serializer, hash helpers, line range
 ```
 
 Modules have small, documented surfaces. New normalization rules,
-similarity metrics, or pattern recognizers plug in without touching the
-rest of the pipeline.
+similarity metrics, or pattern recognizers plug in without touching
+the rest of the pipeline.
 
 ---
 
@@ -1281,34 +1394,49 @@ vendor/bin/phpunit --testsuite Integration
 composer coverage:html         # writes tests/phpunit/coverage-html/
 ```
 
-The test suite covers:
+The test suite (165+ tests, 469+ assertions) covers:
 
 - Scanner glob semantics
-- Normalizer canonicalization (renamed-variable / literal / name modes)
-- N-gram fingerprint determinism and Jaccard floor on unrelated code
-- APTED correctness on identical, renamed, and unrelated trees, plus
+- Normalizer canonicalization across all three modes
+- N-gram fingerprint determinism + Jaccard floor on unrelated code
+- ContainmentSimilarity: subset/overlap/empty cases + size-ratio guard
+- APTED correctness on identical, renamed, unrelated trees, plus
   bounded short-circuit behavior
 - WorkerPool serial path, parallel path (skipped without pcntl), empty
-  input, and CPU-count detection
-- IndexStore round-trip, file-change invalidation, config-key invalidation
-- Anti-unifier hole discovery on the canonical example, and on
-  three-member clusters
-- Strategy / config-driven pattern tagging
-- End-to-end on a fixture corpus with expected clusters
+  input, CPU-count detection, and the streaming variant including
+  child-exception propagation and array-vs-generator task returns
+- IndexStore round-trip, file-change invalidation, config-key
+  invalidation
 - Pipeline orchestration: stage ordering, `stopAfter` halting at the
-  right boundary, `stageProgress` reset between stages
+  right boundary, `stageProgress` reset between stages, cooperative
+  iter() yielding pre/post-stage and mid-stage for cooperative stages
 - ProgressListener wiring: per-file scan + preprocess events fire,
   null listener is the default and never branches stage behaviour
 - BlockExtractor `--kinds` filter rejects unknown kinds and keeps the
   ones you ask for
-- ConfigLoader schema validation: every field's bounds + the cross-field
-  `min_block_size <= max_block_size` rule
-- Reporters: SARIF, GitLab SAST, Diff (per-cluster + cumulative patch),
-  Checkstyle XML, HTML index/cluster pages — each tested against a
-  real Pipeline run on `tests/Fixtures/sql`
+- ConfigLoader schema validation: every field's bounds + the
+  cross-field `min_block_size <= max_block_size` rule + the
+  `optional_blocks` sub-object
+- Anti-unifier hole discovery on the canonical examples + type-3
+  optional-block formation, max-per-cluster cap fallback, seed
+  selection regardless of cluster.members order, observed-value
+  remapping after the seed swap
+- ParameterSynthesizer type inference (every branch) + optional_block
+  name derivation (verb-from-segment, stop-word skip, snake-to-camel,
+  no-identifier fallback)
+- SignatureBuilder: required-then-optional ordering, default-false
+  rendering, optional-only-cluster signatures, name fallback
+- PatternRecognizer: optional-segments tag presence/absence, plus
+  config-driven, strategy, crud-handler
+- Reporters: SARIF, GitLab SAST, Diff (per-cluster + cumulative
+  patch), Checkstyle XML, JSON (with `present_in_members`), HTML
+  index/cluster pages — each tested against a real Pipeline run on
+  fixture data including the type-3 optional fixture
 - TUI: ViewState pane focus / sort cycling, PhpdupModel key bindings,
-  `View::progressBar` taskbar updates, `←/→` cluster navigation, theme
-  resolution
+  `View::progressBar` taskbar updates, `←/→` cluster navigation,
+  StagePumpedMsg pump / generator exhaustion, RestartPipelineMsg
+  rebuild, theme resolution
+- End-to-end on a fixture corpus with expected clusters
 
 GitHub Actions runs the full suite on every push and PR across PHP
 8.1, 8.2, 8.3, 8.4, then PHPStan level 6 and Psalm on PHP 8.3, then
@@ -1323,15 +1451,16 @@ uploads Clover coverage to Codecov.
 | Operation                | Complexity                          | Notes                                                                  |
 |--------------------------|-------------------------------------|------------------------------------------------------------------------|
 | File scanning            | O(F)                                | F = file count                                                         |
-| Parsing                  | O(L) per file                       | L = lines; cached on subsequent runs; **parallelized** in v0.2         |
+| Parsing                  | O(L) per file                       | L = lines; cached on subsequent runs; **parallelized**                |
 | Block extraction         | O(N)                                | N = AST node count                                                     |
 | Normalization            | O(N)                                | parallelized                                                           |
 | Hashing                  | O(N) per block                      | parallelized                                                           |
 | Hash bucketing           | O(B)                                | B = block count                                                        |
 | Inverted-index candidate | O(B × g̅)                            | g̅ = avg n-grams per block, with rare-gram pre-filter                  |
-| Pairwise Jaccard         | candidate-bounded                   | only blocks sharing rare grams; **parallelized** in v0.2               |
+| Pairwise Jaccard         | candidate-bounded                   | only blocks sharing rare grams; **parallelized**                       |
 | Tree edit distance       | bounded by `(1−τ) × max(\|a\|,\|b\|)` | APTED-style Zhang-Shasha forest DP with heavy-path order; aborts early |
 | Anti-unification         | O(\|cluster\| × N) per cluster      | currently serial                                                       |
+| LCS for stmt arrays      | O(n × m) per divergent array        | bounded by `optional_blocks_max_per_cluster`                           |
 
 ### Tunable knobs
 
@@ -1340,60 +1469,46 @@ uploads Clover coverage to Codecov.
 - `max_df` — rare-gram filter cutoff for candidate generation.
 - `similarity_threshold` and `tree_threshold` — where to draw the
   near-duplicate line.
-- `workers` (v0.2) — parallelism level.
-- `incremental` / `lazy_ast` (v0.2) — re-run reuse and memory budget.
+- `optional_blocks.containment` and `optional_blocks.min_overlap` —
+  type-3 detection sensitivity.
+- `workers` — parallelism level.
+- `incremental` / `lazy_ast` — re-run reuse and memory budget.
 
 ### Caches
 
-- **AST cache** (`<cache_dir>/parser-v5_<sha1>.cache`) — serialized parse
-  trees keyed by `sha1(file) + parser_version`. Re-runs with no source
-  changes skip parsing entirely.
-- **Index store** (v0.2, `<cache_dir>/<sha1(path)>.idx`) — per-file
-  block snapshots keyed by content hash + parser version + config key.
+- **AST cache** (`<cache_dir>/parser-v5_<sha1>.cache`) — serialized
+  parse trees keyed by `sha1(file) + parser_version`. Re-runs with no
+  source changes skip parsing entirely.
+- **Index store** (`<cache_dir>/<sha1(path)>.idx`) — per-file block
+  snapshots keyed by content hash + parser version + config key.
   Re-runs reuse blocks for unchanged files.
 
-Both live under `.phpdup-cache/` next to the project root and are safe
-to delete at any time.
-
-### Throughput on the reference corpus
-
-(530 files, 3,295 comparable blocks; 8 workers, cold cache)
-
-- 35.4 files/sec
-- 220 blocks/sec
-- 2.1× the v0.1 baseline
-
-See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the full table
-including 1/4/8/16-worker sweeps, warm-cache vs cold-cache, and the
-honest discussion of what *didn't* pay off (lazy AST at small scale,
-diminishing returns past 8 workers).
+Both live under `.phpdup-cache/` next to the project root and are
+safe to delete at any time.
 
 ---
 
 ## FAQ
 
 **How is this different from PHPCPD?**
-PHPCPD finds duplicated *tokens* — long runs of identical lexer output.
-`phpdup` works on the AST after canonicalization, so renamed variables,
-different literals, different method names, and different table names
-can all cluster together. More importantly, `phpdup` tells you what the
-abstraction would *look like* — its parameter list, types, and a
-suggested function name — not just where the duplication is.
+PHPCPD finds duplicated *tokens* — long runs of identical lexer
+output. `phpdup` works on the AST after canonicalization, so renamed
+variables, different literals, different method names, *and entire
+optional code segments* can all cluster together. More importantly,
+phpdup tells you what the abstraction would *look like* — its
+parameter list, types, and a suggested function name — not just
+where the duplication is.
 
 **Will it rewrite my code?**
-No. `phpdup` is advisory only. It surfaces opportunities; humans decide.
-Auto-rewriting was an explicit non-goal — see ARCHITECTURE.md §1.
+No. `phpdup` is advisory only. It surfaces opportunities; humans
+decide. Auto-rewriting was an explicit non-goal — see
+ARCHITECTURE.md §1.
 
 **Does the parallel mode work on Windows / sandboxed PHP?**
 The worker pool detects `pcntl_*` availability at runtime and falls
 back to a serial code path automatically. The CLI still accepts
 `--workers N` so config files don't have to branch — the value is
 ignored when pcntl is missing.
-
-**My CI box only has 2 cores; should I disable parallelism?**
-No need — auto-detect picks 2 and parallelism still helps. Below ~32
-candidate pairs the pool runs serially anyway (the overhead of forking
-isn't worth it on tiny inputs).
 
 **How much RAM does the cache use?**
 The AST cache stores serialized parser output keyed by file hash;
@@ -1403,10 +1518,10 @@ snapshots) is ~10–100 KB per file. Both live under
 nuked at any time.
 
 **Why don't I get the threshold/role example as cleanly on my code?**
-Try `--mode aggressive --min-impact 30`. The defaults are tuned for
-quiet output on first run. Lowering `min-impact` and switching to
-`aggressive` exposes more candidates. Conversely, dropping to `default`
-mode reduces false positives if you're getting noise.
+Try `--mode=aggressive --min-impact=30`. The defaults are tuned for
+quiet output on first run. Lowering `--min-impact` and switching to
+`aggressive` exposes more candidates. Conversely, dropping to
+`default` mode reduces false positives if you're getting noise.
 
 **Does it support PHP 7.x?**
 The tool itself requires PHP 8.1+ (uses `xxh128` and constructor
@@ -1414,47 +1529,33 @@ property promotion). It can analyze codebases written in older PHP
 versions — the parser handles 5.x and up.
 
 **Does it handle modern PHP 8.x syntax?**
-Yes — match expressions, enums, readonly, named arguments, attributes,
-nullsafe, first-class callable syntax — all supported by
+Yes — match expressions, enums, readonly, named arguments,
+attributes, nullsafe, first-class callable syntax — all supported by
 `nikic/php-parser` v5.
 
-**Why is `--workers 1` slower than v0.1's serial mode?**
-v0.1's TED was a bounded top-down heuristic — fast on average but not
-provably correct. v0.2's APTED implementation is correct Zhang-Shasha
-which is slower per pair. Cluster output is the same; the user-visible
-win comes from the parallel scoring, not APTED itself. See
-BENCHMARKS.md for the details.
-
-**Can I use `--watch` together with `--tui`?**
-Yes. The watcher's periodic timer is registered on the same
-`React\EventLoop` instance the SugarCraft `Program` runs on, so the
-dashboard stays interactive while the watcher polls. When a change is
-detected, the watcher fires a `RestartPipelineMsg` at the program and
-the model rebuilds its cooperative pipeline iterator from the factory it
-was constructed with — so live counts in the panes drop to zero and
-climb back up as the new analysis run progresses.
-
-**How do I re-render the demo GIF?**
+**How do I re-render the demo GIFs?**
 Install [VHS](https://github.com/charmbracelet/vhs), then:
 
 ```bash
-vhs docs/phpdup-demo.tape
-# writes docs/media/phpdup-demo.gif
+docs/tapes/render.sh                    # render all
+docs/tapes/render.sh tui-live.tape      # render one
 ```
 
-VHS needs a Chromium binary on the PATH; on Ubuntu 23.10+ where
-unprivileged user namespaces are restricted, point it at a `--no-sandbox`
-Chrome wrapper.
+VHS needs a Chromium binary. On Ubuntu 23.10+ where unprivileged user
+namespaces are restricted (and `/usr/bin/chromium-browser` is the
+Snap-only stub), pass `CHROME_BIN=/path/to/chrome` — Playwright's
+`chrome-headless-shell` works well — and the script bootstraps a
+`--no-sandbox` shim on PATH.
 
 **The TUI looks empty / didn't appear when I added `--tui`.**
-The dashboard requires a real TTY for keyboard input and rendering. If
-your terminal isn't a real TTY (CI, piped stdout, redirected file) the
-SugarCraft `Program` will fail to attach to the input stream — use
-`--plain` instead. The pipeline now runs *inside* the runtime, so the
-panes update live as work progresses; if all the panes are still at
-zero something likely failed during pipeline init (run
-`bin/phpdup analyze … --plain` to see the error message that the TUI
-might be hiding).
+The dashboard requires a real TTY for keyboard input and rendering.
+If your terminal isn't a real TTY (CI, piped stdout, redirected
+file) the SugarCraft `Program` will fail to attach to the input
+stream — use `--plain` instead. The pipeline now runs *inside* the
+runtime, so the panes update live as work progresses; if all the
+panes are still at zero something likely failed during pipeline init
+(run `bin/phpdup analyze … --plain` to see the error message that
+the TUI might be hiding).
 
 ---
 
@@ -1463,8 +1564,8 @@ might be hiding).
 PRs welcome. Please:
 
 1. Run `composer test` and add tests for new functionality.
-2. Match the existing PHP coding style (`declare(strict_types=1)`, PSR-4,
-   constructor property promotion, narrow public surfaces).
+2. Match the existing PHP coding style (`declare(strict_types=1)`,
+   PSR-4, constructor property promotion, narrow public surfaces).
 3. For new normalization rules, similarity metrics, or pattern
    recognizers, document the rule in the relevant module's docblock.
 
