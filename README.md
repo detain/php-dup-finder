@@ -66,6 +66,7 @@ inferred types and observed values, ready to drop into a refactor.
 
 ## Table of contents
 
+- [What's new in v0.4](#whats-new-in-v04)
 - [What's new in v0.3](#whats-new-in-v03)
 - [What's new in v0.2](#whats-new-in-v02)
 - [Features](#features)
@@ -100,6 +101,26 @@ inferred types and observed values, ready to drop into a refactor.
 - [FAQ](#faq)
 - [Contributing](#contributing)
 - [License](#license)
+
+---
+
+## What's new in v0.4
+
+v0.4 lands the three architectural items v0.3's docs called out as
+deferred: the worker pool now streams, the pipeline cooperatively
+yields, and the TUI works alongside the file watcher.
+
+| Area                       | v0.3                                                   | v0.4                                                                                                  |
+|----------------------------|--------------------------------------------------------|-------------------------------------------------------------------------------------------------------|
+| WorkerPool                 | `run()` returns one big array once every child exits   | `runStreaming()` returns a `\Generator` — children emit length-prefixed serialized records over `stream_socket_pair`s; parent multiplexes via `stream_select` and yields each record live. `run()` is now a thin drain over the streaming version. |
+| Pipeline                   | Synchronous `run()` only                               | Cooperative `iter()` Generator yielding pre/post-stage and (for stages implementing `CooperativeStageInterface`) at every checkpoint inside the stage. ScanningStage yields every 16 files, PreprocessStage every 32 records. |
+| TUI mid-stage updates      | Pipeline ran, then TUI booted — counts appeared post-hoc | TUI drives the pipeline iterator from inside the runtime via `StagePumpedMsg`. Panes, sparkline, and OSC 9;4 progress now build up frame-by-frame as work progresses. |
+| `--watch --tui`            | Rejected with an error                                 | Supported — the watcher and the SugarCraft `Program` share a single `React\EventLoop`. Changes fire a `RestartPipelineMsg` that resets state and rebuilds the cooperative generator from its factory. |
+| Tests                      | 112                                                    | 125+ (Pipeline iter, streaming pool, live model pump/restart, watch+tui).                              |
+
+The cooperative pipeline is a pure addition; the synchronous `run()` is
+still the path used by CI / non-TUI mode and produces byte-identical
+output to v0.3.
 
 ---
 
@@ -539,6 +560,15 @@ via `--workers N` / `PHPDUP_WORKERS=N`. When `pcntl_*` is unavailable
 back to a serial code path with the same closure interface — callers
 don't branch.
 
+`WorkerPool::runStreaming()` (v0.4) is the streaming variant: each
+child writes length-prefixed serialized records to a per-child
+`stream_socket_pair` as it produces them, and the parent multiplexes
+via `stream_select` and `yield`s each record live. `PreprocessStage`
+consumes the resulting `\Generator` so the cooperative pipeline gets
+mid-stage progress events instead of waiting for every child to exit.
+The collect-and-return `run()` is now a thin synchronous drain over
+the streaming version.
+
 ### Incremental indexing
 
 `Phpdup\Persistence\IndexStore` snapshots each file's extracted +
@@ -746,12 +776,13 @@ What you get:
 - `--plain` forces plain CLI output even when `--tui` would otherwise
   fire (handy for CI and pipes).
 
-Live mid-stage refresh (the renderer ticking while a stage is
-in-flight) requires a generator-based pipeline and is on the roadmap
-alongside true streaming. Today the pipeline runs to completion before
-the dashboard boots, so the sparkline shows post-hoc timings rather
-than building up frame-by-frame — but every other piece (stage
-listener, theme system, key bindings, taskbar progress) is in place.
+**Live mid-stage refresh.** The pipeline runs *inside* the SugarCraft
+runtime via a cooperative `Pipeline::iter()` generator. Each `next()`
+advances to the next yield point — pre-stage, post-stage, every 16
+files in `ScanningStage`, every 32 records streamed back from the
+parallel preprocess pool. Between yields the runtime renders, so the
+sparkline, file counts, parse-error totals, and taskbar progress all
+build up frame-by-frame instead of appearing post-hoc.
 
 ---
 
@@ -774,10 +805,13 @@ dependency-free and portable to macOS / Linux without an extension —
 at the cost of a small (≤ 1.5 s) reload latency.
 
 `Ctrl+C` (or `SIGTERM`) triggers a clean teardown via
-`Loop::addSignal`. `--watch` is plain-mode only for now;
-`--watch --tui` is intentionally rejected because the runtime
-ordering between the SugarCraft `Program` loop and the watch loop
-needs more thought.
+`Loop::addSignal`. **`--watch --tui` is supported** — the watch poller
+and the SugarCraft `Program` share a single `React\EventLoop` instance
+so the dashboard stays interactive while the watcher polls in the
+background. On change, the watcher dispatches a
+`RestartPipelineMsg` to the program; the model resets state, rebuilds
+the cooperative generator via its factory, and the live counts in the
+panes drop to zero before climbing back up.
 
 ---
 
@@ -1222,11 +1256,13 @@ win comes from the parallel scoring, not APTED itself. See
 BENCHMARKS.md for the details.
 
 **Can I use `--watch` together with `--tui`?**
-Not yet. `--watch + --tui` is rejected with an error because the
-React\EventLoop watch loop and the SugarCraft Program loop need to share
-a single event loop instance, which requires more thought than v0.3
-shipped. Plain-mode watch + a separate `--tui` post-analysis run is the
-current pattern.
+Yes. The watcher's periodic timer is registered on the same
+`React\EventLoop` instance the SugarCraft `Program` runs on, so the
+dashboard stays interactive while the watcher polls. When a change is
+detected, the watcher fires a `RestartPipelineMsg` at the program and
+the model rebuilds its cooperative pipeline iterator from the factory it
+was constructed with — so live counts in the panes drop to zero and
+climb back up as the new analysis run progresses.
 
 **How do I re-render the demo GIF?**
 Install [VHS](https://github.com/charmbracelet/vhs), then:
@@ -1241,11 +1277,14 @@ unprivileged user namespaces are restricted, point it at a `--no-sandbox`
 Chrome wrapper.
 
 **The TUI looks empty / didn't appear when I added `--tui`.**
-Phase 2 ships the dashboard but defers live mid-stage refresh to the
-streaming pipeline work. The pipeline runs synchronously to completion
-first, then the TUI boots with the final state. If your terminal isn't a
-real TTY (CI, piped stdout) the dashboard will fail to attach — use
-`--plain` instead.
+The dashboard requires a real TTY for keyboard input and rendering. If
+your terminal isn't a real TTY (CI, piped stdout, redirected file) the
+SugarCraft `Program` will fail to attach to the input stream — use
+`--plain` instead. The pipeline now runs *inside* the runtime, so the
+panes update live as work progresses; if all the panes are still at
+zero something likely failed during pipeline init (run
+`bin/phpdup analyze … --plain` to see the error message that the TUI
+might be hiding).
 
 ---
 
