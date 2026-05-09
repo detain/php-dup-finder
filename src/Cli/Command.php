@@ -54,6 +54,9 @@ final class Command extends SymfonyCommand
             ->addOption('sarif', null, InputOption::VALUE_REQUIRED, 'Write SARIF 2.1.0 report to FILE (for GitHub/GitLab PR annotations)')
             ->addOption('gitlab-sast', null, InputOption::VALUE_REQUIRED, 'Write GitLab SAST report (v15) to FILE')
             ->addOption('checkstyle', null, InputOption::VALUE_REQUIRED, 'Write Checkstyle XML report to FILE')
+            ->addOption('csv', null, InputOption::VALUE_REQUIRED, 'Write flat CSV (one row per cluster member) to FILE')
+            ->addOption('prometheus', null, InputOption::VALUE_REQUIRED, 'Write Prometheus text-format metrics to FILE (for pushgateway / CI dashboards)')
+            ->addOption('timeseries', null, InputOption::VALUE_REQUIRED, 'Append a JSONL summary record (commit-tagged) to FILE for tracking duplicate debt over time')
             ->addOption('diff', null, InputOption::VALUE_REQUIRED, 'Write per-cluster unified diffs into DIR')
             ->addOption('patch', null, InputOption::VALUE_REQUIRED, 'Write a single cumulative patch file containing every cluster diff')
             ->addOption('limit', null, InputOption::VALUE_REQUIRED, 'Show at most N clusters in CLI output', 50)
@@ -97,6 +100,7 @@ Options grouped by category:
 
  <comment>Output / reports</comment>
    --html, --json, --sarif, --gitlab-sast, --checkstyle,
+   --csv, --prometheus, --timeseries,
    --diff, --patch, --limit, --sort, --stats
 
  <comment>Performance / runtime</comment>
@@ -225,6 +229,9 @@ HELP;
             'diffDir'        => $input->getOption('diff'),
             'patchFile'      => $input->getOption('patch'),
             'checkstyleFile' => $input->getOption('checkstyle'),
+            'csvFile'        => $input->getOption('csv'),
+            'prometheusFile' => $input->getOption('prometheus'),
+            'timeseriesFile' => $input->getOption('timeseries'),
         ];
         $buildPipeline = static function (?ProgressListener $listener) use (
             $useCache, $exactOnly, $showStats, $maxMemoryMb, $stopAfter, $reportArgs
@@ -243,6 +250,9 @@ HELP;
                         diffDir:        $reportArgs['diffDir'],
                         patchFile:      $reportArgs['patchFile'],
                         checkstyleFile: $reportArgs['checkstyleFile'],
+                        csvFile:        $reportArgs['csvFile'],
+                        prometheusFile: $reportArgs['prometheusFile'],
+                        timeseriesFile: $reportArgs['timeseriesFile'],
                     ),
                 ],
                 stopAfter: $stopAfter,
