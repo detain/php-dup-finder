@@ -8,13 +8,23 @@ use Phpdup\Clustering\Cluster;
 /**
  * Computes impact and confidence scores for each cluster, drops
  * low-impact clusters under the configured threshold, and returns
- * clusters sorted by descending impact (then by member count, then
- * by similarity).
+ * clusters sorted via {@see ClusterSort}.
+ *
+ * Default sort is `impact:desc` to preserve the original "biggest wins
+ * first" behaviour. Pass any other {@see ClusterSort} (e.g. parsed
+ * from `--sort=members` or `--sort=block-size:asc`) to change the
+ * ordering — Ranker still scores impact + confidence first so the
+ * stable tie-breakers in ClusterSort can break ties consistently.
  */
 final class Ranker
 {
-    public function __construct(private readonly int $minImpact = 20)
-    {
+    private readonly ClusterSort $sort;
+
+    public function __construct(
+        private readonly int $minImpact = 20,
+        ?ClusterSort $sort = null,
+    ) {
+        $this->sort = $sort ?? new ClusterSort();
     }
 
     /**
@@ -28,10 +38,7 @@ final class Ranker
             $c->confidence = $this->confidenceOf($c);
         }
         $kept = array_values(array_filter($clusters, fn(Cluster $c) => $c->impact >= $this->minImpact));
-        usort($kept, function (Cluster $a, Cluster $b): int {
-            return [$b->impact, $b->size(), $b->similarity] <=> [$a->impact, $a->size(), $a->similarity];
-        });
-        return $kept;
+        return $this->sort->apply($kept);
     }
 
     /**

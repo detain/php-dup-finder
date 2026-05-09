@@ -34,16 +34,49 @@ final class ViewStateTest extends TestCase
         $this->assertSame(Stage::Refactoring, $vs->focusedStage());
     }
 
-    public function testCycleSortModeRoundtrips(): void
+    public function testCycleSortModeWalksAllKeysAndReturnsToImpact(): void
     {
         $vs = new ViewState();
-        $this->assertSame(ViewState::SORT_IMPACT, $vs->sortMode);
+        $this->assertSame(ViewState::SORT_IMPACT, $vs->sortMode, 'starts at impact');
+
+        $seen = [$vs->sortMode];
+        for ($i = 0; $i < count(ViewState::SORT_CYCLE) - 1; $i++) {
+            $vs->cycleSortMode();
+            $seen[] = $vs->sortMode;
+        }
+        $this->assertSame(ViewState::SORT_CYCLE, $seen, 'cycles through every key in declared order');
+
         $vs->cycleSortMode();
-        $this->assertSame(ViewState::SORT_SIMILARITY, $vs->sortMode);
+        $this->assertSame(ViewState::SORT_IMPACT, $vs->sortMode, 'wraps back to first');
+    }
+
+    public function testCycleSortModeRecoversFromOffListValue(): void
+    {
+        $vs = new ViewState();
+        $vs->sortMode = 'totally-not-a-real-key';
         $vs->cycleSortMode();
-        $this->assertSame(ViewState::SORT_NAME, $vs->sortMode);
-        $vs->cycleSortMode();
-        $this->assertSame(ViewState::SORT_IMPACT, $vs->sortMode);
+        $this->assertSame(ViewState::SORT_CYCLE[0], $vs->sortMode);
+    }
+
+    public function testToggleSortDirectionAlternatesAscDesc(): void
+    {
+        $vs = new ViewState();
+        $this->assertSame('desc', $vs->sortDirection, 'defaults to desc');
+        $vs->toggleSortDirection();
+        $this->assertSame('asc', $vs->sortDirection);
+        $vs->toggleSortDirection();
+        $this->assertSame('desc', $vs->sortDirection);
+    }
+
+    public function testClusterSortReflectsCurrentModeAndDirection(): void
+    {
+        $vs = new ViewState();
+        $vs->sortMode = ViewState::SORT_MEMBERS;
+        $vs->toggleSortDirection(); // → asc
+
+        $cs = $vs->clusterSort();
+        $this->assertSame('members', $cs->key);
+        $this->assertSame('asc', $cs->direction);
     }
 
     public function testFocusedStageReflectsIndex(): void

@@ -55,7 +55,10 @@ final class ReportStage implements StageInterface
             ));
         }
 
-        $clusters = (new Ranker($config->minClusterImpact))->rank($state->clusters);
+        $clusters = (new Ranker(
+            $config->minClusterImpact,
+            \Phpdup\Reporting\ClusterSort::parse($config->sort),
+        ))->rank($state->clusters);
 
         $report = new Report(
             files: count($state->files),

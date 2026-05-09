@@ -67,12 +67,30 @@ final class PhpdupModelTest extends TestCase
         $this->assertSame(1, $model->viewState->focusedPaneIndex);
     }
 
-    public function testTKeyTogglesSortMode(): void
+    public function testLowercaseTCyclesSortModeForward(): void
     {
         $model = $this->buildModel();
         $this->assertSame(ViewState::SORT_IMPACT, $model->viewState->sortMode);
         $model->update(new KeyMsg(KeyType::Char, rune: 't'));
-        $this->assertSame(ViewState::SORT_SIMILARITY, $model->viewState->sortMode);
+        $this->assertSame(ViewState::SORT_CYCLE[1], $model->viewState->sortMode, 'one tap → next key in SORT_CYCLE');
+    }
+
+    public function testUppercaseTTogglesSortDirection(): void
+    {
+        $model = $this->buildModel();
+        $this->assertSame('desc', $model->viewState->sortDirection, 'defaults to desc');
+        $model->update(new KeyMsg(KeyType::Char, rune: 'T'));
+        $this->assertSame('asc', $model->viewState->sortDirection);
+        $model->update(new KeyMsg(KeyType::Char, rune: 'T'));
+        $this->assertSame('desc', $model->viewState->sortDirection);
+    }
+
+    public function testUppercaseTDoesNotAffectSortMode(): void
+    {
+        $model = $this->buildModel();
+        $original = $model->viewState->sortMode;
+        $model->update(new KeyMsg(KeyType::Char, rune: 'T'));
+        $this->assertSame($original, $model->viewState->sortMode, 'shift-T flips direction only, never the key');
     }
 
     public function testHKeyTogglesHelpExpanded(): void

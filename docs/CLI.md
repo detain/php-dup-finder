@@ -60,6 +60,7 @@ for the full JSON-Schema-compatible spec.
 | `--patch FILE`                             | —       | Write a single cumulative patch file containing every cluster diff.                    |
 | `--checkstyle FILE`                        | —       | Write Checkstyle XML to FILE (Jenkins / Sonar / Bitbucket consumers).                  |
 | `--limit N`                                | `50`    | Maximum number of clusters to print to the terminal. Doesn't affect file outputs.       |
+| `--sort KEY[:asc\|desc]`                   | `impact:desc` | Cluster sort. Keys: `impact`, `members`, `block-size`, `lines`, `similarity`, `confidence`, `name`, `file`, `id`. Aliases: `size`/`count` → `members`. Direction may also be given as a leading `-` (desc) or `+` (asc), e.g. `-members`, `+lines`. |
 | `--stats`                                  | off     | Print pipeline stage timings, block-kind histogram, and worker info after the report.  |
 
 ### Runtime
@@ -209,6 +210,20 @@ Disable type-3 detection for a strict run:
 bin/phpdup analyze src --optional-blocks=off
 ```
 
+Sort by something other than impact:
+
+```bash
+bin/phpdup analyze src --sort=members:desc          # most-duplicated first
+bin/phpdup analyze src --sort=block-size:desc       # largest blocks first
+bin/phpdup analyze src --sort=lines                 # most duplicated lines (desc default)
+bin/phpdup analyze src --sort=similarity:asc        # weakest matches first (review marginal ones)
+bin/phpdup analyze src --sort=confidence:desc       # safest refactors first
+bin/phpdup analyze src --sort=name:asc              # alphabetical by qualified member name
+bin/phpdup analyze src --sort=file:asc              # alphabetical by source file
+bin/phpdup analyze src --sort=-impact               # leading - = desc shortcut
+bin/phpdup analyze src --sort=+lines                # leading + = asc shortcut
+```
+
 Performance diagnostic with stage timings:
 
 ```bash
@@ -260,6 +275,7 @@ values.
   "incremental":          true,
   "lazy_ast":             true,
   "kinds":                ["method", "closure"],
+  "sort":                 "impact:desc",
   "optional_blocks": {
     "enabled":             true,
     "containment":         0.85,
@@ -300,6 +316,7 @@ with the offending field path on the first violation.
 | `incremental`                          | boolean          | `true`           | Per-file index-snapshot reuse.                                           |
 | `lazy_ast`                             | boolean          | `true`           | Drop original ASTs after fingerprinting; reload via `BlockAstLoader`.    |
 | `kinds`                                | list of strings  | all              | Each entry one of `function`, `method`, `closure`, `arrow`, `if`, `for`, `foreach`, `while`, `do`, `try`, `switch`, `match`. |
+| `sort`                                 | string           | `"impact:desc"`  | `KEY[:asc\|desc]`. Keys: `impact`, `members`, `block-size`, `lines`, `similarity`, `confidence`, `name`, `file`, `id`. Aliases: `size`/`count` → `members`. |
 | `optional_blocks.enabled`              | boolean          | `true`           | Master switch for type-3 detection.                                      |
 | `optional_blocks.containment`          | number           | `0.85`           | `0.0 ≤ x ≤ 1.0`. Containment-fallback threshold.                         |
 | `optional_blocks.min_overlap`          | number           | `0.6`            | `0.0 ≤ x ≤ 1.0`. Size-ratio guard against trivially-small overlaps.      |

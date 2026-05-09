@@ -130,6 +130,59 @@ final class ConfigLoaderTest extends TestCase
         (new ConfigLoader())->validate(['kinds' => ['lambda']]);
     }
 
+    public function testSortAcceptsValidSpecs(): void
+    {
+        (new ConfigLoader())->validate(['sort' => 'impact:desc']);
+        (new ConfigLoader())->validate(['sort' => 'members']);
+        (new ConfigLoader())->validate(['sort' => 'block-size:asc']);
+        (new ConfigLoader())->validate(['sort' => '+lines']);
+        $this->expectNotToPerformAssertions();
+    }
+
+    public function testSortRejectsUnknownKey(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('sort: Invalid sort key "complexity"');
+        (new ConfigLoader())->validate(['sort' => 'complexity']);
+    }
+
+    public function testSortRejectsUnknownDirection(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('sort: Invalid sort direction');
+        (new ConfigLoader())->validate(['sort' => 'impact:sideways']);
+    }
+
+    public function testSortRejectsEmptyString(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('sort must be a non-empty string');
+        (new ConfigLoader())->validate(['sort' => '']);
+    }
+
+    public function testSortRejectsNonStringValues(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('sort must be a non-empty string');
+        (new ConfigLoader())->validate(['sort' => ['impact', 'members']]);
+    }
+
+    public function testSortOverrideTakesPrecedenceOverConfigFile(): void
+    {
+        $tmp = sys_get_temp_dir() . '/phpdup-' . uniqid() . '.json';
+        file_put_contents($tmp, json_encode(['sort' => 'similarity:asc']));
+        try {
+            $config = (new ConfigLoader())->load(
+                paths: ['src'],
+                configFile: $tmp,
+                overrides: ['sort' => 'lines:desc'],
+            );
+            $this->assertSame('lines:desc', $config->sort);
+        } finally {
+            @unlink($tmp);
+        }
+    }
+
     public function testKindsOverrideTakesPrecedenceOverConfigFile(): void
     {
         $tmp = sys_get_temp_dir() . '/phpdup-' . uniqid() . '.json';

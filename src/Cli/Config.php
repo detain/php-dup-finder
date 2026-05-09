@@ -51,6 +51,10 @@ final class Config
         // Don't promote single-statement gaps below this length (in raw stmts) to
         // optional_block holes — too noisy on tiny mismatches.
         public readonly int $optionalBlocksMinSegmentLength = 1,
+        // Cluster sort spec (e.g. "impact:desc", "members:desc", "block-size:asc").
+        // Format: KEY[:DIRECTION]. See \Phpdup\Reporting\ClusterSort::ALL_KEYS.
+        // Default preserves the long-standing "biggest impact first" ordering.
+        public readonly string $sort = 'impact:desc',
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -73,6 +77,9 @@ final class Config
         if ($optionalBlocksMinSegmentLength < 1) {
             throw new \InvalidArgumentException("optional_blocks_min_segment_length must be >= 1");
         }
+        // Validate the sort spec eagerly so misconfigured CLI/config calls
+        // fail at load time instead of inside the Ranker.
+        \Phpdup\Reporting\ClusterSort::parse($sort);
     }
 
     /** @param list<string> $paths */

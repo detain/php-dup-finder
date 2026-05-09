@@ -236,6 +236,11 @@ final class PhpdupModel implements Model, ProgressListener
             return [$this, Cmd::suspend()];
         }
         if ($msg->type === KeyType::Char) {
+            // Handle shift-T (uppercase) for direction toggling before
+            // lower-casing for the regular dispatch.
+            if ($msg->rune === 'T') {
+                return $this->mutate(fn() => $this->viewState->toggleSortDirection());
+            }
             return match (strtolower($msg->rune)) {
                 'q'     => [$this, Cmd::quit()],
                 't'     => $this->mutate(fn() => $this->viewState->cycleSortMode()),
@@ -310,10 +315,13 @@ final class PhpdupModel implements Model, ProgressListener
 
         $detail = $this->viewState->detailClusterId !== null
             ? $this->renderDetail()
-            : "  " . $this->theme->muted->render('Tip: ↑/↓ focus pane · Enter detail · t sort · h help · q quit');
+            : "  " . $this->theme->muted->render(sprintf(
+                'Tip: ↑/↓ focus · Enter detail · t sort (%s) · T flip dir · h help · q quit',
+                $this->viewState->sortMode . ':' . $this->viewState->sortDirection,
+            ));
 
         $help = $this->viewState->helpExpanded ? "\n  " . $this->theme->muted->render(
-            'Keys: ↑/↓ cycle focused pane · Enter expand cluster · Esc dismiss · t sort (impact/similarity/name) · h toggle help · Ctrl+C / q quit'
+            'Keys: ↑/↓ cycle focused pane · ←/→ navigate detail · Enter expand · Esc dismiss · t cycle sort (impact/members/block-size/lines/similarity/confidence/name) · T flip asc/desc · h toggle help · Ctrl+C / q quit'
         ) : '';
 
         return $banner . "\n\n"

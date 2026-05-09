@@ -1038,6 +1038,47 @@ bin/phpdup analyze src --limit=10        # top 10 in the CLI
 bin/phpdup analyze src --limit=1000      # show everything
 ```
 
+#### `--sort KEY[:asc|desc]` (default: `impact:desc`)
+
+Order clusters by a chosen attribute and direction. Affects every
+output format (CLI, JSON, HTML, SARIF, GitLab SAST, Diff, Checkstyle)
+because it runs inside the `Ranker` after impact + confidence are
+computed.
+
+| Key            | Sorts clusters by …                                                            |
+|----------------|---------------------------------------------------------------------------------|
+| `impact`       | Estimated lines saved if the abstraction is applied (the default).              |
+| `members`      | Number of duplicate blocks in the cluster (alias: `size`, `count`).             |
+| `block-size`   | Average AST node count per member (proxy for "how big each duplicate is").      |
+| `lines`        | Total duplicated lines across all members.                                      |
+| `similarity`   | Edge weight (1.0 for exact, lower for type-2/3 near-dupes).                     |
+| `confidence`   | The Ranker's `[0..1]` "how safe is this refactor" score.                        |
+| `name`         | First member's qualified name (`Namespace\Class::method`), alphabetical.        |
+| `file`         | First member's file path, alphabetical.                                         |
+| `id`           | Cluster id, alphabetical (mainly useful for stable diffs across runs).          |
+
+Direction defaults to `desc`. Use `:asc` / `:desc`, or the shortcut
+prefixes `-` (desc) and `+` (asc):
+
+```bash
+bin/phpdup analyze src --sort=members:desc       # most-duplicated clusters first
+bin/phpdup analyze src --sort=block-size:desc    # biggest blocks first
+bin/phpdup analyze src --sort=lines              # most duplicated lines (desc default)
+bin/phpdup analyze src --sort=similarity:asc     # weakest matches first — review marginal type-3
+bin/phpdup analyze src --sort=confidence:desc    # safest refactors first
+bin/phpdup analyze src --sort=name:asc           # alphabetical
+bin/phpdup analyze src --sort=-impact            # leading - = desc shortcut
+bin/phpdup analyze src --sort=+lines             # leading + = asc shortcut
+```
+
+Ties are broken consistently (members DESC ▸ similarity DESC ▸ id ASC)
+so the same input always produces the same final ordering regardless
+of the user's primary direction.
+
+In the TUI, the `t` key cycles through the same sort keys live (impact
+→ members → block-size → lines → similarity → confidence → name → wrap),
+and shift-`T` toggles asc/desc. The current sort is shown in the Tip line.
+
 #### `--stats`
 
 Print pipeline stage timings, block-kind histogram, and worker info

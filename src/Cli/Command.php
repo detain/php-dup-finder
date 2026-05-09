@@ -40,6 +40,7 @@ final class Command extends SymfonyCommand
             ->addOption('json', null, InputOption::VALUE_REQUIRED, 'Write JSON report to this file')
             ->addOption('exact-only', null, InputOption::VALUE_NONE, 'Skip near-duplicate detection (faster)')
             ->addOption('limit', null, InputOption::VALUE_REQUIRED, 'Show at most N clusters in CLI output', 50)
+            ->addOption('sort', null, InputOption::VALUE_REQUIRED, 'Cluster sort: KEY[:asc|desc]. Keys: impact|members|block-size|lines|similarity|confidence|name|file|id. Aliases: size→members, count→members. Default impact:desc.')
             ->addOption('stats', null, InputOption::VALUE_NONE, 'Show pipeline statistics')
             ->addOption('no-cache', null, InputOption::VALUE_NONE, 'Disable AST cache for this run')
             ->addOption('workers', 'j', InputOption::VALUE_REQUIRED, 'Worker count for parallel preprocess + pair scoring (0 = auto, 1 = serial)')
@@ -82,6 +83,7 @@ final class Command extends SymfonyCommand
             'workers'                     => $input->getOption('workers'),
             'max_df'                      => $input->getOption('max-df'),
             'optional_blocks_containment' => $input->getOption('optional-blocks-containment'),
+            'sort'                        => $input->getOption('sort'),
         ], fn($v) => $v !== null);
         $obFlag = $input->getOption('optional-blocks');
         if ($obFlag !== null) {
@@ -94,6 +96,21 @@ final class Command extends SymfonyCommand
         }
         if ($input->getOption('no-incremental')) $overrides['incremental'] = false;
         if ($input->getOption('no-lazy-ast'))    $overrides['lazy_ast']   = false;
+        // Validate --sort eagerly so the user gets a friendly exit 2 instead
+        // of an uncaught InvalidArgumentException out of Config::__construct.
+        $sortOpt = $input->getOption('sort');
+        if ($sortOpt !== null) {
+            try {
+                \Phpdup\Reporting\ClusterSort::parse((string)$sortOpt);
+            } catch (\InvalidArgumentException $e) {
+                $output->writeln(sprintf(
+                    '<error>phpdup: --sort %s. Valid keys: %s. Direction: asc|desc.</error>',
+                    $e->getMessage(),
+                    implode(', ', \Phpdup\Reporting\ClusterSort::ALL_KEYS),
+                ));
+                return 2;
+            }
+        }
         $kindsOpt = $input->getOption('kinds');
         if ($kindsOpt !== null) {
             $kinds = array_values(array_filter(array_map('trim', explode(',', (string)$kindsOpt))));

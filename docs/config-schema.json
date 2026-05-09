@@ -108,6 +108,12 @@
             },
             "description": "Block kinds to extract. Empty list (or omitted) means accept all kinds. Equivalent to --kinds on the CLI."
         },
+        "sort": {
+            "type": "string",
+            "default": "impact:desc",
+            "pattern": "^[+-]?(impact|members|size|count|block-size|block_size|lines|similarity|confidence|name|file|id)(:(asc|desc|ascending|descending|\\+|\\-))?$",
+            "description": "Cluster sort spec — KEY[:DIRECTION]. Keys: impact, members, block-size, lines, similarity, confidence, name, file, id. Aliases: size/count → members; block_size → block-size. Direction defaults to desc; a leading '-' forces desc, '+' forces asc. Equivalent to --sort on the CLI."
+        },
         "optional_blocks": {
             "type": "object",
             "additionalProperties": false,

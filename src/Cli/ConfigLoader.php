@@ -70,6 +70,7 @@ final class ConfigLoader
             optionalBlocksMinOverlap:     (float)($overrides['optional_blocks_min_overlap'] ?? $optBlock['min_overlap'] ?? $base->optionalBlocksMinOverlap),
             optionalBlocksMaxPerCluster:  (int)($overrides['optional_blocks_max_per_cluster'] ?? $optBlock['max_per_cluster'] ?? $base->optionalBlocksMaxPerCluster),
             optionalBlocksMinSegmentLength: (int)($overrides['optional_blocks_min_segment_length'] ?? $optBlock['min_segment_length'] ?? $base->optionalBlocksMinSegmentLength),
+            sort: (string)($overrides['sort'] ?? $data['sort'] ?? $base->sort),
         );
     }
 
@@ -96,6 +97,7 @@ final class ConfigLoader
             'incremental', 'lazy_ast',
             'kinds',
             'optional_blocks',
+            'sort',
             'report',
         ];
         foreach (array_keys($data) as $k) {
@@ -235,6 +237,16 @@ final class ConfigLoader
             }
             if (array_key_exists('min_segment_length', $data['optional_blocks'])) {
                 $assertInt($data['optional_blocks']['min_segment_length'], 'optional_blocks.min_segment_length', 1);
+            }
+        }
+        if (array_key_exists('sort', $data)) {
+            if (!is_string($data['sort']) || $data['sort'] === '') {
+                throw new \RuntimeException("sort must be a non-empty string$where");
+            }
+            try {
+                \Phpdup\Reporting\ClusterSort::parse($data['sort']);
+            } catch (\InvalidArgumentException $e) {
+                throw new \RuntimeException("sort: {$e->getMessage()}$where");
             }
         }
         if (array_key_exists('report', $data)) {
