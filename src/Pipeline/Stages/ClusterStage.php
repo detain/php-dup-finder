@@ -7,6 +7,7 @@ use Phpdup\Clustering\Clusterer;
 use Phpdup\Index\BlockIndex;
 use Phpdup\Parallel\PairScoreWorker;
 use Phpdup\Parallel\WorkerPool;
+use Phpdup\Persistence\ClusterCache;
 use Phpdup\Pipeline\CooperativeStageInterface;
 use Phpdup\Pipeline\NullProgressListener;
 use Phpdup\Pipeline\PipelineState;
@@ -18,6 +19,22 @@ use Symfony\Component\Console\Output\OutputInterface;
 
 final class ClusterStage implements CooperativeStageInterface
 {
+    /** Build the cluster-cache config-key from the fields that drive clustering output. */
+    private function cacheConfigKey(\Phpdup\Cli\Config $config): string
+    {
+        return sha1(serialize([
+            $config->similarityThreshold,
+            $config->treeThreshold,
+            $config->maxDocumentFrequency,
+            $config->optionalBlocksEnabled,
+            $config->optionalBlocksContainment,
+            $config->optionalBlocksMinOverlap,
+            $config->optionalBlocksMaxPerCluster,
+            $config->optionalBlocksMinSegmentLength,
+            $this->exactOnly,
+        ]));
+    }
+
     /** Yield to the runtime every N edges streamed from the pair-score workers. */
     private const YIELD_EVERY = 64;
 
@@ -27,6 +44,7 @@ final class ClusterStage implements CooperativeStageInterface
         private readonly bool $exactOnly,
         private readonly int $maxMemoryMb = 0,
         ?ProgressListener $listener = null,
+        private readonly bool $useClusterCache = true,
     ) {
         $this->listener = $listener ?? new NullProgressListener();
     }
@@ -50,6 +68,30 @@ final class ClusterStage implements CooperativeStageInterface
         }
 
         $config = $state->config;
+
+        // Persistent cluster cache: a full-corpus snapshot keyed on
+        // sorted (block_id, structuralHash) pairs. Re-runs with no
+        // changes hit the cache and skip clustering entirely. Any
+        // change invalidates wholesale (the safer choice — partial
+        // edge invalidation comes later if it earns its complexity).
+        $clusterCache = ($this->useClusterCache && $config->incremental && !$this->exactOnly)
+            ? new ClusterCache($config->cacheDir, $this->cacheConfigKey($config))
+            : null;
+        if ($clusterCache !== null) {
+            $cached = $clusterCache->load($state->blocks);
+            if ($cached !== null) {
+                $state->clusters = $cached;
+                $state->currentTask = sprintf('Reused %d clusters from cache (corpus unchanged)', count($cached));
+                $state->stageProgress = 1.0;
+                $state->timings['cluster'] = 0.0;
+                $output->writeln(sprintf(
+                    "<info>phpdup</info> reused %d clusters from cache (corpus unchanged since last run)",
+                    count($cached),
+                ));
+                yield Stage::Clustering;
+                return;
+            }
+        }
 
         $state->currentTask = 'Building block index';
         yield Stage::Clustering;
@@ -178,6 +220,10 @@ final class ClusterStage implements CooperativeStageInterface
         $state->clusters = $clusterer->cluster($index, $edges);
         $state->timings['cluster'] = microtime(true) - $tCluster;
         $state->currentTask = sprintf('Built %d clusters', count($state->clusters));
+
+        if ($clusterCache !== null) {
+            $clusterCache->save($state->blocks, $state->clusters);
+        }
 
         if ($this->maxMemoryMb > 0) {
             $rssMb = (int)floor(memory_get_peak_usage(true) / (1024 * 1024));
