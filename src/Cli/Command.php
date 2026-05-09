@@ -46,7 +46,8 @@ final class Command extends SymfonyCommand
             ->addOption('min-impact', null, InputOption::VALUE_REQUIRED, 'Minimum cluster impact to report')
             ->addOption('exact-only', null, InputOption::VALUE_NONE, 'Skip near-duplicate detection (faster)')
             ->addOption('kinds', null, InputOption::VALUE_REQUIRED, 'Comma-separated block kinds to include (e.g. method,closure). Default: all of method|function|closure|arrow|if|for|foreach|while|do|try|switch|match')
-            ->addOption('auto-tune', null, InputOption::VALUE_NONE, 'Probe the corpus before analysis and pick min-block-size / max-df / min-impact based on size; --exact-only is forced on for very large trees. Picked profile is printed; explicit CLI overrides take precedence.');
+            ->addOption('auto-tune', null, InputOption::VALUE_NONE, 'Probe the corpus before analysis and pick min-block-size / max-df / min-impact based on size; --exact-only is forced on for very large trees. Picked profile is printed; explicit CLI overrides take precedence.')
+            ->addOption('min-safety', null, InputOption::VALUE_REQUIRED, 'Drop clusters whose refactor-safety score (0..1) is below this threshold. 0 = report all (default).');
 
         // ── Output / reports ───────────────────────────────────────────────
         $this
@@ -99,7 +100,7 @@ Options grouped by category:
  <comment>Detection tuning</comment>
    --min-block-size, --mode, --similarity, --max-df,
    --optional-blocks, --optional-blocks-containment,
-   --min-impact, --exact-only, --kinds, --auto-tune
+   --min-impact, --min-safety, --exact-only, --kinds, --auto-tune
 
  <comment>Output / reports</comment>
    --html, --json, --sarif, --gitlab-sast, --checkstyle,
@@ -265,7 +266,12 @@ HELP;
             'prometheusFile' => $input->getOption('prometheus'),
             'timeseriesFile' => $input->getOption('timeseries'),
             'cliVerbosity'   => $cliVerbosity,
+            'minSafety'      => $input->getOption('min-safety') !== null ? (float)$input->getOption('min-safety') : 0.0,
         ];
+        if ($reportArgs['minSafety'] < 0.0 || $reportArgs['minSafety'] > 1.0) {
+            $output->writeln('<error>phpdup: --min-safety must be in [0, 1]</error>');
+            return 2;
+        }
         $buildPipeline = static function (?ProgressListener $listener) use (
             $useCache, $exactOnly, $showStats, $maxMemoryMb, $stopAfter, $reportArgs
         ): Pipeline {
@@ -287,6 +293,7 @@ HELP;
                         prometheusFile: $reportArgs['prometheusFile'],
                         timeseriesFile: $reportArgs['timeseriesFile'],
                         cliVerbosity:   $reportArgs['cliVerbosity'],
+                        minSafety:      $reportArgs['minSafety'],
                     ),
                 ],
                 stopAfter: $stopAfter,

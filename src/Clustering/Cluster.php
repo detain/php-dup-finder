@@ -38,6 +38,12 @@ final class Cluster
 
     public int $impact = 0;
     public float $confidence = 0.0;
+    /**
+     * Refactoring-safety score in [0, 1]. Populated by
+     * {@see \Phpdup\Reporting\SafetyScorer} after Ranker scoring.
+     * Reporters use this for filtering (--min-safety) and display.
+     */
+    public float $safety = 0.0;
 
     /**
      * @param list<Block> $members
