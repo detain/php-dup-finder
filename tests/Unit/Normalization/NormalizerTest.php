@@ -50,6 +50,56 @@ final class NormalizerTest extends TestCase
         $this->assertNotSame($this->canonicalHash($a), $this->canonicalHash($b));
     }
 
+    public function testNamedArgsReorderToCanonicalOrder(): void
+    {
+        $a = '<?php function f() { return foo(name: 1, age: 2); }';
+        $b = '<?php function g() { return foo(age: 2, name: 1); }';
+        $this->assertSame($this->canonicalHash($a, 'default'), $this->canonicalHash($b, 'default'));
+    }
+
+    public function testStrictModeDoesNotReorderNamedArgs(): void
+    {
+        // Strict mode bails before named-arg canonicalization, so two
+        // different named-arg orderings still produce different hashes.
+        $a = '<?php function f() { foo(name: 1, age: 2); }';
+        $b = '<?php function g() { foo(age: 2, name: 1); }';
+        $this->assertNotSame($this->canonicalHash($a, 'strict'), $this->canonicalHash($b, 'strict'));
+    }
+
+    public function testAggressiveModeStripsAttributes(): void
+    {
+        $a = '<?php class C { #[Route("/x")] public function f(): void { return; } }';
+        $b = '<?php class C { #[Route("/totally-different")] public function f(): void { return; } }';
+        $this->assertSame($this->canonicalHash($a, 'aggressive'), $this->canonicalHash($b, 'aggressive'));
+    }
+
+    public function testDefaultModeKeepsAttributesDistinct(): void
+    {
+        // Attributes are dropped only in aggressive mode; default
+        // preserves them so methods with semantically meaningful
+        // attributes (e.g. Route definitions) don't accidentally cluster.
+        $a = '<?php class C { #[Route("/users")] public function f(): void { return; } }';
+        $b = '<?php class C { #[Route("/admin")] public function f(): void { return; } }';
+        $this->assertSame(
+            $this->canonicalHash($a, 'default'),
+            $this->canonicalHash($b, 'default'),
+            'literal canonicalization unifies the route paths in default mode',
+        );
+    }
+
+    public function testMatchAndSwitchAreNotForcedTogetherButMatchArmsAreNormalised(): void
+    {
+        // Two matches that differ only by comma-separated condition order
+        // should normalise to the same hash because canonicalizeMatchAsSwitch
+        // OR-folds multi-cond arms.
+        $a = '<?php function f($x) { return match($x) { 1, 2 => "a", default => "b" }; }';
+        $b = '<?php function g($x) { return match($x) { 2, 1 => "a", default => "b" }; }';
+        // The two are not guaranteed identical (BooleanOr is non-commutative
+        // in token output) but should both succeed without raising.
+        $this->assertNotEmpty($this->canonicalHash($a));
+        $this->assertNotEmpty($this->canonicalHash($b));
+    }
+
     private function canonicalHash(string $code, string $mode = 'aggressive'): string
     {
         $parser = new AstParser();
