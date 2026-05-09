@@ -78,6 +78,45 @@ final class HtmlReporterTest extends TestCase
         }
     }
 
+    public function testOptionalBlockHolesGetTaggedRowAndAbsentSpan(): void
+    {
+        $report = $this->buildOptionalReport();
+        $dir    = sys_get_temp_dir() . '/phpdup-html-' . uniqid();
+        try {
+            (new HtmlReporter())->writeTo($report, $dir);
+            $glob = glob("$dir/cluster-*.html");
+            $this->assertNotEmpty($glob);
+
+            $found = false;
+            foreach ($glob as $page) {
+                $body = (string)file_get_contents($page);
+                if (str_contains($body, 'hole-optional_block')) {
+                    $found = true;
+                    $this->assertStringContainsString('class="badge optional"', $body, 'optional rows get a "type-3" badge');
+                    $this->assertStringContainsString('class="absent"', $body, '<absent> sentinel rendered with .absent class');
+                }
+            }
+            $this->assertTrue($found, 'expected at least one cluster page to render an optional_block row');
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
+    public function testCssIncludesOptionalBlockStyling(): void
+    {
+        $report = $this->buildReport();
+        $dir    = sys_get_temp_dir() . '/phpdup-html-' . uniqid();
+        try {
+            (new HtmlReporter())->writeTo($report, $dir);
+            $css = (string)file_get_contents("$dir/style.css");
+            $this->assertStringContainsString('.hole-optional_block', $css);
+            $this->assertStringContainsString('.absent', $css);
+            $this->assertStringContainsString('.badge.optional', $css);
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
     private function buildReport(): Report
     {
         $config = new Config(
@@ -85,11 +124,29 @@ final class HtmlReporterTest extends TestCase
             exclude: Config::defaults([])->exclude,
             lazyAst: false,
         );
+        return $this->runPipeline($config, exactOnly: true);
+    }
+
+    private function buildOptionalReport(): Report
+    {
+        $config = new Config(
+            paths: [__DIR__ . '/../../Fixtures/optional'],
+            exclude: Config::defaults([])->exclude,
+            minBlockSize: 4,
+            maxDocumentFrequency: 0.5,
+            minClusterImpact: 1,
+            lazyAst: false,
+        );
+        return $this->runPipeline($config, exactOnly: false);
+    }
+
+    private function runPipeline(Config $config, bool $exactOnly): Report
+    {
         $state = new PipelineState($config);
         $out   = new NullOutput();
         (new ScanningStage())->run($state, $out);
         (new PreprocessStage(useCache: false))->run($state, $out);
-        (new ClusterStage(exactOnly: true))->run($state, $out);
+        (new ClusterStage(exactOnly: $exactOnly))->run($state, $out);
         (new RefactorStage(useCache: false))->run($state, $out);
 
         return new Report(

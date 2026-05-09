@@ -63,6 +63,29 @@ final class SarifReporterTest extends TestCase
         }
     }
 
+    public function testOptionalBlockClusterSurfacesOptionalSegmentMetadata(): void
+    {
+        $report  = $this->buildOptionalReport();
+        $payload = (new SarifReporter())->build($report);
+
+        $this->assertNotEmpty($payload['runs'][0]['results']);
+
+        // Find the result coming from the optional-segments cluster.
+        $found = null;
+        foreach ($payload['runs'][0]['results'] as $r) {
+            $tags = $r['properties']['patternTags'] ?? [];
+            if (in_array('optional-segments', $tags, true)) {
+                $found = $r;
+                break;
+            }
+        }
+        $this->assertNotNull($found, 'expected at least one result tagged optional-segments');
+
+        $props = $found['properties'];
+        $this->assertGreaterThanOrEqual(1, $props['optionalSegmentCount']);
+        $this->assertTrue($props['hasOptionalSegments']);
+    }
+
     private function buildReport(): Report
     {
         $config = new Config(
@@ -70,11 +93,29 @@ final class SarifReporterTest extends TestCase
             exclude: Config::defaults([])->exclude,
             lazyAst: false,
         );
+        return $this->runPipeline($config);
+    }
+
+    private function buildOptionalReport(): Report
+    {
+        $config = new Config(
+            paths: [__DIR__ . '/../../Fixtures/optional'],
+            exclude: Config::defaults([])->exclude,
+            minBlockSize: 4,
+            maxDocumentFrequency: 0.5,
+            minClusterImpact: 1,
+            lazyAst: false,
+        );
+        return $this->runPipeline($config, exactOnly: false);
+    }
+
+    private function runPipeline(Config $config, bool $exactOnly = true): Report
+    {
         $state = new PipelineState($config);
         $out   = new NullOutput();
         (new ScanningStage())->run($state, $out);
         (new PreprocessStage(useCache: false))->run($state, $out);
-        (new ClusterStage(exactOnly: true))->run($state, $out);
+        (new ClusterStage(exactOnly: $exactOnly))->run($state, $out);
         (new RefactorStage(useCache: false))->run($state, $out);
 
         $clusters = (new Ranker($config->minClusterImpact))->rank($state->clusters);
