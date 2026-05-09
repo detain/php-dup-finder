@@ -167,12 +167,28 @@ final class HtmlReporter
   <th>Placeholder</th><th>Suggested</th><th>Type</th><th>Kind</th><th>Observed</th>
 </tr></thead><tbody>
 <?php foreach ($c->holes as $h): ?>
-<tr>
+<tr class="hole-<?= htmlspecialchars($h->kind) ?>">
   <td><code><?= htmlspecialchars($h->placeholder) ?></code></td>
   <td><code><?= htmlspecialchars($h->suggestedName) ?></code></td>
   <td><?= htmlspecialchars($h->inferredType) ?></td>
-  <td><?= htmlspecialchars($h->kind) ?></td>
-  <td><?= htmlspecialchars(implode(', ', array_unique($h->observedValues))) ?></td>
+  <td><?= htmlspecialchars($h->kind) ?>
+      <?php if ($h->kind === 'optional_block'): ?>
+        <span class="badge optional">type-3</span>
+      <?php endif; ?>
+  </td>
+  <td><?php
+      $vals = array_unique($h->observedValues);
+      $first = true;
+      foreach ($vals as $v) {
+          if (!$first) echo ', ';
+          $first = false;
+          if ($v === '<absent>') {
+              echo '<span class="absent">&lt;absent&gt;</span>';
+          } else {
+              echo htmlspecialchars($v);
+          }
+      }
+  ?></td>
 </tr>
 <?php endforeach; ?>
 </tbody></table>
@@ -371,6 +387,11 @@ th.sorted-desc::after { content: ' ▼'; font-size: 10px; }
 .diff .del { background: var(--del); display: block; }
 .diff .hunk { background: var(--hunk); color: var(--muted); display: block; }
 .holes code { background: white; border: 1px solid var(--border); padding: 1px 4px; border-radius: 3px; }
+.hole-optional_block { background: #fffbeb; }
+.hole-optional_block td { border-bottom-color: #fde68a; }
+.absent { color: #d97706; font-style: italic; }
+.badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; margin-left: 6px; }
+.badge.optional { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 

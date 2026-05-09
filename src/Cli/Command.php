@@ -32,6 +32,9 @@ final class Command extends SymfonyCommand
             ->addOption('min-block-size', null, InputOption::VALUE_REQUIRED, 'Minimum AST node count for a block')
             ->addOption('mode', null, InputOption::VALUE_REQUIRED, 'Normalization mode: strict|default|aggressive')
             ->addOption('similarity', null, InputOption::VALUE_REQUIRED, 'Jaccard similarity threshold (0..1)')
+            ->addOption('max-df', null, InputOption::VALUE_REQUIRED, 'Max document-frequency (0..1) for n-grams to be candidate-pair seeds. 0.01 default suits real codebases; bump to ~0.5 for small fixtures.')
+            ->addOption('optional-blocks', null, InputOption::VALUE_REQUIRED, 'Type-3 / "optional segment" detection: on|off (default on). When on, blocks whose statements differ in length but share a common skeleton cluster together with bool $include* params for the absent-from-some-members segments.')
+            ->addOption('optional-blocks-containment', null, InputOption::VALUE_REQUIRED, 'Containment threshold (0..1) for the type-3 fallback path. Default 0.85.')
             ->addOption('min-impact', null, InputOption::VALUE_REQUIRED, 'Minimum cluster impact to report')
             ->addOption('html', null, InputOption::VALUE_REQUIRED, 'Write HTML report to this directory')
             ->addOption('json', null, InputOption::VALUE_REQUIRED, 'Write JSON report to this file')
@@ -70,14 +73,25 @@ final class Command extends SymfonyCommand
         }
 
         $overrides = array_filter([
-            'min_block_size'       => $input->getOption('min-block-size'),
-            'normalization_mode'   => $input->getOption('mode'),
-            'similarity_threshold' => $input->getOption('similarity'),
-            'min_cluster_impact'   => $input->getOption('min-impact'),
-            'html'                 => $input->getOption('html'),
-            'json'                 => $input->getOption('json'),
-            'workers'              => $input->getOption('workers'),
+            'min_block_size'              => $input->getOption('min-block-size'),
+            'normalization_mode'          => $input->getOption('mode'),
+            'similarity_threshold'        => $input->getOption('similarity'),
+            'min_cluster_impact'          => $input->getOption('min-impact'),
+            'html'                        => $input->getOption('html'),
+            'json'                        => $input->getOption('json'),
+            'workers'                     => $input->getOption('workers'),
+            'max_df'                      => $input->getOption('max-df'),
+            'optional_blocks_containment' => $input->getOption('optional-blocks-containment'),
         ], fn($v) => $v !== null);
+        $obFlag = $input->getOption('optional-blocks');
+        if ($obFlag !== null) {
+            $obFlag = strtolower((string)$obFlag);
+            if (!in_array($obFlag, ['on', 'off', 'true', 'false', '1', '0', 'yes', 'no'], true)) {
+                $output->writeln('<error>phpdup: --optional-blocks must be on|off</error>');
+                return 2;
+            }
+            $overrides['optional_blocks_enabled'] = in_array($obFlag, ['on', 'true', '1', 'yes'], true);
+        }
         if ($input->getOption('no-incremental')) $overrides['incremental'] = false;
         if ($input->getOption('no-lazy-ast'))    $overrides['lazy_ast']   = false;
         $kindsOpt = $input->getOption('kinds');

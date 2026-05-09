@@ -79,6 +79,15 @@ final class SarifReporter
         return $results;
     }
 
+    private function countOptionalSegments(Cluster $cluster): int
+    {
+        $n = 0;
+        foreach ($cluster->holes as $h) {
+            if ($h->kind === 'optional_block') $n++;
+        }
+        return $n;
+    }
+
     /** @return array<string, mixed> */
     private function resultFor(Cluster $cluster, Block $member): array
     {
@@ -110,7 +119,7 @@ final class SarifReporter
                 'clusterId'      => $cluster->id,
                 'structuralHash' => $member->structuralHash,
             ],
-            'properties' => [
+            'properties' => array_filter([
                 'kind'               => $member->kind,
                 'clusterKind'        => $cluster->members[0]->kind ?? null,
                 'similarity'         => $cluster->similarity,
@@ -119,7 +128,11 @@ final class SarifReporter
                 'memberCount'        => count($cluster->members),
                 'patternTags'        => $cluster->patternTags,
                 'suggestedSignature' => (string)$cluster->signature,
-            ],
+                // Type-3 / optional-segment metadata so PR-annotation tooling
+                // can flag these clusters distinctly from "exact + variables".
+                'optionalSegmentCount' => $this->countOptionalSegments($cluster),
+                'hasOptionalSegments'  => in_array('optional-segments', $cluster->patternTags, true),
+            ], static fn($v) => $v !== null && $v !== false && $v !== 0),
         ];
     }
 }

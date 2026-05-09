@@ -68,14 +68,24 @@ final class JsonReporter
                 'name'      => $m->name,
                 'size'      => $m->size,
             ], $c->members),
-            'holes' => array_map(static fn(Hole $h) => [
-                'placeholder'    => $h->placeholder,
-                'kind'           => $h->kind,
-                'inferred_type'  => $h->inferredType,
-                'suggested_name' => $h->suggestedName,
-                'observed'       => array_values(array_unique($h->observedValues)),
-                'value_count'    => $h->uniqueValueCount(),
-            ], $c->holes),
+            'holes' => array_map(static function (Hole $h) {
+                $base = [
+                    'placeholder'    => $h->placeholder,
+                    'kind'           => $h->kind,
+                    'inferred_type'  => $h->inferredType,
+                    'suggested_name' => $h->suggestedName,
+                    'observed'       => array_values(array_unique($h->observedValues)),
+                    'value_count'    => $h->uniqueValueCount(),
+                ];
+                if ($h->kind === 'optional_block') {
+                    $present = [];
+                    foreach ($h->observedValues as $i => $v) {
+                        if ($v !== '<absent>') $present[] = $i;
+                    }
+                    $base['present_in_members'] = $present;
+                }
+                return $base;
+            }, $c->holes),
         ];
     }
 }
