@@ -4,8 +4,7 @@
 > Behaves more like an "extract function" advisor than a copy/paste finder.
 
 [![CI](https://github.com/detain/php-dup-finder/actions/workflows/ci.yml/badge.svg)](https://github.com/detain/php-dup-finder/actions/workflows/ci.yml)
-[![Codacy Badge](https://app.codacy.com/project/badge/Grade/REPLACE_WITH_PROJECT_ID)](https://app.codacy.com/gh/detain/php-dup-finder/dashboard)
-[![Codacy Coverage](https://app.codacy.com/project/badge/Coverage/REPLACE_WITH_PROJECT_ID)](https://app.codacy.com/gh/detain/php-dup-finder/dashboard)
+[![codecov](https://codecov.io/gh/detain/php-dup-finder/branch/master/graph/badge.svg)](https://app.codecov.io/gh/detain/php-dup-finder)
 [![PHP Version](https://img.shields.io/badge/php-%5E8.1-blue.svg)](https://www.php.net)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -781,7 +780,7 @@ The test suite covers:
 - End-to-end on a fixture corpus with expected clusters
 
 GitHub Actions runs the full suite on every push and PR across PHP
-8.1, 8.2, 8.3, 8.4, then uploads Clover coverage to Codacy.
+8.1, 8.2, 8.3, 8.4, then uploads Clover coverage to Codecov.
 
 ---
 

@@ -61,14 +61,14 @@ jobs:
       - name: Smoke-test CLI on fixtures
         run: bin/phpdup analyze tests/Fixtures --min-impact 5 --limit 3
 
-      - name: Upload coverage to Codacy
-        if: ${{ matrix.primary && env.CODACY_PROJECT_TOKEN != '' }}
-        env:
-          CODACY_PROJECT_TOKEN: ${{ secrets.CODACY_PROJECT_TOKEN }}
-        run: |
-          bash <(curl -Ls https://coverage.codacy.com/get.sh) report \
-            -r coverage.xml \
-            --commit-uuid $GITHUB_SHA
+      - name: Upload coverage to Codecov
+        if: ${{ matrix.primary }}
+        uses: codecov/codecov-action@v6
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+        continue-on-error: true
 
       - name: Upload coverage artifact
         if: ${{ matrix.primary }}
