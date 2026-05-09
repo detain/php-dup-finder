@@ -3,16 +3,19 @@ declare(strict_types=1);
 
 namespace Phpdup\Pipeline\Stages;
 
+use Phpdup\Pipeline\CooperativeStageInterface;
 use Phpdup\Pipeline\NullProgressListener;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Pipeline\Stage;
-use Phpdup\Pipeline\StageInterface;
 use Phpdup\Scanning\FileScanner;
 use Symfony\Component\Console\Output\OutputInterface;
 
-final class ScanningStage implements StageInterface
+final class ScanningStage implements CooperativeStageInterface
 {
+    /** Yield to the runtime after every N files so the TUI can repaint. */
+    private const YIELD_INTERVAL = 16;
+
     private readonly ProgressListener $listener;
 
     public function __construct(?ProgressListener $listener = null)
@@ -27,15 +30,27 @@ final class ScanningStage implements StageInterface
 
     public function run(PipelineState $state, OutputInterface $output): void
     {
+        foreach ($this->iter($state, $output) as $_) {
+            // synchronous drain
+        }
+    }
+
+    public function iter(PipelineState $state, OutputInterface $output): \Generator
+    {
         $config  = $state->config;
         $scanner = new FileScanner($config->exclude);
 
         $files = [];
+        $sinceYield = 0;
         foreach ($config->paths as $root) {
             foreach ($scanner->scan($root) as $path) {
                 $files[] = $path;
                 $state->scannedFiles = ++$state->totalFiles;
                 $this->listener->onFileScanned($state->scannedFiles, $state->totalFiles);
+                if (++$sinceYield >= self::YIELD_INTERVAL) {
+                    $sinceYield = 0;
+                    yield Stage::Scanning;
+                }
             }
         }
         sort($files);

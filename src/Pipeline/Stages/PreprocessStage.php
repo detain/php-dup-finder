@@ -7,15 +7,18 @@ use Phpdup\Extraction\Block;
 use Phpdup\Parallel\PreprocessWorker;
 use Phpdup\Parallel\WorkerPool;
 use Phpdup\Persistence\IndexStore;
+use Phpdup\Pipeline\CooperativeStageInterface;
 use Phpdup\Pipeline\NullProgressListener;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Pipeline\Stage;
-use Phpdup\Pipeline\StageInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
-final class PreprocessStage implements StageInterface
+final class PreprocessStage implements CooperativeStageInterface
 {
+    /** Yield to the runtime every N records streamed from workers. */
+    private const YIELD_EVERY = 32;
+
     private readonly ProgressListener $listener;
 
     public function __construct(
@@ -48,6 +51,13 @@ final class PreprocessStage implements StageInterface
 
     public function run(PipelineState $state, OutputInterface $output): void
     {
+        foreach ($this->iter($state, $output) as $_) {
+            // synchronous drain
+        }
+    }
+
+    public function iter(PipelineState $state, OutputInterface $output): \Generator
+    {
         $config = $state->config;
         $files  = $state->files;
 
@@ -62,7 +72,10 @@ final class PreprocessStage implements StageInterface
         $blocks = [];
 
         // Phase 2a: split files into reuse (cache hit) and process (need work).
-        $toProcess = [];
+        // Yield every YIELD_EVERY cache lookups so the renderer can repaint while
+        // we walk a large file list.
+        $toProcess  = [];
+        $sinceYield = 0;
         if ($store !== null) {
             foreach ($files as $f) {
                 $cached = $store->load($f);
@@ -77,46 +90,59 @@ final class PreprocessStage implements StageInterface
                 } else {
                     $toProcess[] = $f;
                 }
+                if (++$sinceYield >= self::YIELD_EVERY) {
+                    $sinceYield = 0;
+                    yield Stage::Preprocessing;
+                }
             }
         } else {
             $toProcess = $files;
         }
 
-        // Phase 2b: process the rest, in parallel when possible.
-        // Note: the WorkerPool fork model returns one big result array per pool->run(); true
-        // generator-based streaming across forks would require restructuring WorkerPool to
-        // pipe results back incrementally. For now we drop intermediate arrays as soon as
-        // they're flushed to the IndexStore so peak RSS stays bounded by one batch's worth.
+        // Phase 2b: process the rest. Streaming WorkerPool yields records as
+        // each child produces them; we yield up to the runtime every
+        // YIELD_EVERY records so the TUI can repaint mid-stage instead of
+        // freezing for the duration of the parallel work.
         $tPre = microtime(true);
         if ($toProcess) {
             $worker = new PreprocessWorker($config);
             $workerCount = $config->workers > 0 ? $config->workers : WorkerPool::detectCpuCount();
             $pool = new WorkerPool(workers: $workerCount);
             $task = static fn(array $batch): array => $worker->process($batch);
-            $rows = $pool->run($toProcess, $task);
-            $perFileBlocks = [];
+
+            $perFileBlocks     = [];
             $processedFilesSet = [];
-            foreach ($rows as $row) {
+            $sinceYield        = 0;
+
+            foreach ($pool->runStreaming($toProcess, $task) as $row) {
                 $processedFilesSet[$row['file']] = true;
                 if ($row['type'] === 'error') {
                     $state->parseErrors++;
-                    continue;
-                }
-                if ($row['type'] === 'block') {
+                } elseif ($row['type'] === 'block') {
                     /** @var Block $b */
                     $b = $row['block'];
                     $perFileBlocks[$row['file']][] = $b;
                     $blocks[] = $b;
                 }
+                $state->processedFiles = count($processedFilesSet);
+
+                if (++$sinceYield >= self::YIELD_EVERY) {
+                    $sinceYield = 0;
+                    $this->listener->onFilePreprocessed(
+                        $state->processedFiles, $state->reusedFiles, $state->parseErrors,
+                    );
+                    yield Stage::Preprocessing;
+                }
             }
-            $state->processedFiles = count($processedFilesSet);
-            unset($rows, $processedFilesSet);
+            unset($processedFilesSet);
+
             if ($store !== null) {
                 foreach ($perFileBlocks as $file => $list) {
                     $store->save($file, $list);
                 }
             }
             unset($perFileBlocks);
+
             $this->listener->onFilePreprocessed(
                 $state->processedFiles, $state->reusedFiles, $state->parseErrors,
             );
