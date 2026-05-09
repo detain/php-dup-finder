@@ -27,7 +27,8 @@
             "pattern_tags": [
                 "config-driven",
                 "crud-handler",
-                "sql-builder"
+                "sql-builder",
+                "sql-query"
             ],
             "signature": "function findById(\n    string $value,\n): mixed",
             "members": [
