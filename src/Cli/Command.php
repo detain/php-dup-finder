@@ -45,7 +45,8 @@ final class Command extends SymfonyCommand
             ->addOption('optional-blocks-containment', null, InputOption::VALUE_REQUIRED, 'Containment threshold (0..1) for the type-3 fallback path. Default 0.85.')
             ->addOption('min-impact', null, InputOption::VALUE_REQUIRED, 'Minimum cluster impact to report')
             ->addOption('exact-only', null, InputOption::VALUE_NONE, 'Skip near-duplicate detection (faster)')
-            ->addOption('kinds', null, InputOption::VALUE_REQUIRED, 'Comma-separated block kinds to include (e.g. method,closure). Default: all of method|function|closure|arrow|if|for|foreach|while|do|try|switch|match');
+            ->addOption('kinds', null, InputOption::VALUE_REQUIRED, 'Comma-separated block kinds to include (e.g. method,closure). Default: all of method|function|closure|arrow|if|for|foreach|while|do|try|switch|match')
+            ->addOption('auto-tune', null, InputOption::VALUE_NONE, 'Probe the corpus before analysis and pick min-block-size / max-df / min-impact based on size; --exact-only is forced on for very large trees. Picked profile is printed; explicit CLI overrides take precedence.');
 
         // ── Output / reports ───────────────────────────────────────────────
         $this
@@ -96,7 +97,7 @@ Options grouped by category:
  <comment>Detection tuning</comment>
    --min-block-size, --mode, --similarity, --max-df,
    --optional-blocks, --optional-blocks-containment,
-   --min-impact, --exact-only, --kinds
+   --min-impact, --exact-only, --kinds, --auto-tune
 
  <comment>Output / reports</comment>
    --html, --json, --sarif, --gitlab-sast, --checkstyle,
@@ -181,6 +182,29 @@ HELP;
             $overrides['allowed_kinds'] = $kinds;
         }
 
+        $autoTuneExactOnly = false;
+        if ($input->getOption('auto-tune')) {
+            $base = Config::defaults($paths);
+            $tuner = new AutoTuner();
+            $suggestion = $tuner->tune($paths, $base->exclude);
+            $output->writeln(sprintf(
+                '<info>phpdup</info> auto-tune: %s',
+                $suggestion->rationale,
+            ));
+            // Explicit CLI flags win — only fill in keys the user didn't
+            // override. 'exact_only' is a synthetic CLI-level switch handled
+            // below, not a Config override.
+            foreach ($suggestion->overrides as $k => $v) {
+                if ($k === 'exact_only') {
+                    $autoTuneExactOnly = (bool)$v;
+                    continue;
+                }
+                if (!array_key_exists($k, $overrides)) {
+                    $overrides[$k] = $v;
+                }
+            }
+        }
+
         $config = (new ConfigLoader())->load(
             paths: $paths,
             configFile: $input->getOption('config'),
@@ -188,7 +212,7 @@ HELP;
         );
 
         $useCache  = !$input->getOption('no-cache');
-        $exactOnly = (bool)$input->getOption('exact-only');
+        $exactOnly = (bool)$input->getOption('exact-only') || $autoTuneExactOnly;
         $showStats = (bool)$input->getOption('stats');
         $limit     = (int)$input->getOption('limit');
         $maxMemoryMb = $input->getOption('max-memory') !== null
