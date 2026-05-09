@@ -121,12 +121,7 @@ final class Command extends SymfonyCommand
         }
 
         $watchMode = (bool)$input->getOption('watch');
-        $state     = new PipelineState($config);
         $tuiMode   = $this->shouldRunTui($input, $output);
-        if ($watchMode && $tuiMode) {
-            $output->writeln('<error>phpdup: --watch is incompatible with --tui (Phase 10 ships plain-mode watch only)</error>');
-            return 2;
-        }
         $themeName = (string)$input->getOption('theme');
         if ($tuiMode && !in_array(strtolower($themeName), TuiRunner::knownThemes(), true)) {
             $output->writeln(sprintf(
@@ -136,43 +131,154 @@ final class Command extends SymfonyCommand
             return 2;
         }
 
-        $tuiRunner = new TuiRunner();
-        $model     = $tuiMode ? $tuiRunner->buildModel($state, $themeName) : null;
-        $listener  = $model instanceof ProgressListener ? $model : null;
+        // Factory closure used both for live TUI mode (init() + restart on watch change)
+        // and for the synchronous code path. Captures all the runtime knobs by value;
+        // $modelRef is by-reference so the listener resolves once the model is built.
+        $modelRef    = null;
+        $reportArgs  = [
+            'limit'          => $limit,
+            'showStats'      => $showStats,
+            'sarifFile'      => $input->getOption('sarif'),
+            'gitlabSastFile' => $input->getOption('gitlab-sast'),
+            'diffDir'        => $input->getOption('diff'),
+            'patchFile'      => $input->getOption('patch'),
+            'checkstyleFile' => $input->getOption('checkstyle'),
+        ];
+        $buildPipeline = static function (?ProgressListener $listener) use (
+            $useCache, $exactOnly, $showStats, $maxMemoryMb, $stopAfter, $reportArgs
+        ): Pipeline {
+            return new Pipeline(
+                stages: [
+                    new ScanningStage($listener),
+                    new PreprocessStage($useCache, $showStats, $listener, $maxMemoryMb),
+                    new ClusterStage($exactOnly, $maxMemoryMb),
+                    new RefactorStage($useCache),
+                    new ReportStage(
+                        limit:          $reportArgs['limit'],
+                        showStats:      $reportArgs['showStats'],
+                        sarifFile:      $reportArgs['sarifFile'],
+                        gitlabSastFile: $reportArgs['gitlabSastFile'],
+                        diffDir:        $reportArgs['diffDir'],
+                        patchFile:      $reportArgs['patchFile'],
+                        checkstyleFile: $reportArgs['checkstyleFile'],
+                    ),
+                ],
+                stopAfter: $stopAfter,
+                listener:  $listener,
+            );
+        };
 
-        $pipeline = new Pipeline(
-            stages: [
-                new ScanningStage($listener),
-                new PreprocessStage($useCache, $showStats, $listener, $maxMemoryMb),
-                new ClusterStage($exactOnly, $maxMemoryMb),
-                new RefactorStage($useCache),
-                new ReportStage(
-                    limit: $limit,
-                    showStats: $showStats,
-                    sarifFile: $input->getOption('sarif'),
-                    gitlabSastFile: $input->getOption('gitlab-sast'),
-                    diffDir: $input->getOption('diff'),
-                    patchFile: $input->getOption('patch'),
-                    checkstyleFile: $input->getOption('checkstyle'),
-                ),
-            ],
-            stopAfter: $stopAfter,
-            listener: $listener,
-        );
+        $tuiRunner = new TuiRunner();
+
+        if ($tuiMode) {
+            $iteratorFactory = static function () use (&$modelRef, $buildPipeline, $config, $output): array {
+                $state = new PipelineState($config);
+                /** @var ProgressListener|null $listener */
+                $listener = $modelRef;
+                $gen = $buildPipeline($listener)->iter($state, $output);
+                return [$gen, $state];
+            };
+            $modelRef = $tuiRunner->buildLiveModel($themeName, $iteratorFactory);
+
+            if ($watchMode) {
+                return $this->runWatchTui($modelRef, $tuiRunner, $config, $output);
+            }
+            return $tuiRunner->runWithModel($modelRef);
+        }
 
         if ($watchMode) {
-            $rebuild = static fn(): PipelineState => new PipelineState($config);
+            $pipeline = $buildPipeline(null);
+            $rebuild  = static fn(): PipelineState => new PipelineState($config);
             return (new WatchRunner($pipeline, $rebuild, $output))->run();
         }
 
+        $state    = new PipelineState($config);
+        $pipeline = $buildPipeline(null);
         $pipeline->run($state, $output);
 
-        if ($model !== null) {
-            $model->viewState->analysisComplete = true;
-            return $tuiRunner->runWithModel($model);
-        }
-
         return 0;
+    }
+
+    private function runWatchTui(
+        PhpdupModel $model,
+        TuiRunner $tuiRunner,
+        Config $config,
+        OutputInterface $output,
+    ): int {
+        $loop    = \React\EventLoop\Loop::get();
+        $program = $tuiRunner->makeProgram($model, useAltScreen: true, loop: $loop);
+
+        // Watch by polling source mtimes once the first analysis pass has emitted $state->files.
+        // We rebuild the snapshot whenever the model fires a fresh analysis run.
+        $snapshot = [];
+        $reload   = 0;
+        $loop->addPeriodicTimer(1.5, function () use ($model, &$snapshot, &$reload, $program): void {
+            $files = $model->state->files;
+            if ($files === [] || !$model->viewState->analysisComplete) {
+                // Still working on the current run — don't double-trigger.
+                return;
+            }
+            if ($snapshot === []) {
+                $snapshot = $this->snapshotMtimes($files);
+                return;
+            }
+            $changed = $this->pollChanges($snapshot, $files);
+            if ($changed === []) return;
+            $reload++;
+            $program->send(new \Phpdup\Tui\Msg\RestartPipelineMsg($reload));
+            $snapshot = []; // re-snapshot after the new run completes.
+        });
+
+        $program->run();
+        return 0;
+    }
+
+    /**
+     * @param list<string> $files
+     * @return array<string,int>
+     */
+    private function snapshotMtimes(array $files): array
+    {
+        $out = [];
+        foreach ($files as $f) {
+            clearstatcache(true, $f);
+            $m = @filemtime($f);
+            if ($m !== false) {
+                $out[$f] = $m;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * @param array<string,int> $previous
+     * @param list<string> $current
+     * @return list<string>
+     */
+    private function pollChanges(array &$previous, array $current): array
+    {
+        $changed = [];
+        $known = $previous;
+        foreach ($current as $f) {
+            clearstatcache(true, $f);
+            $m = @filemtime($f);
+            if ($m === false) continue;
+            if (!isset($known[$f])) {
+                $changed[] = $f;       // new file
+                $previous[$f] = $m;
+            } elseif ($known[$f] !== $m) {
+                $changed[] = $f;       // mtime changed
+                $previous[$f] = $m;
+            }
+        }
+        // detect deletions
+        foreach (array_keys($previous) as $f) {
+            if (!in_array($f, $current, true)) {
+                $changed[] = $f;
+                unset($previous[$f]);
+            }
+        }
+        return $changed;
     }
 
     private function shouldRunTui(InputInterface $input, OutputInterface $_output): bool

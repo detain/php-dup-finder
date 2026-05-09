@@ -6,6 +6,8 @@ namespace Phpdup\Tui;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Pipeline\Stage;
+use Phpdup\Tui\Msg\RestartPipelineMsg;
+use Phpdup\Tui\Msg\StagePumpedMsg;
 use SugarCraft\Bits\Spinner\Spinner;
 use SugarCraft\Bits\Spinner\TickMsg as SpinnerTickMsg;
 use SugarCraft\Charts\Sparkline\Sparkline;
@@ -38,13 +40,34 @@ final class PhpdupModel implements Model, ProgressListener
 
     private float $startedAt;
 
+    /** Cooperative pipeline iterator — null when the model isn't driving live (Phase 2 mode). */
+    private ?\Generator $iterator = null;
+
+    /** True once the iterator has been rewound; tracks whether to call rewind() vs next() on the next pump. */
+    private bool $iteratorStarted = false;
+
+    /**
+     * Factory used to (re)build a Pipeline iterator when the model wants to start fresh —
+     * e.g. on init or after a {@see RestartPipelineMsg}. The factory should also return a
+     * fresh PipelineState (which is then assigned to {@see $state}) so the dashboard zeroes
+     * out properly.
+     *
+     * @var \Closure(): array{0: \Generator<int, Stage>, 1: PipelineState}|null
+     */
+    private $iteratorFactory;
+
+    /** Reload counter shown in the dashboard when watch-mode triggers RestartPipelineMsg. */
+    public int $reloadCount = 0;
+
     public function __construct(
         public PipelineState $state,
         public ViewState $viewState,
         private readonly Theme $theme,
+        ?\Closure $iteratorFactory = null,
     ) {
-        $this->spinner   = Spinner::new();
-        $this->startedAt = microtime(true);
+        $this->spinner         = Spinner::new();
+        $this->startedAt       = microtime(true);
+        $this->iteratorFactory = $iteratorFactory;
     }
 
     public function onStageStart(Stage $stage): void
@@ -76,7 +99,16 @@ final class PhpdupModel implements Model, ProgressListener
 
     public function init(): \Closure
     {
-        return Cmd::batch($this->spinner->tick());
+        $cmds = [$this->spinner->tick()];
+        if ($this->iteratorFactory !== null) {
+            // Live-drive mode: build a fresh iterator + state and start pumping.
+            $this->buildIterator();
+            $cmds[] = $this->scheduleNextPump();
+        } else {
+            // No factory means the pipeline ran before the TUI booted (Phase 2 mode).
+            $this->viewState->analysisComplete = true;
+        }
+        return Cmd::batch(...$cmds);
     }
 
     /** @return array{0: Model, 1: \Closure|null} */
@@ -96,7 +128,83 @@ final class PhpdupModel implements Model, ProgressListener
             $this->spinner = $nextSpinner;
             return [$this, $cmd];
         }
+        if ($msg instanceof StagePumpedMsg) {
+            return $this->pumpPipeline();
+        }
+        if ($msg instanceof RestartPipelineMsg) {
+            return $this->restart($msg->reload);
+        }
         return [$this, null];
+    }
+
+    /**
+     * Pump the cooperative pipeline iterator one step. Each pump advances to
+     * the next yield point; between pumps the runtime renders.
+     *
+     * @return array{0: Model, 1: \Closure|null}
+     */
+    private function pumpPipeline(): array
+    {
+        if ($this->iterator === null) {
+            return [$this, null];
+        }
+
+        try {
+            if (!$this->iteratorStarted) {
+                $this->iterator->rewind();
+                $this->iteratorStarted = true;
+            } else {
+                $this->iterator->next();
+            }
+        } catch (\Throwable $e) {
+            $this->viewState->toastQueue[] = 'Pipeline error: ' . $e->getMessage();
+            $this->iterator = null;
+            $this->viewState->analysisComplete = true;
+            return [$this, null];
+        }
+
+        if (!$this->iterator->valid()) {
+            $this->iterator = null;
+            $this->viewState->analysisComplete = true;
+            return [$this, null];
+        }
+
+        return [$this, $this->scheduleNextPump()];
+    }
+
+    /**
+     * Discard the current iterator/state and start a new analysis run. Called when
+     * watch-mode detects a file change.
+     *
+     * @return array{0: Model, 1: \Closure|null}
+     */
+    private function restart(int $reload): array
+    {
+        if ($this->iteratorFactory === null) {
+            return [$this, null];
+        }
+        $this->reloadCount = $reload;
+        $this->viewState->analysisComplete = false;
+        $this->buildIterator();
+        return [$this, $this->scheduleNextPump()];
+    }
+
+    private function buildIterator(): void
+    {
+        if ($this->iteratorFactory === null) {
+            return;
+        }
+        [$gen, $state] = ($this->iteratorFactory)();
+        $this->iterator        = $gen;
+        $this->iteratorStarted = false;
+        $this->state           = $state;
+        $this->stageDurations  = [];
+        $this->startedAt       = microtime(true);
+    }
+
+    private function scheduleNextPump(): \Closure
+    {
+        return Cmd::tick(0.0, static fn() => new StagePumpedMsg());
     }
 
     public function view(): View

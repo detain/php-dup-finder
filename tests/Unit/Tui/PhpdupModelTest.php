@@ -164,6 +164,110 @@ final class PhpdupModelTest extends TestCase
         return new \Phpdup\Clustering\Cluster(id: $id, members: [], similarity: 1.0, exact: true);
     }
 
+    public function testInitWithoutFactoryMarksAnalysisCompleteAndReturnsBatchedCmd(): void
+    {
+        $model = $this->buildModel();
+        $cmd = $model->init();
+        $this->assertInstanceOf(\Closure::class, $cmd);
+        $this->assertTrue($model->viewState->analysisComplete);
+    }
+
+    public function testInitWithFactoryDoesNotMarkAnalysisCompleteYet(): void
+    {
+        $factory = function () {
+            $state = new \Phpdup\Pipeline\PipelineState(
+                \Phpdup\Cli\Config::defaults([__DIR__ . '/../../Fixtures/sql']),
+            );
+            $gen = (function () { yield \Phpdup\Pipeline\Stage::Scanning; yield \Phpdup\Pipeline\Stage::Scanning; })();
+            return [$gen, $state];
+        };
+        $model = new \Phpdup\Tui\PhpdupModel(
+            new \Phpdup\Pipeline\PipelineState(\Phpdup\Cli\Config::defaults([__DIR__])),
+            new \Phpdup\Tui\ViewState(),
+            \Phpdup\Tui\TuiRunner::resolveTheme('plain'),
+            $factory,
+        );
+        $cmd = $model->init();
+        $this->assertInstanceOf(\Closure::class, $cmd);
+        $this->assertFalse($model->viewState->analysisComplete);
+    }
+
+    public function testStagePumpedMsgAdvancesGeneratorAndSchedulesNextPump(): void
+    {
+        $factory = function () {
+            $state = new \Phpdup\Pipeline\PipelineState(
+                \Phpdup\Cli\Config::defaults([__DIR__]),
+            );
+            $gen = (function () {
+                yield \Phpdup\Pipeline\Stage::Scanning;
+                yield \Phpdup\Pipeline\Stage::Preprocessing;
+            })();
+            return [$gen, $state];
+        };
+        $model = new \Phpdup\Tui\PhpdupModel(
+            new \Phpdup\Pipeline\PipelineState(\Phpdup\Cli\Config::defaults([__DIR__])),
+            new \Phpdup\Tui\ViewState(),
+            \Phpdup\Tui\TuiRunner::resolveTheme('plain'),
+            $factory,
+        );
+        $model->init();
+
+        // First pump rewinds → generator at first yield. Schedules next pump.
+        [$_, $cmd1] = $model->update(new \Phpdup\Tui\Msg\StagePumpedMsg());
+        $this->assertInstanceOf(\Closure::class, $cmd1, 'first pump schedules another');
+        $this->assertFalse($model->viewState->analysisComplete);
+
+        // Second pump advances to second yield. Still scheduling.
+        [$_, $cmd2] = $model->update(new \Phpdup\Tui\Msg\StagePumpedMsg());
+        $this->assertInstanceOf(\Closure::class, $cmd2);
+
+        // Third pump exhausts the generator. analysisComplete flips on; no more cmds.
+        [$_, $cmd3] = $model->update(new \Phpdup\Tui\Msg\StagePumpedMsg());
+        $this->assertNull($cmd3, 'no more pumps once generator is exhausted');
+        $this->assertTrue($model->viewState->analysisComplete);
+    }
+
+    public function testRestartPipelineMsgRebuildsIteratorAndState(): void
+    {
+        $callCount = 0;
+        $factory = function () use (&$callCount) {
+            $callCount++;
+            $state = new \Phpdup\Pipeline\PipelineState(
+                \Phpdup\Cli\Config::defaults([__DIR__]),
+            );
+            $gen = (function () { yield \Phpdup\Pipeline\Stage::Scanning; })();
+            return [$gen, $state];
+        };
+        $model = new \Phpdup\Tui\PhpdupModel(
+            new \Phpdup\Pipeline\PipelineState(\Phpdup\Cli\Config::defaults([__DIR__])),
+            new \Phpdup\Tui\ViewState(),
+            \Phpdup\Tui\TuiRunner::resolveTheme('plain'),
+            $factory,
+        );
+        $model->init();
+        $this->assertSame(1, $callCount, 'init triggers one factory call');
+
+        // Drain the first pipeline.
+        $model->update(new \Phpdup\Tui\Msg\StagePumpedMsg());
+        $model->update(new \Phpdup\Tui\Msg\StagePumpedMsg());
+        $this->assertTrue($model->viewState->analysisComplete);
+
+        // Restart fires a new factory call and resets analysisComplete.
+        [$_, $cmd] = $model->update(new \Phpdup\Tui\Msg\RestartPipelineMsg(reload: 7));
+        $this->assertSame(2, $callCount, 'restart triggers a fresh factory call');
+        $this->assertSame(7, $model->reloadCount);
+        $this->assertFalse($model->viewState->analysisComplete);
+        $this->assertInstanceOf(\Closure::class, $cmd);
+    }
+
+    public function testRestartPipelineMsgIsNoOpWithoutFactory(): void
+    {
+        $model = $this->buildModel(); // no factory
+        [$_, $cmd] = $model->update(new \Phpdup\Tui\Msg\RestartPipelineMsg(reload: 1));
+        $this->assertNull($cmd);
+        $this->assertSame(0, $model->reloadCount);
+    }
+
     private function buildModel(): PhpdupModel
     {
         $state = new PipelineState(Config::defaults([__DIR__]));
