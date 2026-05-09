@@ -73,6 +73,97 @@ final class PatternRecognizerTest extends TestCase
         $this->assertContains('crud-handler', $cluster->patternTags);
     }
 
+    public function testControllerActionTagFromClassNameSuffix(): void
+    {
+        $blocks = $this->dummyMembers('show');
+        foreach ($blocks as $b) {
+            $b->class = 'PostController';
+        }
+        $cluster = new Cluster('TEST', $blocks, 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('controller-action', $cluster->patternTags);
+    }
+
+    public function testControllerActionTagFromFilePath(): void
+    {
+        $blocks = $this->dummyMembers('show');
+        foreach ($blocks as $b) {
+            $b->file = '/var/www/app/Http/Controllers/PostsController.php';
+        }
+        $cluster = new Cluster('TEST', $blocks, 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('controller-action', $cluster->patternTags);
+    }
+
+    public function testMigrationTagFromPathAndMemberName(): void
+    {
+        $blocks = $this->dummyMembers('up');
+        foreach ($blocks as $b) {
+            $b->file = '/app/database/migrations/2024_01_01_000000_create_users.php';
+        }
+        $cluster = new Cluster('TEST', $blocks, 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('migration', $cluster->patternTags);
+    }
+
+    public function testRepositoryMethodTag(): void
+    {
+        $blocks = $this->dummyMembers('findById');
+        foreach ($blocks as $b) {
+            $b->class = 'UserRepository';
+        }
+        $cluster = new Cluster('TEST', $blocks, 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('repository-method', $cluster->patternTags);
+    }
+
+    public function testEventListenerTag(): void
+    {
+        $blocks = $this->dummyMembers('handle');
+        foreach ($blocks as $b) {
+            $b->class = 'OrderShippedListener';
+        }
+        $cluster = new Cluster('TEST', $blocks, 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('event-listener', $cluster->patternTags);
+    }
+
+    public function testServiceProviderTag(): void
+    {
+        $blocks = $this->dummyMembers('register');
+        foreach ($blocks as $b) {
+            $b->class = 'AppServiceProvider';
+        }
+        $cluster = new Cluster('TEST', $blocks, 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('service-provider', $cluster->patternTags);
+    }
+
+    public function testEloquentModelTagFromNamespace(): void
+    {
+        $blocks = $this->dummyMembers('scopeActive');
+        foreach ($blocks as $b) {
+            $b->namespace = 'App\\Models';
+            $b->class     = 'User';
+        }
+        $cluster = new Cluster('TEST', $blocks, 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('eloquent-model', $cluster->patternTags);
+    }
+
+    public function testQueryBuilderChainTagFromCallName(): void
+    {
+        // Build a block whose AST contains a `createQueryBuilder()` call so the
+        // node-finder path picks it up.
+        $parser    = new AstParser();
+        $extractor = new BlockExtractor(minSize: 1);
+        $stmts = $parser->parseCode('<?php function findActive() { return $this->em->createQueryBuilder()->select("u")->from(User::class, "u")->getQuery()->getResult(); }');
+        $blocks = $extractor->extract('virtual.php', $stmts);
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('query-builder-chain', $cluster->patternTags);
+    }
+
     /** @return list<Block> */
     private function dummyMembers(string $name = 'someMethod'): array
     {

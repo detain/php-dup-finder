@@ -42,6 +42,16 @@ final class PatternRecognizer
         if ($this->isSqlBuilder($cluster))      $tags[] = 'sql-builder';
         if ($this->isStateMachine($cluster))    $tags[] = 'state-machine';
         if ($this->hasOptionalSegments($cluster)) $tags[] = 'optional-segments';
+        // Framework-aware tags (IX.A). Inferred from qualified-name
+        // patterns + member naming so they work even when the cluster
+        // members have unloaded ASTs.
+        if ($this->isControllerAction($cluster))     $tags[] = 'controller-action';
+        if ($this->isMigration($cluster))            $tags[] = 'migration';
+        if ($this->isEloquentModel($cluster))        $tags[] = 'eloquent-model';
+        if ($this->isRepositoryMethod($cluster))     $tags[] = 'repository-method';
+        if ($this->isEventListener($cluster))        $tags[] = 'event-listener';
+        if ($this->isServiceProvider($cluster))      $tags[] = 'service-provider';
+        if ($this->isQueryBuilderChain($cluster))    $tags[] = 'query-builder-chain';
         $cluster->patternTags = $tags;
     }
 
@@ -140,6 +150,148 @@ final class PatternRecognizer
             if ($switches) return true;
             $matches = $finder->findInstanceOf([$m->ast], Node\Expr\Match_::class);
             if ($matches) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Controller-action: class name ends in `Controller` and at least
+     * one member name matches a typical action verb (index/show/store/
+     * update/destroy/edit/create) OR the file path contains
+     * `Http/Controllers/` (Laravel) / `Controller/` (Symfony).
+     */
+    private function isControllerAction(Cluster $cluster): bool
+    {
+        foreach ($cluster->members as $m) {
+            $cls = (string)$m->class;
+            if (str_ends_with($cls, 'Controller') || str_contains($cls, 'Controller\\')) {
+                return true;
+            }
+            $f = $m->file;
+            if (str_contains($f, '/Http/Controllers/') || str_contains($f, '/Controller/')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Migration: file path contains `database/migrations/` (Laravel) or
+     * `Migrations/` (Symfony Doctrine), and the cluster member is named
+     * `up` or `down`.
+     */
+    private function isMigration(Cluster $cluster): bool
+    {
+        foreach ($cluster->members as $m) {
+            $f = $m->file;
+            $mIsMigrationFile = str_contains($f, '/migrations/')
+                || str_contains($f, '/Migrations/');
+            if (!$mIsMigrationFile) continue;
+            $name = (string)$m->name;
+            if ($name === 'up' || $name === 'down') return true;
+        }
+        return false;
+    }
+
+    /**
+     * Eloquent model: namespace ends in \\Models\\ (Laravel convention)
+     * AND the class name doesn't look like a controller/repository.
+     */
+    private function isEloquentModel(Cluster $cluster): bool
+    {
+        foreach ($cluster->members as $m) {
+            $ns = (string)$m->namespace;
+            if (str_ends_with($ns, '\\Models') || str_contains($ns, '\\Models\\')) {
+                $cls = (string)$m->class;
+                if (!str_ends_with($cls, 'Controller') && !str_ends_with($cls, 'Repository')) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Repository method: class name ends in `Repository` and the member
+     * name is a typical repository verb (find/get/save/delete/count).
+     */
+    private function isRepositoryMethod(Cluster $cluster): bool
+    {
+        $verbs = ['find', 'get', 'save', 'delete', 'remove', 'count', 'fetch'];
+        foreach ($cluster->members as $m) {
+            $cls = (string)$m->class;
+            if (!str_ends_with($cls, 'Repository')) continue;
+            $name = strtolower((string)$m->name);
+            foreach ($verbs as $v) {
+                if (str_starts_with($name, $v)) return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Event listener / subscriber: class ends in `Listener`,
+     * `Subscriber`, or `EventHandler`. Member name typically `handle`.
+     */
+    private function isEventListener(Cluster $cluster): bool
+    {
+        foreach ($cluster->members as $m) {
+            $cls = (string)$m->class;
+            if (str_ends_with($cls, 'Listener')
+                || str_ends_with($cls, 'Subscriber')
+                || str_ends_with($cls, 'EventHandler')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Service provider: class name ends in `ServiceProvider` (Laravel)
+     * or `Bundle` (Symfony). Member typically `register` / `boot` /
+     * `build`.
+     */
+    private function isServiceProvider(Cluster $cluster): bool
+    {
+        foreach ($cluster->members as $m) {
+            $cls = (string)$m->class;
+            if (!str_ends_with($cls, 'ServiceProvider')
+                && !str_ends_with($cls, 'Bundle')
+            ) {
+                continue;
+            }
+            $name = (string)$m->name;
+            if (in_array($name, ['register', 'boot', 'build', 'configure'], true)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Query-builder chain: the body contains a method-call chain whose
+     * head is recognised as a Doctrine / Eloquent / DBAL builder
+     * entrypoint (`createQueryBuilder`, `DB::table`, `Model::query`).
+     */
+    private function isQueryBuilderChain(Cluster $cluster): bool
+    {
+        $finder = new NodeFinder();
+        foreach ($cluster->members as $m) {
+            if ($m->ast === null) continue;
+            $hits = $finder->find([$m->ast], static function (Node $n) {
+                if ($n instanceof Node\Expr\MethodCall && $n->name instanceof Node\Identifier
+                    && in_array($n->name->name, ['createQueryBuilder', 'getQueryBuilder'], true)
+                ) {
+                    return true;
+                }
+                if ($n instanceof Node\Expr\StaticCall && $n->name instanceof Node\Identifier
+                    && in_array($n->name->name, ['table', 'query'], true)
+                ) {
+                    return true;
+                }
+                return false;
+            });
+            if (!empty($hits)) return true;
         }
         return false;
     }
