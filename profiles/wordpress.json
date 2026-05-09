@@ -1,0 +1,17 @@
+{
+    "_description": "WordPress — auto-applied when wp-config.php or wp-includes/version.php is present. Excludes WP core, themes, and plugins-vendor; targets bespoke plugin/theme code in wp-content/{plugins,themes}/<your-slug> only.",
+    "exclude": [
+        "wp-admin/**",
+        "wp-includes/**",
+        "wp-content/uploads/**",
+        "wp-content/cache/**",
+        "wp-content/plugins/akismet/**",
+        "wp-content/plugins/jetpack/**",
+        "vendor/**",
+        "node_modules/**",
+        "**/.phpdup-cache/**"
+    ],
+    "kinds": ["method", "function", "if", "foreach", "while", "switch", "match"],
+    "min_block_size": 6,
+    "min_cluster_impact": 15
+}

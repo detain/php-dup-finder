@@ -1,0 +1,14 @@
+{
+    "_description": "Symfony — auto-applied when a Symfony artifact (bin/console, config/services.yaml, src/Kernel.php) is detected. Excludes framework cache + var dirs to keep findings focused on the user's application code.",
+    "exclude": [
+        "vendor/**",
+        "var/**",
+        "public/**",
+        "node_modules/**",
+        "translations/**",
+        "**/.phpdup-cache/**"
+    ],
+    "kinds": ["method", "function", "closure", "if", "for", "foreach", "while", "do", "try", "switch", "match"],
+    "min_block_size": 6,
+    "min_cluster_impact": 18
+}

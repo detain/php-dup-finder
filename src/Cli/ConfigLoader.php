@@ -8,8 +8,11 @@ final class ConfigLoader
     /**
      * @param list<string> $paths
      * @param array<string,mixed> $overrides
+     * @param list<string>|null $profileExclude  Profile-supplied exclude globs
+     *                                           applied only when neither $configFile
+     *                                           nor an $overrides['exclude'] is given.
      */
-    public function load(array $paths, ?string $configFile, array $overrides = []): Config
+    public function load(array $paths, ?string $configFile, array $overrides = [], ?array $profileExclude = null): Config
     {
         $base = Config::defaults($paths);
         $data = [];
@@ -47,7 +50,12 @@ final class ConfigLoader
         $optBlock = is_array($data['optional_blocks'] ?? null) ? $data['optional_blocks'] : [];
 
         $resolvedPaths = !empty($data['paths']) ? $data['paths'] : $base->paths;
-        $resolvedExclude = !empty($data['exclude']) ? $data['exclude'] : $base->exclude;
+        // Profile excludes apply when the caller didn't pin them
+        // explicitly via --config / overrides — i.e. they're a *default
+        // upgrade*, not a forced override.
+        $resolvedExclude = !empty($data['exclude'])
+            ? $data['exclude']
+            : ($profileExclude !== null ? $profileExclude : $base->exclude);
 
         return new Config(
             paths: $resolvedPaths,

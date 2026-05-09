@@ -1,0 +1,14 @@
+{
+    "_description": "Drupal — auto-applied when core/lib/Drupal.php or web/core/lib/Drupal.php exists. Drupal modules generate a lot of repetitive boilerplate; min_block_size is bumped to filter out trivial hook stubs.",
+    "exclude": [
+        "vendor/**",
+        "core/**",
+        "web/core/**",
+        "sites/default/files/**",
+        "node_modules/**",
+        "**/.phpdup-cache/**"
+    ],
+    "kinds": ["method", "function", "if", "foreach", "switch", "match"],
+    "min_block_size": 8,
+    "min_cluster_impact": 25
+}
