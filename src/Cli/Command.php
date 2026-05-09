@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace Phpdup\Cli;
 
 use Phpdup\Pipeline\Pipeline;
+use Phpdup\Pipeline\ProgressListener;
+use Phpdup\Tui\PhpdupModel;
 use Phpdup\Tui\TuiRunner;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\Stage;
@@ -97,10 +99,25 @@ final class Command extends SymfonyCommand
             }
         }
 
+        $state     = new PipelineState($config);
+        $tuiMode   = $this->shouldRunTui($input, $output);
+        $themeName = (string)$input->getOption('theme');
+        if ($tuiMode && !in_array(strtolower($themeName), TuiRunner::knownThemes(), true)) {
+            $output->writeln(sprintf(
+                '<error>phpdup: --theme must be one of %s</error>',
+                implode('|', TuiRunner::knownThemes()),
+            ));
+            return 2;
+        }
+
+        $tuiRunner = new TuiRunner();
+        $model     = $tuiMode ? $tuiRunner->buildModel($state, $themeName) : null;
+        $listener  = $model instanceof ProgressListener ? $model : null;
+
         $pipeline = new Pipeline(
             stages: [
-                new ScanningStage(),
-                new PreprocessStage($useCache, $showStats),
+                new ScanningStage($listener),
+                new PreprocessStage($useCache, $showStats, $listener),
                 new ClusterStage($exactOnly),
                 new RefactorStage($useCache),
                 new ReportStage(
@@ -114,21 +131,14 @@ final class Command extends SymfonyCommand
                 ),
             ],
             stopAfter: $stopAfter,
+            listener: $listener,
         );
 
-        $state = new PipelineState($config);
         $pipeline->run($state, $output);
 
-        if ($this->shouldRunTui($input, $output)) {
-            $themeName = (string)$input->getOption('theme');
-            if (!in_array(strtolower($themeName), TuiRunner::knownThemes(), true)) {
-                $output->writeln(sprintf(
-                    '<error>phpdup: --theme must be one of %s</error>',
-                    implode('|', TuiRunner::knownThemes()),
-                ));
-                return 2;
-            }
-            return (new TuiRunner())->run($state, $themeName);
+        if ($model !== null) {
+            $model->viewState->analysisComplete = true;
+            return $tuiRunner->runWithModel($model);
         }
 
         return 0;

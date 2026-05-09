@@ -19,11 +19,19 @@ final class TuiRunner
 {
     public function run(PipelineState $state, string $themeName, bool $useAltScreen = true): int
     {
-        $theme   = self::resolveTheme($themeName);
-        $view    = new ViewState();
+        $view = new ViewState();
         $view->analysisComplete = true;
-        $model   = new PhpdupModel($state, $view, $theme);
+        $model = new PhpdupModel($state, $view, self::resolveTheme($themeName));
+        return $this->runWithModel($model, $useAltScreen);
+    }
 
+    /**
+     * Boot the program with a pre-built model. Used when the same PhpdupModel is
+     * passed to the pipeline as a {@see \Phpdup\Pipeline\ProgressListener} and
+     * has already accumulated stage timings before the TUI starts.
+     */
+    public function runWithModel(PhpdupModel $model, bool $useAltScreen = true): int
+    {
         $options = new ProgramOptions(
             useAltScreen: $useAltScreen,
             catchInterrupts: true,
@@ -33,6 +41,11 @@ final class TuiRunner
         (new Program($model, $options))->run();
 
         return 0;
+    }
+
+    public function buildModel(PipelineState $state, string $themeName): PhpdupModel
+    {
+        return new PhpdupModel($state, new ViewState(), self::resolveTheme($themeName));
     }
 
     public static function resolveTheme(string $name): Theme

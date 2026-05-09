@@ -14,19 +14,26 @@ use Symfony\Component\Console\Output\OutputInterface;
  */
 final class Pipeline
 {
+    private readonly ProgressListener $listener;
+
     /** @param list<StageInterface> $stages */
     public function __construct(
         private readonly array $stages,
         private readonly ?Stage $stopAfter = null,
-    ) {}
+        ?ProgressListener $listener = null,
+    ) {
+        $this->listener = $listener ?? new NullProgressListener();
+    }
 
     public function run(PipelineState $state, OutputInterface $output): PipelineState
     {
         foreach ($this->stages as $stage) {
             $state->stage = $stage->name();
             $state->stageProgress = 0.0;
+            $this->listener->onStageStart($stage->name());
             $stage->run($state, $output);
             $state->stageProgress = 1.0;
+            $this->listener->onStageEnd($stage->name());
 
             if ($this->stopAfter !== null && $stage->name() === $this->stopAfter) {
                 break;

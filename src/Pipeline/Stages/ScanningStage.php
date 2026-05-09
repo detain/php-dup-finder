@@ -3,7 +3,9 @@ declare(strict_types=1);
 
 namespace Phpdup\Pipeline\Stages;
 
+use Phpdup\Pipeline\NullProgressListener;
 use Phpdup\Pipeline\PipelineState;
+use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Pipeline\Stage;
 use Phpdup\Pipeline\StageInterface;
 use Phpdup\Scanning\FileScanner;
@@ -11,6 +13,13 @@ use Symfony\Component\Console\Output\OutputInterface;
 
 final class ScanningStage implements StageInterface
 {
+    private readonly ProgressListener $listener;
+
+    public function __construct(?ProgressListener $listener = null)
+    {
+        $this->listener = $listener ?? new NullProgressListener();
+    }
+
     public function name(): Stage
     {
         return Stage::Scanning;
@@ -26,6 +35,7 @@ final class ScanningStage implements StageInterface
             foreach ($scanner->scan($root) as $path) {
                 $files[] = $path;
                 $state->scannedFiles = ++$state->totalFiles;
+                $this->listener->onFileScanned($state->scannedFiles, $state->totalFiles);
             }
         }
         sort($files);

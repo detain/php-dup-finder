@@ -101,6 +101,69 @@ final class PhpdupModelTest extends TestCase
         $this->assertNotEmpty($view->body);
     }
 
+    public function testViewAttachesTaskbarProgress(): void
+    {
+        $model = $this->buildModel();
+        $view  = $model->view();
+        $this->assertNotNull($view->progressBar);
+        $this->assertSame(0, $view->progressBar->percent);
+
+        $model->viewState->analysisComplete = true;
+        $this->assertSame(100, $model->view()->progressBar->percent);
+    }
+
+    public function testIsAProgressListener(): void
+    {
+        $model = $this->buildModel();
+        $this->assertInstanceOf(\Phpdup\Pipeline\ProgressListener::class, $model);
+
+        $model->onStageStart(\Phpdup\Pipeline\Stage::Scanning);
+        $this->assertSame(\Phpdup\Pipeline\Stage::Scanning, $model->state->stage);
+
+        $model->onFileScanned(7, 12);
+        $this->assertSame(7, $model->state->scannedFiles);
+        $this->assertSame(12, $model->state->totalFiles);
+    }
+
+    public function testLeftRightCycleClusterDetailWhenOpen(): void
+    {
+        $model = $this->buildModel();
+
+        $cluster1 = $this->fakeCluster('C1');
+        $cluster2 = $this->fakeCluster('C2');
+        $cluster3 = $this->fakeCluster('C3');
+        $model->state->clusters = [$cluster1, $cluster2, $cluster3];
+
+        $model->viewState->detailClusterId = 'C1';
+
+        $model->update(new KeyMsg(KeyType::Right));
+        $this->assertSame('C2', $model->viewState->detailClusterId);
+
+        $model->update(new KeyMsg(KeyType::Right));
+        $this->assertSame('C3', $model->viewState->detailClusterId);
+
+        $model->update(new KeyMsg(KeyType::Right));
+        $this->assertSame('C1', $model->viewState->detailClusterId, 'wraps to first');
+
+        $model->update(new KeyMsg(KeyType::Left));
+        $this->assertSame('C3', $model->viewState->detailClusterId, 'wraps backwards');
+    }
+
+    public function testLeftRightDoNothingWhenDetailClosed(): void
+    {
+        $model = $this->buildModel();
+        $model->state->clusters = [$this->fakeCluster('C1')];
+        $this->assertNull($model->viewState->detailClusterId);
+
+        $model->update(new KeyMsg(KeyType::Right));
+        $this->assertNull($model->viewState->detailClusterId);
+    }
+
+    private function fakeCluster(string $id): \Phpdup\Clustering\Cluster
+    {
+        return new \Phpdup\Clustering\Cluster(id: $id, members: [], similarity: 1.0, exact: true);
+    }
+
     private function buildModel(): PhpdupModel
     {
         $state = new PipelineState(Config::defaults([__DIR__]));

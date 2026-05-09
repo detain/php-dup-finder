@@ -7,17 +7,24 @@ use Phpdup\Extraction\Block;
 use Phpdup\Parallel\PreprocessWorker;
 use Phpdup\Parallel\WorkerPool;
 use Phpdup\Persistence\IndexStore;
+use Phpdup\Pipeline\NullProgressListener;
 use Phpdup\Pipeline\PipelineState;
+use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Pipeline\Stage;
 use Phpdup\Pipeline\StageInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
 final class PreprocessStage implements StageInterface
 {
+    private readonly ProgressListener $listener;
+
     public function __construct(
         private readonly bool $useCache,
         private readonly bool $showStats = false,
-    ) {}
+        ?ProgressListener $listener = null,
+    ) {
+        $this->listener = $listener ?? new NullProgressListener();
+    }
 
     public function name(): Stage
     {
@@ -49,6 +56,9 @@ final class PreprocessStage implements StageInterface
                         $blocks[] = $b;
                     }
                     $state->reusedFiles++;
+                    $this->listener->onFilePreprocessed(
+                        $state->processedFiles, $state->reusedFiles, $state->parseErrors,
+                    );
                 } else {
                     $toProcess[] = $f;
                 }
@@ -84,6 +94,9 @@ final class PreprocessStage implements StageInterface
                     $store->save($file, $list);
                 }
             }
+            $this->listener->onFilePreprocessed(
+                $state->processedFiles, $state->reusedFiles, $state->parseErrors,
+            );
         }
 
         // Assign IDs (after collecting from all sources).
