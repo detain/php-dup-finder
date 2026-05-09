@@ -12,8 +12,10 @@ use Phpdup\Reporting\CliReporter;
 use Phpdup\Reporting\CsvReporter;
 use Phpdup\Reporting\DiffReporter;
 use Phpdup\Reporting\GitLabSastReporter;
+use Phpdup\Reporting\GraphvizReporter;
 use Phpdup\Reporting\HtmlReporter;
 use Phpdup\Reporting\JsonReporter;
+use Phpdup\Reporting\PlantumlReporter;
 use Phpdup\Reporting\PrometheusReporter;
 use Phpdup\Reporting\Ranker;
 use Phpdup\Reporting\Report;
@@ -36,6 +38,8 @@ final class ReportStage implements StageInterface
         private readonly ?string $timeseriesFile = null,
         private readonly string $cliVerbosity = CliReporter::VERBOSITY_FULL,
         private readonly float $minSafety = 0.0,
+        private readonly ?string $graphvizFile = null,
+        private readonly ?string $plantumlFile = null,
     ) {}
 
     public function name(): Stage
@@ -120,6 +124,14 @@ final class ReportStage implements StageInterface
         if ($this->timeseriesFile !== null) {
             (new TimeseriesReporter())->writeTo($report, $this->timeseriesFile);
             $output->writeln("<info>phpdup</info> timeseries record appended → {$this->timeseriesFile}");
+        }
+        if ($this->graphvizFile !== null) {
+            (new GraphvizReporter())->writeTo($report, $this->graphvizFile);
+            $output->writeln("<info>phpdup</info> graphviz dot → {$this->graphvizFile}");
+        }
+        if ($this->plantumlFile !== null) {
+            (new PlantumlReporter())->writeTo($report, $this->plantumlFile);
+            $output->writeln("<info>phpdup</info> plantuml file → {$this->plantumlFile}");
         }
     }
 }
