@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<files psalm-version="6.0.0@b8e96bb617bf59382113b1b56cef751f648a7dc9">
+  <file src="src/Extraction/BlockExtractor.php">
+    <ParamNameMismatch>
+      <code><![CDATA[$n]]></code>
+      <code><![CDATA[$n]]></code>
+    </ParamNameMismatch>
+  </file>
+  <file src="src/Refactor/PatternRecognizer.php">
+    <InvalidArgument>
+      <code><![CDATA[[$m->ast]]]></code>
+      <code><![CDATA[[$m->ast]]]></code>
+      <code><![CDATA[[$m->ast]]]></code>
+      <code><![CDATA[[$m->ast]]]></code>
+      <code><![CDATA[[$m->ast]]]></code>
+      <code><![CDATA[[$m->ast]]]></code>
+    </InvalidArgument>
+  </file>
+  <file src="src/Scanning/FileScanner.php">
+    <InvalidArgument>
+      <code><![CDATA[new \RecursiveCallbackFilterIterator(
+                new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS | \FilesystemIterator::FOLLOW_SYMLINKS),
+                function (\SplFileInfo $current) use ($root): bool {
+                    $rel = $this->relpath($current->getPathname(), $root);
+                    if ($rel === '') {
+                        return true;
+                    }
+                    if ($current->isDir()) {
+                        return !$this->isExcluded($rel . '/');
+                    }
+                    return !$this->isExcluded($rel);
+                }
+            )]]></code>
+    </InvalidArgument>
+  </file>
+  <file src="src/Similarity/AptedDistance.php">
+    <InvalidArrayOffset>
+      <code><![CDATA[$L1[$abs_i]]]></code>
+      <code><![CDATA[$L2[$abs_j]]]></code>
+      <code><![CDATA[$LL1[$abs_i]]]></code>
+      <code><![CDATA[$LL2[$abs_j]]]></code>
+      <code><![CDATA[$LL2[$abs_j]]]></code>
+    </InvalidArrayOffset>
+  </file>
+</files>

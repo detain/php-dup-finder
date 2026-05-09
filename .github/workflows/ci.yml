@@ -92,3 +92,7 @@ jobs:
       - name: Lint PHP files
         run: |
           find src tests -name "*.php" -print0 | xargs -0 -n1 -P4 php -l > /dev/null
+      - name: PHPStan (level 6)
+        run: vendor/bin/phpstan analyse --memory-limit=1G --no-progress
+      - name: Psalm
+        run: vendor/bin/psalm --no-progress --no-cache
