@@ -55,6 +55,7 @@ final class JsonReporter
             'exact'        => $c->exact,
             'similarity'   => round($c->similarity, 4),
             'confidence'   => round($c->confidence, 4),
+            'safety'       => round($c->safety, 4),
             'impact'       => $c->impact,
             'pattern_tags' => $c->patternTags,
             'signature'    => $c->signature,

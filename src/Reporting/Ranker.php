@@ -19,12 +19,19 @@ use Phpdup\Clustering\Cluster;
 final class Ranker
 {
     private readonly ClusterSort $sort;
+    private readonly SafetyScorer $safetyScorer;
 
     public function __construct(
         private readonly int $minImpact = 20,
         ?ClusterSort $sort = null,
+        private readonly float $minSafety = 0.0,
+        ?SafetyScorer $safetyScorer = null,
     ) {
-        $this->sort = $sort ?? new ClusterSort();
+        $this->sort         = $sort ?? new ClusterSort();
+        $this->safetyScorer = $safetyScorer ?? new SafetyScorer();
+        if ($minSafety < 0.0 || $minSafety > 1.0) {
+            throw new \InvalidArgumentException("minSafety out of range");
+        }
     }
 
     /**
@@ -34,10 +41,14 @@ final class Ranker
     public function rank(array $clusters): array
     {
         foreach ($clusters as $c) {
-            $c->impact = $this->impactOf($c);
+            $c->impact     = $this->impactOf($c);
             $c->confidence = $this->confidenceOf($c);
+            $c->safety     = $this->safetyScorer->score($c);
         }
-        $kept = array_values(array_filter($clusters, fn(Cluster $c) => $c->impact >= $this->minImpact));
+        $kept = array_values(array_filter(
+            $clusters,
+            fn(Cluster $c) => $c->impact >= $this->minImpact && $c->safety >= $this->minSafety,
+        ));
         return $this->sort->apply($kept);
     }
 

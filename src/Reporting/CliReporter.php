@@ -179,11 +179,12 @@ final class CliReporter
             $out->writeln('  ' . $this->renderTags($c->patternTags, $theme, $decorated));
         }
 
-        $confLine = sprintf('confidence %.2f', $c->confidence);
+        $confLine = sprintf('confidence %.2f · safety %.2f', $c->confidence, $c->safety);
+        $worst = min($c->confidence, $c->safety);
         $out->writeln('  ' . match (true) {
-            $c->confidence >= 0.85 => StatusLine::success($confLine, $theme),
-            $c->confidence >= 0.65 => StatusLine::warn($confLine, $theme),
-            default                => StatusLine::error($confLine, $theme),
+            $worst >= 0.85 => StatusLine::success($confLine, $theme),
+            $worst >= 0.65 => StatusLine::warn($confLine, $theme),
+            default        => StatusLine::error($confLine, $theme),
         });
     }
 

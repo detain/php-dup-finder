@@ -35,6 +35,7 @@ final class ReportStage implements StageInterface
         private readonly ?string $prometheusFile = null,
         private readonly ?string $timeseriesFile = null,
         private readonly string $cliVerbosity = CliReporter::VERBOSITY_FULL,
+        private readonly float $minSafety = 0.0,
     ) {}
 
     public function name(): Stage
@@ -63,8 +64,9 @@ final class ReportStage implements StageInterface
         }
 
         $clusters = (new Ranker(
-            $config->minClusterImpact,
-            \Phpdup\Reporting\ClusterSort::parse($config->sort),
+            minImpact:  $config->minClusterImpact,
+            sort:       \Phpdup\Reporting\ClusterSort::parse($config->sort),
+            minSafety:  $this->minSafety,
         ))->rank($state->clusters);
 
         $report = new Report(
