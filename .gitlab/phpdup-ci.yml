@@ -1,0 +1,63 @@
+# Drop-in GitLab CI snippet for php-dup-finder.
+#
+# Usage: include this file from your project's .gitlab-ci.yml. Example:
+#
+#   include:
+#     - remote: https://raw.githubusercontent.com/detain/php-dup-finder/master/.gitlab/phpdup-ci.yml
+#
+# Customise via top-level variables:
+#
+#   PHPDUP_PATHS       - paths to scan (default: src)
+#   PHPDUP_MIN_IMPACT  - minimum cluster impact (default: 20)
+#   PHPDUP_WORKERS     - worker count (default: auto)
+#   PHPDUP_PHP_IMAGE   - container image (default: php:8.3-cli)
+#
+# Outputs the SAST report to GitLab's Vulnerability Report (visible on the
+# MR Security tab) plus an HTML report exposed as a public-pages artifact
+# for browseable per-cluster diffs. No MR comment threading — see
+# UPDATE_PLAN.md "Deferred — GitLab/GitHub native integration" for the
+# rationale.
+
+variables:
+  PHPDUP_PATHS: "src"
+  PHPDUP_MIN_IMPACT: "20"
+  PHPDUP_WORKERS: "0"
+  PHPDUP_PHP_IMAGE: "php:8.3-cli"
+
+phpdup:
+  stage: test
+  image: ${PHPDUP_PHP_IMAGE}
+  variables:
+    GIT_DEPTH: "1"
+  before_script:
+    - apt-get update -qq && apt-get install -qq -y unzip git jq
+    - curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+    - composer install --no-interaction --no-progress --prefer-dist
+  script:
+    - php bin/phpdup analyze ${PHPDUP_PATHS}
+        --min-impact ${PHPDUP_MIN_IMPACT}
+        --workers ${PHPDUP_WORKERS}
+        --json gl-phpdup-report.json
+        --gitlab-sast gl-sast-report.json
+        --html public/phpdup
+        --checkstyle gl-phpdup-checkstyle.xml
+        --csv gl-phpdup.csv
+        --prometheus gl-phpdup-metrics.prom
+        --timeseries gl-phpdup-history.jsonl
+        --plain
+  artifacts:
+    name: "phpdup-${CI_COMMIT_SHORT_SHA}"
+    expire_in: 30 days
+    when: always
+    paths:
+      - gl-phpdup-report.json
+      - gl-phpdup-checkstyle.xml
+      - gl-phpdup.csv
+      - gl-phpdup-metrics.prom
+      - gl-phpdup-history.jsonl
+      - public/phpdup
+    reports:
+      sast: gl-sast-report.json
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
