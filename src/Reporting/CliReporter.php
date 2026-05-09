@@ -26,6 +26,18 @@ use Symfony\Component\Console\Output\OutputInterface;
  */
 final class CliReporter
 {
+    public const VERBOSITY_FULL         = 'full';
+    public const VERBOSITY_CLUSTERS     = 'clusters';     // banner + per-cluster one-liner list, no inner details
+    public const VERBOSITY_SUMMARY_ONLY = 'summary-only'; // banner + final summary only
+
+    public function __construct(
+        private readonly string $verbosity = self::VERBOSITY_FULL,
+    ) {
+        if (!in_array($verbosity, [self::VERBOSITY_FULL, self::VERBOSITY_CLUSTERS, self::VERBOSITY_SUMMARY_ONLY], true)) {
+            throw new \InvalidArgumentException("Invalid CliReporter verbosity: {$verbosity}");
+        }
+    }
+
     public function render(Report $report, OutputInterface $out, int $limit = 50): void
     {
         $decorated = $out->isDecorated();
@@ -49,16 +61,38 @@ final class CliReporter
             return;
         }
 
+        if ($this->verbosity === self::VERBOSITY_SUMMARY_ONLY) {
+            $this->renderTrailer($report, $clusters, $theme, $out);
+            return;
+        }
+
         $shown = min($limit, count($clusters));
         $out->writeln(StatusLine::info(
             sprintf('%d cluster(s); showing top %d (sorted by impact)', count($clusters), $shown),
             $theme,
         ));
 
+        if ($this->verbosity === self::VERBOSITY_CLUSTERS) {
+            $this->renderClusterList(array_slice($clusters, 0, $shown), $theme, $out);
+            $this->renderTrailer($report, $clusters, $theme, $out);
+            return;
+        }
+
         for ($i = 0; $i < $shown; $i++) {
             $this->renderCluster($i + 1, $clusters[$i], $theme, $width, $decorated, $out);
         }
 
+        $this->renderTrailer($report, $clusters, $theme, $out);
+    }
+
+    /**
+     * Trailing summary line — kept identical across verbosity levels so
+     * scripts grepping for the totals work regardless of mode.
+     *
+     * @param list<Cluster> $clusters
+     */
+    private function renderTrailer(Report $report, array $clusters, Theme $theme, OutputInterface $out): void
+    {
         $out->writeln('');
         $out->writeln(StatusLine::success(sprintf(
             'summary  %d clusters · %d duplicated lines · %d total impact',
@@ -66,6 +100,34 @@ final class CliReporter
             $report->totalDuplicatedLines(),
             array_sum(array_map(fn(Cluster $c) => $c->impact, $clusters)),
         ), $theme));
+    }
+
+    /**
+     * Compact per-cluster one-liner table for --clusters mode. No
+     * member tables, signatures, holes, or pattern chips — just the
+     * top-line numbers so users can grep-by-id and pipe into other
+     * tools.
+     *
+     * @param list<Cluster> $clusters
+     */
+    private function renderClusterList(array $clusters, Theme $theme, OutputInterface $out): void
+    {
+        $out->writeln('');
+        $table = Table::new()
+            ->border(Border::rounded())
+            ->headers('CLUSTER', 'MEMBERS', 'SIM', 'IMPACT', 'KIND', 'LOCATION');
+        foreach ($clusters as $c) {
+            $loc = isset($c->members[0]) ? $c->members[0]->location() : '';
+            $table = $table->row(
+                $c->id,
+                (string)$c->size(),
+                sprintf('%.2f', $c->similarity),
+                (string)$c->impact,
+                $c->members[0]->kind ?? '',
+                $loc,
+            );
+        }
+        $out->writeln($table->render());
     }
 
     private function renderCluster(int $num, Cluster $c, Theme $theme, int $width, bool $decorated, OutputInterface $out): void

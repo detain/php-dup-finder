@@ -34,6 +34,7 @@ final class ReportStage implements StageInterface
         private readonly ?string $csvFile = null,
         private readonly ?string $prometheusFile = null,
         private readonly ?string $timeseriesFile = null,
+        private readonly string $cliVerbosity = CliReporter::VERBOSITY_FULL,
     ) {}
 
     public function name(): Stage
@@ -76,7 +77,7 @@ final class ReportStage implements StageInterface
         $state->report   = $report;
         $state->clusters = $clusters;
 
-        (new CliReporter())->render($report, $output, $this->limit);
+        (new CliReporter($this->cliVerbosity))->render($report, $output, $this->limit);
 
         if ($config->jsonReportFile !== null) {
             (new JsonReporter())->writeTo($report, $config->jsonReportFile);

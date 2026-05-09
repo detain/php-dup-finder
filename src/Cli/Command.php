@@ -61,6 +61,8 @@ final class Command extends SymfonyCommand
             ->addOption('diff', null, InputOption::VALUE_REQUIRED, 'Write per-cluster unified diffs into DIR')
             ->addOption('patch', null, InputOption::VALUE_REQUIRED, 'Write a single cumulative patch file containing every cluster diff')
             ->addOption('limit', null, InputOption::VALUE_REQUIRED, 'Show at most N clusters in CLI output', 50)
+            ->addOption('summary-only', null, InputOption::VALUE_NONE, 'Render only the top banner + final summary line (skip per-cluster details)')
+            ->addOption('clusters', null, InputOption::VALUE_NONE, 'Render a one-line-per-cluster table instead of the full per-cluster breakdown')
             ->addOption('sort', null, InputOption::VALUE_REQUIRED, 'Cluster sort: KEY[:asc|desc]. Keys: impact|members|block-size|lines|similarity|confidence|name|file|id. Aliases: size→members, count→members. Default impact:desc.')
             ->addOption('stats', null, InputOption::VALUE_NONE, 'Show pipeline statistics');
 
@@ -102,7 +104,8 @@ Options grouped by category:
  <comment>Output / reports</comment>
    --html, --json, --sarif, --gitlab-sast, --checkstyle,
    --csv, --prometheus, --timeseries,
-   --diff, --patch, --limit, --sort, --stats
+   --diff, --patch, --limit, --sort, --stats,
+   --summary-only, --clusters
 
  <comment>Performance / runtime</comment>
    --workers (-j), --no-cache, --no-incremental, --no-lazy-ast,
@@ -215,6 +218,11 @@ HELP;
         $exactOnly = (bool)$input->getOption('exact-only') || $autoTuneExactOnly;
         $showStats = (bool)$input->getOption('stats');
         $limit     = (int)$input->getOption('limit');
+        $cliVerbosity = match (true) {
+            (bool)$input->getOption('summary-only') => \Phpdup\Reporting\CliReporter::VERBOSITY_SUMMARY_ONLY,
+            (bool)$input->getOption('clusters')     => \Phpdup\Reporting\CliReporter::VERBOSITY_CLUSTERS,
+            default                                 => \Phpdup\Reporting\CliReporter::VERBOSITY_FULL,
+        };
         $maxMemoryMb = $input->getOption('max-memory') !== null
             ? (int)$input->getOption('max-memory')
             : 0;
@@ -256,6 +264,7 @@ HELP;
             'csvFile'        => $input->getOption('csv'),
             'prometheusFile' => $input->getOption('prometheus'),
             'timeseriesFile' => $input->getOption('timeseries'),
+            'cliVerbosity'   => $cliVerbosity,
         ];
         $buildPipeline = static function (?ProgressListener $listener) use (
             $useCache, $exactOnly, $showStats, $maxMemoryMb, $stopAfter, $reportArgs
@@ -277,6 +286,7 @@ HELP;
                         csvFile:        $reportArgs['csvFile'],
                         prometheusFile: $reportArgs['prometheusFile'],
                         timeseriesFile: $reportArgs['timeseriesFile'],
+                        cliVerbosity:   $reportArgs['cliVerbosity'],
                     ),
                 ],
                 stopAfter: $stopAfter,
