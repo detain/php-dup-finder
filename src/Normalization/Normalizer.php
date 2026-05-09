@@ -82,7 +82,7 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
     {
     }
 
-    public function enterNode(Node $node): null
+    public function enterNode(Node $node)
     {
         $this->canonicalizeVariables($node);
         if ($this->mode === 'strict') {

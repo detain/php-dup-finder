@@ -71,7 +71,7 @@ final class BlockVisitor extends NodeVisitorAbstract
         $this->sink = $sink;
     }
 
-    public function enterNode(Node $node): null
+    public function enterNode(Node $node)
     {
         if ($node instanceof Stmt\Namespace_) {
             $this->namespace = $node->name?->toString();
@@ -120,7 +120,7 @@ final class BlockVisitor extends NodeVisitorAbstract
         return null;
     }
 
-    public function leaveNode(Node $node): null
+    public function leaveNode(Node $node)
     {
         if ($node instanceof Stmt\Class_ || $node instanceof Stmt\Interface_ || $node instanceof Stmt\Trait_ || $node instanceof Stmt\Enum_) {
             array_pop($this->classStack);
@@ -151,7 +151,7 @@ final class BlockVisitor extends NodeVisitorAbstract
         $traverser = new NodeTraverser();
         $traverser->addVisitor(new class($count) extends NodeVisitorAbstract {
             public function __construct(private int &$count) {}
-            public function enterNode(Node $n): null { $this->count++; return null; }
+            public function enterNode(Node $n) { $this->count++; return null; }
         });
         $traverser->traverse([$node]);
         return $count;
