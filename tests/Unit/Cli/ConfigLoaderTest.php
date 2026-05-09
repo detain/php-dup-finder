@@ -116,4 +116,33 @@ final class ConfigLoaderTest extends TestCase
         $this->expectExceptionMessage('in /tmp/phpdup.json');
         (new ConfigLoader())->validate(['workers' => -1], '/tmp/phpdup.json');
     }
+
+    public function testKindsAcceptsValidEntries(): void
+    {
+        (new ConfigLoader())->validate(['kinds' => ['method', 'closure']]);
+        $this->expectNotToPerformAssertions();
+    }
+
+    public function testKindsRejectsUnknownKind(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage("kinds[] entry 'lambda' must be one of");
+        (new ConfigLoader())->validate(['kinds' => ['lambda']]);
+    }
+
+    public function testKindsOverrideTakesPrecedenceOverConfigFile(): void
+    {
+        $tmp = sys_get_temp_dir() . '/phpdup-' . uniqid() . '.json';
+        file_put_contents($tmp, json_encode(['kinds' => ['method']]));
+        try {
+            $config = (new ConfigLoader())->load(
+                paths: ['src'],
+                configFile: $tmp,
+                overrides: ['allowed_kinds' => ['function', 'closure']],
+            );
+            $this->assertSame(['function', 'closure'], $config->allowedKinds);
+        } finally {
+            @unlink($tmp);
+        }
+    }
 }

@@ -13,6 +13,7 @@ final class Config
     /**
      * @param list<string> $paths
      * @param list<string> $exclude
+     * @param list<string> $allowedKinds Empty list = accept all kinds.
      */
     public function __construct(
         public readonly array $paths,
@@ -32,6 +33,7 @@ final class Config
         public readonly int $workers = 0,
         public readonly bool $incremental = true,
         public readonly bool $lazyAst = true,
+        public readonly array $allowedKinds = [],
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");

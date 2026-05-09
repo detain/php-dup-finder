@@ -233,8 +233,17 @@ final class PhpdupModel implements Model, ProgressListener
         $marker  = $focused ? $this->theme->accent->render('▸ ') : '  ';
         $label   = $stage->label();
 
+        $kindFilter = $this->state->config->allowedKinds === []
+            ? ''
+            : "\nfiltering: " . implode(', ', $this->state->config->allowedKinds);
+
         $body = match ($stage) {
-            Stage::Scanning => sprintf("%d files\n%d paths", $this->state->totalFiles, count($this->state->config->paths)),
+            Stage::Scanning => sprintf(
+                "%d files\n%d paths%s",
+                $this->state->totalFiles,
+                count($this->state->config->paths),
+                $kindFilter,
+            ),
             Stage::Preprocessing => sprintf(
                 "%d blocks\n%d reused · %d processed\n%d parse errors",
                 count($this->state->blocks),

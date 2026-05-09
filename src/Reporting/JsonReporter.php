@@ -51,6 +51,7 @@ final class JsonReporter
     {
         return [
             'id'           => $c->id,
+            'kind'         => $c->members[0]->kind ?? null,
             'exact'        => $c->exact,
             'similarity'   => round($c->similarity, 4),
             'confidence'   => round($c->confidence, 4),

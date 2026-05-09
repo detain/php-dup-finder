@@ -111,6 +111,8 @@ final class SarifReporter
                 'structuralHash' => $member->structuralHash,
             ],
             'properties' => [
+                'kind'               => $member->kind,
+                'clusterKind'        => $cluster->members[0]->kind ?? null,
                 'similarity'         => $cluster->similarity,
                 'exact'              => $cluster->exact,
                 'impact'             => $cluster->impact,

@@ -41,7 +41,11 @@ final class PreprocessWorker
     {
         $cache     = new AstCache($this->config->cacheDir);
         $parser    = new AstParser();
-        $extractor = new BlockExtractor($this->config->minBlockSize, $this->config->maxBlockSize);
+        $extractor = new BlockExtractor(
+            $this->config->minBlockSize,
+            $this->config->maxBlockSize,
+            $this->config->allowedKinds,
+        );
         $normalizer= new Normalizer($this->config->normalizationMode);
         $hasher    = new SubtreeHasher();
         $fp        = new NgramFingerprint($this->config->ngramSize);

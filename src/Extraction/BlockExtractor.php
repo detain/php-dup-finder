@@ -27,9 +27,19 @@ use Phpdup\Util\LineRange;
  */
 final class BlockExtractor
 {
+    public const ALL_KINDS = [
+        'function', 'method', 'closure', 'arrow',
+        'if', 'for', 'foreach', 'while', 'do',
+        'try', 'switch', 'match',
+    ];
+
+    /**
+     * @param list<string> $allowedKinds Empty list = accept all kinds.
+     */
     public function __construct(
         private readonly int $minSize = 8,
         private readonly int $maxSize = 800,
+        private readonly array $allowedKinds = [],
     ) {
     }
 
@@ -45,6 +55,7 @@ final class BlockExtractor
             file: $file,
             minSize: $this->minSize,
             maxSize: $this->maxSize,
+            allowedKinds: $this->allowedKinds,
             sink: function (Block $b) use (&$blocks): void { $blocks[] = $b; },
         );
         $traverser->addVisitor($visitor);
@@ -62,10 +73,14 @@ final class BlockVisitor extends NodeVisitorAbstract
     /** @var \Closure(Block):void */
     private \Closure $sink;
 
+    /**
+     * @param list<string> $allowedKinds
+     */
     public function __construct(
         private readonly string $file,
         private readonly int $minSize,
         private readonly int $maxSize,
+        private readonly array $allowedKinds,
         \Closure $sink,
     ) {
         $this->sink = $sink;
@@ -82,6 +97,9 @@ final class BlockVisitor extends NodeVisitorAbstract
 
         $kind = $this->classifyKind($node);
         if ($kind === null) {
+            return null;
+        }
+        if ($this->allowedKinds !== [] && !in_array($kind, $this->allowedKinds, true)) {
             return null;
         }
 

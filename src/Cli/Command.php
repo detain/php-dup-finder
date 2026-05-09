@@ -48,6 +48,7 @@ final class Command extends SymfonyCommand
             ->addOption('diff', null, InputOption::VALUE_REQUIRED, 'Write per-cluster unified diffs into DIR')
             ->addOption('patch', null, InputOption::VALUE_REQUIRED, 'Write a single cumulative patch file containing every cluster diff')
             ->addOption('checkstyle', null, InputOption::VALUE_REQUIRED, 'Write Checkstyle XML report to FILE')
+            ->addOption('kinds', null, InputOption::VALUE_REQUIRED, 'Comma-separated block kinds to include (e.g. method,closure). Default: all of method|function|closure|arrow|if|for|foreach|while|do|try|switch|match')
             ->addOption('tui', null, InputOption::VALUE_NONE, 'Show interactive SugarCraft dashboard after analysis completes')
             ->addOption('plain', null, InputOption::VALUE_NONE, 'Force plain CLI output (no TUI, no ANSI colours)')
             ->addOption('theme', null, InputOption::VALUE_REQUIRED, 'TUI theme: ansi|plain|charm|dracula|nord|catppuccin', 'ansi');
@@ -76,6 +77,20 @@ final class Command extends SymfonyCommand
         ], fn($v) => $v !== null);
         if ($input->getOption('no-incremental')) $overrides['incremental'] = false;
         if ($input->getOption('no-lazy-ast'))    $overrides['lazy_ast']   = false;
+        $kindsOpt = $input->getOption('kinds');
+        if ($kindsOpt !== null) {
+            $kinds = array_values(array_filter(array_map('trim', explode(',', (string)$kindsOpt))));
+            $invalid = array_diff($kinds, \Phpdup\Extraction\BlockExtractor::ALL_KINDS);
+            if ($invalid) {
+                $output->writeln(sprintf(
+                    '<error>phpdup: --kinds invalid: %s. Valid: %s</error>',
+                    implode(',', $invalid),
+                    implode(',', \Phpdup\Extraction\BlockExtractor::ALL_KINDS),
+                ));
+                return 2;
+            }
+            $overrides['allowed_kinds'] = $kinds;
+        }
 
         $config = (new ConfigLoader())->load(
             paths: $paths,

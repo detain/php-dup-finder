@@ -37,6 +37,13 @@ final class ConfigLoader
         $htmlOverride = $overrides['html'] ?? ($report['html'] ?? null);
         $jsonOverride = $overrides['json'] ?? ($report['json'] ?? null);
 
+        $allowedKinds = $base->allowedKinds;
+        if (array_key_exists('allowed_kinds', $overrides)) {
+            $allowedKinds = $overrides['allowed_kinds'];
+        } elseif (array_key_exists('kinds', $data)) {
+            $allowedKinds = $data['kinds'];
+        }
+
         return new Config(
             paths: !empty($data['paths']) ? $data['paths'] : $base->paths,
             exclude: !empty($data['exclude']) ? $data['exclude'] : $base->exclude,
@@ -55,6 +62,7 @@ final class ConfigLoader
             workers: (int)$get('workers', $base->workers),
             incremental: (bool)$get('incremental', $base->incremental),
             lazyAst: (bool)$get('lazy_ast', $base->lazyAst),
+            allowedKinds: $allowedKinds,
         );
     }
 
@@ -79,6 +87,7 @@ final class ConfigLoader
             'min_cluster_impact', 'max_df', 'ngram_size',
             'cache_dir', 'parallelism', 'workers',
             'incremental', 'lazy_ast',
+            'kinds',
             'report',
         ];
         foreach (array_keys($data) as $k) {
@@ -110,6 +119,18 @@ final class ConfigLoader
         }
         if (array_key_exists('exclude', $data)) {
             $assertListOfStrings($data['exclude'], 'exclude');
+        }
+        if (array_key_exists('kinds', $data)) {
+            $assertListOfStrings($data['kinds'], 'kinds');
+            foreach ($data['kinds'] as $k) {
+                if (!in_array($k, \Phpdup\Extraction\BlockExtractor::ALL_KINDS, true)) {
+                    throw new \RuntimeException(
+                        "kinds[] entry '$k' must be one of "
+                        . implode('|', \Phpdup\Extraction\BlockExtractor::ALL_KINDS)
+                        . $where
+                    );
+                }
+            }
         }
 
         $assertInt = static function (mixed $v, string $path, int $min, ?int $max = null) use ($where): void {
