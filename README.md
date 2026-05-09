@@ -133,6 +133,10 @@ observed values, ready to apply.
   [`docs/config-schema.json`](docs/config-schema.json) at load time;
   `--validate-config` exits with the field path on the first violation
   before any analysis runs.
+- **Shell completion** for bash, fish, and zsh via
+  `phpdup completion <shell>`. Output is the standard Symfony Console
+  completion script with commented-out installation instructions
+  prepended, so you can paste-and-follow inline.
 - **Composable pipeline** with cooperative iteration. Five stages
   (`Scanning`, `Preprocessing`, `Clustering`, `Refactoring`,
   `Reporting`) all implement a tiny `StageInterface` and share a
@@ -1152,6 +1156,38 @@ path).
 ```bash
 bin/phpdup analyze --config=phpdup.json --validate-config && echo OK
 ```
+
+### Shell completion
+
+phpdup ships its own `completion` sub-command. The output is the standard
+Symfony Console completion script for the chosen shell, with **commented-out
+installation instructions** prepended so you can `cat` the dump and follow the
+steps inline:
+
+```bash
+bin/phpdup completion bash    # → bash script + comments showing 3 install paths
+bin/phpdup completion fish    # → fish script + comments
+bin/phpdup completion zsh     # → zsh script + comments (#compdef stays first)
+```
+
+The most common one-liner per shell:
+
+```bash
+# bash — per-user completion under XDG home
+mkdir -p ~/.local/share/bash-completion/completions
+phpdup completion bash > ~/.local/share/bash-completion/completions/phpdup
+
+# fish — auto-loaded on next shell start
+mkdir -p ~/.config/fish/completions
+phpdup completion fish > ~/.config/fish/completions/phpdup.fish
+
+# zsh — pick a directory on $fpath BEFORE compinit
+mkdir -p ~/.zsh/completions
+phpdup completion zsh > ~/.zsh/completions/_phpdup
+# then in ~/.zshrc, before 'compinit':  fpath=(~/.zsh/completions $fpath)
+```
+
+When `shell` is omitted, `$SHELL` is consulted. Unknown shells exit `2`.
 
 ### Exit codes
 
