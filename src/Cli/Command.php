@@ -384,9 +384,18 @@ HELP;
         }
 
         $state    = new PipelineState($config);
+        SignalHandler::install($state);
         $pipeline = $buildPipeline(null);
-        $pipeline->run($state, $output);
+        try {
+            $pipeline->run($state, $output);
+        } finally {
+            SignalHandler::uninstall();
+        }
 
+        if ($state->cancelled) {
+            $output->writeln('<comment>phpdup: cancelled by user — partial report rendered</comment>');
+            return 130; // canonical SIGINT exit code
+        }
         return 0;
     }
 

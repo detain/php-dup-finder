@@ -49,6 +49,14 @@ final class PipelineState
 
     public ?Report $report = null;
 
+    /**
+     * Soft-cancel flag: set by SignalHandler when the user presses ^C
+     * during a long run. Cooperative stages MUST consult this between
+     * yields and break out cleanly so the pipeline can produce a
+     * partial report instead of dropping out via SIGINT.
+     */
+    public bool $cancelled = false;
+
     /** @var array<string,float> stage-name → seconds */
     public array $timings = [
         'preprocess' => 0.0,

@@ -46,6 +46,13 @@ final class Pipeline
     public function iter(PipelineState $state, OutputInterface $output): \Generator
     {
         foreach ($this->stages as $stage) {
+            // Soft-cancel checkpoint: if the user pressed ^C since the
+            // last stage finished, jump straight to the Reporting stage
+            // so they get a partial report with whatever's been done.
+            if ($state->cancelled && $stage->name() !== Stage::Reporting) {
+                continue;
+            }
+
             $state->stage         = $stage->name();
             $state->stageProgress = 0.0;
             $this->listener->onStageStart($stage->name());
