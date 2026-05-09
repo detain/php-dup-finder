@@ -9,13 +9,16 @@ use Phpdup\Pipeline\Stage;
 use Phpdup\Pipeline\StageInterface;
 use Phpdup\Reporting\CheckstyleReporter;
 use Phpdup\Reporting\CliReporter;
+use Phpdup\Reporting\CsvReporter;
 use Phpdup\Reporting\DiffReporter;
 use Phpdup\Reporting\GitLabSastReporter;
 use Phpdup\Reporting\HtmlReporter;
 use Phpdup\Reporting\JsonReporter;
+use Phpdup\Reporting\PrometheusReporter;
 use Phpdup\Reporting\Ranker;
 use Phpdup\Reporting\Report;
 use Phpdup\Reporting\SarifReporter;
+use Phpdup\Reporting\TimeseriesReporter;
 use Symfony\Component\Console\Output\OutputInterface;
 
 final class ReportStage implements StageInterface
@@ -28,6 +31,9 @@ final class ReportStage implements StageInterface
         private readonly ?string $diffDir = null,
         private readonly ?string $patchFile = null,
         private readonly ?string $checkstyleFile = null,
+        private readonly ?string $csvFile = null,
+        private readonly ?string $prometheusFile = null,
+        private readonly ?string $timeseriesFile = null,
     ) {}
 
     public function name(): Stage
@@ -99,6 +105,18 @@ final class ReportStage implements StageInterface
         if ($this->checkstyleFile !== null) {
             (new CheckstyleReporter())->writeTo($report, $this->checkstyleFile);
             $output->writeln("<info>phpdup</info> checkstyle report → {$this->checkstyleFile}");
+        }
+        if ($this->csvFile !== null) {
+            (new CsvReporter())->writeTo($report, $this->csvFile);
+            $output->writeln("<info>phpdup</info> csv report → {$this->csvFile}");
+        }
+        if ($this->prometheusFile !== null) {
+            (new PrometheusReporter())->writeTo($report, $this->prometheusFile);
+            $output->writeln("<info>phpdup</info> prometheus report → {$this->prometheusFile}");
+        }
+        if ($this->timeseriesFile !== null) {
+            (new TimeseriesReporter())->writeTo($report, $this->timeseriesFile);
+            $output->writeln("<info>phpdup</info> timeseries record appended → {$this->timeseriesFile}");
         }
     }
 }
