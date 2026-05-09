@@ -39,7 +39,12 @@ final class Command extends SymfonyCommand
             ->addOption('no-incremental', null, InputOption::VALUE_NONE, 'Disable per-file index reuse')
             ->addOption('no-lazy-ast', null, InputOption::VALUE_NONE, 'Keep all original ASTs in memory (higher RSS, faster anti-unification)')
             ->addOption('stage', null, InputOption::VALUE_REQUIRED, 'Run pipeline only up to STAGE (scanning|preprocessing|clustering|refactoring|reporting); useful for incremental debugging')
-            ->addOption('validate-config', null, InputOption::VALUE_NONE, 'Validate the --config file against the documented schema and exit (no analysis is run)');
+            ->addOption('validate-config', null, InputOption::VALUE_NONE, 'Validate the --config file against the documented schema and exit (no analysis is run)')
+            ->addOption('sarif', null, InputOption::VALUE_REQUIRED, 'Write SARIF 2.1.0 report to FILE (for GitHub/GitLab PR annotations)')
+            ->addOption('gitlab-sast', null, InputOption::VALUE_REQUIRED, 'Write GitLab SAST report (v15) to FILE')
+            ->addOption('diff', null, InputOption::VALUE_REQUIRED, 'Write per-cluster unified diffs into DIR')
+            ->addOption('patch', null, InputOption::VALUE_REQUIRED, 'Write a single cumulative patch file containing every cluster diff')
+            ->addOption('checkstyle', null, InputOption::VALUE_REQUIRED, 'Write Checkstyle XML report to FILE');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -94,7 +99,15 @@ final class Command extends SymfonyCommand
                 new PreprocessStage($useCache, $showStats),
                 new ClusterStage($exactOnly),
                 new RefactorStage($useCache),
-                new ReportStage($limit, $showStats),
+                new ReportStage(
+                    limit: $limit,
+                    showStats: $showStats,
+                    sarifFile: $input->getOption('sarif'),
+                    gitlabSastFile: $input->getOption('gitlab-sast'),
+                    diffDir: $input->getOption('diff'),
+                    patchFile: $input->getOption('patch'),
+                    checkstyleFile: $input->getOption('checkstyle'),
+                ),
             ],
             stopAfter: $stopAfter,
         );
