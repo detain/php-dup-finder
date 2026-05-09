@@ -66,6 +66,7 @@ inferred types and observed values, ready to drop into a refactor.
 
 ## Table of contents
 
+- [What's new in v0.5](#whats-new-in-v05)
 - [What's new in v0.4](#whats-new-in-v04)
 - [What's new in v0.3](#whats-new-in-v03)
 - [What's new in v0.2](#whats-new-in-v02)
@@ -88,6 +89,7 @@ inferred types and observed values, ready to drop into a refactor.
   - [GitLab SAST report](#gitlab-sast-report)
   - [Diff and patch](#diff-and-patch)
   - [Checkstyle XML](#checkstyle-xml)
+- [Type-3 / optional-segment detection](#type-3--optional-segment-detection)
 - [TUI mode](#tui-mode)
 - [Watch mode](#watch-mode)
 - [Static analysis & config validation](#static-analysis--config-validation)
@@ -101,6 +103,67 @@ inferred types and observed values, ready to drop into a refactor.
 - [FAQ](#faq)
 - [Contributing](#contributing)
 - [License](#license)
+
+---
+
+## What's new in v0.5
+
+v0.5 adds **type-3 / "optional-segment" clone detection** — phpdup
+now clusters blocks whose statements differ in length but share a
+common skeleton, and synthesizes a default-`false` boolean parameter
+for each segment that's present in some members and absent in others.
+
+Given two blocks like:
+
+```php
+// block 1
+if ($something == $somethingelse) {
+    base64_encode($stuff);
+    $ret = other_stuff($blah);
+    some_other_logic($here);   // ← extra in block 1
+    and_more($f);              // ← extra in block 1
+} else {
+    return false;
+}
+
+// block 2
+if ($something == $somethingelse) {
+    base64_encode($stuff);
+    $ret = other_stuff($blah);
+} else {
+    return false;
+}
+```
+
+phpdup now produces:
+
+```
+function extractedFunction(
+    bool $includeSomeOtherLogic = false,
+    bool $includeAndMore = false,
+): mixed
+```
+
+…with the cluster tagged `optional-segments`. See
+[Type-3 / optional-segment detection](#type-3--optional-segment-detection)
+for the algorithm and tunables.
+
+| Area                       | v0.4                                                           | v0.5                                                                                                                                            |
+|----------------------------|----------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------|
+| Clone detection scope      | Type-1 (exact) and type-2 (renamed-variables) only             | + Type-3 — clusters blocks whose stmt arrays differ in length when one is a near-subset of the other.                                            |
+| New similarity metric      | Jaccard only                                                   | + ContainmentSimilarity — asymmetric `\|A∩B\|min / min(sum(A), sum(B))`. Used as a fallback when Jaccard fails for Type-3 clones.               |
+| Anti-unification           | Whole-array hole when stmt arrays differed in length           | LCS over per-statement structural hashes. Matched positions recurse normally; unmatched template positions become `optional_block` holes.       |
+| Synthesized parameters     | One typed param per disagreement                               | + `bool $includeFooBar = false` per optional segment, named from the first identifier in the missing code.                                       |
+| Pattern recognition        | 6 archetypes                                                   | + `optional-segments` tag.                                                                                                                       |
+| Reporters                  | —                                                              | JSON adds `holes[].present_in_members` (per-member presence list); SARIF adds `properties.optionalSegmentCount` + `hasOptionalSegments`; HTML highlights optional rows in amber with a "type-3" badge. |
+| New CLI flags              | —                                                              | `--max-df`, `--optional-blocks=on\|off`, `--optional-blocks-containment`.                                                                        |
+| Config knobs               | —                                                              | `optional_blocks: { enabled, containment, min_overlap, max_per_cluster, min_segment_length }` in `phpdup.json`.                                  |
+| Tests                      | 125                                                            | 133 (added: ContainmentSimilarity, optional-block end-to-end, type-3-disabled-via-config).                                                       |
+
+The legacy "stmt arrays differ in length → whole-array subtree hole"
+behaviour is still there as the fallback when type-3 detection is
+disabled or when an alignment would exceed the per-cluster cap. Type-1
+and type-2 cluster output is unchanged.
 
 ---
 
@@ -400,6 +463,13 @@ Drop a `phpdup.json` next to your code, or pass `--config`:
   "incremental":          true,
   "lazy_ast":             true,
   "kinds":                ["method", "closure"],
+  "optional_blocks": {
+    "enabled":             true,
+    "containment":         0.85,
+    "min_overlap":         0.6,
+    "max_per_cluster":     3,
+    "min_segment_length":  1
+  },
   "report": {
     "html": "phpdup-report",
     "json": "phpdup.json"
@@ -750,6 +820,99 @@ descriptive message linking back to the cluster id and similarity.
 
 ---
 
+## Type-3 / optional-segment detection
+
+A "type-3" clone is one where the structures match, but some members
+have extra (or missing) statements relative to others. phpdup detects
+these in two stages.
+
+### Clustering: containment fallback
+
+When the n-gram Jaccard between two candidate blocks falls below
+`similarity_threshold`, the clusterer tries an asymmetric
+`ContainmentSimilarity`:
+
+```
+C(A, B) = |A ∩ B|min / min(sum(A), sum(B))
+```
+
+…which returns 1.0 whenever the smaller bag is fully contained in the
+larger, regardless of size disparity. The pair is accepted with the
+containment score as the edge weight only when:
+
+```
+containment ≥ optional_blocks_containment   (default 0.85)  AND
+size_ratio  ≥ optional_blocks_min_overlap    (default 0.6)
+```
+
+The size-ratio guard prevents a 1-line block from clustering with a
+100-line block on the basis of a single shared n-gram.
+
+### Anti-unification: LCS over statement arrays
+
+The seed (template) is now the cluster member with the most AST nodes
+— the "maximal" version of the abstraction. When `walk()` reaches a
+`stmts` / `cases` / `catches` array whose length differs from the
+seed's, phpdup runs LCS over each statement's structural hash:
+
+- Matched template positions recurse via the normal walk — variables,
+  literals, names inside the matched statement still produce regular
+  holes.
+- Unmatched template positions become **`optional_block`** holes —
+  one per missing statement (capped at `optional_blocks_max_per_cluster`,
+  default 3, to prevent pathological seven-boolean signatures).
+
+Each optional_block hole is materialised by `ParameterSynthesizer` as
+a default-`false` `bool` parameter. The name is derived from the first
+non-stop-word identifier in the segment, e.g. a missing
+`some_other_logic($here);` becomes `bool $includeSomeOtherLogic = false`.
+
+`SignatureBuilder` groups required parameters first, then optional
+booleans, so the resulting signature is syntactically valid PHP.
+
+### Tunables
+
+```json
+{
+  "optional_blocks": {
+    "enabled": true,
+    "containment": 0.85,
+    "min_overlap": 0.6,
+    "max_per_cluster": 3,
+    "min_segment_length": 1
+  }
+}
+```
+
+CLI overrides:
+
+```bash
+bin/phpdup analyze src \
+    --optional-blocks=on \
+    --optional-blocks-containment=0.85
+```
+
+To disable type-3 detection completely, set `optional_blocks.enabled` to
+`false` (or pass `--optional-blocks=off`); the clusterer reverts to
+Jaccard-only and AntiUnifier falls back to whole-array subtree holes
+when stmt arrays differ in length.
+
+### How it surfaces in reporters
+
+- **CLI** — the Holes table shows `kind = optional_block` and observed
+  values include the literal `<absent>` marker for members where the
+  segment was missing.
+- **JSON** — every optional_block hole carries a
+  `present_in_members: [int, ...]` array listing the cluster-member
+  indices that *did* include the segment.
+- **SARIF** — each result's `properties` adds `optionalSegmentCount`
+  and `hasOptionalSegments` so PR-annotation tooling can flag type-3
+  clusters distinctly.
+- **HTML** — optional rows are tinted amber, get a "type-3" badge, and
+  italicize the `<absent>` sentinel.
+
+---
+
 ## TUI mode
 
 `--tui` opts in to an interactive SugarCraft dashboard rendered after
@@ -853,12 +1016,19 @@ Tuning options:
       --min-block-size N   Minimum AST node count for a block (default 8)
       --mode MODE          Normalization mode: strict|default|aggressive
       --similarity N       Jaccard similarity threshold (0..1, default 0.80)
+      --max-df N           Max document-frequency cutoff for n-grams used as
+                           candidate-pair seeds (0..1, default 0.01).
       --min-impact N       Minimum cluster impact to report (default 20)
       --exact-only         Skip near-duplicate detection (very fast)
       --kinds K1,K2,...    Block kinds to extract: function|method|closure|
                            arrow|if|for|foreach|while|do|try|switch|match
       --max-memory MB      Soft RSS ceiling; warns and suggests --exact-only
                            when peak RSS exceeds.
+      --optional-blocks=on|off
+                           Type-3 / optional-segment detection (default on).
+      --optional-blocks-containment N
+                           Containment threshold for the type-3 fallback
+                           (0..1, default 0.85).
 
 Output options:
       --html DIR           Write HTML report to this directory
