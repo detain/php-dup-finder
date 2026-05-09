@@ -6,15 +6,18 @@ namespace Phpdup\Parallel;
 /**
  * pcntl_fork-based worker pool for embarrassingly parallel batch work.
  *
- * Usage:
+ * Two modes:
  *
- *     $pool = new WorkerPool(workers: 4);
- *     $results = $pool->run($items, fn($itemBatch) => processBatch($itemBatch));
+ *   - {@see run()} — collect-and-return. Each child writes its full result
+ *     to a temp file when finished; the parent reads them all once every
+ *     child has exited.
+ *   - {@see runStreaming()} — yield-as-results-arrive. Each child streams
+ *     records through a per-process socketpair as soon as they're
+ *     produced; the parent {@see stream_select()}s across all children and
+ *     the returned {@see \Generator} yields each record live. Used by the
+ *     cooperative pipeline so the TUI can repaint mid-stage.
  *
- * Items are partitioned into chunks, each chunk forked into a child
- * process. Children write their result via PHP serialize() to a temp
- * file; the parent reads and concatenates results in deterministic
- * order (chunk index ascending).
+ * Both modes share the same chunking / serialization / fallback rules.
  *
  * If `pcntl_fork` is unavailable (Windows, restricted PHP build) or
  * `workers` ≤ 1, the pool runs the work serially in the parent.
@@ -27,6 +30,9 @@ namespace Phpdup\Parallel;
  */
 final class WorkerPool
 {
+    /** Length-prefix size for the streaming framing protocol (4 bytes, big-endian uint32). */
+    private const FRAME_HEADER = 4;
+
     public function __construct(
         public readonly int $workers = 0,
     ) {
@@ -130,6 +136,150 @@ final class WorkerPool
             }
         }
         return $results;
+    }
+
+    /**
+     * Streaming variant of {@see run()}. The task closure may return either an
+     * array or a {@see \Generator} of records; this method yields each record
+     * to the caller as soon as it arrives from a child process, instead of
+     * waiting for the whole pool to finish.
+     *
+     * Falls back to serial in-process iteration when {@see isAvailable()}
+     * returns false, when workers ≤ 1, or for trivially small inputs (<8
+     * items) — same fallback rules as {@see run()}.
+     *
+     * @template TItem
+     * @template TResult
+     * @param list<TItem> $items
+     * @param \Closure(list<TItem>): iterable<TResult> $task
+     * @return \Generator<int, TResult>
+     */
+    public function runStreaming(array $items, \Closure $task): \Generator
+    {
+        if (!$items) return;
+
+        $workers = max(1, $this->workers > 0 ? $this->workers : self::detectCpuCount());
+        if ($workers === 1 || !self::isAvailable() || count($items) < 8) {
+            yield from $task($items);
+            return;
+        }
+
+        $chunks   = self::chunkInto($items, $workers);
+        $pipes    = [];   // parent socket per chunk index
+        $pids     = [];
+        $buffers  = [];
+
+        foreach ($chunks as $idx => $chunk) {
+            $pair = @stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+            if ($pair === false) {
+                throw new \RuntimeException('stream_socket_pair failed');
+            }
+            [$childEnd, $parentEnd] = $pair;
+
+            $pid = pcntl_fork();
+            if ($pid === -1) {
+                throw new \RuntimeException('pcntl_fork failed');
+            }
+            if ($pid === 0) {
+                // child
+                @fclose($parentEnd);
+                try {
+                    foreach ($task($chunk) as $record) {
+                        self::writeRecord($childEnd, $record);
+                    }
+                    self::writeRecord($childEnd, ['__done' => true]);
+                    @fclose($childEnd);
+                    exit(0);
+                } catch (\Throwable $e) {
+                    @self::writeRecord($childEnd, ['__error' => $e->getMessage() . "\n" . $e->getTraceAsString()]);
+                    @fclose($childEnd);
+                    exit(1);
+                }
+            }
+
+            // parent
+            @fclose($childEnd);
+            stream_set_blocking($parentEnd, false);
+            $pipes[$idx]   = $parentEnd;
+            $pids[$idx]    = $pid;
+            $buffers[$idx] = '';
+        }
+
+        try {
+            while ($pipes !== []) {
+                $read   = $pipes;
+                $write  = null;
+                $except = null;
+                $ready  = @stream_select($read, $write, $except, 1, 0);
+                if ($ready === false) {
+                    // EINTR can show up here when a signal arrives mid-select; just retry.
+                    if (function_exists('pcntl_signal_dispatch')) {
+                        pcntl_signal_dispatch();
+                    }
+                    continue;
+                }
+                if ($ready === 0) {
+                    continue;
+                }
+
+                foreach (array_keys($read) as $idx) {
+                    $sock = $pipes[$idx];
+                    $chunk = @fread($sock, 65536);
+                    if ($chunk === false || ($chunk === '' && @feof($sock))) {
+                        @fclose($sock);
+                        unset($pipes[$idx]);
+                        continue;
+                    }
+                    if ($chunk === '') continue;
+                    $buffers[$idx] .= $chunk;
+
+                    $closeAfter = false;
+                    while (strlen($buffers[$idx]) >= self::FRAME_HEADER) {
+                        $lenInfo = unpack('N', substr($buffers[$idx], 0, self::FRAME_HEADER));
+                        if ($lenInfo === false) break;
+                        $len = $lenInfo[1];
+                        if (strlen($buffers[$idx]) < self::FRAME_HEADER + $len) break;
+                        $payload = substr($buffers[$idx], self::FRAME_HEADER, $len);
+                        $buffers[$idx] = substr($buffers[$idx], self::FRAME_HEADER + $len);
+
+                        $record = @unserialize($payload);
+                        if (is_array($record) && isset($record['__error'])) {
+                            throw new \RuntimeException("Worker $idx failed: " . $record['__error']);
+                        }
+                        if (is_array($record) && isset($record['__done'])) {
+                            $closeAfter = true;
+                            break;
+                        }
+                        yield $record;
+                    }
+                    if ($closeAfter) {
+                        @fclose($pipes[$idx]);
+                        unset($pipes[$idx]);
+                    }
+                }
+            }
+        } finally {
+            foreach ($pipes as $sock) @fclose($sock);
+            foreach ($pids as $pid) {
+                @pcntl_waitpid($pid, $status);
+            }
+        }
+    }
+
+    /** @param resource $stream */
+    private static function writeRecord($stream, mixed $record): void
+    {
+        $payload = serialize($record);
+        $framed  = pack('N', strlen($payload)) . $payload;
+        $written = 0;
+        $total   = strlen($framed);
+        while ($written < $total) {
+            $n = @fwrite($stream, substr($framed, $written));
+            if ($n === false || $n === 0) {
+                return;
+            }
+            $written += $n;
+        }
     }
 
     /**
