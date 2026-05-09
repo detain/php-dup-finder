@@ -39,16 +39,31 @@ final class PreprocessWorker
      */
     public function process(array $files): array
     {
-        $cache     = new AstCache($this->config->cacheDir);
-        $parser    = new AstParser();
-        $extractor = new BlockExtractor(
-            $this->config->minBlockSize,
-            $this->config->maxBlockSize,
-            $this->config->allowedKinds,
-        );
-        $normalizer= new Normalizer($this->config->normalizationMode);
-        $hasher    = new SubtreeHasher();
-        $fp        = new NgramFingerprint($this->config->ngramSize);
+        $cache  = new AstCache($this->config->cacheDir);
+        $parser = new AstParser();
+        $hasher = new SubtreeHasher();
+
+        // Cache per-config tooling so paths sharing the same effective
+        // config don't pay reconstruction cost. Keyed by a small fingerprint
+        // of the fields the extractor / normalizer / fingerprinter read.
+        $tooling = [];
+        $toolFor = static function (Config $cfg) use (&$tooling): array {
+            $key = sprintf(
+                '%d|%d|%s|%d|%s',
+                $cfg->minBlockSize, $cfg->maxBlockSize,
+                $cfg->normalizationMode, $cfg->ngramSize,
+                implode(',', $cfg->allowedKinds),
+            );
+            if (!isset($tooling[$key])) {
+                $tooling[$key] = [
+                    'extractor'  => new BlockExtractor($cfg->minBlockSize, $cfg->maxBlockSize, $cfg->allowedKinds),
+                    'normalizer' => new Normalizer($cfg->normalizationMode),
+                    'fp'         => new NgramFingerprint($cfg->ngramSize),
+                ];
+            }
+            return $tooling[$key];
+        };
+
         $out = [];
         foreach ($files as $path) {
             $stmts = $cache->get($path);
@@ -60,10 +75,12 @@ final class PreprocessWorker
                 }
                 $cache->put($path, $stmts);
             }
-            foreach ($extractor->extract($path, $stmts) as $block) {
-                $normalizer->normalize($block);
+            $cfg   = $this->config->effectiveFor($path);
+            $tools = $toolFor($cfg);
+            foreach ($tools['extractor']->extract($path, $stmts) as $block) {
+                $tools['normalizer']->normalize($block);
                 $block->structuralHash = $hasher->hash($block->canonical);
-                $block->ngramBag = $fp->fingerprint($block->canonical);
+                $block->ngramBag = $tools['fp']->fingerprint($block->canonical);
                 $out[] = ['type' => 'block', 'file' => $path, 'block' => $block];
             }
         }

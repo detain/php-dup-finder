@@ -55,6 +55,17 @@ final class Config
         // Format: KEY[:DIRECTION]. See \Phpdup\Reporting\ClusterSort::ALL_KEYS.
         // Default preserves the long-standing "biggest impact first" ordering.
         public readonly string $sort = 'impact:desc',
+        // Per-directory overrides discovered by ConfigLoader from
+        // `.phpdup.json` files placed inside the scanned tree. Keys are
+        // **realpath()-resolved** absolute directory paths (no trailing
+        // slash). Values are loose Config-shaped override dicts (the same
+        // shape ConfigLoader::load accepts as $overrides).
+        //
+        // {@see effectiveFor()} merges all overrides whose directory key
+        // is a prefix of the target path, deeper overrides winning over
+        // shallower ones, so children inherit from their parents.
+        /** @var array<string, array<string, mixed>> */
+        public readonly array $perDirectoryOverrides = [],
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -92,6 +103,83 @@ final class Config
                 'storage/**', 'build/**', 'dist/**', '**/*.tpl.php',
                 '**/.phpdup-cache/**', '**/phpdup-report/**',
             ],
+        );
+    }
+
+    /**
+     * Build the effective Config for a given file path by overlaying any
+     * per-directory `.phpdup.json` overrides whose directory is an
+     * ancestor of $filePath. Deeper overrides win over shallower ones.
+     *
+     * Falls back to $this when there are no per-directory overrides
+     * (the common case), so callers can call this unconditionally and
+     * pay no cost when the feature is unused.
+     */
+    public function effectiveFor(string $filePath): self
+    {
+        if ($this->perDirectoryOverrides === []) {
+            return $this;
+        }
+        $real = realpath($filePath);
+        $abs  = $real !== false ? $real : $filePath;
+
+        // Pick all overrides whose key is a path prefix of $abs, then
+        // merge them shortest-first so deeper keys overwrite shallower.
+        $matches = [];
+        foreach ($this->perDirectoryOverrides as $dir => $overrides) {
+            if ($dir === '' || $abs === $dir || str_starts_with($abs, $dir . '/')) {
+                $matches[$dir] = $overrides;
+            }
+        }
+        if ($matches === []) {
+            return $this;
+        }
+        uksort($matches, static fn(string $a, string $b) => strlen($a) <=> strlen($b));
+
+        $merged = [];
+        foreach ($matches as $overrides) {
+            foreach ($overrides as $k => $v) {
+                $merged[$k] = $v;
+            }
+        }
+        return $this->withOverrides($merged);
+    }
+
+    /**
+     * Build a new Config that copies $this but replaces only the keys
+     * named in $overrides. Unknown keys are silently ignored — the
+     * caller has already validated the shape via ConfigLoader::validate.
+     *
+     * @param array<string, mixed> $overrides
+     */
+    public function withOverrides(array $overrides): self
+    {
+        return new self(
+            paths:                          $this->paths,
+            exclude:                        $this->exclude,
+            minBlockSize:                   isset($overrides['min_block_size'])      ? (int)$overrides['min_block_size']      : $this->minBlockSize,
+            maxBlockSize:                   isset($overrides['max_block_size'])      ? (int)$overrides['max_block_size']      : $this->maxBlockSize,
+            normalizationMode:              isset($overrides['normalization_mode'])  ? (string)$overrides['normalization_mode']: $this->normalizationMode,
+            similarityThreshold:            isset($overrides['similarity_threshold'])? (float)$overrides['similarity_threshold']: $this->similarityThreshold,
+            treeThreshold:                  isset($overrides['tree_threshold'])      ? (float)$overrides['tree_threshold']    : $this->treeThreshold,
+            minClusterImpact:               isset($overrides['min_cluster_impact'])  ? (int)$overrides['min_cluster_impact']  : $this->minClusterImpact,
+            maxDocumentFrequency:           isset($overrides['max_df'])              ? (float)$overrides['max_df']            : $this->maxDocumentFrequency,
+            ngramSize:                      isset($overrides['ngram_size'])          ? (int)$overrides['ngram_size']          : $this->ngramSize,
+            cacheDir:                       $this->cacheDir,
+            parallelism:                    $this->parallelism,
+            htmlReportDir:                  $this->htmlReportDir,
+            jsonReportFile:                 $this->jsonReportFile,
+            workers:                        $this->workers,
+            incremental:                    $this->incremental,
+            lazyAst:                        $this->lazyAst,
+            allowedKinds:                   array_key_exists('allowed_kinds', $overrides) ? $overrides['allowed_kinds'] : $this->allowedKinds,
+            optionalBlocksEnabled:          $this->optionalBlocksEnabled,
+            optionalBlocksContainment:      $this->optionalBlocksContainment,
+            optionalBlocksMinOverlap:       $this->optionalBlocksMinOverlap,
+            optionalBlocksMaxPerCluster:    $this->optionalBlocksMaxPerCluster,
+            optionalBlocksMinSegmentLength: $this->optionalBlocksMinSegmentLength,
+            sort:                           $this->sort,
+            perDirectoryOverrides:          $this->perDirectoryOverrides,
         );
     }
 }
