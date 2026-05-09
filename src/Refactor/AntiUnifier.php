@@ -65,10 +65,13 @@ final class AntiUnifier
             return;
         }
 
-        // 1. Pick seed = max-size member; use as the unification template so the
-        //    "maximal" version's statements are the ones that can be marked as
-        //    optional (absent in some members) instead of dropped.
-        $seedIdx = $this->pickSeedIndex($members);
+        // 1. Multi-seed search: try the top candidate seeds and pick
+        //    the one that yields the smallest hole set (the abstraction
+        //    with the most agreement across members). When all members
+        //    are the same size the original largest-member tiebreaker
+        //    still wins, so this only changes behaviour for clusters
+        //    where one seed truly produces a tighter abstraction.
+        $seedIdx = $this->pickBestSeed($members);
         if ($seedIdx !== 0) {
             // Swap into a local array — cluster.members order stays as the
             // ranker arranged it, but unification proceeds with seed at index 0.
@@ -124,6 +127,76 @@ final class AntiUnifier
             }
         }
         return $bestIdx;
+    }
+
+    /**
+     * Multi-seed search.
+     *
+     * Picks the top {@see self::SEED_CANDIDATES} candidates by size,
+     * runs a *trial* unification with each as seed, and returns the
+     * index whose run produces the smallest set of holes. Smaller
+     * hole sets mean the seed maximally captured what the cluster
+     * has in common.
+     *
+     * For clusters of <=2 members or when there's a unique largest
+     * member by a wide margin, this falls back to the single-seed
+     * pick. Only kicks in when ≥3 members of comparable size give
+     * the search room to choose.
+     *
+     * @param list<Block> $members
+     */
+    private function pickBestSeed(array $members): int
+    {
+        $count = count($members);
+        if ($count < 3) {
+            return $this->pickSeedIndex($members);
+        }
+
+        // Rank candidates by size, descending; consider top SEED_CANDIDATES.
+        $ranked = [];
+        foreach ($members as $i => $m) {
+            $ranked[] = [$i, $m->size];
+        }
+        usort($ranked, static fn(array $a, array $b) => $b[1] <=> $a[1]);
+        $candidates = array_slice($ranked, 0, self::SEED_CANDIDATES);
+
+        $bestIdx  = $candidates[0][0];
+        $bestHoles = PHP_INT_MAX;
+        foreach ($candidates as [$idx, $size]) {
+            $holes = $this->trialUnifyHoleCount($members, $idx);
+            if ($holes < $bestHoles) {
+                $bestHoles = $holes;
+                $bestIdx   = $idx;
+            }
+        }
+        return $bestIdx;
+    }
+
+    /** Number of seed candidates to evaluate in the multi-seed search. */
+    private const SEED_CANDIDATES = 3;
+
+    /**
+     * Run a *no-op* unification with $candidateIdx as seed and report
+     * the resulting hole count. Doesn't mutate $cluster — used purely
+     * for picking between candidate seeds. Costs roughly the same as
+     * one regular unification call per candidate; only invoked when
+     * ≥3 members are available so the worst case is 3x.
+     *
+     * @param list<Block> $members
+     */
+    private function trialUnifyHoleCount(array $members, int $candidateIdx): int
+    {
+        $local = $members;
+        if ($candidateIdx !== 0) {
+            [$local[0], $local[$candidateIdx]] = [$local[$candidateIdx], $local[0]];
+        }
+        $ctx   = new UnifyContext($this->optionalBlocksEnabled, $this->optionalBlocksMaxPerCluster);
+        $first = Normalizer::deepClone($this->astOf($local[0]));
+        $count = count($local);
+        for ($i = 1; $i < $count; $i++) {
+            $this->walk($first, $this->astOf($local[$i]), $i, $ctx, []);
+        }
+        return count($ctx->holes);
     }
 
     private function astOf(Block $block): Node
