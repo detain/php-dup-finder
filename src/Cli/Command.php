@@ -38,11 +38,16 @@ final class Command extends SymfonyCommand
             ->addOption('workers', 'j', InputOption::VALUE_REQUIRED, 'Worker count for parallel preprocess + pair scoring (0 = auto, 1 = serial)')
             ->addOption('no-incremental', null, InputOption::VALUE_NONE, 'Disable per-file index reuse')
             ->addOption('no-lazy-ast', null, InputOption::VALUE_NONE, 'Keep all original ASTs in memory (higher RSS, faster anti-unification)')
-            ->addOption('stage', null, InputOption::VALUE_REQUIRED, 'Run pipeline only up to STAGE (scanning|preprocessing|clustering|refactoring|reporting); useful for incremental debugging');
+            ->addOption('stage', null, InputOption::VALUE_REQUIRED, 'Run pipeline only up to STAGE (scanning|preprocessing|clustering|refactoring|reporting); useful for incremental debugging')
+            ->addOption('validate-config', null, InputOption::VALUE_NONE, 'Validate the --config file against the documented schema and exit (no analysis is run)');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
+        if ($input->getOption('validate-config')) {
+            return $this->validateConfigOnly($input, $output);
+        }
+
         $paths = $input->getArgument('paths');
         if (!$paths) {
             $output->writeln('<error>phpdup: at least one path is required</error>');
@@ -96,6 +101,34 @@ final class Command extends SymfonyCommand
 
         $pipeline->run(new PipelineState($config), $output);
 
+        return 0;
+    }
+
+    private function validateConfigOnly(InputInterface $input, OutputInterface $output): int
+    {
+        $configFile = $input->getOption('config');
+        if ($configFile === null) {
+            $output->writeln('<error>phpdup: --validate-config requires --config=FILE</error>');
+            return 2;
+        }
+        if (!is_file($configFile)) {
+            $output->writeln("<error>phpdup: config file not found: {$configFile}</error>");
+            return 2;
+        }
+        $decoded = json_decode((string)file_get_contents($configFile), true);
+        if (!is_array($decoded)) {
+            $output->writeln("<error>phpdup: config file is not valid JSON: {$configFile}</error>");
+            return 2;
+        }
+
+        try {
+            (new ConfigLoader())->validate($decoded, $configFile);
+        } catch (\RuntimeException $e) {
+            $output->writeln('<error>phpdup: ' . $e->getMessage() . '</error>');
+            return 2;
+        }
+
+        $output->writeln("<info>phpdup</info> config OK: {$configFile}");
         return 0;
     }
 }

@@ -1,0 +1,75 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://github.com/detain/php-dup-finder/blob/master/docs/config-schema.json",
+    "title": "phpdup configuration",
+    "description": "Schema for phpdup.json. The phpdup CLI also runs equivalent checks at load time and surfaces field-path errors before any analysis begins.",
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+        "paths": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 },
+            "description": "Source roots to scan."
+        },
+        "exclude": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "description": "Glob patterns excluded from the scan (** for recursive)."
+        },
+        "min_block_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Minimum AST node count for a block to be considered. Must be ≤ max_block_size."
+        },
+        "max_block_size": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Maximum AST node count for a block. Must be ≥ min_block_size."
+        },
+        "normalization_mode": {
+            "type": "string",
+            "enum": ["strict", "default", "aggressive"]
+        },
+        "similarity_threshold": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "description": "Jaccard threshold for near-duplicate clustering."
+        },
+        "tree_threshold": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "description": "APTED tree-edit-distance similarity threshold."
+        },
+        "min_cluster_impact": {
+            "type": "integer",
+            "minimum": 0
+        },
+        "max_df": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "description": "Maximum document-frequency for an n-gram before it is treated as boilerplate."
+        },
+        "ngram_size": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 10
+        },
+        "cache_dir": { "type": "string" },
+        "parallelism": { "type": "string", "enum": ["auto", "off", "manual"] },
+        "workers": { "type": "integer", "minimum": 0 },
+        "incremental": { "type": "boolean" },
+        "lazy_ast": { "type": "boolean" },
+        "report": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "html": { "type": "string" },
+                "json": { "type": "string" }
+            }
+        }
+    }
+}
