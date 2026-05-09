@@ -120,6 +120,35 @@ final class ParameterSynthesizerTest extends TestCase
         $this->assertSame('$includeSomeSnakeThing', $cluster->holes[0]->suggestedName);
     }
 
+    public function testMixedIntsAndStringsProduceUnion(): void
+    {
+        $cluster = $this->clusterWithHoles([new Hole('__P0', 'literal', ['1', '2', "'admin'"])]);
+        (new ParameterSynthesizer())->synthesize($cluster);
+        $this->assertSame('int|string', $cluster->holes[0]->inferredType);
+    }
+
+    public function testMixedIntFloatBoolProduceStableOrderedUnion(): void
+    {
+        $cluster = $this->clusterWithHoles([new Hole('__P0', 'literal', ['1', '2.5', 'true'])]);
+        (new ParameterSynthesizer())->synthesize($cluster);
+        // Stable order: int before float before bool
+        $this->assertSame('int|float|bool', $cluster->holes[0]->inferredType);
+    }
+
+    public function testUnclassifiableValueFallsBackToMixed(): void
+    {
+        $cluster = $this->clusterWithHoles([new Hole('__P0', 'subtree', ['$some->call()', '$other'])]);
+        (new ParameterSynthesizer())->synthesize($cluster);
+        $this->assertSame('mixed', $cluster->holes[0]->inferredType);
+    }
+
+    public function testNullAndStringValuesProduceNullableUnion(): void
+    {
+        $cluster = $this->clusterWithHoles([new Hole('__P0', 'literal', ["'foo'", "'bar'", 'null'])]);
+        (new ParameterSynthesizer())->synthesize($cluster);
+        $this->assertSame('string|null', $cluster->holes[0]->inferredType);
+    }
+
     /** @param list<Hole> $holes */
     private function clusterWithHoles(array $holes): Cluster
     {

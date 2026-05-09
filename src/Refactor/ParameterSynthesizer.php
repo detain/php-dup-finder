@@ -71,7 +71,68 @@ final class ParameterSynthesizer
             return 'callable|string';
         }
 
-        return 'mixed';
+        // Mixed-type observations — try to emit a union type instead of
+        // dropping straight to 'mixed'. Each observed value is classified
+        // independently; the unique set is joined with '|' in a stable
+        // ordering. If we can't classify *every* value we still fall
+        // back to 'mixed' rather than emitting a misleading partial union.
+        $union = $this->unionType($values);
+        return $union ?? 'mixed';
+    }
+
+    /**
+     * Try to classify each observed value individually and return a
+     * union type like 'int|string'. Returns null when at least one
+     * value can't be confidently classified — caller falls back to
+     * 'mixed'.
+     *
+     * Categories considered (per value):
+     *
+     *   - integer literal     → 'int'
+     *   - float literal       → 'float'
+     *   - PHP string literal  → 'string'
+     *   - bool keyword        → 'bool'
+     *   - null keyword        → 'null'
+     *   - class-like name     → 'class-string'
+     *
+     * Bare identifiers are NOT classified — they're often variables in
+     * the template, and emitting `'string'` for them would be a lie.
+     *
+     * @param list<string> $values
+     */
+    private function unionType(array $values): ?string
+    {
+        $seen = [];
+        foreach ($values as $v) {
+            $type = $this->classifyValue($v);
+            if ($type === null) {
+                return null;
+            }
+            $seen[$type] = true;
+        }
+        if ($seen === []) {
+            return null;
+        }
+        // Stable ordering: scalar primitives first, then class-string.
+        $order = ['int', 'float', 'string', 'bool', 'null', 'class-string'];
+        $sorted = [];
+        foreach ($order as $t) {
+            if (isset($seen[$t])) {
+                $sorted[] = $t;
+            }
+        }
+        return implode('|', $sorted);
+    }
+
+    private function classifyValue(string $v): ?string
+    {
+        if (preg_match('/^-?\d+$/', $v)) return 'int';
+        if (preg_match('/^-?\d+\.\d+$/', $v)) return 'float';
+        if (in_array($v, ['true', 'false', 'TRUE', 'FALSE'], true)) return 'bool';
+        if (in_array($v, ['null', 'NULL'], true)) return 'null';
+        if (preg_match('/^([\'"]).*\1$/s', $v)) return 'string';
+        if (preg_match('/^[A-Z][A-Za-z0-9_]*(\\\\[A-Z][A-Za-z0-9_]*)*$/', $v)) return 'class-string';
+        return null;
     }
 
     /**
