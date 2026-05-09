@@ -1,0 +1,80 @@
+{
+    "phpdup_version": "0.1.0",
+    "summary": {
+        "files": 1,
+        "blocks": 3,
+        "parse_errors": 0,
+        "clusters": 1,
+        "duplicated_lines": 21,
+        "total_impact": 74
+    },
+    "config": {
+        "min_block_size": 8,
+        "normalization_mode": "aggressive",
+        "similarity_threshold": 0.8,
+        "tree_threshold": 0.85,
+        "min_cluster_impact": 20
+    },
+    "clusters": [
+        {
+            "id": "Xaeb0e34a",
+            "kind": "method",
+            "exact": true,
+            "similarity": 1,
+            "confidence": 1,
+            "impact": 74,
+            "pattern_tags": [
+                "config-driven",
+                "crud-handler",
+                "sql-builder"
+            ],
+            "signature": "function findById(\n    string $value,\n): mixed",
+            "members": [
+                {
+                    "file": "tests/Fixtures/sql/Repos.php",
+                    "start": 6,
+                    "end": 12,
+                    "kind": "method",
+                    "namespace": "Fixtures\\Sql",
+                    "class": "UserRepo",
+                    "name": "findById",
+                    "size": 37
+                },
+                {
+                    "file": "tests/Fixtures/sql/Repos.php",
+                    "start": 17,
+                    "end": 23,
+                    "kind": "method",
+                    "namespace": "Fixtures\\Sql",
+                    "class": "ProductRepo",
+                    "name": "findById",
+                    "size": 37
+                },
+                {
+                    "file": "tests/Fixtures/sql/Repos.php",
+                    "start": 28,
+                    "end": 34,
+                    "kind": "method",
+                    "namespace": "Fixtures\\Sql",
+                    "class": "OrderRepo",
+                    "name": "findById",
+                    "size": 37
+                }
+            ],
+            "holes": [
+                {
+                    "placeholder": "__P0",
+                    "kind": "literal",
+                    "inferred_type": "string",
+                    "suggested_name": "$value",
+                    "observed": [
+                        "'SELECT * FROM users WHERE id = ?'",
+                        "'SELECT * FROM products WHERE id = ?'",
+                        "'SELECT * FROM orders WHERE id = ?'"
+                    ],
+                    "value_count": 3
+                }
+            ]
+        }
+    ]
+}

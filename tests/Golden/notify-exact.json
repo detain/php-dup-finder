@@ -1,0 +1,160 @@
+{
+    "phpdup_version": "0.1.0",
+    "summary": {
+        "files": 1,
+        "blocks": 8,
+        "parse_errors": 0,
+        "clusters": 2,
+        "duplicated_lines": 27,
+        "total_impact": 72
+    },
+    "config": {
+        "min_block_size": 8,
+        "normalization_mode": "aggressive",
+        "similarity_threshold": 0.8,
+        "tree_threshold": 0.85,
+        "min_cluster_impact": 20
+    },
+    "clusters": [
+        {
+            "id": "X53edd72b",
+            "kind": "method",
+            "exact": true,
+            "similarity": 1,
+            "confidence": 1,
+            "impact": 44,
+            "pattern_tags": [
+                "config-driven"
+            ],
+            "signature": "function notifyByThreshold(\n    int $threshold,\n    string $value,\n): mixed",
+            "members": [
+                {
+                    "file": "tests/Fixtures/notify/Notify.php",
+                    "start": 10,
+                    "end": 15,
+                    "kind": "method",
+                    "namespace": "Fixtures\\Notify",
+                    "class": "Notify",
+                    "name": "notifyHigh",
+                    "size": 22
+                },
+                {
+                    "file": "tests/Fixtures/notify/Notify.php",
+                    "start": 17,
+                    "end": 22,
+                    "kind": "method",
+                    "namespace": "Fixtures\\Notify",
+                    "class": "Notify",
+                    "name": "notifyMid",
+                    "size": 22
+                },
+                {
+                    "file": "tests/Fixtures/notify/Notify.php",
+                    "start": 24,
+                    "end": 29,
+                    "kind": "method",
+                    "namespace": "Fixtures\\Notify",
+                    "class": "Notify",
+                    "name": "notifyLow",
+                    "size": 22
+                }
+            ],
+            "holes": [
+                {
+                    "placeholder": "__P0",
+                    "kind": "literal",
+                    "inferred_type": "int",
+                    "suggested_name": "$threshold",
+                    "observed": [
+                        "10",
+                        "20",
+                        "30"
+                    ],
+                    "value_count": 3
+                },
+                {
+                    "placeholder": "__P1",
+                    "kind": "literal",
+                    "inferred_type": "string",
+                    "suggested_name": "$value",
+                    "observed": [
+                        "'admin'",
+                        "'moderator'",
+                        "'editor'"
+                    ],
+                    "value_count": 3
+                }
+            ]
+        },
+        {
+            "id": "Xe02c914f",
+            "kind": "if",
+            "exact": true,
+            "similarity": 1,
+            "confidence": 1,
+            "impact": 28,
+            "pattern_tags": [
+                "config-driven"
+            ],
+            "signature": "function extractedFunction(\n    int $threshold,\n    string $value,\n): mixed",
+            "members": [
+                {
+                    "file": "tests/Fixtures/notify/Notify.php",
+                    "start": 12,
+                    "end": 14,
+                    "kind": "if",
+                    "namespace": "Fixtures\\Notify",
+                    "class": "Notify",
+                    "name": null,
+                    "size": 14
+                },
+                {
+                    "file": "tests/Fixtures/notify/Notify.php",
+                    "start": 19,
+                    "end": 21,
+                    "kind": "if",
+                    "namespace": "Fixtures\\Notify",
+                    "class": "Notify",
+                    "name": null,
+                    "size": 14
+                },
+                {
+                    "file": "tests/Fixtures/notify/Notify.php",
+                    "start": 26,
+                    "end": 28,
+                    "kind": "if",
+                    "namespace": "Fixtures\\Notify",
+                    "class": "Notify",
+                    "name": null,
+                    "size": 14
+                }
+            ],
+            "holes": [
+                {
+                    "placeholder": "__P0",
+                    "kind": "literal",
+                    "inferred_type": "int",
+                    "suggested_name": "$threshold",
+                    "observed": [
+                        "10",
+                        "20",
+                        "30"
+                    ],
+                    "value_count": 3
+                },
+                {
+                    "placeholder": "__P1",
+                    "kind": "literal",
+                    "inferred_type": "string",
+                    "suggested_name": "$value",
+                    "observed": [
+                        "'admin'",
+                        "'moderator'",
+                        "'editor'"
+                    ],
+                    "value_count": 3
+                }
+            ]
+        }
+    ]
+}
