@@ -59,6 +59,8 @@ final class Command extends SymfonyCommand
             ->addOption('csv', null, InputOption::VALUE_REQUIRED, 'Write flat CSV (one row per cluster member) to FILE')
             ->addOption('prometheus', null, InputOption::VALUE_REQUIRED, 'Write Prometheus text-format metrics to FILE (for pushgateway / CI dashboards)')
             ->addOption('timeseries', null, InputOption::VALUE_REQUIRED, 'Append a JSONL summary record (commit-tagged) to FILE for tracking duplicate debt over time')
+            ->addOption('graphviz', null, InputOption::VALUE_REQUIRED, 'Write a Graphviz DOT graph (file→cluster bipartite) to FILE — render with `dot -Tpng FILE -o out.png`')
+            ->addOption('plantuml', null, InputOption::VALUE_REQUIRED, 'Write a PlantUML class diagram to FILE — render with `plantuml FILE`')
             ->addOption('diff', null, InputOption::VALUE_REQUIRED, 'Write per-cluster unified diffs into DIR')
             ->addOption('patch', null, InputOption::VALUE_REQUIRED, 'Write a single cumulative patch file containing every cluster diff')
             ->addOption('limit', null, InputOption::VALUE_REQUIRED, 'Show at most N clusters in CLI output', 50)
@@ -105,6 +107,7 @@ Options grouped by category:
  <comment>Output / reports</comment>
    --html, --json, --sarif, --gitlab-sast, --checkstyle,
    --csv, --prometheus, --timeseries,
+   --graphviz, --plantuml,
    --diff, --patch, --limit, --sort, --stats,
    --summary-only, --clusters
 
@@ -265,6 +268,8 @@ HELP;
             'csvFile'        => $input->getOption('csv'),
             'prometheusFile' => $input->getOption('prometheus'),
             'timeseriesFile' => $input->getOption('timeseries'),
+            'graphvizFile'   => $input->getOption('graphviz'),
+            'plantumlFile'   => $input->getOption('plantuml'),
             'cliVerbosity'   => $cliVerbosity,
             'minSafety'      => $input->getOption('min-safety') !== null ? (float)$input->getOption('min-safety') : 0.0,
         ];
@@ -294,6 +299,8 @@ HELP;
                         timeseriesFile: $reportArgs['timeseriesFile'],
                         cliVerbosity:   $reportArgs['cliVerbosity'],
                         minSafety:      $reportArgs['minSafety'],
+                        graphvizFile:   $reportArgs['graphvizFile'],
+                        plantumlFile:   $reportArgs['plantumlFile'],
                     ),
                 ],
                 stopAfter: $stopAfter,
