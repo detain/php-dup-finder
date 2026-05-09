@@ -1,0 +1,10 @@
+/vendor/
+/composer.lock
+/.phpdup-cache/
+/phpdup-report/
+/.phpunit.result.cache
+/.phpunit.cache/
+/tests/coverage/
+/coverage.xml
+/coverage-html/
+/.caliber/

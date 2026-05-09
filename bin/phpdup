@@ -1,0 +1,29 @@
+#!/usr/bin/env php
+<?php
+declare(strict_types=1);
+
+$autoloads = [
+    __DIR__ . '/../vendor/autoload.php',
+    __DIR__ . '/../../../autoload.php',
+];
+$loaded = false;
+foreach ($autoloads as $file) {
+    if (is_file($file)) {
+        require $file;
+        $loaded = true;
+        break;
+    }
+}
+if (!$loaded) {
+    fwrite(STDERR, "phpdup: composer autoload not found. Run `composer install` in the project root.\n");
+    exit(1);
+}
+
+use Symfony\Component\Console\Application;
+use Phpdup\Cli\Command;
+
+$app = new Application('phpdup', '0.1.0');
+$cmd = new Command();
+$app->add($cmd);
+$app->setDefaultCommand($cmd->getName(), false);
+exit($app->run());
