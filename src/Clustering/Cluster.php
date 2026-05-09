@@ -46,6 +46,17 @@ final class Cluster
     public float $safety = 0.0;
 
     /**
+     * Member indices flagged by {@see \Phpdup\Reporting\CoherenceAnalyzer}
+     * as outliers — ones whose mean pairwise similarity to the rest of
+     * the cluster is below the analyzer's threshold. Reporters surface
+     * an "outlier" badge alongside these members so reviewers can
+     * triage them out.
+     *
+     * @var list<int>
+     */
+    public array $outlierMemberIds = [];
+
+    /**
      * @param list<Block> $members
      */
     public function __construct(string $id, array $members, float $similarity, bool $exact)
