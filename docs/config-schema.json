@@ -2,7 +2,7 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": "https://github.com/detain/php-dup-finder/blob/master/docs/config-schema.json",
     "title": "phpdup configuration",
-    "description": "Schema for phpdup.json. The phpdup CLI also runs equivalent checks at load time and surfaces field-path errors before any analysis begins.",
+    "description": "Schema for phpdup.json. The phpdup CLI runs equivalent checks at load time via Phpdup\\Cli\\ConfigLoader::validate() and surfaces field-path errors before any analysis begins. Defaults below match Phpdup\\Cli\\Config.",
     "type": "object",
     "additionalProperties": false,
     "properties": {
@@ -10,65 +10,155 @@
             "type": "array",
             "minItems": 1,
             "items": { "type": "string", "minLength": 1 },
-            "description": "Source roots to scan."
+            "description": "Source roots to scan. When this key is absent or empty, paths must come from the CLI args."
         },
         "exclude": {
             "type": "array",
             "items": { "type": "string", "minLength": 1 },
-            "description": "Glob patterns excluded from the scan (** for recursive)."
+            "description": "Glob patterns excluded from the scan. ** matches recursively."
         },
         "min_block_size": {
             "type": "integer",
             "minimum": 1,
-            "description": "Minimum AST node count for a block to be considered. Must be ≤ max_block_size."
+            "default": 8,
+            "description": "Minimum AST node count for a block to be considered. Must be <= max_block_size; the cross-field check is enforced at load time."
         },
         "max_block_size": {
             "type": "integer",
             "minimum": 1,
-            "description": "Maximum AST node count for a block. Must be ≥ min_block_size."
+            "default": 800,
+            "description": "Maximum AST node count for a block. Must be >= min_block_size. Blocks above this are dropped before fingerprinting."
         },
         "normalization_mode": {
             "type": "string",
-            "enum": ["strict", "default", "aggressive"]
+            "enum": ["strict", "default", "aggressive"],
+            "default": "aggressive",
+            "description": "strict = variable-rename tolerant only. default = also collapse literal values. aggressive = also collapse method, property, and class names."
         },
         "similarity_threshold": {
             "type": "number",
             "minimum": 0.0,
             "maximum": 1.0,
-            "description": "Jaccard threshold for near-duplicate clustering."
+            "default": 0.80,
+            "description": "Jaccard threshold for the near-duplicate clustering phase. Below this, the type-3 containment fallback may still apply when optional_blocks.enabled is true."
         },
         "tree_threshold": {
             "type": "number",
             "minimum": 0.0,
             "maximum": 1.0,
-            "description": "APTED tree-edit-distance similarity threshold."
+            "default": 0.85,
+            "description": "APTED tree-edit-distance similarity threshold applied to candidates that passed the Jaccard filter."
         },
         "min_cluster_impact": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "default": 20,
+            "description": "Minimum cluster impact (approximately the count of duplicated lines) required for a cluster to appear in the report. Quiets output without changing clustering."
         },
         "max_df": {
             "type": "number",
             "minimum": 0.0,
             "maximum": 1.0,
-            "description": "Maximum document-frequency for an n-gram before it is treated as boilerplate."
+            "default": 0.01,
+            "description": "Maximum document-frequency for an n-gram before it is treated as boilerplate and dropped from candidate-pair generation. 0.01 suits real codebases; bump to ~0.5 for tiny fixtures where every n-gram is 'common' by ratio."
         },
         "ngram_size": {
             "type": "integer",
             "minimum": 2,
-            "maximum": 10
+            "maximum": 10,
+            "default": 5,
+            "description": "Token-level n-gram length used for fingerprinting and Jaccard similarity."
         },
-        "cache_dir": { "type": "string" },
-        "parallelism": { "type": "string", "enum": ["auto", "off", "manual"] },
-        "workers": { "type": "integer", "minimum": 0 },
-        "incremental": { "type": "boolean" },
-        "lazy_ast": { "type": "boolean" },
+        "cache_dir": {
+            "type": "string",
+            "default": ".phpdup-cache",
+            "description": "Directory used for the AST cache and per-file index snapshots."
+        },
+        "parallelism": {
+            "type": "string",
+            "enum": ["auto", "off", "manual"],
+            "default": "auto",
+            "description": "auto = detect CPU count and parallelize when worth it. off = run serially. manual = honor the workers field literally."
+        },
+        "workers": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0,
+            "description": "Worker count for parallel preprocess + pair scoring. 0 = auto-detect from nproc / /proc/cpuinfo. 1 = serial. Higher is explicit."
+        },
+        "incremental": {
+            "type": "boolean",
+            "default": true,
+            "description": "Reuse per-file block snapshots from the IndexStore when the source hash, parser version, and config key all match. Disable for benchmarks or paranoid runs."
+        },
+        "lazy_ast": {
+            "type": "boolean",
+            "default": true,
+            "description": "Drop each block's original AST after fingerprinting; reload on demand inside the anti-unifier via BlockAstLoader. Disable for max speed when RAM is plentiful."
+        },
+        "kinds": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "enum": [
+                    "function", "method", "closure", "arrow",
+                    "if", "for", "foreach", "while", "do",
+                    "try", "switch", "match"
+                ]
+            },
+            "description": "Block kinds to extract. Empty list (or omitted) means accept all kinds. Equivalent to --kinds on the CLI."
+        },
+        "optional_blocks": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Tunables for type-3 / 'optional segment' clone detection — clusters where some members include extra statements not present in others, rendered as default-false bool $include* parameters in the suggested abstraction.",
+            "properties": {
+                "enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Master switch. When false the clusterer reverts to Jaccard-only and AntiUnifier falls back to whole-array subtree holes for divergent stmt arrays."
+                },
+                "containment": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "default": 0.85,
+                    "description": "ContainmentSimilarity threshold for the near-subset fallback used when Jaccard rejects a candidate pair. Higher = stricter."
+                },
+                "min_overlap": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "default": 0.6,
+                    "description": "Minimum size ratio (smaller bag mass / larger bag mass) for a near-subset pair to be kept. Prevents pairing a 1-line block with a 100-line one."
+                },
+                "max_per_cluster": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 3,
+                    "description": "Cap on optional_block holes per cluster before AntiUnifier falls back to a single whole-array hole — guards against pathological seven-boolean signatures."
+                },
+                "min_segment_length": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 1,
+                    "description": "Minimum stmt-array gap length (in raw stmts) to promote into an optional_block hole. Avoids noisy tiny mismatches."
+                }
+            }
+        },
         "report": {
             "type": "object",
             "additionalProperties": false,
+            "description": "File-output destinations. Equivalent to --html / --json on the CLI; the SARIF, GitLab SAST, diff, patch, and Checkstyle outputs are CLI-only.",
             "properties": {
-                "html": { "type": "string" },
-                "json": { "type": "string" }
+                "html": {
+                    "type": "string",
+                    "description": "Directory to write the interactive HTML report into."
+                },
+                "json": {
+                    "type": "string",
+                    "description": "Path to write the structured JSON report to."
+                }
             }
         }
     }
