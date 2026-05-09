@@ -7,19 +7,29 @@ use Phpdup\Clustering\Clusterer;
 use Phpdup\Index\BlockIndex;
 use Phpdup\Parallel\PairScoreWorker;
 use Phpdup\Parallel\WorkerPool;
+use Phpdup\Pipeline\CooperativeStageInterface;
+use Phpdup\Pipeline\NullProgressListener;
 use Phpdup\Pipeline\PipelineState;
+use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Pipeline\Stage;
-use Phpdup\Pipeline\StageInterface;
 use Phpdup\Similarity\JaccardSimilarity;
 use Phpdup\Similarity\TreeEditDistance;
 use Symfony\Component\Console\Output\OutputInterface;
 
-final class ClusterStage implements StageInterface
+final class ClusterStage implements CooperativeStageInterface
 {
+    /** Yield to the runtime every N edges streamed from the pair-score workers. */
+    private const YIELD_EVERY = 64;
+
+    private readonly ProgressListener $listener;
+
     public function __construct(
         private readonly bool $exactOnly,
         private readonly int $maxMemoryMb = 0,
-    ) {}
+        ?ProgressListener $listener = null,
+    ) {
+        $this->listener = $listener ?? new NullProgressListener();
+    }
 
     public function name(): Stage
     {
@@ -28,11 +38,21 @@ final class ClusterStage implements StageInterface
 
     public function run(PipelineState $state, OutputInterface $output): void
     {
+        foreach ($this->iter($state, $output) as $_) {
+            // synchronous drain
+        }
+    }
+
+    public function iter(PipelineState $state, OutputInterface $output): \Generator
+    {
         if (!$state->blocks) {
             return;
         }
 
         $config = $state->config;
+
+        $state->currentTask = 'Building block index';
+        yield Stage::Clustering;
 
         $index = new BlockIndex();
         foreach ($state->blocks as $b) {
@@ -42,6 +62,8 @@ final class ClusterStage implements StageInterface
 
         // Optional: drop original ASTs to free memory; reload lazily during refactor.
         if ($config->lazyAst) {
+            $state->currentTask = 'Releasing source ASTs to free memory';
+            yield Stage::Clustering;
             foreach ($state->blocks as $b) {
                 $b->unloadAst();
             }
@@ -62,9 +84,22 @@ final class ClusterStage implements StageInterface
 
         $edges = null;
         if (!$this->exactOnly) {
+            $state->currentTask = 'Generating candidate pairs (n-gram inverted index)';
+            yield Stage::Clustering;
+
             $candidatePairs = $clusterer->generateCandidatePairs($index);
-            $workers = $config->workers > 0 ? $config->workers : WorkerPool::detectCpuCount();
-            if (count($candidatePairs) >= 64 && $workers > 1) {
+            $state->candidatePairs = count($candidatePairs);
+            $state->scoredPairs    = 0;
+            $this->listener->onPairScored(0, $state->candidatePairs);
+
+            if ($state->candidatePairs > 0) {
+                $workers = $config->workers > 0 ? $config->workers : WorkerPool::detectCpuCount();
+                $useParallel = $state->candidatePairs >= 64 && $workers > 1;
+                $state->currentTask = $useParallel
+                    ? sprintf('Scoring %d candidate pairs across %d workers', $state->candidatePairs, $workers)
+                    : sprintf('Scoring %d candidate pairs', $state->candidatePairs);
+                yield Stage::Clustering;
+
                 $scoreWorker = new PairScoreWorker(
                     $index,
                     $config->similarityThreshold,
@@ -73,13 +108,76 @@ final class ClusterStage implements StageInterface
                     $config->optionalBlocksContainment,
                     $config->optionalBlocksMinOverlap,
                 );
-                $pool = new WorkerPool(workers: $workers);
-                $task = static fn(array $pairs): array => $scoreWorker->score($pairs);
-                $edges = $pool->run($candidatePairs, $task);
+
+                $edges = [];
+                if ($useParallel) {
+                    $pool = new WorkerPool(workers: $workers);
+                    $task = static function (array $pairs) use ($scoreWorker): \Generator {
+                        // Sub-batch so the parent receives multiple frames per child,
+                        // letting the TUI repaint while pairs are still being scored.
+                        foreach (array_chunk($pairs, 256) as $chunk) {
+                            $scored = $scoreWorker->score($chunk);
+                            yield ['__progress' => count($chunk)];
+                            foreach ($scored as $edge) {
+                                yield $edge;
+                            }
+                        }
+                    };
+                    $sinceYield = 0;
+                    foreach ($pool->runStreaming($candidatePairs, $task) as $row) {
+                        if (is_array($row) && isset($row['__progress'])) {
+                            $state->scoredPairs += (int)$row['__progress'];
+                        } else {
+                            $edges[] = $row;
+                        }
+                        if (++$sinceYield >= self::YIELD_EVERY) {
+                            $sinceYield = 0;
+                            $state->stageProgress = $state->candidatePairs > 0
+                                ? min(0.95, $state->scoredPairs / $state->candidatePairs)
+                                : 0.0;
+                            $this->listener->onPairScored($state->scoredPairs, $state->candidatePairs);
+                            $state->currentTask = sprintf(
+                                'Scoring candidate pairs (%d / %d)',
+                                $state->scoredPairs, $state->candidatePairs,
+                            );
+                            yield Stage::Clustering;
+                        }
+                    }
+                } else {
+                    // Serial path with periodic yields so the TUI stays responsive.
+                    $sinceYield = 0;
+                    $batchSize  = 256;
+                    foreach (array_chunk($candidatePairs, $batchSize) as $chunk) {
+                        foreach ($scoreWorker->score($chunk) as $edge) {
+                            $edges[] = $edge;
+                        }
+                        $state->scoredPairs += count($chunk);
+                        $sinceYield += count($chunk);
+                        if ($sinceYield >= self::YIELD_EVERY) {
+                            $sinceYield = 0;
+                            $state->stageProgress = $state->candidatePairs > 0
+                                ? min(0.95, $state->scoredPairs / $state->candidatePairs)
+                                : 0.0;
+                            $this->listener->onPairScored($state->scoredPairs, $state->candidatePairs);
+                            $state->currentTask = sprintf(
+                                'Scoring candidate pairs (%d / %d)',
+                                $state->scoredPairs, $state->candidatePairs,
+                            );
+                            yield Stage::Clustering;
+                        }
+                    }
+                }
+                $this->listener->onPairScored($state->candidatePairs, $state->candidatePairs);
             }
         }
+
+        $state->currentTask = 'Forming clusters from edges';
+        $state->stageProgress = 0.97;
+        yield Stage::Clustering;
+
         $state->clusters = $clusterer->cluster($index, $edges);
         $state->timings['cluster'] = microtime(true) - $tCluster;
+        $state->currentTask = sprintf('Built %d clusters', count($state->clusters));
 
         if ($this->maxMemoryMb > 0) {
             $rssMb = (int)floor(memory_get_peak_usage(true) / (1024 * 1024));

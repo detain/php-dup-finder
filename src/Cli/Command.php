@@ -27,8 +27,16 @@ final class Command extends SymfonyCommand
     {
         $this->setName('analyze')
             ->setDescription('Recursively scan PHP source roots for duplicated logic.')
-            ->addArgument('paths', InputArgument::IS_ARRAY, 'One or more paths to scan', [])
+            ->setHelp($this->buildGroupedHelp())
+            ->addArgument('paths', InputArgument::IS_ARRAY, 'One or more paths to scan', []);
+
+        // ── Configuration ──────────────────────────────────────────────────
+        $this
             ->addOption('config', 'c', InputOption::VALUE_REQUIRED, 'Path to phpdup.json config file')
+            ->addOption('validate-config', null, InputOption::VALUE_NONE, 'Validate the --config file against the documented schema and exit (no analysis is run)');
+
+        // ── Detection tuning ───────────────────────────────────────────────
+        $this
             ->addOption('min-block-size', null, InputOption::VALUE_REQUIRED, 'Minimum AST node count for a block')
             ->addOption('mode', null, InputOption::VALUE_REQUIRED, 'Normalization mode: strict|default|aggressive')
             ->addOption('similarity', null, InputOption::VALUE_REQUIRED, 'Jaccard similarity threshold (0..1)')
@@ -36,29 +44,70 @@ final class Command extends SymfonyCommand
             ->addOption('optional-blocks', null, InputOption::VALUE_REQUIRED, 'Type-3 / "optional segment" detection: on|off (default on). When on, blocks whose statements differ in length but share a common skeleton cluster together with bool $include* params for the absent-from-some-members segments.')
             ->addOption('optional-blocks-containment', null, InputOption::VALUE_REQUIRED, 'Containment threshold (0..1) for the type-3 fallback path. Default 0.85.')
             ->addOption('min-impact', null, InputOption::VALUE_REQUIRED, 'Minimum cluster impact to report')
+            ->addOption('exact-only', null, InputOption::VALUE_NONE, 'Skip near-duplicate detection (faster)')
+            ->addOption('kinds', null, InputOption::VALUE_REQUIRED, 'Comma-separated block kinds to include (e.g. method,closure). Default: all of method|function|closure|arrow|if|for|foreach|while|do|try|switch|match');
+
+        // ── Output / reports ───────────────────────────────────────────────
+        $this
             ->addOption('html', null, InputOption::VALUE_REQUIRED, 'Write HTML report to this directory')
             ->addOption('json', null, InputOption::VALUE_REQUIRED, 'Write JSON report to this file')
-            ->addOption('exact-only', null, InputOption::VALUE_NONE, 'Skip near-duplicate detection (faster)')
-            ->addOption('limit', null, InputOption::VALUE_REQUIRED, 'Show at most N clusters in CLI output', 50)
-            ->addOption('sort', null, InputOption::VALUE_REQUIRED, 'Cluster sort: KEY[:asc|desc]. Keys: impact|members|block-size|lines|similarity|confidence|name|file|id. Aliases: size→members, count→members. Default impact:desc.')
-            ->addOption('stats', null, InputOption::VALUE_NONE, 'Show pipeline statistics')
-            ->addOption('no-cache', null, InputOption::VALUE_NONE, 'Disable AST cache for this run')
-            ->addOption('workers', 'j', InputOption::VALUE_REQUIRED, 'Worker count for parallel preprocess + pair scoring (0 = auto, 1 = serial)')
-            ->addOption('no-incremental', null, InputOption::VALUE_NONE, 'Disable per-file index reuse')
-            ->addOption('no-lazy-ast', null, InputOption::VALUE_NONE, 'Keep all original ASTs in memory (higher RSS, faster anti-unification)')
-            ->addOption('stage', null, InputOption::VALUE_REQUIRED, 'Run pipeline only up to STAGE (scanning|preprocessing|clustering|refactoring|reporting); useful for incremental debugging')
-            ->addOption('validate-config', null, InputOption::VALUE_NONE, 'Validate the --config file against the documented schema and exit (no analysis is run)')
             ->addOption('sarif', null, InputOption::VALUE_REQUIRED, 'Write SARIF 2.1.0 report to FILE (for GitHub/GitLab PR annotations)')
             ->addOption('gitlab-sast', null, InputOption::VALUE_REQUIRED, 'Write GitLab SAST report (v15) to FILE')
+            ->addOption('checkstyle', null, InputOption::VALUE_REQUIRED, 'Write Checkstyle XML report to FILE')
             ->addOption('diff', null, InputOption::VALUE_REQUIRED, 'Write per-cluster unified diffs into DIR')
             ->addOption('patch', null, InputOption::VALUE_REQUIRED, 'Write a single cumulative patch file containing every cluster diff')
-            ->addOption('checkstyle', null, InputOption::VALUE_REQUIRED, 'Write Checkstyle XML report to FILE')
-            ->addOption('kinds', null, InputOption::VALUE_REQUIRED, 'Comma-separated block kinds to include (e.g. method,closure). Default: all of method|function|closure|arrow|if|for|foreach|while|do|try|switch|match')
+            ->addOption('limit', null, InputOption::VALUE_REQUIRED, 'Show at most N clusters in CLI output', 50)
+            ->addOption('sort', null, InputOption::VALUE_REQUIRED, 'Cluster sort: KEY[:asc|desc]. Keys: impact|members|block-size|lines|similarity|confidence|name|file|id. Aliases: size→members, count→members. Default impact:desc.')
+            ->addOption('stats', null, InputOption::VALUE_NONE, 'Show pipeline statistics');
+
+        // ── Performance / runtime ──────────────────────────────────────────
+        $this
+            ->addOption('workers', 'j', InputOption::VALUE_REQUIRED, 'Worker count for parallel preprocess + pair scoring (0 = auto, 1 = serial)')
+            ->addOption('no-cache', null, InputOption::VALUE_NONE, 'Disable AST cache for this run')
+            ->addOption('no-incremental', null, InputOption::VALUE_NONE, 'Disable per-file index reuse')
+            ->addOption('no-lazy-ast', null, InputOption::VALUE_NONE, 'Keep all original ASTs in memory (higher RSS, faster anti-unification)')
             ->addOption('max-memory', null, InputOption::VALUE_REQUIRED, 'Soft memory ceiling in MB. When peak RSS exceeds this mid-pipeline, phpdup logs a warning and suggests --exact-only.')
-            ->addOption('watch', null, InputOption::VALUE_NONE, 'Stay running and re-analyze on file changes (poll-based; Ctrl+C to exit)')
+            ->addOption('stage', null, InputOption::VALUE_REQUIRED, 'Run pipeline only up to STAGE (scanning|preprocessing|clustering|refactoring|reporting); useful for incremental debugging');
+
+        // ── Interactive / UI ───────────────────────────────────────────────
+        $this
             ->addOption('tui', null, InputOption::VALUE_NONE, 'Show interactive SugarCraft dashboard after analysis completes')
             ->addOption('plain', null, InputOption::VALUE_NONE, 'Force plain CLI output (no TUI, no ANSI colours)')
-            ->addOption('theme', null, InputOption::VALUE_REQUIRED, 'TUI theme: ansi|plain|charm|dracula|nord|catppuccin', 'ansi');
+            ->addOption('theme', null, InputOption::VALUE_REQUIRED, 'TUI theme: ansi|plain|charm|dracula|nord|catppuccin', 'ansi')
+            ->addOption('watch', null, InputOption::VALUE_NONE, 'Stay running and re-analyze on file changes (poll-based; Ctrl+C to exit)');
+    }
+
+    /**
+     * Categorized cheat-sheet shown under `Help:` when running --help.
+     * Complements Symfony's auto-generated --help option list (which preserves
+     * the addOption() order, so the groups also stay together there).
+     */
+    private function buildGroupedHelp(): string
+    {
+        return <<<HELP
+Options grouped by category:
+
+ <comment>Configuration</comment>
+   --config, --validate-config
+
+ <comment>Detection tuning</comment>
+   --min-block-size, --mode, --similarity, --max-df,
+   --optional-blocks, --optional-blocks-containment,
+   --min-impact, --exact-only, --kinds
+
+ <comment>Output / reports</comment>
+   --html, --json, --sarif, --gitlab-sast, --checkstyle,
+   --diff, --patch, --limit, --sort, --stats
+
+ <comment>Performance / runtime</comment>
+   --workers (-j), --no-cache, --no-incremental, --no-lazy-ast,
+   --max-memory, --stage
+
+ <comment>Interactive / UI</comment>
+   --tui, --plain, --theme, --watch
+
+Run <info>phpdup --help</info> for full descriptions of each option.
+HELP;
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -70,6 +119,8 @@ final class Command extends SymfonyCommand
         $paths = $input->getArgument('paths');
         if (!$paths) {
             $output->writeln('<error>phpdup: at least one path is required</error>');
+            $output->writeln('Run <info>phpdup --help</info> for usage and a grouped option reference.');
+            $output->writeln('Example: <info>phpdup src/ --html=build/dup-report</info>');
             return 2;
         }
 
@@ -182,8 +233,8 @@ final class Command extends SymfonyCommand
                 stages: [
                     new ScanningStage($listener),
                     new PreprocessStage($useCache, $showStats, $listener, $maxMemoryMb),
-                    new ClusterStage($exactOnly, $maxMemoryMb),
-                    new RefactorStage($useCache),
+                    new ClusterStage($exactOnly, $maxMemoryMb, $listener),
+                    new RefactorStage($useCache, $listener),
                     new ReportStage(
                         limit:          $reportArgs['limit'],
                         showStats:      $reportArgs['showStats'],

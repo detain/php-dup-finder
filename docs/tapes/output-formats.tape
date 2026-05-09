@@ -3,7 +3,9 @@ Output docs/media/output-formats.gif
 Set Shell "bash"
 Set FontSize 13
 Set Width 1100
-Set Height 540
+Set Height 720
+Set Padding 10
+Set Margin 0
 Set Theme "Catppuccin Mocha"
 Set TypingSpeed 28ms
 Set PlaybackSpeed 1.0

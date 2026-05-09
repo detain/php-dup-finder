@@ -9,6 +9,7 @@ use Phpdup\Pipeline\Stage;
 use Phpdup\Tui\Msg\RestartPipelineMsg;
 use Phpdup\Tui\Msg\StagePumpedMsg;
 use SugarCraft\Bits\Spinner\Spinner;
+use SugarCraft\Bits\Spinner\Style as SpinnerStyle;
 use SugarCraft\Bits\Spinner\TickMsg as SpinnerTickMsg;
 use SugarCraft\Charts\Sparkline\Sparkline;
 use SugarCraft\Core\Cmd;
@@ -65,7 +66,7 @@ final class PhpdupModel implements Model, ProgressListener
         private readonly Theme $theme,
         ?\Closure $iteratorFactory = null,
     ) {
-        $this->spinner         = Spinner::new();
+        $this->spinner         = Spinner::new(SpinnerStyle::miniDot());
         $this->startedAt       = microtime(true);
         $this->iteratorFactory = $iteratorFactory;
     }
@@ -93,9 +94,23 @@ final class PhpdupModel implements Model, ProgressListener
         $this->state->totalFiles   = $total;
     }
 
-    public function onFilePreprocessed(int $processed, int $reused, int $errors): void {}
-    public function onPairScored(int $scored, int $total): void {}
-    public function onClusterRefactored(int $refactored, int $total): void {}
+    public function onFilePreprocessed(int $processed, int $reused, int $errors): void
+    {
+        $this->state->processedFiles = $processed;
+        $this->state->reusedFiles    = $reused;
+        $this->state->parseErrors    = $errors;
+    }
+
+    public function onPairScored(int $scored, int $total): void
+    {
+        $this->state->scoredPairs    = $scored;
+        $this->state->candidatePairs = $total;
+    }
+
+    public function onClusterRefactored(int $refactored, int $total): void
+    {
+        $this->state->refactoredClusters = $refactored;
+    }
 
     public function init(): \Closure
     {
@@ -313,6 +328,14 @@ final class PhpdupModel implements Model, ProgressListener
             FlexItem::new($this->paneFor(Stage::Refactoring))->withRatio(1),
         )->withGap(1);
 
+        $statusLine = $this->viewState->analysisComplete
+            ? ''
+            : "  " . $this->theme->info->render('▸ ' . $this->state->stage->label())
+              . '  ' . $this->theme->muted->render($this->state->currentTask !== ''
+                  ? $this->state->currentTask
+                  : 'working...')
+              . "\n";
+
         $detail = $this->viewState->detailClusterId !== null
             ? $this->renderDetail()
             : "  " . $this->theme->muted->render(sprintf(
@@ -326,6 +349,7 @@ final class PhpdupModel implements Model, ProgressListener
 
         return $banner . "\n\n"
              . $panes->render($cols, max(8, $rows - 8)) . "\n"
+             . $statusLine
              . $this->renderTimingsSparkline($cols)
              . $detail
              . $help;
@@ -367,20 +391,44 @@ final class PhpdupModel implements Model, ProgressListener
                 $this->state->processedFiles,
                 $this->state->parseErrors,
             ),
-            Stage::Clustering => sprintf(
-                "%d clusters\n%.2fs",
-                count($this->state->clusters),
-                $this->state->timings['cluster'] ?? 0.0,
-            ),
-            Stage::Refactoring => sprintf(
-                "%d refactored\n%.2fs",
-                count($this->state->clusters),
-                $this->state->timings['refactor'] ?? 0.0,
-            ),
+            Stage::Clustering => $this->state->candidatePairs > 0
+                ? sprintf(
+                    "%d clusters\n%d / %d pairs\n%.2fs",
+                    count($this->state->clusters),
+                    $this->state->scoredPairs,
+                    $this->state->candidatePairs,
+                    $this->state->timings['cluster'] ?? 0.0,
+                )
+                : sprintf(
+                    "%d clusters\n%.2fs",
+                    count($this->state->clusters),
+                    $this->state->timings['cluster'] ?? 0.0,
+                ),
+            Stage::Refactoring => $this->refactorPaneBody(),
             default => '',
         };
 
         return $marker . $this->theme->info->render($label) . "\n" . $body;
+    }
+
+    /**
+     * Refactor pane body — switches between live "X / Y refactored" while the
+     * refactor stage is running and a static final count once we've moved on
+     * (Ranker can filter clusters in ReportStage, so the live numerator can
+     * exceed the post-report cluster count otherwise).
+     */
+    private function refactorPaneBody(): string
+    {
+        $refactored = $this->state->refactoredClusters;
+        $duration   = $this->state->timings['refactor'] ?? 0.0;
+        $stageIdx   = $this->state->stage->index();
+        $refactorIdx = Stage::Refactoring->index();
+        $isLiveOrEarlier = !$this->viewState->analysisComplete && $stageIdx <= $refactorIdx;
+        if ($isLiveOrEarlier) {
+            $total = count($this->state->clusters);
+            return sprintf("%d / %d refactored\n%.2fs", $refactored, $total, $duration);
+        }
+        return sprintf("%d refactored\n%.2fs", $refactored, $duration);
     }
 
     private function renderDetail(): string

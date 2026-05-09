@@ -37,6 +37,16 @@ final class PipelineState
     /** @var list<Cluster> Final clusters after RefactorStage. */
     public array $clusters = [];
 
+    /** Total candidate pairs queued for scoring (Clustering stage). */
+    public int $candidatePairs = 0;
+    /** Pairs scored so far (Clustering stage). */
+    public int $scoredPairs = 0;
+    /** Clusters processed by anti-unification (Refactoring stage). */
+    public int $refactoredClusters = 0;
+
+    /** Short, human-friendly description of what the active stage is doing right now. */
+    public string $currentTask = '';
+
     public ?Report $report = null;
 
     /** @var array<string,float> stage-name → seconds */
