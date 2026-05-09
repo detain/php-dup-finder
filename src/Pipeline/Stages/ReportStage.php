@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Phpdup\Pipeline\Stages;
 
+use Phpdup\Cli\Pager;
 use Phpdup\Parallel\WorkerPool;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\Stage;
@@ -40,6 +41,7 @@ final class ReportStage implements StageInterface
         private readonly float $minSafety = 0.0,
         private readonly ?string $graphvizFile = null,
         private readonly ?string $plantumlFile = null,
+        private readonly string $pagerMode = Pager::MODE_NEVER,
     ) {}
 
     public function name(): Stage
@@ -83,7 +85,28 @@ final class ReportStage implements StageInterface
         $state->report   = $report;
         $state->clusters = $clusters;
 
-        (new CliReporter($this->cliVerbosity))->render($report, $output, $this->limit);
+        // Cache cluster ids so the `phpdup completion` drill-down can
+        // suggest them. One id per line; refreshed on every run so
+        // stale ids age out automatically.
+        $this->writeClusterIdCache($config->cacheDir, $clusters);
+
+        if ($this->pagerMode !== Pager::MODE_NEVER) {
+            $buf = new \Symfony\Component\Console\Output\BufferedOutput(
+                $output->getVerbosity(),
+                $output->isDecorated(),
+                $output->getFormatter(),
+            );
+            (new CliReporter($this->cliVerbosity))->render($report, $buf, $this->limit);
+            $payload = $buf->fetch();
+            $lines = substr_count($payload, "\n");
+            if (Pager::shouldPage($this->pagerMode, $lines)) {
+                Pager::send($payload, $output);
+            } else {
+                $output->write($payload);
+            }
+        } else {
+            (new CliReporter($this->cliVerbosity))->render($report, $output, $this->limit);
+        }
 
         if ($config->jsonReportFile !== null) {
             (new JsonReporter())->writeTo($report, $config->jsonReportFile);
@@ -133,5 +156,18 @@ final class ReportStage implements StageInterface
             (new PlantumlReporter())->writeTo($report, $this->plantumlFile);
             $output->writeln("<info>phpdup</info> plantuml file → {$this->plantumlFile}");
         }
+    }
+
+    /** @param list<\Phpdup\Clustering\Cluster> $clusters */
+    private function writeClusterIdCache(string $cacheDir, array $clusters): void
+    {
+        if ($cacheDir === '' || !@is_dir($cacheDir) && !@mkdir($cacheDir, 0o775, true)) {
+            return;
+        }
+        $payload = '';
+        foreach ($clusters as $c) {
+            $payload .= $c->id . "\n";
+        }
+        @file_put_contents($cacheDir . '/clusters.list', $payload);
     }
 }
