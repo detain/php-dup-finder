@@ -6,6 +6,7 @@ namespace Phpdup\Refactor;
 use PhpParser\Node;
 use PhpParser\NodeFinder;
 use Phpdup\Clustering\Cluster;
+use Phpdup\Refactor\Hole;
 
 /**
  * Tags clusters whose shape matches well-known refactor archetypes.
@@ -40,7 +41,16 @@ final class PatternRecognizer
         if ($this->isValidationChain($cluster)) $tags[] = 'validation-chain';
         if ($this->isSqlBuilder($cluster))      $tags[] = 'sql-builder';
         if ($this->isStateMachine($cluster))    $tags[] = 'state-machine';
+        if ($this->hasOptionalSegments($cluster)) $tags[] = 'optional-segments';
         $cluster->patternTags = $tags;
+    }
+
+    private function hasOptionalSegments(Cluster $cluster): bool
+    {
+        foreach ($cluster->holes as $h) {
+            if ($h->kind === 'optional_block') return true;
+        }
+        return false;
     }
 
     private function isConfigDriven(Cluster $cluster): bool

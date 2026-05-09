@@ -48,6 +48,10 @@ final class ParameterSynthesizer
 
     private function inferType(Hole $hole): string
     {
+        if ($hole->kind === 'optional_block') {
+            return 'bool';
+        }
+
         $values = $hole->observedValues;
         if (!$values) return 'mixed';
 
@@ -78,6 +82,14 @@ final class ParameterSynthesizer
         $values = $hole->observedValues;
         $base = null;
 
+        // Optional segments: derive a verb from the first identifier in the
+        // segment so the boolean param reads naturally — e.g. a segment whose
+        // first call is `some_other_logic(...)` becomes `$includeSomeOtherLogic`.
+        if ($hole->kind === 'optional_block') {
+            $base = 'include' . ucfirst($this->camelCaseFromSegment($values));
+            return $this->resolveCollision('$' . $base, $usedNames);
+        }
+
         // Try longest common substring of identifier-shaped values
         if (count($values) >= 2 && $this->allMatch($values, '/^\$?[a-zA-Z_][a-zA-Z0-9_]*$/')) {
             $stripped = array_map(static fn(string $v) => ltrim($v, '$'), $values);
@@ -99,13 +111,68 @@ final class ParameterSynthesizer
         }
 
         $base = $this->camelToSnake($base);
-        $name = '$' . $base;
-        $i = 1;
-        while (isset($usedNames[$name])) {
-            $name = '$' . $base . $i++;
+        return $this->resolveCollision('$' . $base, $usedNames);
+    }
+
+    /** @param array<string,bool> $usedNames */
+    private function resolveCollision(string $name, array &$usedNames): string
+    {
+        if (!isset($usedNames[$name])) {
+            $usedNames[$name] = true;
+            return $name;
         }
-        $usedNames[$name] = true;
-        return $name;
+        $i = 1;
+        $candidate = $name . $i;
+        while (isset($usedNames[$candidate])) {
+            $i++;
+            $candidate = $name . $i;
+        }
+        $usedNames[$candidate] = true;
+        return $candidate;
+    }
+
+    /**
+     * Extract a camelCase verb-ish name from the first non-absent observed
+     * segment. Used to label optional_block boolean parameters.
+     *
+     * @param list<string> $observed
+     */
+    private function camelCaseFromSegment(array $observed): string
+    {
+        foreach ($observed as $v) {
+            if ($v === '<absent>' || $v === '<missing>' || $v === '') continue;
+            // First identifier-like token in the segment, e.g.
+            //   `some_other_logic($here);` → `some_other_logic`
+            //   `$ret = otherStuff();`     → `otherStuff`
+            //   `if ($x) doThing();`       → `doThing`
+            if (preg_match('/[a-zA-Z_][a-zA-Z0-9_]{2,}/', $v, $matches)) {
+                $token = $matches[0];
+                // skip stop-words; reach for the next identifier in that case.
+                $stop = ['if', 'for', 'foreach', 'while', 'do', 'try', 'catch', 'switch', 'return', 'throw', 'else', 'true', 'false', 'null'];
+                if (in_array(strtolower($token), $stop, true)) {
+                    if (preg_match_all('/[a-zA-Z_][a-zA-Z0-9_]{2,}/', $v, $all)) {
+                        foreach ($all[0] as $cand) {
+                            if (!in_array(strtolower($cand), $stop, true)) {
+                                $token = $cand;
+                                break;
+                            }
+                        }
+                    }
+                }
+                return $this->snakeToCamel($token);
+            }
+        }
+        return 'OptionalBlock';
+    }
+
+    private function snakeToCamel(string $s): string
+    {
+        $parts = preg_split('/[_\\s]+/', $s) ?: [$s];
+        $out = '';
+        foreach ($parts as $i => $p) {
+            $out .= $i === 0 ? lcfirst($p) : ucfirst($p);
+        }
+        return $out;
     }
 
     /** @param list<string> $values */

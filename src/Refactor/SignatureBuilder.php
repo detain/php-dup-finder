@@ -23,11 +23,20 @@ final class SignatureBuilder
     public function buildSignature(Cluster $cluster): void
     {
         $name = $this->suggestFunctionName($cluster);
-        $params = [];
+        $required = [];
+        $optional = [];
         foreach ($cluster->holes as $hole) {
             $type = $this->displayType($hole->inferredType);
-            $params[] = sprintf('    %s%s%s,', $type ? $type . ' ' : '', $hole->suggestedName, '');
+            if ($hole->kind === 'optional_block') {
+                // Optional segment → default-false bool. PHP requires defaulted
+                // params at the end of the parameter list, so collect them
+                // separately and append after the required ones.
+                $optional[] = sprintf('    bool %s = false,', $hole->suggestedName);
+            } else {
+                $required[] = sprintf('    %s%s,', $type ? $type . ' ' : '', $hole->suggestedName);
+            }
         }
+        $params = array_merge($required, $optional);
         $body = $params ? "\n" . implode("\n", $params) . "\n" : '';
         $cluster->signature = "function {$name}({$body}): mixed";
     }

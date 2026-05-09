@@ -15,49 +15,115 @@ use Phpdup\Util\AstSerializer;
  * Computes the most-specific generalization of a cluster's members.
  *
  * Uses path-based hole tracking rather than embedded sentinel nodes:
- * the template is left untouched (it's a deep clone of member[0]'s
- * AST), and divergences are recorded as Hole objects with the path
- * through the AST and the observed values per member.
+ * the template is left untouched (it's a deep clone of the seed
+ * member's AST), and divergences are recorded as Hole objects with
+ * the path through the AST and the observed values per member.
  *
- * Algorithm: for each subsequent member i ≥ 1, walk member[0] and
- * member[i] in parallel. At each path P:
+ * Algorithm — per cluster:
  *
- *   - if a hole already exists at P (from a prior member): record
- *     member[i]'s value there; stop recursing into this subtree
- *   - if nodes match structurally and any leaf scalars match: recurse
- *   - otherwise: NEW hole at P. Members 0..i-1 implicitly agreed with
- *     member[0]'s value at P (otherwise a hole would already exist),
- *     so backfill i copies of that, then record member[i]'s value.
+ *   1. Pick the seed: the member with the most AST nodes. Used as the
+ *      template so it acts as the "maximal" version of the abstraction.
+ *   2. For each other member i, walk seed and member i in parallel:
+ *       - if a hole already exists at this path: record member i's
+ *         value, stop recursing
+ *       - if scalars match: continue
+ *       - otherwise: NEW hole. Backfill prior members' implicit
+ *         agreement with the seed, then record member i's divergence.
+ *   3. When subnodes are arrays of statements with differing length AND
+ *      type-3 detection is enabled, run LCS over each statement's
+ *      structural hash. Matched positions recurse normally; unmatched
+ *      template positions become 'optional_block' holes — that's how
+ *      "block 1 has 5 stmts, block 2 has 3 of those 5" is rendered as
+ *      "function ... bool $includeFooBar = false".
+ *   4. After unification, observed values are remapped from the
+ *      seed-first internal order back to the original cluster order so
+ *      reporters see the per-member values in the order they expect.
  */
 final class AntiUnifier
 {
     private Standard $printer;
 
-    public function __construct(private readonly ?BlockAstLoader $astLoader = null)
-    {
+    public function __construct(
+        private readonly ?BlockAstLoader $astLoader = null,
+        private readonly bool $optionalBlocksEnabled = true,
+        private readonly int $optionalBlocksMaxPerCluster = 3,
+        private readonly int $optionalBlocksMinSegmentLength = 1,
+    ) {
         $this->printer = new Standard();
     }
 
     public function unify(Cluster $cluster): void
     {
         $members = $cluster->members;
-        if (count($members) === 0) {
+        $count   = count($members);
+        if ($count === 0) {
             return;
         }
-        if (count($members) === 1) {
+        if ($count === 1) {
             $cluster->generalizedAst = Normalizer::deepClone($this->astOf($members[0]));
             $cluster->holes = [];
             return;
         }
 
-        $ctx = new UnifyContext();
+        // 1. Pick seed = max-size member; use as the unification template so the
+        //    "maximal" version's statements are the ones that can be marked as
+        //    optional (absent in some members) instead of dropped.
+        $seedIdx = $this->pickSeedIndex($members);
+        if ($seedIdx !== 0) {
+            // Swap into a local array — cluster.members order stays as the
+            // ranker arranged it, but unification proceeds with seed at index 0.
+            [$members[0], $members[$seedIdx]] = [$members[$seedIdx], $members[0]];
+        }
+
+        $ctx = new UnifyContext($this->optionalBlocksEnabled, $this->optionalBlocksMaxPerCluster);
         $first = $this->astOf($members[0]);
-        for ($i = 1; $i < count($members); $i++) {
+        for ($i = 1; $i < $count; $i++) {
             $this->walk($first, $this->astOf($members[$i]), $i, $ctx, []);
         }
 
+        // 2. Pad any holes whose later-arriving members agreed structurally —
+        //    walk's early-return appends a value, but optional_block holes get
+        //    explicit append calls only when LCS visits the index, so a member
+        //    whose array length matched the template never visits an
+        //    already-existing optional hole. Backfill those gaps with the
+        //    seed's repr (the member effectively had the seed's stmt).
+        $expectedLen = $count;
+        foreach ($ctx->holes as $hole) {
+            if ($hole->kind !== 'optional_block') continue;
+            while (count($hole->observedValues) < $expectedLen) {
+                $hole->observedValues[] = $hole->observedValues[0] ?? '<absent>';
+            }
+        }
+
         $cluster->generalizedAst = Normalizer::deepClone($first);
-        $cluster->holes = array_values($ctx->holes);
+        $cluster->holes          = array_values($ctx->holes);
+
+        // 3. Remap observed values from internal (seed-first) to external
+        //    (cluster.members) order. The values were appended in walk-order:
+        //    index 0 = seed = original cluster index $seedIdx; index $seedIdx
+        //    in the array = original cluster index 0; everyone else lines up.
+        if ($seedIdx !== 0) {
+            foreach ($cluster->holes as $hole) {
+                if (isset($hole->observedValues[0]) && isset($hole->observedValues[$seedIdx])) {
+                    [$hole->observedValues[0], $hole->observedValues[$seedIdx]]
+                        = [$hole->observedValues[$seedIdx], $hole->observedValues[0]];
+                }
+            }
+        }
+    }
+
+    /** @param list<Block> $members */
+    private function pickSeedIndex(array $members): int
+    {
+        $bestIdx  = 0;
+        $bestSize = -1;
+        foreach ($members as $i => $m) {
+            if ($m->size > $bestSize) {
+                $bestSize = $m->size;
+                $bestIdx  = $i;
+            }
+        }
+        return $bestIdx;
     }
 
     private function astOf(Block $block): Node
@@ -114,33 +180,180 @@ final class AntiUnifier
                 continue;
             }
             if (is_array($tVal) && is_array($mVal)) {
-                if (count($tVal) !== count($mVal)) {
-                    $this->createHole([...$path, $sub], $template, $member, $memberIdx, $ctx, 'subtree');
+                if (count($tVal) === count($mVal)) {
+                    foreach ($tVal as $idx => $tChild) {
+                        $mChild = $mVal[$idx];
+                        if ($tChild instanceof Node && $mChild instanceof Node) {
+                            $this->walk($tChild, $mChild, $memberIdx, $ctx, [...$path, $sub, $idx]);
+                        } elseif ($tChild !== $mChild && !($tChild === null && $mChild === null)) {
+                            $this->createHole([...$path, $sub, $idx], null, null, $memberIdx, $ctx, 'subtree');
+                        }
+                    }
                     continue;
                 }
-                foreach ($tVal as $idx => $tChild) {
-                    $mChild = $mVal[$idx];
-                    if ($tChild instanceof Node && $mChild instanceof Node) {
-                        $this->walk($tChild, $mChild, $memberIdx, $ctx, [...$path, $sub, $idx]);
-                    } elseif ($tChild !== $mChild && !($tChild === null && $mChild === null)) {
-                        // mixed-type array element divergence — rare
-                        $this->createHole([...$path, $sub, $idx], null, null, $memberIdx, $ctx, 'subtree');
-                    }
-                }
+                // Lengths differ — try LCS-based optional-block detection. Falls
+                // back to the legacy whole-array hole when disabled, when the
+                // contents aren't statements, or when too many segments would
+                // diverge.
+                $this->unifyDivergentArray($tVal, $mVal, $memberIdx, $ctx, $path, $sub);
                 continue;
             }
             if ($tVal === $mVal) {
                 continue;
             }
             if ($tVal === null xor $mVal === null) {
-                // optional subnode present in one and not the other
                 $this->createHole([...$path, $sub], null, null, $memberIdx, $ctx, 'subtree');
                 continue;
             }
-            // scalar attribute mismatch (e.g. flags) — treat as subtree hole at this position
             $this->createHole($path, $template, $member, $memberIdx, $ctx, 'subtree');
             return;
         }
+    }
+
+    /**
+     * Handle two arrays of children that differ in length. When enabled and the
+     * elements look like statements, run LCS over their structural hashes and
+     * emit one optional_block hole per unmatched template position. Otherwise
+     * fall back to a whole-array subtree hole — the legacy v0.3 behaviour.
+     *
+     * @param array<int, mixed> $tList
+     * @param array<int, mixed> $mList
+     * @param list<int|string> $path
+     */
+    private function unifyDivergentArray(
+        array $tList,
+        array $mList,
+        int $memberIdx,
+        UnifyContext $ctx,
+        array $path,
+        string $sub,
+    ): void {
+        if (!$ctx->optionalBlocksEnabled || !$this->arrayIsStmtList($tList) || !$this->arrayIsStmtList($mList)) {
+            $this->createHole([...$path, $sub], null, null, $memberIdx, $ctx, 'subtree');
+            return;
+        }
+
+        $tList = array_values($tList);
+        $mList = array_values($mList);
+        $tHashes = array_map(fn(Node $s) => $this->stmtHash($s), $tList);
+        $mHashes = array_map(fn(Node $s) => $this->stmtHash($s), $mList);
+        $matchT  = $this->lcsAlignTemplate($tHashes, $mHashes);
+
+        // Check we wouldn't blow past the optional-segment cap. Counting only the
+        // newly-unmatched positions on this iteration; existing optional holes at
+        // these paths reuse their slot.
+        $newOptionalCount = 0;
+        foreach ($matchT as $i => $j) {
+            if ($j !== -1) continue;
+            $childKey = self::pathKey([...$path, $sub, $i]);
+            if (!isset($ctx->holesByPath[$childKey])) $newOptionalCount++;
+        }
+        $existingOptional = 0;
+        foreach ($ctx->holes as $h) {
+            if ($h->kind === 'optional_block') $existingOptional++;
+        }
+        if ($existingOptional + $newOptionalCount > $ctx->optionalBlocksMaxPerCluster) {
+            // Too many optional segments would fall out of this alignment —
+            // safer to wrap the whole array as a subtree hole and let the user
+            // resolve manually than to ship a 7-boolean signature.
+            $this->createHole([...$path, $sub], null, null, $memberIdx, $ctx, 'subtree');
+            return;
+        }
+
+        foreach ($tList as $i => $tStmt) {
+            $childPath = [...$path, $sub, $i];
+            $childKey  = self::pathKey($childPath);
+            $j         = $matchT[$i];
+
+            if ($j >= 0) {
+                if (isset($ctx->holesByPath[$childKey])) {
+                    // A prior member created an optional hole here; this member
+                    // has the segment, so record the present marker.
+                    $ctx->holesByPath[$childKey]->appendObserved($this->repr($tStmt));
+                } else {
+                    $this->walk($tStmt, $mList[$j], $memberIdx, $ctx, $childPath);
+                }
+            } else {
+                $this->createOrAppendOptionalHole($childPath, $tStmt, $memberIdx, $ctx);
+            }
+        }
+    }
+
+    /** @param array<int,mixed> $list */
+    private function arrayIsStmtList(array $list): bool
+    {
+        if ($list === []) return false;
+        foreach ($list as $entry) {
+            if (!($entry instanceof Node\Stmt)) return false;
+        }
+        return true;
+    }
+
+    private function stmtHash(Node $stmt): string
+    {
+        return sha1(implode("\0", AstSerializer::tokens($stmt)));
+    }
+
+    /**
+     * Longest common subsequence on two hash sequences. Returns, for each
+     * template index i, the matched member index or -1.
+     *
+     * @param list<string> $tHashes
+     * @param list<string> $mHashes
+     * @return array<int, int>
+     */
+    private function lcsAlignTemplate(array $tHashes, array $mHashes): array
+    {
+        $n = count($tHashes);
+        $m = count($mHashes);
+        if ($n === 0 || $m === 0) {
+            return array_fill(0, $n, -1);
+        }
+        $dp = array_fill(0, $n + 1, array_fill(0, $m + 1, 0));
+        for ($i = 1; $i <= $n; $i++) {
+            for ($j = 1; $j <= $m; $j++) {
+                if ($tHashes[$i - 1] === $mHashes[$j - 1]) {
+                    $dp[$i][$j] = $dp[$i - 1][$j - 1] + 1;
+                } else {
+                    $dp[$i][$j] = max($dp[$i - 1][$j], $dp[$i][$j - 1]);
+                }
+            }
+        }
+        // Backtrace to find the alignment for each template index.
+        $matchT = array_fill(0, $n, -1);
+        $i = $n; $j = $m;
+        while ($i > 0 && $j > 0) {
+            if ($tHashes[$i - 1] === $mHashes[$j - 1]) {
+                $matchT[$i - 1] = $j - 1;
+                $i--; $j--;
+            } elseif ($dp[$i - 1][$j] >= $dp[$i][$j - 1]) {
+                $i--;
+            } else {
+                $j--;
+            }
+        }
+        return $matchT;
+    }
+
+    /**
+     * @param list<int|string> $path
+     */
+    private function createOrAppendOptionalHole(array $path, ?Node $tStmt, int $memberIdx, UnifyContext $ctx): void
+    {
+        $key = self::pathKey($path);
+        if (isset($ctx->holesByPath[$key])) {
+            $ctx->holesByPath[$key]->appendObserved('<absent>');
+            return;
+        }
+        $holeId = '__O' . ($ctx->holeCounter++);
+        $hole   = new Hole($holeId, 'optional_block');
+        $tRepr  = $this->repr($tStmt);
+        for ($i = 0; $i < $memberIdx; $i++) {
+            $hole->appendObserved($tRepr);
+        }
+        $hole->appendObserved('<absent>');
+        $ctx->holes[$holeId]      = $hole;
+        $ctx->holesByPath[$key]   = $hole;
     }
 
     /**
@@ -154,14 +367,14 @@ final class AntiUnifier
             return;
         }
         $holeId = '__P' . ($ctx->holeCounter++);
-        $hole = new Hole($holeId, $kind);
-        $tRepr = $this->repr($tNode);
+        $hole   = new Hole($holeId, $kind);
+        $tRepr  = $this->repr($tNode);
         for ($i = 0; $i < $memberIdx; $i++) {
             $hole->appendObserved($tRepr);
         }
         $hole->appendObserved($this->repr($mNode));
-        $ctx->holes[$holeId] = $hole;
-        $ctx->holesByPath[$key] = $hole;
+        $ctx->holes[$holeId]      = $hole;
+        $ctx->holesByPath[$key]   = $hole;
     }
 
     private function kindForLeaf(Node $template): string
@@ -231,4 +444,9 @@ final class UnifyContext
     public array $holes = [];
     /** @var array<string,Hole> by pathKey */
     public array $holesByPath = [];
+
+    public function __construct(
+        public readonly bool $optionalBlocksEnabled = true,
+        public readonly int $optionalBlocksMaxPerCluster = 3,
+    ) {}
 }

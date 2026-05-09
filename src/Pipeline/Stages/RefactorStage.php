@@ -36,7 +36,12 @@ final class RefactorStage implements StageInterface
         $loader = $config->lazyAst
             ? new BlockAstLoader(new AstCache($this->useCache ? $config->cacheDir : ''), new AstParser())
             : null;
-        $antiUnifier = new AntiUnifier($loader);
+        $antiUnifier = new AntiUnifier(
+            $loader,
+            $config->optionalBlocksEnabled,
+            $config->optionalBlocksMaxPerCluster,
+            $config->optionalBlocksMinSegmentLength,
+        );
         $synth       = new ParameterSynthesizer();
         $sigBuilder  = new SignatureBuilder();
         $patterns    = new PatternRecognizer();
