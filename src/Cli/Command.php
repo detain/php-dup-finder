@@ -49,6 +49,7 @@ final class Command extends SymfonyCommand
             ->addOption('patch', null, InputOption::VALUE_REQUIRED, 'Write a single cumulative patch file containing every cluster diff')
             ->addOption('checkstyle', null, InputOption::VALUE_REQUIRED, 'Write Checkstyle XML report to FILE')
             ->addOption('kinds', null, InputOption::VALUE_REQUIRED, 'Comma-separated block kinds to include (e.g. method,closure). Default: all of method|function|closure|arrow|if|for|foreach|while|do|try|switch|match')
+            ->addOption('max-memory', null, InputOption::VALUE_REQUIRED, 'Soft memory ceiling in MB. When peak RSS exceeds this mid-pipeline, phpdup logs a warning and suggests --exact-only.')
             ->addOption('tui', null, InputOption::VALUE_NONE, 'Show interactive SugarCraft dashboard after analysis completes')
             ->addOption('plain', null, InputOption::VALUE_NONE, 'Force plain CLI output (no TUI, no ANSI colours)')
             ->addOption('theme', null, InputOption::VALUE_REQUIRED, 'TUI theme: ansi|plain|charm|dracula|nord|catppuccin', 'ansi');
@@ -102,6 +103,9 @@ final class Command extends SymfonyCommand
         $exactOnly = (bool)$input->getOption('exact-only');
         $showStats = (bool)$input->getOption('stats');
         $limit     = (int)$input->getOption('limit');
+        $maxMemoryMb = $input->getOption('max-memory') !== null
+            ? (int)$input->getOption('max-memory')
+            : 0;
 
         $stopAfter = null;
         $stageOpt  = $input->getOption('stage');
@@ -132,8 +136,8 @@ final class Command extends SymfonyCommand
         $pipeline = new Pipeline(
             stages: [
                 new ScanningStage($listener),
-                new PreprocessStage($useCache, $showStats, $listener),
-                new ClusterStage($exactOnly),
+                new PreprocessStage($useCache, $showStats, $listener, $maxMemoryMb),
+                new ClusterStage($exactOnly, $maxMemoryMb),
                 new RefactorStage($useCache),
                 new ReportStage(
                     limit: $limit,

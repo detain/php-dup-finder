@@ -22,8 +22,23 @@ final class PreprocessStage implements StageInterface
         private readonly bool $useCache,
         private readonly bool $showStats = false,
         ?ProgressListener $listener = null,
+        private readonly int $maxMemoryMb = 0,
     ) {
         $this->listener = $listener ?? new NullProgressListener();
+    }
+
+    private function checkMemory(OutputInterface $output): void
+    {
+        if ($this->maxMemoryMb <= 0) {
+            return;
+        }
+        $rssMb = (int)floor(memory_get_peak_usage(true) / (1024 * 1024));
+        if ($rssMb > $this->maxMemoryMb) {
+            $output->writeln(sprintf(
+                "<comment>phpdup: peak RSS %d MB exceeded --max-memory=%d. Consider --exact-only or a larger --min-block-size.</comment>",
+                $rssMb, $this->maxMemoryMb,
+            ));
+        }
     }
 
     public function name(): Stage
@@ -68,6 +83,10 @@ final class PreprocessStage implements StageInterface
         }
 
         // Phase 2b: process the rest, in parallel when possible.
+        // Note: the WorkerPool fork model returns one big result array per pool->run(); true
+        // generator-based streaming across forks would require restructuring WorkerPool to
+        // pipe results back incrementally. For now we drop intermediate arrays as soon as
+        // they're flushed to the IndexStore so peak RSS stays bounded by one batch's worth.
         $tPre = microtime(true);
         if ($toProcess) {
             $worker = new PreprocessWorker($config);
@@ -76,7 +95,9 @@ final class PreprocessStage implements StageInterface
             $task = static fn(array $batch): array => $worker->process($batch);
             $rows = $pool->run($toProcess, $task);
             $perFileBlocks = [];
+            $processedFilesSet = [];
             foreach ($rows as $row) {
+                $processedFilesSet[$row['file']] = true;
                 if ($row['type'] === 'error') {
                     $state->parseErrors++;
                     continue;
@@ -88,12 +109,14 @@ final class PreprocessStage implements StageInterface
                     $blocks[] = $b;
                 }
             }
-            $state->processedFiles = count(array_unique(array_column($rows, 'file')));
+            $state->processedFiles = count($processedFilesSet);
+            unset($rows, $processedFilesSet);
             if ($store !== null) {
                 foreach ($perFileBlocks as $file => $list) {
                     $store->save($file, $list);
                 }
             }
+            unset($perFileBlocks);
             $this->listener->onFilePreprocessed(
                 $state->processedFiles, $state->reusedFiles, $state->parseErrors,
             );
@@ -115,6 +138,8 @@ final class PreprocessStage implements StageInterface
         if ($this->showStats) {
             $this->printStats($output, $blocks);
         }
+
+        $this->checkMemory($output);
     }
 
     /** @param list<Block> $blocks */

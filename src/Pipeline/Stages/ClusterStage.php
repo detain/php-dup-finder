@@ -16,7 +16,10 @@ use Symfony\Component\Console\Output\OutputInterface;
 
 final class ClusterStage implements StageInterface
 {
-    public function __construct(private readonly bool $exactOnly) {}
+    public function __construct(
+        private readonly bool $exactOnly,
+        private readonly int $maxMemoryMb = 0,
+    ) {}
 
     public function name(): Stage
     {
@@ -69,5 +72,15 @@ final class ClusterStage implements StageInterface
         }
         $state->clusters = $clusterer->cluster($index, $edges);
         $state->timings['cluster'] = microtime(true) - $tCluster;
+
+        if ($this->maxMemoryMb > 0) {
+            $rssMb = (int)floor(memory_get_peak_usage(true) / (1024 * 1024));
+            if ($rssMb > $this->maxMemoryMb) {
+                $output->writeln(sprintf(
+                    "<comment>phpdup: peak RSS %d MB exceeded --max-memory=%d during clustering. Consider --exact-only.</comment>",
+                    $rssMb, $this->maxMemoryMb,
+                ));
+            }
+        }
     }
 }
