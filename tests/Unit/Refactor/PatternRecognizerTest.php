@@ -151,6 +151,73 @@ final class PatternRecognizerTest extends TestCase
         $this->assertContains('eloquent-model', $cluster->patternTags);
     }
 
+    public function testLoopMapTag(): void
+    {
+        $blocks = $this->blocksFromCode('<?php function f($items) { $out = []; foreach ($items as $i) { $out[] = strtoupper($i); } return $out; }');
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('loop-map', $cluster->patternTags);
+    }
+
+    public function testLoopFilterTag(): void
+    {
+        $blocks = $this->blocksFromCode('<?php function f($items) { foreach ($items as $i) { if (!$i->valid()) continue; do_thing($i); } }');
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('loop-filter', $cluster->patternTags);
+    }
+
+    public function testSqlQueryTag(): void
+    {
+        $blocks = $this->blocksFromCode('<?php function f($db) { return $db->query("SELECT * FROM users WHERE id = 1"); }');
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('sql-query', $cluster->patternTags);
+    }
+
+    public function testHttpCallTag(): void
+    {
+        $blocks = $this->blocksFromCode('<?php function fetch($http) { return $http->get("https://api.example.com/users", []); }');
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('http-call', $cluster->patternTags);
+    }
+
+    public function testErrorHandlerTag(): void
+    {
+        $blocks = $this->blocksFromCode('<?php function f() { try { do_thing(); } catch (\\Throwable $e) { $logger->error($e); } }');
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('error-handler', $cluster->patternTags);
+    }
+
+    public function testBuilderChainTag(): void
+    {
+        $blocks = $this->blocksFromCode('<?php function build() { return $b->setA(1)->setB(2)->setC(3)->build(); }');
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('builder-chain', $cluster->patternTags);
+    }
+
+    public function testContainerRegistrationTag(): void
+    {
+        $blocks = $this->blocksFromCode('<?php function register() { $this->bind(Foo::class, FooImpl::class); $this->bind(Bar::class, BarImpl::class); }');
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('container-registration', $cluster->patternTags);
+    }
+
+    /** @return list<\Phpdup\Extraction\Block> */
+    private function blocksFromCode(string $code): array
+    {
+        $parser    = new AstParser();
+        $extractor = new BlockExtractor(minSize: 1);
+        $stmts = $parser->parseCode($code);
+        $blocks = $extractor->extract('virtual.php', $stmts);
+        $this->assertNotEmpty($blocks);
+        return $blocks;
+    }
+
     public function testQueryBuilderChainTagFromCallName(): void
     {
         // Build a block whose AST contains a `createQueryBuilder()` call so the
