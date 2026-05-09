@@ -33,6 +33,7 @@
         "sugarcraft/sugar-veil": "dev-master"
     },
     "require-dev": {
+        "humbug/box": "^4.0",
         "phpstan/phpstan": "^2.1",
         "phpunit/phpunit": "^10.5",
         "vimeo/psalm": "6.0.0"

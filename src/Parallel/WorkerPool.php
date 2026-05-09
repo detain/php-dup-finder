@@ -266,7 +266,10 @@ final class WorkerPool
         }
     }
 
-    /** @param resource $stream */
+    /**
+     * @param resource $stream
+     * @param mixed $record  serialized TResult or a {__done:true} / {__error:string} sentinel
+     */
     private static function writeRecord($stream, mixed $record): void
     {
         $payload = serialize($record);

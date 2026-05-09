@@ -174,9 +174,8 @@ final class ClusterStage implements CooperativeStageInterface
                         }
                         if (++$sinceYield >= self::YIELD_EVERY) {
                             $sinceYield = 0;
-                            $state->stageProgress = $state->candidatePairs > 0
-                                ? min(0.95, $state->scoredPairs / $state->candidatePairs)
-                                : 0.0;
+                            $denom = max(1, $state->candidatePairs);
+                            $state->stageProgress = min(0.95, $state->scoredPairs / $denom);
                             $this->listener->onPairScored($state->scoredPairs, $state->candidatePairs);
                             $state->currentTask = sprintf(
                                 'Scoring candidate pairs (%d / %d)',
@@ -197,9 +196,8 @@ final class ClusterStage implements CooperativeStageInterface
                         $sinceYield += count($chunk);
                         if ($sinceYield >= self::YIELD_EVERY) {
                             $sinceYield = 0;
-                            $state->stageProgress = $state->candidatePairs > 0
-                                ? min(0.95, $state->scoredPairs / $state->candidatePairs)
-                                : 0.0;
+                            $denom = max(1, $state->candidatePairs);
+                            $state->stageProgress = min(0.95, $state->scoredPairs / $denom);
                             $this->listener->onPairScored($state->scoredPairs, $state->candidatePairs);
                             $state->currentTask = sprintf(
                                 'Scoring candidate pairs (%d / %d)',
@@ -217,7 +215,16 @@ final class ClusterStage implements CooperativeStageInterface
         $state->stageProgress = 0.97;
         yield Stage::Clustering;
 
-        $state->clusters = $clusterer->cluster($index, $edges);
+        // Strip __progress bookkeeping rows injected by the streaming score path.
+        /** @var list<array{0: string, 1: string, 2: float}> $pureEdges */
+        $pureEdges = [];
+        foreach ($edges ?? [] as $e) {
+            if (!isset($e['__progress'])) {
+                /** @var array{0: string, 1: string, 2: float} $e */
+                $pureEdges[] = $e;
+            }
+        }
+        $state->clusters = $clusterer->cluster($index, $pureEdges);
         $state->timings['cluster'] = microtime(true) - $tCluster;
         $state->currentTask = sprintf('Built %d clusters', count($state->clusters));
 

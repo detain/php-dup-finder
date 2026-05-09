@@ -143,6 +143,9 @@ final class AstSerializer
         return null;
     }
 
+    /**
+     * @param scalar $v
+     */
     private static function stringifyScalar(mixed $v): string
     {
         if (is_bool($v))   return $v ? 'true' : 'false';

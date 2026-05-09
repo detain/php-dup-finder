@@ -22,10 +22,13 @@ if (!$loaded) {
 use Symfony\Component\Console\Application;
 use Phpdup\Cli\Command;
 use Phpdup\Cli\CompletionCommand;
+use Phpdup\Cli\UpdateCommand;
 
 $app = new Application('phpdup', '0.1.0');
 $cmd = new Command();
 $app->add($cmd);
+// self:update / upgrade / self-update — registered as aliases in UpdateCommand.
+$app->add(new UpdateCommand());
 // Override Symfony Console's default `completion` command with our own that
 // prepends commented-out shell-specific install instructions to the script.
 $app->add(new CompletionCommand());

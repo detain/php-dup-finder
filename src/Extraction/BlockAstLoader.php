@@ -32,7 +32,7 @@ final class BlockAstLoader
     ) {
     }
 
-    public function resolve(Block $block): Node
+    public function resolve(Block $block): Node|null
     {
         if (!$block->isAstUnloaded()) {
             return $block->ast;

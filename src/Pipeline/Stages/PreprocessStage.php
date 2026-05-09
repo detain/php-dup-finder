@@ -184,7 +184,7 @@ final class PreprocessStage implements CooperativeStageInterface
         }
         if ($sizes) {
             sort($sizes);
-            $p = fn(float $q) => $sizes[(int)floor($q * (count($sizes) - 1))];
+            $p = fn(float $q): int => $sizes[(int)floor($q * (count($sizes) - 1))];
             $out->writeln(sprintf(
                 '  size: min=%d p50=%d p90=%d p99=%d max=%d',
                 $sizes[0], $p(0.5), $p(0.9), $p(0.99), end($sizes)

@@ -1,0 +1,48 @@
+{
+    "output": "phpdup.phar",
+    "stub": "box-stub.php",
+    "main": "bin/phpdup",
+    "directories": [
+        "src",
+        "vendor"
+    ],
+    "files": [
+        "bin/phpdup",
+        "LICENSE",
+        "profiles"
+    ],
+    "metadata": {
+        "version": "0.1.0"
+    },
+    "compression": "gz",
+    "whitelist": [
+        "vendor/autoload.php",
+        "vendor/composer/*",
+        "vendor/nikic/php-parser/lib/**",
+        "vendor/symfony/console/**",
+        "vendor/symfony/polyfill-*",
+        "vendor/sebastian/diff/**",
+        "vendor/sugarcraft/candy-core/**",
+        "vendor/sugarcraft/candy-hermit/**",
+        "vendor/sugarcraft/candy-kit/**",
+        "vendor/sugarcraft/candy-log/**",
+        "vendor/sugarcraft/candy-palette/**",
+        "vendor/sugarcraft/candy-sprinkles/**",
+        "vendor/sugarcraft/sugar-bits/**",
+        "vendor/sugarcraft/sugar-charts/**",
+        "vendor/sugarcraft/sugar-crumbs/**",
+        "vendor/sugarcraft/sugar-prompt/**",
+        "vendor/sugarcraft/sugar-spark/**",
+        "vendor/sugarcraft/sugar-stickers/**",
+        "vendor/sugarcraft/sugar-table/**",
+        "vendor/sugarcraft/sugar-toast/**",
+        "vendor/sugarcraft/sugar-veil/**"
+    ],
+    "exclude-dev": false,
+    "exclude-composer-files": false,
+    "binary-reference": "bin/phpdup",
+    "application": {
+        "name": "phpdup",
+        "version": "0.1.0"
+    }
+}

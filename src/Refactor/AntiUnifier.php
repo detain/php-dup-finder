@@ -199,7 +199,7 @@ final class AntiUnifier
         return count($ctx->holes);
     }
 
-    private function astOf(Block $block): Node
+    private function astOf(Block $block): Node|null
     {
         if (!$block->isAstUnloaded()) {
             return $block->ast;

@@ -66,7 +66,7 @@ final class WatchRunner
         });
 
         if (function_exists('pcntl_signal')) {
-            $stop = function () use ($loop, &$running) {
+            $stop = function () use ($loop, &$running): void {
                 if (!$running) return;
                 $running = false;
                 $this->output->writeln("\n<info>phpdup</info> watch mode stopping");
