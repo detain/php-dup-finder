@@ -46,9 +46,12 @@ final class ConfigLoader
 
         $optBlock = is_array($data['optional_blocks'] ?? null) ? $data['optional_blocks'] : [];
 
+        $resolvedPaths = !empty($data['paths']) ? $data['paths'] : $base->paths;
+        $resolvedExclude = !empty($data['exclude']) ? $data['exclude'] : $base->exclude;
+
         return new Config(
-            paths: !empty($data['paths']) ? $data['paths'] : $base->paths,
-            exclude: !empty($data['exclude']) ? $data['exclude'] : $base->exclude,
+            paths: $resolvedPaths,
+            exclude: $resolvedExclude,
             minBlockSize: (int)$get('min_block_size', $base->minBlockSize),
             maxBlockSize: (int)$get('max_block_size', $base->maxBlockSize),
             normalizationMode: (string)$get('normalization_mode', $base->normalizationMode),
@@ -71,7 +74,83 @@ final class ConfigLoader
             optionalBlocksMaxPerCluster:  (int)($overrides['optional_blocks_max_per_cluster'] ?? $optBlock['max_per_cluster'] ?? $base->optionalBlocksMaxPerCluster),
             optionalBlocksMinSegmentLength: (int)($overrides['optional_blocks_min_segment_length'] ?? $optBlock['min_segment_length'] ?? $base->optionalBlocksMinSegmentLength),
             sort: (string)($overrides['sort'] ?? $data['sort'] ?? $base->sort),
+            perDirectoryOverrides: $this->discoverPerDirectoryOverrides($resolvedPaths),
         );
+    }
+
+    /**
+     * Walk each scan path looking for `.phpdup.json` files and return a map
+     * of {realpath(dir) → override-dict}. The dicts are validated via
+     * {@see validate()} so misconfigured per-directory files fail loudly
+     * at load time rather than mid-pipeline.
+     *
+     * Found files override only the subtree rooted at their directory;
+     * the actual layered merge happens in {@see Config::effectiveFor()}.
+     *
+     * @param list<string> $paths
+     * @return array<string, array<string, mixed>>
+     */
+    private function discoverPerDirectoryOverrides(array $paths): array
+    {
+        $out = [];
+        foreach ($paths as $root) {
+            if (!is_dir($root)) {
+                continue;
+            }
+            $iter = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS)
+            );
+            foreach ($iter as $file) {
+                if (!$file instanceof \SplFileInfo) continue;
+                if ($file->getBasename() !== '.phpdup.json') continue;
+                $decoded = json_decode((string)file_get_contents($file->getPathname()), true);
+                if (!is_array($decoded)) {
+                    throw new \RuntimeException('Per-directory config is not valid JSON: ' . $file->getPathname());
+                }
+                // Re-use the same validator so per-directory files can't
+                // smuggle in misspelled keys or out-of-range values.
+                $this->validate($decoded, $file->getPathname());
+
+                $dir = realpath($file->getPath());
+                if ($dir === false) {
+                    continue;
+                }
+                $out[$dir] = $this->shapeOverrides($decoded);
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Map the on-disk JSON shape (e.g. `optional_blocks: { containment: 0.9 }`)
+     * to the flat override-dict shape that {@see Config::withOverrides()} accepts
+     * (e.g. `optional_blocks_containment => 0.9`).
+     *
+     * @param array<string,mixed> $data
+     * @return array<string,mixed>
+     */
+    private function shapeOverrides(array $data): array
+    {
+        $out = [];
+        foreach (['min_block_size', 'max_block_size', 'normalization_mode',
+                  'similarity_threshold', 'tree_threshold', 'min_cluster_impact',
+                  'max_df', 'ngram_size', 'sort'] as $k) {
+            if (array_key_exists($k, $data)) {
+                $out[$k] = $data[$k];
+            }
+        }
+        if (array_key_exists('kinds', $data)) {
+            $out['allowed_kinds'] = $data['kinds'];
+        }
+        if (isset($data['optional_blocks']) && is_array($data['optional_blocks'])) {
+            $ob = $data['optional_blocks'];
+            if (array_key_exists('enabled', $ob))            $out['optional_blocks_enabled']            = $ob['enabled'];
+            if (array_key_exists('containment', $ob))        $out['optional_blocks_containment']        = $ob['containment'];
+            if (array_key_exists('min_overlap', $ob))        $out['optional_blocks_min_overlap']        = $ob['min_overlap'];
+            if (array_key_exists('max_per_cluster', $ob))    $out['optional_blocks_max_per_cluster']    = $ob['max_per_cluster'];
+            if (array_key_exists('min_segment_length', $ob)) $out['optional_blocks_min_segment_length'] = $ob['min_segment_length'];
+        }
+        return $out;
     }
 
     /**
