@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Phpdup\Similarity;
 
 use PhpParser\Node;
+use Phpdup\Fingerprint\ShapeletSketch;
 use Phpdup\Util\AstSerializer;
 
 /**
@@ -37,6 +38,35 @@ final class AptedDistance
      */
     public function similarity(Node $a, Node $b, float $threshold = 0.0): float
     {
+        // Tier-1 pre-filter: size delta. If the trees differ in size by
+        // more than the threshold permits, no number of matches could
+        // close the gap — skip linearisation entirely.
+        $sa = AstSerializer::nodeCount($a);
+        $sb = AstSerializer::nodeCount($b);
+        if ($sa === 0 || $sb === 0) {
+            return $sa === $sb ? 1.0 : 0.0;
+        }
+        $worstUpfront = max($sa, $sb);
+        $sizeBudget = (int)ceil((1.0 - $threshold) * $worstUpfront);
+        if (abs($sa - $sb) > $sizeBudget) {
+            return 0.0;
+        }
+
+        // Tier-2 pre-filter: shapelet sketch. A 64-bit (node-type, depth)
+        // histogram fingerprint; if Jaccard-by-popcount of the two
+        // sketches falls below the threshold, the trees can't possibly
+        // be that similar by tree-edit either. ~10 ALU ops vs O(n²) DP.
+        if ($threshold > 0.0) {
+            $skA = ShapeletSketch::sketch($a);
+            $skB = ShapeletSketch::sketch($b);
+            // Loose bound: tree-edit similarity is upper-bounded by the
+            // fraction of overlapping (type,depth) buckets present in both
+            // trees. A bucket overlap below threshold/2 leaves no room.
+            if (ShapeletSketch::overlap($skA, $skB) < $threshold / 2.0) {
+                return 0.0;
+            }
+        }
+
         $ta = self::flatten($a);
         $tb = self::flatten($b);
         $n = count($ta['labels']);
