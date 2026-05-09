@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Phpdup\Cli;
 
 use Phpdup\Pipeline\Pipeline;
+use Phpdup\Tui\TuiRunner;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\Stage;
 use Phpdup\Pipeline\Stages\ClusterStage;
@@ -44,7 +45,10 @@ final class Command extends SymfonyCommand
             ->addOption('gitlab-sast', null, InputOption::VALUE_REQUIRED, 'Write GitLab SAST report (v15) to FILE')
             ->addOption('diff', null, InputOption::VALUE_REQUIRED, 'Write per-cluster unified diffs into DIR')
             ->addOption('patch', null, InputOption::VALUE_REQUIRED, 'Write a single cumulative patch file containing every cluster diff')
-            ->addOption('checkstyle', null, InputOption::VALUE_REQUIRED, 'Write Checkstyle XML report to FILE');
+            ->addOption('checkstyle', null, InputOption::VALUE_REQUIRED, 'Write Checkstyle XML report to FILE')
+            ->addOption('tui', null, InputOption::VALUE_NONE, 'Show interactive SugarCraft dashboard after analysis completes')
+            ->addOption('plain', null, InputOption::VALUE_NONE, 'Force plain CLI output (no TUI, no ANSI colours)')
+            ->addOption('theme', null, InputOption::VALUE_REQUIRED, 'TUI theme: ansi|plain|charm|dracula|nord|catppuccin', 'ansi');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -112,9 +116,32 @@ final class Command extends SymfonyCommand
             stopAfter: $stopAfter,
         );
 
-        $pipeline->run(new PipelineState($config), $output);
+        $state = new PipelineState($config);
+        $pipeline->run($state, $output);
+
+        if ($this->shouldRunTui($input, $output)) {
+            $themeName = (string)$input->getOption('theme');
+            if (!in_array(strtolower($themeName), TuiRunner::knownThemes(), true)) {
+                $output->writeln(sprintf(
+                    '<error>phpdup: --theme must be one of %s</error>',
+                    implode('|', TuiRunner::knownThemes()),
+                ));
+                return 2;
+            }
+            return (new TuiRunner())->run($state, $themeName);
+        }
 
         return 0;
+    }
+
+    private function shouldRunTui(InputInterface $input, OutputInterface $_output): bool
+    {
+        if ($input->getOption('plain')) {
+            return false;
+        }
+        // Phase 2: require --tui explicitly. Auto-enable on TTY is deferred until Phase 3
+        // wires live progress; auto-launching today would surprise users running interactively.
+        return (bool)$input->getOption('tui');
     }
 
     private function validateConfigOnly(InputInterface $input, OutputInterface $output): int
