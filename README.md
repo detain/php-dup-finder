@@ -8,6 +8,10 @@
 [![PHP Version](https://img.shields.io/badge/php-%5E8.1-blue.svg)](https://www.php.net)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
+![phpdup demo](docs/media/phpdup-demo.gif)
+
+The demo above is rendered from [`docs/phpdup-demo.tape`](docs/phpdup-demo.tape) with [VHS](https://github.com/charmbracelet/vhs) — `vhs docs/phpdup-demo.tape`. It shows a top-2 cluster summary, the SARIF / GitLab SAST / diff / checkstyle outputs going to disk in one run, the SARIF payload, and a `--kinds=method,closure` filter pass.
+
 `phpdup` indexes a PHP codebase, parses every file into an Abstract Syntax
 Tree, normalizes those ASTs into a canonical form, and finds clusters of
 **parameterizable duplication** — places where the *shape* of the code
@@ -62,6 +66,7 @@ inferred types and observed values, ready to drop into a refactor.
 
 ## Table of contents
 
+- [What's new in v0.3](#whats-new-in-v03)
 - [What's new in v0.2](#whats-new-in-v02)
 - [Features](#features)
 - [Installation](#installation)
@@ -78,6 +83,13 @@ inferred types and observed values, ready to drop into a refactor.
   - [Incremental indexing](#incremental-indexing)
   - [Lazy AST loading](#lazy-ast-loading)
 - [Output formats](#output-formats)
+  - [SARIF (GitHub / GitLab PR annotations)](#sarif)
+  - [GitLab SAST report](#gitlab-sast-report)
+  - [Diff and patch](#diff-and-patch)
+  - [Checkstyle XML](#checkstyle-xml)
+- [TUI mode](#tui-mode)
+- [Watch mode](#watch-mode)
+- [Static analysis & config validation](#static-analysis--config-validation)
 - [CLI reference](#cli-reference)
 - [Programmatic use](#programmatic-use)
 - [Examples](#examples)
@@ -88,6 +100,34 @@ inferred types and observed values, ready to drop into a refactor.
 - [FAQ](#faq)
 - [Contributing](#contributing)
 - [License](#license)
+
+---
+
+## What's new in v0.3
+
+v0.3 turns phpdup into a CI-grade tool. The 295-line `Command::execute()`
+is now five composable pipeline stages, the same pipeline drives an
+optional interactive SugarCraft TUI, and four new machine-readable
+output formats land alongside the existing CLI/JSON/HTML.
+
+| Area                       | v0.2                              | v0.3                                                                                          |
+|----------------------------|-----------------------------------|-----------------------------------------------------------------------------------------------|
+| Architecture               | One monolithic `execute()` method | `Pipeline` orchestrator + `Scanning`/`Preprocessing`/`Clustering`/`Refactoring`/`Reporting` stages, each with its own tests. |
+| Output formats             | CLI, JSON, HTML                   | + **SARIF 2.1.0** (`--sarif`), **GitLab SAST v15** (`--gitlab-sast`), **unified diffs** (`--diff` dir / `--patch` file), **Checkstyle XML** (`--checkstyle`). |
+| TUI                        | —                                 | SugarCraft dashboard (`--tui`) with FlexBox panes, sparkline of stage timings, OSC 9;4 taskbar progress, six themes (`--theme=ansi\|plain\|charm\|dracula\|nord\|catppuccin`). |
+| Watch                      | —                                 | `--watch` polls mtimes via React\\EventLoop and re-runs on change; `Ctrl+C` exits cleanly.    |
+| Static analysis            | `php -l` only                     | PHPStan **level 6** (clean) + Psalm with a tracked baseline, both in CI.                      |
+| Config validation          | Field-level checks at construction | Full `phpdup.json` schema validation in `ConfigLoader::validate()`; `--validate-config` flag exits with the field-path on the first violation. |
+| Block-kind filter          | All kinds always extracted        | `--kinds=method,closure` (also accepted in `phpdup.json` as `"kinds"`) filters at extraction time before fingerprinting. |
+| Memory                     | Soft RSS unbounded                | `--max-memory=MB` warns when peak RSS exceeds the ceiling and suggests `--exact-only`. Intermediate arrays are unset early. |
+| Pipeline observability     | —                                 | `ProgressListener` interface stages emit per-file / per-pair events to; the TUI is a listener.|
+| Incremental halt           | —                                 | `--stage=NAME` halts after `scanning`, `preprocessing`, `clustering`, `refactoring`, or `reporting` for incremental debugging. |
+| HTML report                | Static, sort-by-impact only       | Client-side column sort, live filter input, copy-signature button, mini-map of cluster-impact distribution, syntax-highlighted code. |
+| Tests                      | 31                                | 112+                                                                                          |
+
+Cluster output (count, members, signatures, impact, similarity) remains
+byte-identical with v0.2 — none of the new features change clustering
+math.
 
 ---
 
@@ -145,8 +185,31 @@ For raw numbers and an honest discussion of where the wins came from
 - **Impact-ranked output.** Clusters sorted by how many lines disappear
   if the abstraction is applied, with a separate confidence score that
   flags risky refactors (subtree-level holes, cross-namespace spans).
-- **Three output formats.** SugarCraft-styled colorized CLI, structured
-  JSON, and a static HTML site with side-by-side diffs and hole tables.
+- **Seven output formats.** SugarCraft-styled colorized CLI, structured
+  JSON, an interactive HTML site (sortable, filterable, with a
+  cluster-impact mini-map and copy-signature buttons), **SARIF 2.1.0**
+  for GitHub/GitLab PR annotations, **GitLab SAST v15** for the MR
+  security widget, **unified diffs** for human review, and
+  **Checkstyle XML** for Jenkins/Sonar/Bitbucket.
+- **Optional SugarCraft TUI** (`--tui`). Four-pane FlexBox dashboard,
+  sparkline of stage durations, OSC 9;4 taskbar progress in
+  ConEmu/WezTerm/Windows Terminal, six built-in themes, ←/→ to cycle
+  cluster details, q to quit. Works from a real PipelineState — no
+  mocked data.
+- **Watch mode** (`--watch`). Re-runs analysis on file changes via a
+  poll-based `React\EventLoop` timer; SIGINT/SIGTERM tear down cleanly.
+- **Block-kind filter** (`--kinds=method,closure`). Drops non-matching
+  block kinds at extraction time so clustering only sees what you asked
+  for.
+- **Schema-validated config.** `phpdup.json` is checked against the
+  documented schema (`docs/config-schema.json`) at load time;
+  `--validate-config` exits with a field-path error before any analysis
+  runs, so CI can gate on config drift.
+- **Composable pipeline.** Five stages (`Scanning`,
+  `Preprocessing`, `Clustering`, `Refactoring`, `Reporting`) all
+  implement a tiny `StageInterface` and share a `PipelineState`. A
+  `ProgressListener` interface lets observers (the TUI, future
+  watchers) hook in without touching the stages.
 - **Parallelized preprocessing and pair scoring.** `pcntl_fork` worker
   pool batches files for parse + extract + normalize + fingerprint, and
   candidate pairs for Jaccard + tree-edit-distance scoring. Auto CPU
@@ -169,7 +232,8 @@ For raw numbers and an honest discussion of where the wins came from
   pattern recognizer, and reporters are independent modules with
   small, testable interfaces.
 - **Production-ready PHP.** Strict types throughout, PSR-4 autoloaded,
-  PHPUnit 10 test suite (31 tests / 99 assertions), requires PHP 8.1+.
+  PHPStan level 6 clean + Psalm baseline-tracked, PHPUnit 10 test
+  suite (112+ tests), requires PHP 8.1+.
 
 ---
 
@@ -256,6 +320,42 @@ Pin a specific worker count:
 bin/phpdup analyze src --workers 8       # or -j 8
 ```
 
+Emit every CI-relevant format in one shot:
+
+```bash
+bin/phpdup analyze src \
+    --sarif       phpdup.sarif \
+    --gitlab-sast phpdup.gitlab.json \
+    --diff        ./phpdup-diffs \
+    --checkstyle  phpdup.xml \
+    --json        phpdup.json \
+    --html        phpdup-report
+```
+
+Filter to a single block kind and gate on impact:
+
+```bash
+bin/phpdup analyze src --kinds=method --min-impact=50 --exact-only
+```
+
+Validate a config file before pushing it to CI:
+
+```bash
+bin/phpdup analyze --config phpdup.json --validate-config
+```
+
+Live-reload while you refactor:
+
+```bash
+bin/phpdup analyze src --watch
+```
+
+Show the interactive dashboard once analysis completes:
+
+```bash
+bin/phpdup analyze src --tui --theme=dracula
+```
+
 ---
 
 ## Configuration
@@ -278,6 +378,7 @@ Drop a `phpdup.json` next to your code, or pass `--config`:
   "workers":              0,
   "incremental":          true,
   "lazy_ast":             true,
+  "kinds":                ["method", "closure"],
   "report": {
     "html": "phpdup-report",
     "json": "phpdup.json"
@@ -293,6 +394,19 @@ Keys added in v0.2:
   across runs.
 - `lazy_ast` — `true` (default) drops original ASTs after
   fingerprinting; reloads them only for blocks in clusters.
+
+Keys added in v0.3:
+
+- `kinds` — list of block kinds to extract. Empty / omitted means
+  all of `function`, `method`, `closure`, `arrow`, `if`, `for`,
+  `foreach`, `while`, `do`, `try`, `switch`, `match`. Overridable per-run
+  with `--kinds=method,closure`.
+
+The full schema lives at [`docs/config-schema.json`](docs/config-schema.json)
+and is validated by `ConfigLoader::validate()` whenever a config file is
+loaded. `bin/phpdup analyze --config phpdup.json --validate-config`
+runs validation in isolation and exits with `0` (OK) or `2` (with the
+field-path error message).
 
 CLI flags override config values. Run `bin/phpdup analyze --help` for the
 full list.
@@ -517,11 +631,178 @@ emit.
 
 A static-site report with:
 
-- Index page sorted by impact
-- Per-cluster page with member sources side-by-side
-- Holes table showing placeholder, suggested name, type, and observed values
-- Sebastian-Bergmann unified diff between the first two members
-- Pure CSS, no JavaScript or build step
+- Index page sorted by impact, with an interactive **mini-map** of
+  cluster-impact distribution (green bars exact, blue bars near-duplicate;
+  click to jump).
+- Client-side **column sort** (click any header to toggle asc/desc) and a
+  **search filter** input that hides rows whose data-search blob doesn't
+  match.
+- **Copy-suggested-signature** button per cluster (Clipboard API with an
+  `execCommand` fallback for non-secure contexts).
+- Per-cluster page with member sources side-by-side, **inline syntax
+  highlighting** for keywords / strings / comments / numbers (no external
+  dep, no build step).
+- Holes table showing placeholder, suggested name, type, and observed values.
+- Sebastian-Bergmann unified diff between the first two members, colorized
+  by hunk header / add / del.
+
+JS lives in `app.js` next to `style.css` — both inlined into the build,
+no external deps, no build step.
+
+### SARIF
+
+[SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/sarif-v2.1.0-os.html)
+output for GitHub Code Scanning and GitLab Code Quality:
+
+```bash
+bin/phpdup analyze src --sarif=phpdup.sarif
+```
+
+Each duplicate block becomes a `result` with rule
+`phpdup/duplicate-logic`, level `warning` for exact / `note` for
+near-duplicate, the cluster's suggested signature in
+`properties.suggestedSignature`, and shared
+`partialFingerprints.clusterId` so SARIF consumers can group sibling
+results into a single cluster annotation.
+
+In a GitHub Actions workflow:
+
+```yaml
+- run: vendor/bin/phpdup analyze src --sarif=phpdup.sarif --min-impact=50
+- uses: github/codeql-action/upload-sarif@v3
+  if: always()
+  with:
+    sarif_file: phpdup.sarif
+```
+
+### GitLab SAST report
+
+[GitLab SAST report v15.x](https://gitlab.com/gitlab-org/security-products/security-report-schemas):
+
+```bash
+bin/phpdup analyze src --gitlab-sast=gl-sast-report.json
+```
+
+Severity is impact-bucketed (`>100` High, `>=50` Medium, `>=20` Low,
+otherwise Info). Confidence is `High` for exact clones, otherwise
+derived from the cluster confidence score. Wire it into `.gitlab-ci.yml`
+as a `report.sast` artifact so the MR security widget surfaces
+duplicates.
+
+### Diff and patch
+
+`--diff=DIR` writes one `.diff` file per cluster — pairwise unified
+diffs from member[0] to each subsequent member, with a header comment
+showing the suggested abstraction and anchor location. Helps reviewers
+see the duplication and judge whether the abstraction captures the
+variation.
+
+`--patch=FILE` concatenates every cluster's diff into one cumulative
+patch file.
+
+```bash
+bin/phpdup analyze src --diff=./diffs --patch=phpdup.patch
+```
+
+### Checkstyle XML
+
+`--checkstyle=FILE` produces a Checkstyle-format XML report consumable
+by Jenkins Warnings NG, Bitbucket Reports, Sonar, Detekt — anything that
+parses Checkstyle:
+
+```bash
+bin/phpdup analyze src --checkstyle=phpdup.xml
+```
+
+Each duplicate is an `<error>` with `source="phpdup.duplicate-logic"`,
+severity `warning` for exact / `info` for near-duplicate, and a
+descriptive message linking back to the cluster id and similarity.
+
+---
+
+## TUI mode
+
+`--tui` opts in to an interactive SugarCraft dashboard rendered after
+analysis completes:
+
+```bash
+bin/phpdup analyze src --tui --theme=catppuccin
+```
+
+What you get:
+
+- **Four-pane FlexBox dashboard** showing Scanning / Preprocessing /
+  Clustering / Refactoring with live counts and timing.
+- **Sparkline of stage durations** at the bottom of the screen, plus a
+  real elapsed timer.
+- **OSC 9;4 taskbar progress** — ConEmu, WezTerm, and Windows Terminal
+  pin a progress indicator on the OS taskbar.
+- **Six themes**: `ansi` (default), `plain`, `charm`, `dracula`, `nord`,
+  `catppuccin` — pick via `--theme=NAME`.
+- **Keyboard**: `q` / `Ctrl+C` quit, `Ctrl+Z` suspend, `↑/↓` cycle pane
+  focus, `Enter` open detail, `←/→` cycle clusters in detail view, `t`
+  toggle sort (impact / similarity / name), `h` toggle help, `Esc`
+  dismiss detail.
+- `--plain` forces plain CLI output even when `--tui` would otherwise
+  fire (handy for CI and pipes).
+
+Live mid-stage refresh (the renderer ticking while a stage is
+in-flight) requires a generator-based pipeline and is on the roadmap
+alongside true streaming. Today the pipeline runs to completion before
+the dashboard boots, so the sparkline shows post-hoc timings rather
+than building up frame-by-frame — but every other piece (stage
+listener, theme system, key bindings, taskbar progress) is in place.
+
+---
+
+## Watch mode
+
+`--watch` keeps phpdup running and re-analyzes on every file change:
+
+```bash
+bin/phpdup analyze src --watch --min-impact=30
+```
+
+How it works: a `React\EventLoop` periodic timer (default 1.5 s)
+polls `filemtime()` for every scanned file, with `clearstatcache()`
+before each read to defeat PHP's stat cache. When any mtime changes,
+phpdup re-runs the full pipeline and reports `change detected (N
+files) — reload #X`.
+
+Polling instead of `inotify` / FSEvents keeps the watcher
+dependency-free and portable to macOS / Linux without an extension —
+at the cost of a small (≤ 1.5 s) reload latency.
+
+`Ctrl+C` (or `SIGTERM`) triggers a clean teardown via
+`Loop::addSignal`. `--watch` is plain-mode only for now;
+`--watch --tui` is intentionally rejected because the runtime
+ordering between the SugarCraft `Program` loop and the watch loop
+needs more thought.
+
+---
+
+## Static analysis & config validation
+
+CI runs three layers of static checks on every push and PR:
+
+```yaml
+- run: find src tests -name '*.php' -print0 | xargs -0 -n1 -P4 php -l > /dev/null
+- run: vendor/bin/phpstan analyse --memory-limit=1G --no-progress
+- run: vendor/bin/psalm --no-progress --no-cache
+```
+
+- **PHPStan level 6** is clean (no baseline). Configuration in
+  [`phpstan.neon`](phpstan.neon).
+- **Psalm** runs at error level 6 with a tracked baseline
+  (`psalm-baseline.xml`) for legacy `InvalidArrayOffset` /
+  `MissingParamType` findings in the APTED implementation. New code is
+  expected to land without baseline entries; the baseline ratchets
+  down over time.
+- **Config schema validation** — `ConfigLoader::validate()` mirrors
+  [`docs/config-schema.json`](docs/config-schema.json) and throws a
+  `RuntimeException` whose message names the offending field on the
+  first violation. `--validate-config` runs validation in isolation
+  for CI gating.
 
 ---
 
@@ -533,23 +814,49 @@ Usage: phpdup analyze <paths...> [options]
 Arguments:
   paths                    One or more paths to scan
 
-Options:
+Tuning options:
   -c, --config FILE        Path to phpdup.json
       --min-block-size N   Minimum AST node count for a block (default 8)
       --mode MODE          Normalization mode: strict|default|aggressive
       --similarity N       Jaccard similarity threshold (0..1, default 0.80)
       --min-impact N       Minimum cluster impact to report (default 20)
+      --exact-only         Skip near-duplicate detection (very fast)
+      --kinds K1,K2,...    Block kinds to extract: function|method|closure|
+                           arrow|if|for|foreach|while|do|try|switch|match
+      --max-memory MB      Soft RSS ceiling; warns and suggests --exact-only
+                           when peak RSS exceeds.
+
+Output options:
       --html DIR           Write HTML report to this directory
       --json FILE          Write JSON report to this file
-      --exact-only         Skip near-duplicate detection (very fast)
+      --sarif FILE         Write SARIF 2.1.0 report (PR annotations)
+      --gitlab-sast FILE   Write GitLab SAST v15 report
+      --diff DIR           Write per-cluster unified diffs into DIR
+      --patch FILE         Write a single cumulative patch file
+      --checkstyle FILE    Write Checkstyle XML report
       --limit N            Show at most N clusters in CLI output (default 50)
       --stats              Show pipeline statistics + worker info
-      --no-cache           Disable AST cache for this run
+
+Runtime options:
   -j, --workers N          Worker count for parallel preprocess + pair scoring
                            (0 = auto-detect CPU count, 1 = serial)
+      --no-cache           Disable AST cache for this run
       --no-incremental     Disable per-file index snapshot reuse
       --no-lazy-ast        Keep all original ASTs in memory throughout the run
-                           (higher RSS, slightly faster anti-unification)
+      --stage NAME         Halt pipeline after STAGE (scanning|preprocessing|
+                           clustering|refactoring|reporting) — debugging.
+
+TUI / watch:
+      --tui                Show interactive SugarCraft dashboard once analysis
+                           completes.
+      --plain              Force plain CLI output (no TUI, no ANSI colours).
+      --theme NAME         TUI theme: ansi|plain|charm|dracula|nord|catppuccin
+                           (default ansi).
+      --watch              Stay running and re-analyze on file changes.
+
+Validation:
+      --validate-config    Validate the --config file against the documented
+                           schema and exit (no analysis is run).
 ```
 
 ### Exit codes
@@ -733,10 +1040,12 @@ The project is organized as:
 
 ```
 src/
-  Cli/            CLI entry point and config loader
+  Cli/            CLI entry point, ConfigLoader (with schema validation), Command
+  Pipeline/       Stage enum, PipelineState, ProgressListener, Pipeline
+                  orchestrator, and the five Stage classes.
   Scanning/       File walking and glob filtering
   Parsing/        nikic/php-parser wrapper + AST cache
-  Extraction/     Block selection from file ASTs + lazy AST loader
+  Extraction/     Block selection (with --kinds filter) + lazy AST loader
   Normalization/  Three-pass canonicalization
   Fingerprint/    Structural hash + n-gram bag
   Index/          In-memory + inverted index
@@ -745,7 +1054,11 @@ src/
   Clustering/     Hash-bucket + union-find
   Parallel/       WorkerPool + Preprocess/PairScore workers
   Refactor/       Anti-unification + parameter/signature synth + patterns
-  Reporting/      CLI / JSON / HTML reporters + ranker
+  Reporting/      CLI / JSON / HTML / SARIF / GitLab SAST / Diff / Checkstyle
+                  reporters + ranker
+  Tui/            PhpdupModel (SugarCraft Model + ProgressListener), ViewState,
+                  TuiRunner (theme resolution + Program boot)
+  Watch/          WatchRunner (poll-based React\EventLoop watcher)
   Util/           AST serializer, hash helpers, line range
 ```
 
@@ -778,9 +1091,24 @@ The test suite covers:
   three-member clusters
 - Strategy / config-driven pattern tagging
 - End-to-end on a fixture corpus with expected clusters
+- Pipeline orchestration: stage ordering, `stopAfter` halting at the
+  right boundary, `stageProgress` reset between stages
+- ProgressListener wiring: per-file scan + preprocess events fire,
+  null listener is the default and never branches stage behaviour
+- BlockExtractor `--kinds` filter rejects unknown kinds and keeps the
+  ones you ask for
+- ConfigLoader schema validation: every field's bounds + the cross-field
+  `min_block_size <= max_block_size` rule
+- Reporters: SARIF, GitLab SAST, Diff (per-cluster + cumulative patch),
+  Checkstyle XML, HTML index/cluster pages — each tested against a
+  real Pipeline run on `tests/Fixtures/sql`
+- TUI: ViewState pane focus / sort cycling, PhpdupModel key bindings,
+  `View::progressBar` taskbar updates, `←/→` cluster navigation, theme
+  resolution
 
 GitHub Actions runs the full suite on every push and PR across PHP
-8.1, 8.2, 8.3, 8.4, then uploads Clover coverage to Codecov.
+8.1, 8.2, 8.3, 8.4, then PHPStan level 6 and Psalm on PHP 8.3, then
+uploads Clover coverage to Codecov.
 
 ---
 
@@ -892,6 +1220,32 @@ provably correct. v0.2's APTED implementation is correct Zhang-Shasha
 which is slower per pair. Cluster output is the same; the user-visible
 win comes from the parallel scoring, not APTED itself. See
 BENCHMARKS.md for the details.
+
+**Can I use `--watch` together with `--tui`?**
+Not yet. `--watch + --tui` is rejected with an error because the
+React\EventLoop watch loop and the SugarCraft Program loop need to share
+a single event loop instance, which requires more thought than v0.3
+shipped. Plain-mode watch + a separate `--tui` post-analysis run is the
+current pattern.
+
+**How do I re-render the demo GIF?**
+Install [VHS](https://github.com/charmbracelet/vhs), then:
+
+```bash
+vhs docs/phpdup-demo.tape
+# writes docs/media/phpdup-demo.gif
+```
+
+VHS needs a Chromium binary on the PATH; on Ubuntu 23.10+ where
+unprivileged user namespaces are restricted, point it at a `--no-sandbox`
+Chrome wrapper.
+
+**The TUI looks empty / didn't appear when I added `--tui`.**
+Phase 2 ships the dashboard but defers live mid-stage refresh to the
+streaming pipeline work. The pipeline runs synchronously to completion
+first, then the TUI boots with the final state. If your terminal isn't a
+real TTY (CI, piped stdout) the dashboard will fail to attach — use
+`--plain` instead.
 
 ---
 
