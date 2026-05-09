@@ -6,6 +6,7 @@ namespace Phpdup\Clustering;
 use Phpdup\Extraction\Block;
 use Phpdup\Index\BlockIndex;
 use Phpdup\Index\NgramInvertedIndex;
+use Phpdup\Similarity\ContainmentSimilarity;
 use Phpdup\Similarity\JaccardSimilarity;
 use Phpdup\Similarity\TreeEditDistance;
 
@@ -28,6 +29,8 @@ use Phpdup\Similarity\TreeEditDistance;
  */
 final class Clusterer
 {
+    private readonly ContainmentSimilarity $containment;
+
     public function __construct(
         private readonly JaccardSimilarity $similarity,
         private readonly TreeEditDistance $tree,
@@ -35,7 +38,15 @@ final class Clusterer
         private readonly float $treeThreshold = 0.85,
         private readonly float $maxDocumentFrequency = 0.01,
         private readonly bool $exactOnly = false,
+        // Type-3 "near-subset" detection: when Jaccard fails but the smaller bag is
+        // contained in the larger above this threshold AND the size ratio between
+        // them is above minOverlap, accept the pair anyway. Disabled = legacy
+        // Jaccard-only behaviour.
+        private readonly bool $optionalBlocksEnabled = true,
+        private readonly float $containmentThreshold = 0.85,
+        private readonly float $optionalBlocksMinOverlap = 0.6,
     ) {
+        $this->containment = new ContainmentSimilarity();
     }
 
     /**
@@ -181,11 +192,26 @@ final class Clusterer
                 $edges[] = [$aId, $bId, 1.0];
                 continue;
             }
-            $jac = $this->similarity->similarity($a->ngramBag ?? [], $b->ngramBag ?? []);
-            if ($jac < $this->similarityThreshold) continue;
-            $tedSim = $this->tree->similarity($a->canonical, $b->canonical, $this->treeThreshold);
-            if ($tedSim < $this->treeThreshold) continue;
-            $edges[] = [$aId, $bId, min($jac, $tedSim)];
+            $bagA = $a->ngramBag ?? [];
+            $bagB = $b->ngramBag ?? [];
+            $jac = $this->similarity->similarity($bagA, $bagB);
+            if ($jac >= $this->similarityThreshold) {
+                $tedSim = $this->tree->similarity($a->canonical, $b->canonical, $this->treeThreshold);
+                if ($tedSim < $this->treeThreshold) continue;
+                $edges[] = [$aId, $bId, min($jac, $tedSim)];
+                continue;
+            }
+            // Jaccard rejected: try the type-3 / "near-subset" path. If the smaller
+            // bag is contained in the larger above $containmentThreshold AND the
+            // bags are at least $optionalBlocksMinOverlap comparable in size, mark
+            // it a near-duplicate-with-optional-segments and let AntiUnifier handle
+            // the LCS alignment. Edge similarity is the containment score so the
+            // Ranker can still distinguish strong subsets from marginal ones.
+            if (!$this->optionalBlocksEnabled) continue;
+            $cont  = $this->containment->similarity($bagA, $bagB);
+            $ratio = $this->containment->sizeRatio($bagA, $bagB);
+            if ($cont < $this->containmentThreshold || $ratio < $this->optionalBlocksMinOverlap) continue;
+            $edges[] = [$aId, $bId, $cont];
         }
         return $edges;
     }

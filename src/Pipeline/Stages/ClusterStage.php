@@ -55,6 +55,9 @@ final class ClusterStage implements StageInterface
             treeThreshold: $config->treeThreshold,
             maxDocumentFrequency: $config->maxDocumentFrequency,
             exactOnly: $this->exactOnly,
+            optionalBlocksEnabled:    $config->optionalBlocksEnabled,
+            containmentThreshold:     $config->optionalBlocksContainment,
+            optionalBlocksMinOverlap: $config->optionalBlocksMinOverlap,
         );
 
         $edges = null;
@@ -63,7 +66,12 @@ final class ClusterStage implements StageInterface
             $workers = $config->workers > 0 ? $config->workers : WorkerPool::detectCpuCount();
             if (count($candidatePairs) >= 64 && $workers > 1) {
                 $scoreWorker = new PairScoreWorker(
-                    $index, $config->similarityThreshold, $config->treeThreshold,
+                    $index,
+                    $config->similarityThreshold,
+                    $config->treeThreshold,
+                    $config->optionalBlocksEnabled,
+                    $config->optionalBlocksContainment,
+                    $config->optionalBlocksMinOverlap,
                 );
                 $pool = new WorkerPool(workers: $workers);
                 $task = static fn(array $pairs): array => $scoreWorker->score($pairs);

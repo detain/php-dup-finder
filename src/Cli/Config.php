@@ -34,6 +34,23 @@ final class Config
         public readonly bool $incremental = true,
         public readonly bool $lazyAst = true,
         public readonly array $allowedKinds = [],
+        // Type-3 / "optional segment" detection: cluster pairs where one block is a
+        // near-subset of the other (extra statements not present in every member),
+        // then synthesize a boolean parameter for each optional segment.
+        public readonly bool $optionalBlocksEnabled = true,
+        // Containment threshold: similarity ≥ this AND size_ratio ≥ minOverlap means
+        // "near-subset" — a candidate pair Jaccard would have rejected.
+        public readonly float $optionalBlocksContainment = 0.85,
+        // Minimum size ratio (smaller / larger by n-gram mass) for a near-subset
+        // pair to be kept. Prevents pairing a 1-line block with a 100-line block.
+        public readonly float $optionalBlocksMinOverlap = 0.6,
+        // Cap optional segments per cluster so over-flexible clusters don't bloat
+        // the suggested signature. When the count would exceed, AntiUnifier falls
+        // back to the legacy whole-array hole.
+        public readonly int $optionalBlocksMaxPerCluster = 3,
+        // Don't promote single-statement gaps below this length (in raw stmts) to
+        // optional_block holes — too noisy on tiny mismatches.
+        public readonly int $optionalBlocksMinSegmentLength = 1,
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -43,6 +60,18 @@ final class Config
         }
         if ($treeThreshold < 0 || $treeThreshold > 1) {
             throw new \InvalidArgumentException("tree_threshold out of range");
+        }
+        if ($optionalBlocksContainment < 0 || $optionalBlocksContainment > 1) {
+            throw new \InvalidArgumentException("optional_blocks_containment out of range");
+        }
+        if ($optionalBlocksMinOverlap < 0 || $optionalBlocksMinOverlap > 1) {
+            throw new \InvalidArgumentException("optional_blocks_min_overlap out of range");
+        }
+        if ($optionalBlocksMaxPerCluster < 0) {
+            throw new \InvalidArgumentException("optional_blocks_max_per_cluster must be >= 0");
+        }
+        if ($optionalBlocksMinSegmentLength < 1) {
+            throw new \InvalidArgumentException("optional_blocks_min_segment_length must be >= 1");
         }
     }
 

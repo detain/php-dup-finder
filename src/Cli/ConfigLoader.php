@@ -44,6 +44,8 @@ final class ConfigLoader
             $allowedKinds = $data['kinds'];
         }
 
+        $optBlock = is_array($data['optional_blocks'] ?? null) ? $data['optional_blocks'] : [];
+
         return new Config(
             paths: !empty($data['paths']) ? $data['paths'] : $base->paths,
             exclude: !empty($data['exclude']) ? $data['exclude'] : $base->exclude,
@@ -63,6 +65,11 @@ final class ConfigLoader
             incremental: (bool)$get('incremental', $base->incremental),
             lazyAst: (bool)$get('lazy_ast', $base->lazyAst),
             allowedKinds: $allowedKinds,
+            optionalBlocksEnabled:        (bool)($overrides['optional_blocks_enabled'] ?? $optBlock['enabled'] ?? $base->optionalBlocksEnabled),
+            optionalBlocksContainment:    (float)($overrides['optional_blocks_containment'] ?? $optBlock['containment'] ?? $base->optionalBlocksContainment),
+            optionalBlocksMinOverlap:     (float)($overrides['optional_blocks_min_overlap'] ?? $optBlock['min_overlap'] ?? $base->optionalBlocksMinOverlap),
+            optionalBlocksMaxPerCluster:  (int)($overrides['optional_blocks_max_per_cluster'] ?? $optBlock['max_per_cluster'] ?? $base->optionalBlocksMaxPerCluster),
+            optionalBlocksMinSegmentLength: (int)($overrides['optional_blocks_min_segment_length'] ?? $optBlock['min_segment_length'] ?? $base->optionalBlocksMinSegmentLength),
         );
     }
 
@@ -88,6 +95,7 @@ final class ConfigLoader
             'cache_dir', 'parallelism', 'workers',
             'incremental', 'lazy_ast',
             'kinds',
+            'optional_blocks',
             'report',
         ];
         foreach (array_keys($data) as $k) {
@@ -202,6 +210,31 @@ final class ConfigLoader
         foreach (['incremental', 'lazy_ast'] as $boolKey) {
             if (array_key_exists($boolKey, $data) && !is_bool($data[$boolKey])) {
                 throw new \RuntimeException("$boolKey must be a boolean$where");
+            }
+        }
+        if (array_key_exists('optional_blocks', $data)) {
+            if (!is_array($data['optional_blocks'])) {
+                throw new \RuntimeException("optional_blocks must be an object$where");
+            }
+            $allowed = ['enabled', 'containment', 'min_overlap', 'max_per_cluster', 'min_segment_length'];
+            foreach ($data['optional_blocks'] as $k => $v) {
+                if (!in_array($k, $allowed, true)) {
+                    throw new \RuntimeException("Unknown config key 'optional_blocks.$k'$where");
+                }
+            }
+            if (array_key_exists('enabled', $data['optional_blocks']) && !is_bool($data['optional_blocks']['enabled'])) {
+                throw new \RuntimeException("optional_blocks.enabled must be a boolean$where");
+            }
+            foreach (['containment', 'min_overlap'] as $k) {
+                if (array_key_exists($k, $data['optional_blocks'])) {
+                    $assertFloat01($data['optional_blocks'][$k], "optional_blocks.$k");
+                }
+            }
+            if (array_key_exists('max_per_cluster', $data['optional_blocks'])) {
+                $assertInt($data['optional_blocks']['max_per_cluster'], 'optional_blocks.max_per_cluster', 0);
+            }
+            if (array_key_exists('min_segment_length', $data['optional_blocks'])) {
+                $assertInt($data['optional_blocks']['min_segment_length'], 'optional_blocks.min_segment_length', 1);
             }
         }
         if (array_key_exists('report', $data)) {
