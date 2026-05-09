@@ -7,6 +7,7 @@ use Phpdup\Pipeline\Pipeline;
 use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Tui\PhpdupModel;
 use Phpdup\Tui\TuiRunner;
+use Phpdup\Watch\WatchRunner;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\Stage;
 use Phpdup\Pipeline\Stages\ClusterStage;
@@ -50,6 +51,7 @@ final class Command extends SymfonyCommand
             ->addOption('checkstyle', null, InputOption::VALUE_REQUIRED, 'Write Checkstyle XML report to FILE')
             ->addOption('kinds', null, InputOption::VALUE_REQUIRED, 'Comma-separated block kinds to include (e.g. method,closure). Default: all of method|function|closure|arrow|if|for|foreach|while|do|try|switch|match')
             ->addOption('max-memory', null, InputOption::VALUE_REQUIRED, 'Soft memory ceiling in MB. When peak RSS exceeds this mid-pipeline, phpdup logs a warning and suggests --exact-only.')
+            ->addOption('watch', null, InputOption::VALUE_NONE, 'Stay running and re-analyze on file changes (poll-based; Ctrl+C to exit)')
             ->addOption('tui', null, InputOption::VALUE_NONE, 'Show interactive SugarCraft dashboard after analysis completes')
             ->addOption('plain', null, InputOption::VALUE_NONE, 'Force plain CLI output (no TUI, no ANSI colours)')
             ->addOption('theme', null, InputOption::VALUE_REQUIRED, 'TUI theme: ansi|plain|charm|dracula|nord|catppuccin', 'ansi');
@@ -118,8 +120,13 @@ final class Command extends SymfonyCommand
             }
         }
 
+        $watchMode = (bool)$input->getOption('watch');
         $state     = new PipelineState($config);
         $tuiMode   = $this->shouldRunTui($input, $output);
+        if ($watchMode && $tuiMode) {
+            $output->writeln('<error>phpdup: --watch is incompatible with --tui (Phase 10 ships plain-mode watch only)</error>');
+            return 2;
+        }
         $themeName = (string)$input->getOption('theme');
         if ($tuiMode && !in_array(strtolower($themeName), TuiRunner::knownThemes(), true)) {
             $output->writeln(sprintf(
@@ -152,6 +159,11 @@ final class Command extends SymfonyCommand
             stopAfter: $stopAfter,
             listener: $listener,
         );
+
+        if ($watchMode) {
+            $rebuild = static fn(): PipelineState => new PipelineState($config);
+            return (new WatchRunner($pipeline, $rebuild, $output))->run();
+        }
 
         $pipeline->run($state, $output);
 
