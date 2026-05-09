@@ -1,0 +1,12 @@
+{
+    "_description": "Generic PHP project — used as a fallback when no framework markers are detected. Keeps the built-in defaults intact except for tightening common build/dist/cache excludes.",
+    "exclude": [
+        "vendor/**",
+        "node_modules/**",
+        "build/**",
+        "dist/**",
+        "cache/**",
+        "logs/**",
+        "**/.phpdup-cache/**"
+    ]
+}

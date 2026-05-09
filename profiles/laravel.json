@@ -1,0 +1,16 @@
+{
+    "_description": "Laravel — auto-applied when a Laravel artifact (artisan, app/Http/Controllers/, config/app.php) is detected. Excludes the framework's own scaffolding so duplication in vendor / bootstrap / generated migrations doesn't drown out app-level findings.",
+    "exclude": [
+        "vendor/**",
+        "bootstrap/cache/**",
+        "storage/**",
+        "public/**",
+        "node_modules/**",
+        "database/migrations/*_create_*_table.php",
+        "_ide_helper*.php",
+        "**/.phpdup-cache/**"
+    ],
+    "kinds": ["method", "function", "closure", "if", "for", "foreach", "while", "do", "try", "switch", "match"],
+    "min_block_size": 6,
+    "min_cluster_impact": 18
+}

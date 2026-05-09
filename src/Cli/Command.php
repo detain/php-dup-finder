@@ -47,6 +47,7 @@ final class Command extends SymfonyCommand
             ->addOption('exact-only', null, InputOption::VALUE_NONE, 'Skip near-duplicate detection (faster)')
             ->addOption('kinds', null, InputOption::VALUE_REQUIRED, 'Comma-separated block kinds to include (e.g. method,closure). Default: all of method|function|closure|arrow|if|for|foreach|while|do|try|switch|match')
             ->addOption('auto-tune', null, InputOption::VALUE_NONE, 'Probe the corpus before analysis and pick min-block-size / max-df / min-impact based on size; --exact-only is forced on for very large trees. Picked profile is printed; explicit CLI overrides take precedence.')
+            ->addOption('profile', null, InputOption::VALUE_REQUIRED, 'Apply a project profile (laravel|symfony|drupal|wordpress|generic|auto) to seed framework-aware excludes + tuning. "auto" sniffs the scan path for known markers. Explicit CLI flags + --config win over profile values.')
             ->addOption('min-safety', null, InputOption::VALUE_REQUIRED, 'Drop clusters whose refactor-safety score (0..1) is below this threshold. 0 = report all (default).');
 
         // ── Output / reports ───────────────────────────────────────────────
@@ -102,7 +103,8 @@ Options grouped by category:
  <comment>Detection tuning</comment>
    --min-block-size, --mode, --similarity, --max-df,
    --optional-blocks, --optional-blocks-containment,
-   --min-impact, --min-safety, --exact-only, --kinds, --auto-tune
+   --min-impact, --min-safety, --exact-only, --kinds, --auto-tune,
+   --profile
 
  <comment>Output / reports</comment>
    --html, --json, --sarif, --gitlab-sast, --checkstyle,
@@ -189,6 +191,47 @@ HELP;
             $overrides['allowed_kinds'] = $kinds;
         }
 
+        // Profile detection (V.A.2): runs before --auto-tune so the
+        // tuner sees the framework-aware excludes / kinds. Order:
+        //   1. Profile fills in *missing* keys.
+        //   2. Auto-tune fills in still-missing keys.
+        //   3. ConfigLoader merges JSON config + final $overrides.
+        // Explicit --foo CLI flags went into $overrides up top, so
+        // they always beat profile + tuner.
+        $profileData = [];
+        $profileOpt = $input->getOption('profile');
+        if ($profileOpt !== null) {
+            $registry = ProfileRegistry::bundled();
+            $profileName = (string)$profileOpt;
+            if ($profileName === 'auto') {
+                $profileName = (new ProjectProfileDetector())->detect($paths);
+                $output->writeln("<info>phpdup</info> profile auto-detect: {$profileName}");
+            } elseif (!in_array($profileName, $registry->listAvailable(), true)) {
+                $output->writeln(sprintf(
+                    '<error>phpdup: --profile must be one of %s|auto</error>',
+                    implode('|', $registry->listAvailable()),
+                ));
+                return 2;
+            }
+            try {
+                $profileData = $registry->load($profileName);
+            } catch (\RuntimeException $e) {
+                $output->writeln('<error>phpdup: ' . $e->getMessage() . '</error>');
+                return 2;
+            }
+            // Map profile JSON keys to override-dict keys.
+            $profileOverrides = $this->profileToOverrides($profileData);
+            foreach ($profileOverrides as $k => $v) {
+                if (!array_key_exists($k, $overrides)) {
+                    $overrides[$k] = $v;
+                }
+            }
+        }
+        $profileExclude = isset($profileData['exclude']) && is_array($profileData['exclude'])
+            ? array_values(array_filter($profileData['exclude'], 'is_string'))
+            : null;
+        unset($profileData);
+
         $autoTuneExactOnly = false;
         if ($input->getOption('auto-tune')) {
             $base = Config::defaults($paths);
@@ -216,6 +259,7 @@ HELP;
             paths: $paths,
             configFile: $input->getOption('config'),
             overrides: $overrides,
+            profileExclude: $profileExclude,
         );
 
         $useCache  = !$input->getOption('no-cache');
@@ -429,6 +473,31 @@ HELP;
         // Phase 2: require --tui explicitly. Auto-enable on TTY is deferred until Phase 3
         // wires live progress; auto-launching today would surprise users running interactively.
         return (bool)$input->getOption('tui');
+    }
+
+    /**
+     * Map a profile JSON document onto the override-dict shape that
+     * ConfigLoader::load() / Config::withOverrides() understand.
+     * 'exclude' is handled separately (it goes through ConfigLoader's
+     * profileExclude param so excludes only kick in as a default).
+     *
+     * @param array<string,mixed> $data
+     * @return array<string,mixed>
+     */
+    private function profileToOverrides(array $data): array
+    {
+        $out = [];
+        foreach (['min_block_size', 'max_block_size', 'normalization_mode',
+                  'similarity_threshold', 'tree_threshold', 'min_cluster_impact',
+                  'max_df', 'ngram_size', 'sort'] as $k) {
+            if (array_key_exists($k, $data)) {
+                $out[$k] = $data[$k];
+            }
+        }
+        if (array_key_exists('kinds', $data)) {
+            $out['allowed_kinds'] = $data['kinds'];
+        }
+        return $out;
     }
 
     private function validateConfigOnly(InputInterface $input, OutputInterface $output): int
