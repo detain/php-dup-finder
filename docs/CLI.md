@@ -48,6 +48,7 @@ for the full JSON-Schema-compatible spec.
 | `--optional-blocks on\|off`                | `on`           | Type-3 / "optional segment" detection master switch. See [Type-3 detection](../README.md#type-3--optional-segment-detection). |
 | `--optional-blocks-containment N`          | `0.85`         | Containment-fallback threshold for the type-3 path (`0..1`).                                      |
 | `--db-aware`                               | off            | ORM-/DB-aware semantic deduplication: rewrite recognised database calls (Eloquent, Doctrine, query builders, PDO, mysqli, pg_*, raw SQL strings) to canonical `__DB_<OP>__("table")` tokens during normalisation so equivalent ORM/raw-SQL variants of the same operation cluster together. Off by default — opt-in for ORM-heavy codebases. See [`docs/plans/orm-db-semantic-dedup.md`](plans/orm-db-semantic-dedup.md). |
+| `--trinity-collapse`                       | off            | Detect the canonical CRUD trinity (read → mutate → save) and rewrite the three-statement sequence as a single `__DB_UPSERT__("entity")` synthetic call so ORM upserts cluster with raw `UPDATE` queries. Composes with `--db-aware`. Off by default. See option 2 of [`docs/plans/orm-db-semantic-dedup.md`](plans/orm-db-semantic-dedup.md). |
 
 ### Output
 

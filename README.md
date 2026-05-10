@@ -977,8 +977,56 @@ override the stock dispatch table — wire that into a normalisation
 plugin (see [Normalisation plugins](#normalisation-plugins)) for
 project-specific rewrites.
 
-The full plan — including the follow-up phases (trinity-collapse,
-behavioural-tag scoring, IR lift) that build on this option — is in
+### Trinity-collapse — `--trinity-collapse`
+
+`--db-aware` folds individual DB calls. The natural follow-up is
+**trinity-collapse**: detecting the canonical CRUD shape
+
+```php
+$user = User::find($id);          // (1) read
+$user->name = 'Bob';              // (2) mutate
+$user->save();                    // (3) save
+```
+
+…and rewriting the three statements as a single
+`__DB_UPSERT__("user")` synthetic call so the ORM idiom clusters
+with the raw equivalent
+
+```php
+$pdo->query("UPDATE users SET name = 'Bob' WHERE id = $id");
+```
+
+(which `--db-aware` separately folds to a `__DB_WRITE__` token).
+
+`Phpdup\Normalization\TrinityCollapser` walks every statement-array
+in the AST (function/method/closure bodies, if/else branches, loop
+bodies) and looks for triplets of the shape **read → mutate(s) → save**
+where:
+
+- The read is any `DbOpRegistry::OP_READ` call assigned to a
+  variable (`$x = User::find($id)`, `$x = $em->find(User::class, $id)`,
+  `$x = $repo->findOneBy([...])`, …).
+- The mutate(s) are property assignments (`$x->name = 'Bob'`,
+  `$x->name .= 'X'`) or setter calls (`$x->setName('Bob')`,
+  `$x->withFoo(...)`, `$x->addThing(...)`) on the bound variable.
+  At least one mutation is required — read+save with no change in
+  between is left untouched.
+- The save terminates the chain: receiver-bound writes
+  (`$x->save()`, `$x->update()`), Doctrine flush (`$em->flush()`),
+  or `$em->persist($x)` (with `$x` matching the bound variable as
+  the first argument).
+
+Any unrelated statement between the read and save abandons the
+trinity — the dataflow walker is intentionally conservative; false
+misses are preferable to false matches.
+
+`--trinity-collapse` composes with `--db-aware` (the typical
+combination), and runs as a *pre-pass* before `DbOpCanonicalizer`
+so the collapser can pattern-match on the original read/save call
+shapes.
+
+The full plan — including the follow-up phases (behavioural-tag
+scoring, IR lift) that build on this option — is in
 [`docs/plans/orm-db-semantic-dedup.md`](docs/plans/orm-db-semantic-dedup.md).
 
 ---
