@@ -17,6 +17,9 @@ use Phpdup\Refactor\Hole;
  */
 final class RefactorTestReporter
 {
+    /**
+     * Write one PHPUnit test-skeleton file per cluster under `$dir`.
+     */
     public function writeTo(Report $report, string $dir): void
     {
         if ($dir !== '' && !is_dir($dir)) {
@@ -31,6 +34,9 @@ final class RefactorTestReporter
         }
     }
 
+    /**
+     * Render the test-class source for one cluster.
+     */
     public function buildTest(Cluster $cluster): string
     {
         $className = "Cluster{$cluster->id}Test";
@@ -96,6 +102,10 @@ PHP;
         return $out;
     }
 
+    /**
+     * Render one observed hole value as a PHP literal suitable for
+     * embedding directly in a `casesProvider` row.
+     */
     private function reprValue(Hole $h, int $memberIdx): string
     {
         $v = $h->observedValues[$memberIdx] ?? null;
@@ -103,9 +113,15 @@ PHP;
             return $h->kind === 'optional_block' ? 'false' : 'null';
         }
         // Numeric → bare; bool/null keywords → bare; otherwise quoted string.
-        if (preg_match('/^-?\d+(\.\d+)?$/', $v))             return $v;
-        if (in_array($v, ['true', 'false', 'null'], true))   return $v;
-        if (preg_match('/^([\'"]).*\1$/s', $v))              return $v;
+        if (preg_match('/^-?\d+(\.\d+)?$/', $v) === 1) {
+            return $v;
+        }
+        if (in_array($v, ['true', 'false', 'null'], true)) {
+            return $v;
+        }
+        if (preg_match('/^([\'"]).*\1$/s', $v) === 1) {
+            return $v;
+        }
         // Anything else → quote as a PHP string for the provider row.
         return "'" . addslashes($v) . "'";
     }
