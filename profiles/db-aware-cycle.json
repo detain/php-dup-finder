@@ -1,0 +1,38 @@
+{
+    "_description": "Cycle ORM-specific DB symbol equivalence pack (option 4 of docs/plans/orm-db-semantic-dedup.md). Extends the stock DbOpRegistry with Cycle ORM method names. Cycle ORM is a high-performance PHP ORM with a repository pattern and strong typing support. Use with --profile=db-aware-cycle together with --db-aware to fold Cycle ORM call shapes into the same canonical __DB_<OP>__ tokens as the rest of the recognised DB ecosystem. See https://github.com/cycle/orm",
+    "db_symbols": {
+        "methods": {
+            "find":             "db.read",
+            "findbyid":         "db.read",
+            "findone":          "db.read",
+            "findall":          "db.read",
+            "findoneby":        "db.read",
+            "select":           "db.read",
+            "where":            "db.read",
+            "whereid":          "db.read",
+            "wherefield":       "db.read",
+            "order":            "db.read",
+            "orderby":          "db.read",
+            "limit":            "db.read",
+            "offset":           "db.read",
+            "group":            "db.read",
+            "with":             "db.read",
+            "withstack":        "db.read",
+            "aggregate":        "db.read",
+            "count":            "db.read",
+            "sum":              "db.read",
+            "avg":              "db.read",
+            "min":              "db.read",
+            "max":              "db.read",
+            "persist":          "db.write",
+            "save":             "db.write",
+            "create":           "db.write",
+            "update":           "db.write",
+            "delete":           "db.delete",
+            "remove":           "db.delete",
+            "transaction":      "db.execute",
+            "rollback":         "db.execute",
+            "run":              "db.execute"
+        }
+    }
+}

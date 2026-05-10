@@ -1093,14 +1093,20 @@ Allowed canonical ops: `db.read`, `db.write`, `db.delete`,
 `db.execute`, `db.query`. Custom entries override stock ones with
 the same name; everything else is additive.
 
-**Bundled symbol packs.** Three framework-flavoured packs ship
+**Bundled symbol packs.** Nine framework-flavoured packs ship
 out of the box and can be loaded via `--profile`:
 
-| Profile name           | What it adds                                                           |
-|------------------------|------------------------------------------------------------------------|
-| `db-aware-laravel`     | Eloquent / Laravel methods (`firstWhere`, `pluck`, `chunk`, `increment`, raw\* helpers). |
-| `db-aware-doctrine`    | Doctrine ORM / DBAL (`createQuery`, `executeStatement`, `fetchAssociative*`, transaction helpers). |
-| `db-aware-cake`        | CakePHP ORM (`patchEntity`, `saveOrFail`, `findThreaded`, `loadInto`). |
+| Profile name                | What it adds                                                                                         |
+|-----------------------------|------------------------------------------------------------------------------------------------------|
+| `db-aware-laravel`          | Eloquent / Laravel methods (`firstWhere`, `pluck`, `chunk`, `increment`, raw\* helpers).             |
+| `db-aware-doctrine`         | Doctrine ORM / DBAL (`createQuery`, `executeStatement`, `fetchAssociative*`, transaction helpers).  |
+| `db-aware-cake`             | CakePHP ORM (`patchEntity`, `saveOrFail`, `findThreaded`, `loadInto`).                              |
+| `db-aware-thinkorm`         | ThinkPHP 6.x / think-orm (`find`, `select`, `insert`, `update`, `delete`, `count`, aggregation).   |
+| `db-aware-medoo`            | Medoo (`select`, `insert`, `update`, `delete`, `create`, `drop`, `query`, `exec`).                 |
+| `db-aware-propel`           | Propel ORM (`doSelect`, `doInsert`, `doUpdate`, `doDelete`, `find`, `save`).                        |
+| `db-aware-redbean`          | RedBeanPHP (`find`, `dispense`, `store`, `trash`, `save`, `load`, `wipe`, `related`).              |
+| `db-aware-cycle`            | Cycle ORM (`find`, `findAll`, `persist`, `delete`, `select`, `where`, `aggregate`).                |
+| `db-aware-phpactiverecord`  | PHP ActiveRecord (`find`, `all`, `first`, `last`, `create`, `save`, `update`, `delete`, `destroy`).|
 
 Compose them with `--db-aware` for the canonicalisation pass plus
 the stock DB call coverage. The user's own `db_symbols` in

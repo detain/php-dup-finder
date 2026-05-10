@@ -1,0 +1,40 @@
+{
+    "_description": "Propel ORM-specific DB symbol equivalence pack (option 4 of docs/plans/orm-db-semantic-dedup.md). Extends the stock DbOpRegistry with Propel ORM method names. Propel is a popular PHP ORM that provides an ActiveRecord-like interface with methods like doSelect(), doInsert(), doUpdate(), doDelete(), and query building via Criteria. Use with --profile=db-aware-propel together with --db-aware to fold Propel call shapes into the same canonical __DB_<OP>__ tokens as the rest of the recognised DB ecosystem. See http://propelorm.org/",
+    "db_symbols": {
+        "methods": {
+            "doselect":              "db.read",
+            "doselectjoin":          "db.read",
+            "doselectwith":          "db.read",
+            "docount":               "db.read",
+            "doinsert":              "db.write",
+            "doupdate":              "db.write",
+            "dodelete":              "db.delete",
+            "insert":                "db.write",
+            "update":                "db.write",
+            "delete":                "db.delete",
+            "save":                  "db.write",
+            "getarraycolumn":        "db.read",
+            "getasfields":           "db.read",
+            "toarray":               "db.read",
+            "fromarray":             "db.write",
+            "clear":                 "db.write",
+            "clearallreferences":    "db.write",
+            "getbykey":              "db.read",
+            "getbyname":             "db.read",
+            "getbypk":               "db.read",
+            "getonename":            "db.read",
+            "getrelated":            "db.read",
+            "getrelatedjoin":        "db.read",
+            "setfrom":               "db.write",
+            "add":                   "db.write",
+            "count":                 "db.read",
+            "populate":              "db.write",
+            "retrievebypk":          "db.read",
+            "retrievebypklock":      "db.read",
+            "retrieveone":           "db.read",
+            "retrievelist":          "db.read",
+            "dorefresh":             "db.read",
+            "validate":              "db.read"
+        }
+    }
+}
