@@ -26,6 +26,11 @@ use Phpdup\Extraction\Block;
  * as stale (cache miss). Snapshots are independent per source file so
  * adding one new file or editing one existing file invalidates only
  * that one file's snapshot — the rest replay verbatim.
+ *
+ * Deserialization is restricted to the phpdup value-object classes
+ * (Block / LineRange / Cluster / Hole) plus the PhpParser node
+ * namespace via {@see SerializedClassAllowList::blockCacheClasses()}.
+ * Any other class lands as `__PHP_Incomplete_Class` and forces a miss.
  */
 final class IndexStore
 {
@@ -60,11 +65,30 @@ final class IndexStore
         $blob = @file_get_contents($cacheFile);
         if ($blob === false || $blob === '') return null;
 
-        $payload = @unserialize($blob, ['allowed_classes' => true]);
-        if (!is_array($payload)) return null;
-        if (($payload['file_hash'] ?? null) !== $sha) return null;
-        if (($payload['parser_version'] ?? null) !== self::PARSER_VERSION) return null;
-        if (($payload['config_key'] ?? null) !== $this->configKey) return null;
+        $payload = @unserialize($blob, [
+            'allowed_classes' => SerializedClassAllowList::blockCacheClasses(),
+        ]);
+        if (!is_array($payload)) {
+            return null;
+        }
+        if (($payload['file_hash'] ?? null) !== $sha) {
+            return null;
+        }
+        if (($payload['parser_version'] ?? null) !== self::PARSER_VERSION) {
+            return null;
+        }
+        if (($payload['config_key'] ?? null) !== $this->configKey) {
+            return null;
+        }
+        // Tampered blob → bail with cache-miss semantics.
+        $rawBlocks = $payload['blocks'] ?? [];
+        if (is_array($rawBlocks)) {
+            foreach ($rawBlocks as $block) {
+                if ($block instanceof \__PHP_Incomplete_Class) {
+                    return null;
+                }
+            }
+        }
 
         $blocks = $payload['blocks'] ?? null;
         return is_array($blocks) ? array_values($blocks) : null;

@@ -61,9 +61,30 @@ final class ClusterCache
             return null;
         }
         $blob = @file_get_contents($file);
-        if ($blob === false || $blob === '') return null;
-        $payload = @unserialize($blob, ['allowed_classes' => true]);
-        if (!is_array($payload)) return null;
+        if ($blob === false || $blob === '') {
+            return null;
+        }
+        $payload = @unserialize($blob, [
+            'allowed_classes' => SerializedClassAllowList::blockCacheClasses(),
+        ]);
+        if (!is_array($payload)) {
+            return null;
+        }
+        // Reject any payload where deserialization produced an
+        // `__PHP_Incomplete_Class` — a tampered blob, or one written by
+        // an incompatible build, has no business in the pipeline.
+        foreach ($payload as $value) {
+            if ($value instanceof \__PHP_Incomplete_Class) {
+                return null;
+            }
+            if (is_array($value)) {
+                foreach ($value as $inner) {
+                    if ($inner instanceof \__PHP_Incomplete_Class) {
+                        return null;
+                    }
+                }
+            }
+        }
         if (($payload['parser_version'] ?? null) !== self::PARSER_VERSION) return null;
         if (($payload['config_key'] ?? null)     !== $this->configKey)     return null;
         if (($payload['corpus_hash'] ?? null)    !== $this->hashCorpus($blocks)) return null;
