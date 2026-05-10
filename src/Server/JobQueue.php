@@ -21,7 +21,17 @@ final class JobQueue
     /** @var array<string, array{status:string,payload:array<string,mixed>,result:?array<string,mixed>,error:?string}> */
     private array $jobs = [];
 
-    /** @param array<string,mixed> $payload */
+    /**
+     * Add a new job to the queue and return its opaque identifier.
+     *
+     * The id is derived from {@see random_bytes()} so callers cannot
+     * predict or guess existing job ids, which protects status reads
+     * against trivial enumeration even though the queue itself is
+     * single-process.
+     *
+     * @param array<string,mixed> $payload
+     * @return string Hex-encoded 16-character random id.
+     */
     public function enqueue(array $payload): string
     {
         $id = bin2hex(random_bytes(8));
@@ -34,6 +44,12 @@ final class JobQueue
         return $id;
     }
 
+    /**
+     * Transition a known job to the {@see JobQueue::STATUS_RUNNING} state.
+     *
+     * Unknown ids are ignored on purpose — the API contract is "best
+     * effort, no exceptions for missing rows".
+     */
     public function markRunning(string $id): void
     {
         if (isset($this->jobs[$id])) {
@@ -42,6 +58,8 @@ final class JobQueue
     }
 
     /**
+     * Mark a job as finished and store its decoded analysis result.
+     *
      * @param array<string,mixed> $result
      */
     public function markCompleted(string $id, array $result): void
@@ -52,6 +70,9 @@ final class JobQueue
         }
     }
 
+    /**
+     * Mark a job as failed and record the error message for later polling.
+     */
     public function markFailed(string $id, string $error): void
     {
         if (isset($this->jobs[$id])) {
@@ -60,7 +81,11 @@ final class JobQueue
         }
     }
 
-    /** @return array{status:string,payload:array<string,mixed>,result:?array<string,mixed>,error:?string}|null */
+    /**
+     * Look up a job by id.
+     *
+     * @return array{status:string,payload:array<string,mixed>,result:?array<string,mixed>,error:?string}|null
+     */
     public function get(string $id): ?array
     {
         return $this->jobs[$id] ?? null;
