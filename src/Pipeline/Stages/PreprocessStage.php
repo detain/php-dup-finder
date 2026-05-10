@@ -97,7 +97,9 @@ final class PreprocessStage implements CooperativeStageInterface
         $sinceYield = 0;
         if ($store !== null) {
             if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                $output->writeln(sprintf('preprocess: checking cache for %d files [%s]', count($files), MemoryDebug::getMemoryUsage()));
+                $msg = sprintf('preprocess: checking cache for %d files [%s]', count($files), MemoryDebug::getMemoryUsage());
+                $output->writeln($msg);
+                $state->pushDebugMessage($msg);
             }
             foreach ($files as $f) {
                 $cached = $store->load($f);
@@ -114,8 +116,12 @@ final class PreprocessStage implements CooperativeStageInterface
                 }
                 if (++$sinceYield >= self::YIELD_EVERY) {
                     $sinceYield = 0;
+                    $state->rssBytes = memory_get_usage(false);
+                    $state->peakBytes = memory_get_peak_usage(true);
                     if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                        $output->writeln(sprintf('preprocess: cache check progress %d/%d files [%s]', $state->scannedFiles, count($files), MemoryDebug::getMemoryUsage()));
+                        $msg = sprintf('preprocess: cache check progress %d/%d files [%s]', $state->scannedFiles, count($files), MemoryDebug::getMemoryUsage());
+                        $output->writeln($msg);
+                        $state->pushDebugMessage($msg);
                     }
                     yield Stage::Preprocessing;
                 }
@@ -138,7 +144,9 @@ final class PreprocessStage implements CooperativeStageInterface
             };
 
             if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                $output->writeln(sprintf('preprocess: processing %d files across %d workers [%s]', count($toProcess), $workerCount, MemoryDebug::getMemoryUsage()));
+                $msg = sprintf('preprocess: processing %d files across %d workers [%s]', count($toProcess), $workerCount, MemoryDebug::getMemoryUsage());
+                $output->writeln($msg);
+                $state->pushDebugMessage($msg);
             }
 
             $perFileBlocks     = [];
@@ -146,7 +154,9 @@ final class PreprocessStage implements CooperativeStageInterface
             $sinceYield        = 0;
 
             if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                $output->writeln(sprintf('preprocess: collecting results from workers... [%s]', MemoryDebug::getMemoryUsage()));
+                $msg = sprintf('preprocess: collecting results from workers... [%s]', MemoryDebug::getMemoryUsage());
+                $output->writeln($msg);
+                $state->pushDebugMessage($msg);
             }
             foreach ($pool->runStreaming($toProcess, $task) as $row) {
                 $processedFilesSet[$row['file']] = true;
@@ -162,8 +172,12 @@ final class PreprocessStage implements CooperativeStageInterface
 
                 if (++$sinceYield >= self::YIELD_EVERY) {
                     $sinceYield = 0;
+                    $state->rssBytes = memory_get_usage(false);
+                    $state->peakBytes = memory_get_peak_usage(true);
                     if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                        $output->writeln(sprintf('preprocess: processed %d files, %d blocks so far [%s]', $state->processedFiles, count($blocks), MemoryDebug::getMemoryUsage()));
+                        $msg = sprintf('preprocess: processed %d files, %d blocks so far [%s]', $state->processedFiles, count($blocks), MemoryDebug::getMemoryUsage());
+                        $output->writeln($msg);
+                        $state->pushDebugMessage($msg);
                     }
                     $this->listener->onFilePreprocessed(
                         $state->processedFiles, $state->reusedFiles, $state->parseErrors,
@@ -175,13 +189,17 @@ final class PreprocessStage implements CooperativeStageInterface
 
             if ($store !== null) {
                 if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                    $output->writeln(sprintf('preprocess: saving %d files to cache... [%s]', count($perFileBlocks), MemoryDebug::getMemoryUsage()));
+                    $msg = sprintf('preprocess: saving %d files to cache... [%s]', count($perFileBlocks), MemoryDebug::getMemoryUsage());
+                    $output->writeln($msg);
+                    $state->pushDebugMessage($msg);
                 }
                 foreach ($perFileBlocks as $file => $list) {
                     $store->save($file, $list);
                 }
                 if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                    $output->writeln(sprintf('preprocess: cache save complete [%s]', MemoryDebug::getMemoryUsage()));
+                    $msg = sprintf('preprocess: cache save complete [%s]', MemoryDebug::getMemoryUsage());
+                    $output->writeln($msg);
+                    $state->pushDebugMessage($msg);
                 }
             }
             unset($perFileBlocks);
@@ -193,13 +211,17 @@ final class PreprocessStage implements CooperativeStageInterface
 
         // Assign IDs (after collecting from all sources).
         if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-            $output->writeln(sprintf('preprocess: assigning IDs to %d blocks... [%s]', count($blocks), MemoryDebug::getMemoryUsage()));
+            $msg = sprintf('preprocess: assigning IDs to %d blocks... [%s]', count($blocks), MemoryDebug::getMemoryUsage());
+            $output->writeln($msg);
+            $state->pushDebugMessage($msg);
         }
         foreach ($blocks as $i => $b) {
             $b->id = substr($b->structuralHash, 0, 8) . '_' . $i;
         }
         if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-            $output->writeln(sprintf('preprocess: ID assignment complete, transitioning to next stage... [%s]', MemoryDebug::getMemoryUsage()));
+            $msg = sprintf('preprocess: ID assignment complete, transitioning to next stage... [%s]', MemoryDebug::getMemoryUsage());
+            $output->writeln($msg);
+            $state->pushDebugMessage($msg);
         }
 
         $state->blocks = $blocks;

@@ -93,6 +93,7 @@ final class ConfigLoader
             irThreshold: (float)($overrides['ir_threshold'] ?? $data['ir_threshold'] ?? $base->irThreshold),
             mlPairUrl: (string)($overrides['ml_pair_url'] ?? $data['ml_pair_url'] ?? $base->mlPairUrl),
             mlPairThreshold: (float)($overrides['ml_pair_threshold'] ?? $data['ml_pair_threshold'] ?? $base->mlPairThreshold),
+            debugLog: isset($overrides['debug_log']) ? (string)$overrides['debug_log'] : ($data['debug_log'] ?? $base->debugLog),
         );
     }
 
@@ -238,6 +239,9 @@ final class ConfigLoader
                 $out['db_symbols_functions'] = $ds['functions'];
             }
         }
+        if (array_key_exists('debug_log', $data)) {
+            $out['debug_log'] = $data['debug_log'];
+        }
         return $out;
     }
 
@@ -275,6 +279,7 @@ final class ConfigLoader
             'ir_threshold',
             'ml_pair_url',
             'ml_pair_threshold',
+            'debug_log',
         ];
         foreach (array_keys($data) as $k) {
             if (!in_array($k, $known, true)) {
@@ -514,6 +519,11 @@ final class ConfigLoader
                 if (!is_string($v)) {
                     throw new \RuntimeException("report.$k must be a string$where");
                 }
+            }
+        }
+        if (array_key_exists('debug_log', $data)) {
+            if (!is_string($data['debug_log']) || $data['debug_log'] === '') {
+                throw new \RuntimeException("debug_log must be a non-empty string$where");
             }
         }
     }

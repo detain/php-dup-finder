@@ -43,18 +43,25 @@ final class ScanningStage implements CooperativeStageInterface
 
         $files = [];
         $sinceYield = 0;
+        $state->stageStartTime = microtime(true);
         foreach ($config->paths as $root) {
             foreach ($scanner->scan($root) as $path) {
                 $files[] = $path;
                 $state->scannedFiles = ++$state->totalFiles;
                 $this->listener->onFileScanned($state->scannedFiles, $state->totalFiles);
                 if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG && $state->totalFiles % 100 === 0) {
-                    $output->writeln(sprintf('scanning: discovered file %s [%s]', $path, MemoryDebug::getMemoryUsage()));
+                    $msg = sprintf('scanning: discovered file %s [%s]', $path, MemoryDebug::getMemoryUsage());
+                    $output->writeln($msg);
+                    $state->pushDebugMessage($msg);
                 }
                 if (++$sinceYield >= self::YIELD_INTERVAL) {
                     $sinceYield = 0;
+                    $state->rssBytes = memory_get_usage(false);
+                    $state->peakBytes = memory_get_peak_usage(true);
                     if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                        $output->writeln(sprintf('scanning: %d files scanned so far [%s]', $state->totalFiles, MemoryDebug::getMemoryUsage()));
+                        $msg = sprintf('scanning: %d files scanned so far [%s]', $state->totalFiles, MemoryDebug::getMemoryUsage());
+                        $output->writeln($msg);
+                        $state->pushDebugMessage($msg);
                     }
                     yield Stage::Scanning;
                 }

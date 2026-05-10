@@ -57,6 +57,19 @@ final class PipelineState
      */
     public bool $cancelled = false;
 
+    /** Ring buffer of recent debug messages. */
+    public const DEBUG_BUFFER_SIZE = 100;
+    /** @var list<string> */
+    public array $debugMessages = [];
+    public int $debugIndex = 0;
+
+    /** Current RSS and peak RSS in bytes (updated on each stage yield). */
+    public int $rssBytes = 0;
+    public int $peakBytes = 0;
+
+    /** Per-stage elapsed time tracking for TUI display. */
+    public float $stageStartTime = 0.0;
+
     /** @var array<string,float> stage-name → seconds */
     public array $timings = [
         'preprocess' => 0.0,
@@ -65,4 +78,13 @@ final class PipelineState
     ];
 
     public function __construct(public readonly Config $config) {}
+
+    /**
+     * Push a debug message to the ring buffer.
+     */
+    public function pushDebugMessage(string $message): void
+    {
+        $this->debugMessages[$this->debugIndex % self::DEBUG_BUFFER_SIZE] = $message;
+        $this->debugIndex++;
+    }
 }

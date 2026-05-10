@@ -112,7 +112,9 @@ final class ClusterStage implements CooperativeStageInterface
         }
         $state->index = $index;
         if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-            $output->writeln(sprintf('clustering: built block index with %d blocks [%s]', count($state->blocks), MemoryDebug::getMemoryUsage()));
+            $msg = sprintf('clustering: built block index with %d blocks [%s]', count($state->blocks), MemoryDebug::getMemoryUsage());
+            $output->writeln($msg);
+            $state->pushDebugMessage($msg);
         }
 
         // Optional: drop original ASTs to free memory; reload lazily during refactor.
@@ -149,11 +151,15 @@ final class ClusterStage implements CooperativeStageInterface
             yield Stage::Clustering;
 
             if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                $output->writeln(sprintf('clustering: building n-gram inverted index for %d blocks [%s]', count($state->blocks), MemoryDebug::getMemoryUsage()));
+                $msg = sprintf('clustering: building n-gram inverted index for %d blocks [%s]', count($state->blocks), MemoryDebug::getMemoryUsage());
+                $output->writeln($msg);
+                $state->pushDebugMessage($msg);
             }
             $candidatePairs = $clusterer->generateCandidatePairs($index, $output);
             if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                $output->writeln(sprintf('clustering: generated %d candidate pairs [%s]', count($candidatePairs), MemoryDebug::getMemoryUsage()));
+                $msg = sprintf('clustering: generated %d candidate pairs [%s]', count($candidatePairs), MemoryDebug::getMemoryUsage());
+                $output->writeln($msg);
+                $state->pushDebugMessage($msg);
             }
             $state->candidatePairs = count($candidatePairs);
             $state->scoredPairs    = 0;
@@ -165,23 +171,27 @@ final class ClusterStage implements CooperativeStageInterface
                 if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
                     if ($useParallel && WorkerPool::isAvailable()) {
                         $pairsPerWorker = (int)ceil($state->candidatePairs / $workers);
-                        $output->writeln(sprintf(
+                        $msg = sprintf(
                             'clustering: starting parallel scoring: %d pairs across %d workers (~%d pairs/worker) [%s]',
                             $state->candidatePairs,
                             $workers,
                             $pairsPerWorker,
                             MemoryDebug::getMemoryUsage(),
-                        ));
+                        );
+                        $output->writeln($msg);
+                        $state->pushDebugMessage($msg);
                     } else {
                         $fallbackReason = $workers <= 1
                             ? 'workers <= 1'
                             : (!WorkerPool::isAvailable() ? 'pcntl not available' : 'candidate pairs < 64');
-                        $output->writeln(sprintf(
+                        $msg = sprintf(
                             'clustering: starting serial scoring (%s): %d pairs [%s]',
                             $fallbackReason,
                             $state->candidatePairs,
                             MemoryDebug::getMemoryUsage(),
-                        ));
+                        );
+                        $output->writeln($msg);
+                        $state->pushDebugMessage($msg);
                     }
                 }
                 $state->currentTask = $useParallel && WorkerPool::isAvailable()
@@ -219,11 +229,13 @@ final class ClusterStage implements CooperativeStageInterface
                     $sinceYield = 0;
                     $lastDebugOutput = microtime(true);
                     if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                        $output->writeln(sprintf(
+                        $msg = sprintf(
                             'clustering: scoring began at %s [%s]',
                             date('H:i:s'),
                             MemoryDebug::getMemoryUsage(),
-                        ));
+                        );
+                        $output->writeln($msg);
+                        $state->pushDebugMessage($msg);
                     }
                     foreach ($pool->runStreaming($candidatePairs, $task) as $row) {
                         if (is_array($row) && isset($row['__progress'])) {
@@ -235,6 +247,8 @@ final class ClusterStage implements CooperativeStageInterface
                             $sinceYield = 0;
                             $denom = max(1, $state->candidatePairs);
                             $state->stageProgress = min(0.95, $state->scoredPairs / $denom);
+                            $state->rssBytes = memory_get_usage(false);
+                            $state->peakBytes = memory_get_peak_usage(true);
                             $this->listener->onPairScored($state->scoredPairs, $state->candidatePairs);
                             $state->currentTask = sprintf(
                                 'Scoring candidate pairs (%d / %d)',
@@ -252,14 +266,16 @@ final class ClusterStage implements CooperativeStageInterface
                                 $pct = $state->scoredPairs > 0
                                     ? sprintf(' (%.1f%%)', 100 * $state->scoredPairs / $denom)
                                     : '';
-                                $output->writeln(sprintf(
+                                $msg = sprintf(
                                     'clustering: scoring heartbeat%s | %d / %d pairs | %s elapsed [%s]',
                                     $pct,
                                     $state->scoredPairs,
                                     $state->candidatePairs,
                                     $elapsed . 's',
                                     MemoryDebug::getMemoryUsage(),
-                                ));
+                                );
+                                $output->writeln($msg);
+                                $state->pushDebugMessage($msg);
                             }
                         }
                     }
@@ -269,11 +285,13 @@ final class ClusterStage implements CooperativeStageInterface
                     $lastDebugOutput = microtime(true);
                     $batchSize  = 256;
                     if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                        $output->writeln(sprintf(
+                        $msg = sprintf(
                             'clustering: serial scoring began at %s [%s]',
                             date('H:i:s'),
                             MemoryDebug::getMemoryUsage(),
-                        ));
+                        );
+                        $output->writeln($msg);
+                        $state->pushDebugMessage($msg);
                     }
                     foreach (array_chunk($candidatePairs, $batchSize) as $chunk) {
                         foreach ($scoreWorker->score($chunk) as $edge) {
@@ -285,6 +303,8 @@ final class ClusterStage implements CooperativeStageInterface
                             $sinceYield = 0;
                             $denom = max(1, $state->candidatePairs);
                             $state->stageProgress = min(0.95, $state->scoredPairs / $denom);
+                            $state->rssBytes = memory_get_usage(false);
+                            $state->peakBytes = memory_get_peak_usage(true);
                             $this->listener->onPairScored($state->scoredPairs, $state->candidatePairs);
                             $state->currentTask = sprintf(
                                 'Scoring candidate pairs (%d / %d)',
@@ -302,14 +322,16 @@ final class ClusterStage implements CooperativeStageInterface
                                 $pct = $state->scoredPairs > 0
                                     ? sprintf(' (%.1f%%)', 100 * $state->scoredPairs / $denom)
                                     : '';
-                                $output->writeln(sprintf(
+                                $msg = sprintf(
                                     'clustering: scoring heartbeat%s | %d / %d pairs | %s elapsed [%s]',
                                     $pct,
                                     $state->scoredPairs,
                                     $state->candidatePairs,
                                     $elapsed . 's',
                                     MemoryDebug::getMemoryUsage(),
-                                ));
+                                );
+                                $output->writeln($msg);
+                                $state->pushDebugMessage($msg);
                             }
                         }
                     }
@@ -332,7 +354,9 @@ final class ClusterStage implements CooperativeStageInterface
             }
         }
         if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-            $output->writeln(sprintf('clustering: forming clusters from %d edges [%s]', count($pureEdges), MemoryDebug::getMemoryUsage()));
+            $msg = sprintf('clustering: forming clusters from %d edges [%s]', count($pureEdges), MemoryDebug::getMemoryUsage());
+            $output->writeln($msg);
+            $state->pushDebugMessage($msg);
         }
         $state->clusters = $clusterer->cluster($index, $pureEdges);
         $state->timings['cluster'] = microtime(true) - $tCluster;

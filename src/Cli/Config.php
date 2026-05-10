@@ -131,6 +131,8 @@ final class Config
         // value emit edges weighted by that similarity. CLI:
         // --ml-pair-threshold.
         public readonly float $mlPairThreshold = 0.80,
+        // Path to append debug (vvv) messages to. Null = disabled.
+        public readonly ?string $debugLog = null,
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");

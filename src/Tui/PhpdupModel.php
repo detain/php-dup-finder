@@ -92,6 +92,8 @@ final class PhpdupModel implements Model, ProgressListener
         // PipelineState already tracks this; surface to the dashboard via state.
         $this->state->scannedFiles = $scanned;
         $this->state->totalFiles   = $total;
+        $this->state->rssBytes = memory_get_usage(false);
+        $this->state->peakBytes = memory_get_peak_usage(true);
     }
 
     public function onFilePreprocessed(int $processed, int $reused, int $errors): void
@@ -99,17 +101,23 @@ final class PhpdupModel implements Model, ProgressListener
         $this->state->processedFiles = $processed;
         $this->state->reusedFiles    = $reused;
         $this->state->parseErrors    = $errors;
+        $this->state->rssBytes = memory_get_usage(false);
+        $this->state->peakBytes = memory_get_peak_usage(true);
     }
 
     public function onPairScored(int $scored, int $total): void
     {
         $this->state->scoredPairs    = $scored;
         $this->state->candidatePairs = $total;
+        $this->state->rssBytes = memory_get_usage(false);
+        $this->state->peakBytes = memory_get_peak_usage(true);
     }
 
     public function onClusterRefactored(int $refactored, int $total): void
     {
         $this->state->refactoredClusters = $refactored;
+        $this->state->rssBytes = memory_get_usage(false);
+        $this->state->peakBytes = memory_get_peak_usage(true);
     }
 
     public function init(): \Closure
@@ -408,7 +416,25 @@ final class PhpdupModel implements Model, ProgressListener
             default => '',
         };
 
-        return $marker . $this->theme->info->render($label) . "\n" . $body;
+        $debugSection = '';
+        if ($focused && $this->state->debugIndex > 0) {
+            $debugLines = [];
+            $count = min(5, $this->state->debugIndex);
+            for ($i = 0; $i < $count; $i++) {
+                $idx = ($this->state->debugIndex - 1 - $i + PipelineState::DEBUG_BUFFER_SIZE) % PipelineState::DEBUG_BUFFER_SIZE;
+                if (isset($this->state->debugMessages[$idx])) {
+                    $debugLines[] = $this->state->debugMessages[$idx];
+                }
+            }
+            if ($debugLines !== []) {
+                $debugSection = "\n" . $this->theme->muted->render('debug:') . "\n" . implode("\n", array_map(
+                    fn(string $msg) => '  ' . $this->theme->muted->render($msg),
+                    $debugLines
+                ));
+            }
+        }
+
+        return $marker . $this->theme->info->render($label) . "\n" . $body . $debugSection;
     }
 
     /**

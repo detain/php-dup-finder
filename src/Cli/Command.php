@@ -78,7 +78,8 @@ final class Command extends SymfonyCommand
             ->addOption('clusters', null, InputOption::VALUE_NONE, 'Render a one-line-per-cluster table instead of the full per-cluster breakdown')
             ->addOption('pager', null, InputOption::VALUE_REQUIRED, 'Page CLI report through $PAGER (default `less -R`). Modes: auto|never|always. auto pages when stdout is a TTY and the rendered output exceeds ~60 lines.', 'never')
             ->addOption('sort', null, InputOption::VALUE_REQUIRED, 'Cluster sort: KEY[:asc|desc]. Keys: impact|members|block-size|lines|similarity|confidence|name|file|id. Aliases: size→members, count→members. Default impact:desc.')
-            ->addOption('stats', null, InputOption::VALUE_NONE, 'Show pipeline statistics');
+            ->addOption('stats', null, InputOption::VALUE_NONE, 'Show pipeline statistics')
+            ->addOption('debug-log', null, InputOption::VALUE_REQUIRED, 'Append all debug (vvv) messages to FILE');
 
         // ── Performance / runtime ──────────────────────────────────────────
         $this
@@ -164,6 +165,7 @@ HELP;
             'optional_blocks_containment' => $input->getOption('optional-blocks-containment'),
             'sort'                        => $input->getOption('sort'),
             'ted_weights'                 => $input->getOption('ted-weights'),
+            'debug_log'                   => $input->getOption('debug-log'),
         ], fn($v) => $v !== null);
         if ($input->getOption('db-aware')) {
             $overrides['db_aware'] = true;
