@@ -122,6 +122,97 @@ final class CustomDbSymbolsTest extends TestCase
         $this->assertArrayHasKey('db_symbols', $loaded);
     }
 
+    public function testBundledThinkormDbSymbolsLoadCleanly(): void
+    {
+        $registry = \Phpdup\Cli\ProfileRegistry::bundled();
+        $this->assertContains('db-aware-thinkorm', $registry->listAvailable());
+        $loaded = $registry->load('db-aware-thinkorm');
+        $this->assertArrayHasKey('db_symbols', $loaded);
+        $methods = $loaded['db_symbols']['methods'];
+        // Verify some key think-orm methods are mapped
+        $this->assertSame('db.read', $methods['find'] ?? null);
+        $this->assertSame('db.read', $methods['select'] ?? null);
+        $this->assertSame('db.write', $methods['insert'] ?? null);
+        $this->assertSame('db.delete', $methods['delete'] ?? null);
+    }
+
+    public function testBundledMedooDbSymbolsLoadCleanly(): void
+    {
+        $registry = \Phpdup\Cli\ProfileRegistry::bundled();
+        $this->assertContains('db-aware-medoo', $registry->listAvailable());
+        $loaded = $registry->load('db-aware-medoo');
+        $this->assertArrayHasKey('db_symbols', $loaded);
+        $methods = $loaded['db_symbols']['methods'];
+        $this->assertSame('db.read', $methods['select'] ?? null);
+        $this->assertSame('db.write', $methods['insert'] ?? null);
+        $this->assertSame('db.query', $methods['query'] ?? null);
+    }
+
+    public function testBundledPropelDbSymbolsLoadCleanly(): void
+    {
+        $registry = \Phpdup\Cli\ProfileRegistry::bundled();
+        $this->assertContains('db-aware-propel', $registry->listAvailable());
+        $loaded = $registry->load('db-aware-propel');
+        $this->assertArrayHasKey('db_symbols', $loaded);
+        $methods = $loaded['db_symbols']['methods'];
+        $this->assertSame('db.read', $methods['doselect'] ?? null);
+        $this->assertSame('db.write', $methods['doinsert'] ?? null);
+        $this->assertSame('db.delete', $methods['dodelete'] ?? null);
+    }
+
+    public function testBundledRedbeanDbSymbolsLoadCleanly(): void
+    {
+        $registry = \Phpdup\Cli\ProfileRegistry::bundled();
+        $this->assertContains('db-aware-redbean', $registry->listAvailable());
+        $loaded = $registry->load('db-aware-redbean');
+        $this->assertArrayHasKey('db_symbols', $loaded);
+        $methods = $loaded['db_symbols']['methods'];
+        $this->assertSame('db.read', $methods['find'] ?? null);
+        $this->assertSame('db.write', $methods['store'] ?? null);
+        $this->assertSame('db.delete', $methods['trash'] ?? null);
+    }
+
+    public function testBundledCycleDbSymbolsLoadCleanly(): void
+    {
+        $registry = \Phpdup\Cli\ProfileRegistry::bundled();
+        $this->assertContains('db-aware-cycle', $registry->listAvailable());
+        $loaded = $registry->load('db-aware-cycle');
+        $this->assertArrayHasKey('db_symbols', $loaded);
+        $methods = $loaded['db_symbols']['methods'];
+        $this->assertSame('db.read', $methods['find'] ?? null);
+        $this->assertSame('db.write', $methods['persist'] ?? null);
+    }
+
+    public function testBundledPhpActiveRecordDbSymbolsLoadCleanly(): void
+    {
+        $registry = \Phpdup\Cli\ProfileRegistry::bundled();
+        $this->assertContains('db-aware-phpactiverecord', $registry->listAvailable());
+        $loaded = $registry->load('db-aware-phpactiverecord');
+        $this->assertArrayHasKey('db_symbols', $loaded);
+        $methods = $loaded['db_symbols']['methods'];
+        $this->assertSame('db.read', $methods['find'] ?? null);
+        $this->assertSame('db.read', $methods['first'] ?? null);
+        $this->assertSame('db.write', $methods['create'] ?? null);
+        $this->assertSame('db.delete', $methods['destroy'] ?? null);
+    }
+
+    public function testNewDbAwareProfilesCoverKeyCrudOperations(): void
+    {
+        // Verify all new profiles map the four basic CRUD operations
+        $profiles = ['db-aware-thinkorm', 'db-aware-medoo', 'db-aware-propel',
+                     'db-aware-redbean', 'db-aware-cycle', 'db-aware-phpactiverecord'];
+        $registry = \Phpdup\Cli\ProfileRegistry::bundled();
+        foreach ($profiles as $name) {
+            $loaded = $registry->load($name);
+            $methods = $loaded['db_symbols']['methods'];
+            $hasRead = in_array('db.read', $methods, true);
+            $hasWrite = in_array('db.write', $methods, true);
+            $hasDelete = in_array('db.delete', $methods, true);
+            $this->assertTrue($hasRead && $hasWrite && $hasDelete,
+                "Profile $name must cover db.read, db.write, and db.delete operations");
+        }
+    }
+
     /** @return list<string> */
     private function canonicalTokens(string $code, DbOpRegistry $registry): array
     {
