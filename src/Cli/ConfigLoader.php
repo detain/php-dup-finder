@@ -91,6 +91,8 @@ final class ConfigLoader
             dbSymbolsFunctions: $this->extractDbSymbols($data, $overrides, 'functions'),
             scorer: (string)($overrides['scorer'] ?? $data['scorer'] ?? $base->scorer),
             irThreshold: (float)($overrides['ir_threshold'] ?? $data['ir_threshold'] ?? $base->irThreshold),
+            mlPairUrl: (string)($overrides['ml_pair_url'] ?? $data['ml_pair_url'] ?? $base->mlPairUrl),
+            mlPairThreshold: (float)($overrides['ml_pair_threshold'] ?? $data['ml_pair_threshold'] ?? $base->mlPairThreshold),
         );
     }
 
@@ -262,6 +264,8 @@ final class ConfigLoader
             'db_symbols',
             'scorer',
             'ir_threshold',
+            'ml_pair_url',
+            'ml_pair_threshold',
         ];
         foreach (array_keys($data) as $k) {
             if (!in_array($k, $known, true)) {
@@ -426,6 +430,23 @@ final class ConfigLoader
         }
         if (array_key_exists('ir_threshold', $data)) {
             $assertFloat01($data['ir_threshold'], 'ir_threshold');
+        }
+        if (array_key_exists('ml_pair_url', $data)) {
+            if (!is_string($data['ml_pair_url'])) {
+                throw new \RuntimeException("ml_pair_url must be a string$where");
+            }
+            if ($data['ml_pair_url'] !== ''
+                && !\Phpdup\Ml\MlClient::isAllowedUrl(
+                    rtrim($data['ml_pair_url'], '/') . '/score-pair',
+                )
+            ) {
+                throw new \RuntimeException(
+                    "ml_pair_url must be an http(s) URL with a non-empty host (and not 0.0.0.0)$where",
+                );
+            }
+        }
+        if (array_key_exists('ml_pair_threshold', $data)) {
+            $assertFloat01($data['ml_pair_threshold'], 'ml_pair_threshold');
         }
         if (array_key_exists('db_symbols', $data)) {
             if (!is_array($data['db_symbols'])) {

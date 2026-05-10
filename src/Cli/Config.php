@@ -115,6 +115,22 @@ final class Config
         // as edges with the IR similarity as the edge weight, after
         // AST Jaccard + TED + containment have all rejected.
         public readonly float $irThreshold = 0.85,
+        // Pair-similarity ML sidecar URL (option 6 of
+        // docs/plans/orm-db-semantic-dedup.md — clusterer wiring).
+        // Empty = disabled (the default). When set, the Clusterer
+        // and PairScoreWorker fall through to MlPairClient::score()
+        // as the *last* tier — after structural-hash, AST Jaccard +
+        // TED, containment, and IR have all rejected. The client
+        // returns null on transport failure so unavailability never
+        // breaks the run; pairs at or above mlPairThreshold form
+        // edges weighted by the model's similarity score. CLI:
+        // --ml-pair-url.
+        public readonly string $mlPairUrl = '',
+        // Similarity threshold for the option-6 ML pair tier. Pairs
+        // whose model-returned similarity meets-or-exceeds this
+        // value emit edges weighted by that similarity. CLI:
+        // --ml-pair-threshold.
+        public readonly float $mlPairThreshold = 0.80,
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -150,6 +166,12 @@ final class Config
         }
         if ($irThreshold < 0 || $irThreshold > 1) {
             throw new \InvalidArgumentException("ir_threshold out of range");
+        }
+        if ($mlPairThreshold < 0 || $mlPairThreshold > 1) {
+            throw new \InvalidArgumentException("ml_pair_threshold out of range");
+        }
+        if ($mlPairUrl !== '' && !\Phpdup\Ml\MlClient::isAllowedUrl(rtrim($mlPairUrl, '/') . '/score-pair')) {
+            throw new \InvalidArgumentException("ml_pair_url failed validation: $mlPairUrl");
         }
     }
 
@@ -248,6 +270,8 @@ final class Config
             dbSymbolsFunctions:             $this->dbSymbolsFunctions,
             scorer:                         isset($overrides['scorer']) ? (string)$overrides['scorer']     : $this->scorer,
             irThreshold:                    isset($overrides['ir_threshold']) ? (float)$overrides['ir_threshold'] : $this->irThreshold,
+            mlPairUrl:                      isset($overrides['ml_pair_url']) ? (string)$overrides['ml_pair_url']  : $this->mlPairUrl,
+            mlPairThreshold:                isset($overrides['ml_pair_threshold']) ? (float)$overrides['ml_pair_threshold'] : $this->mlPairThreshold,
         );
     }
 }

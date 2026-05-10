@@ -53,7 +53,9 @@ final class Command extends SymfonyCommand
             ->addOption('db-aware', null, InputOption::VALUE_NONE, 'ORM-/DB-aware semantic dedup: rewrite recognised database calls (Eloquent, Doctrine, PDO, mysqli, pg_*, raw SQL) to canonical __DB_<OP>__ tokens during normalisation so equivalent ORM and raw-SQL variants cluster together. Off by default — opt-in for ORM-heavy codebases. See docs/plans/orm-db-semantic-dedup.md.')
             ->addOption('trinity-collapse', null, InputOption::VALUE_NONE, 'Detect the canonical CRUD trinity (read → mutate → save) and rewrite the three-statement sequence as a single __DB_UPSERT__("entity") synthetic call so ORM upserts cluster with raw UPDATE queries. Composes with --db-aware. Off by default. See option 2 of docs/plans/orm-db-semantic-dedup.md.')
             ->addOption('scorer', null, InputOption::VALUE_REQUIRED, 'Scoring tier set: default | ir. "ir" enables option-5 IR-tier fallback — when AST Jaccard / TED / containment all reject a pair, lift both blocks to the canonical IR (Phpdup\\Ir\\IrLifter) and Jaccard their token bags. Pairs at or above --ir-threshold form edges weighted by the IR similarity. Off by default.', 'default')
-            ->addOption('ir-threshold', null, InputOption::VALUE_REQUIRED, 'IR-tier multiset-Jaccard threshold (0..1). Pairs at or above this score form edges. Default 0.85.');
+            ->addOption('ir-threshold', null, InputOption::VALUE_REQUIRED, 'IR-tier multiset-Jaccard threshold (0..1). Pairs at or above this score form edges. Default 0.85.')
+            ->addOption('ml-pair-url', null, InputOption::VALUE_REQUIRED, 'External pair-similarity ML sidecar URL (option 6 of docs/plans/orm-db-semantic-dedup.md). Empty = disabled. When set, the very last clustering tier — runs after structural-hash, AST Jaccard + TED, containment, and IR all reject a pair. Posts a PairFeatures vector to <URL>/score-pair and accepts pairs at or above --ml-pair-threshold. Returns null on transport failure so unavailability never breaks the run. http(s) only.')
+            ->addOption('ml-pair-threshold', null, InputOption::VALUE_REQUIRED, 'Similarity threshold (0..1) for the option-6 ML pair tier. Pairs whose model-returned similarity meets this value emit edges. Default 0.80.');
 
         // ── Output / reports ───────────────────────────────────────────────
         $this
@@ -114,6 +116,7 @@ Options grouped by category:
    --min-impact, --min-safety, --exact-only, --kinds, --auto-tune,
    --ted-weights, --db-aware, --trinity-collapse,
    --scorer, --ir-threshold,
+   --ml-pair-url, --ml-pair-threshold,
    --profile
 
  <comment>Output / reports</comment>
@@ -180,6 +183,21 @@ HELP;
         $irThresholdOpt = $input->getOption('ir-threshold');
         if ($irThresholdOpt !== null) {
             $overrides['ir_threshold'] = (float)$irThresholdOpt;
+        }
+        $mlPairUrlOpt = $input->getOption('ml-pair-url');
+        if ($mlPairUrlOpt !== null) {
+            $url = (string)$mlPairUrlOpt;
+            if ($url !== ''
+                && !\Phpdup\Ml\MlClient::isAllowedUrl(rtrim($url, '/') . '/score-pair')
+            ) {
+                $output->writeln('<error>phpdup: --ml-pair-url must be an http(s) URL with a non-empty host (and not 0.0.0.0)</error>');
+                return 2;
+            }
+            $overrides['ml_pair_url'] = $url;
+        }
+        $mlPairThresholdOpt = $input->getOption('ml-pair-threshold');
+        if ($mlPairThresholdOpt !== null) {
+            $overrides['ml_pair_threshold'] = (float)$mlPairThresholdOpt;
         }
         $obFlag = $input->getOption('optional-blocks');
         if ($obFlag !== null) {

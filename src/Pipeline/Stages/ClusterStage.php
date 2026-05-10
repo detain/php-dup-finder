@@ -133,6 +133,10 @@ final class ClusterStage implements CooperativeStageInterface
             optionalBlocksMinOverlap: $config->optionalBlocksMinOverlap,
             irScoring:                $config->scorer === 'ir',
             irThreshold:              $config->irThreshold,
+            mlPairClient:             $config->mlPairUrl !== ''
+                ? new \Phpdup\Ml\MlPairClient(baseUrl: $config->mlPairUrl)
+                : null,
+            mlPairThreshold:          $config->mlPairThreshold,
         );
 
         $edges = null;
@@ -162,6 +166,8 @@ final class ClusterStage implements CooperativeStageInterface
                     optionalBlocksMinOverlap: $config->optionalBlocksMinOverlap,
                     irScoring: $config->scorer === 'ir',
                     irThreshold: $config->irThreshold,
+                    mlPairUrl: $config->mlPairUrl,
+                    mlPairThreshold: $config->mlPairThreshold,
                 );
 
                 $edges = [];

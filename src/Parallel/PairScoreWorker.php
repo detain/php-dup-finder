@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Phpdup\Parallel;
 
 use Phpdup\Index\BlockIndex;
+use Phpdup\Ml\MlPairClient;
 use Phpdup\Similarity\ContainmentSimilarity;
 use Phpdup\Similarity\JaccardSimilarity;
 use Phpdup\Similarity\TreeEditDistance;
@@ -22,6 +23,8 @@ use Phpdup\Similarity\TreeEditDistance;
  */
 final class PairScoreWorker
 {
+    private ?MlPairClient $mlPairClient = null;
+
     public function __construct(
         private readonly BlockIndex $index,
         private readonly float $similarityThreshold,
@@ -33,6 +36,13 @@ final class PairScoreWorker
         // for the full rationale. Mirrors the serial scorer there.
         private readonly bool $irScoring = false,
         private readonly float $irThreshold = 0.85,
+        // ML pair-tier (option 6). Pass an empty string to disable.
+        // The client itself is constructed lazily inside the worker
+        // process so each fork gets its own curl handle without the
+        // master serialising one.
+        private readonly string $mlPairUrl = '',
+        private readonly float $mlPairThreshold = 0.80,
+        private readonly int $mlPairTimeoutSec = 5,
     ) {
     }
 
@@ -82,6 +92,21 @@ final class PairScoreWorker
                 $irSim = $jaccard->similarity($a->irBag, $b->irBag);
                 if ($irSim >= $this->irThreshold) {
                     $edges[] = [$aId, $bId, $irSim];
+                    continue;
+                }
+            }
+            // ML pair-tier (option 6). Last-chance scoring against
+            // an external model — see {@see \Phpdup\Clustering\Clusterer}
+            // for the full rationale. The client is built lazily so
+            // each fork has its own curl handle.
+            if ($this->mlPairUrl !== '') {
+                $client = $this->mlPairClient ??= new MlPairClient(
+                    baseUrl: $this->mlPairUrl,
+                    timeoutSec: $this->mlPairTimeoutSec,
+                );
+                $mlScore = $client->score($a, $b);
+                if ($mlScore !== null && $mlScore['similarity'] >= $this->mlPairThreshold) {
+                    $edges[] = [$aId, $bId, $mlScore['similarity']];
                 }
             }
         }
