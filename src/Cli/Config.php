@@ -90,6 +90,19 @@ final class Config
         // queries. Independent of `$dbAware` — the two flags compose;
         // typical usage enables both via `--db-aware --trinity-collapse`.
         public readonly bool $trinityCollapse = false,
+        // User-extensible DB symbol equivalence registry (option 4).
+        // Custom method-name → canonical-op map merged on top of the
+        // stock {@see \Phpdup\Normalization\DbOpRegistry} entries.
+        // Lower-cased keys, values are one of the `db.*` op constants
+        // (`db.read`, `db.write`, `db.delete`, `db.execute`, `db.query`).
+        // Loaded from `phpdup.json -> db_symbols.methods` plus any
+        // symbol packs merged via `--profile`.
+        /** @var array<string,string> */
+        public readonly array $dbSymbolsMethods = [],
+        // User-extensible DB symbol equivalence registry — function
+        // name variant. Lower-cased keys, values as above.
+        /** @var array<string,string> */
+        public readonly array $dbSymbolsFunctions = [],
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -213,6 +226,8 @@ final class Config
             perDirectoryOverrides:          $this->perDirectoryOverrides,
             dbAware:                        isset($overrides['db_aware'])         ? (bool)$overrides['db_aware']         : $this->dbAware,
             trinityCollapse:                isset($overrides['trinity_collapse']) ? (bool)$overrides['trinity_collapse'] : $this->trinityCollapse,
+            dbSymbolsMethods:               $this->dbSymbolsMethods,
+            dbSymbolsFunctions:             $this->dbSymbolsFunctions,
         );
     }
 }

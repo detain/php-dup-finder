@@ -176,6 +176,29 @@
             "type": "boolean",
             "default": false,
             "description": "Trinity-collapse (option 2 of docs/plans/orm-db-semantic-dedup.md). When true, the Normalizer runs TrinityCollapser as a pre-pass that detects the canonical CRUD trinity (read → mutate → save) and rewrites the three-statement sequence as a single __DB_UPSERT__(\"entity\") synthetic call. Composes with db_aware. Off by default. CLI: --trinity-collapse."
+        },
+        "db_symbols": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "User-extensible DB symbol equivalence registry (option 4 of docs/plans/orm-db-semantic-dedup.md). Custom method/function name → canonical-op mappings merged on top of the stock DbOpRegistry entries. Lower-cased keys; values are one of db.read | db.write | db.delete | db.execute | db.query. Profiles ship symbol packs (db-aware-laravel, db-aware-doctrine, db-aware-cake) that can be loaded via --profile.",
+            "properties": {
+                "methods": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string",
+                        "enum": ["db.read", "db.write", "db.delete", "db.execute", "db.query"]
+                    },
+                    "description": "Method-name → canonical-op map. Matches against StaticCall, MethodCall, and NullsafeMethodCall names regardless of receiver. Lower-cased keys."
+                },
+                "functions": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string",
+                        "enum": ["db.read", "db.write", "db.delete", "db.execute", "db.query"]
+                    },
+                    "description": "Function-name → canonical-op map. Matches against FuncCall names. Lower-cased keys."
+                }
+            }
         }
     }
 }
