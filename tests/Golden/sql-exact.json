@@ -30,6 +30,7 @@
                 "sql-builder",
                 "sql-query"
             ],
+            "outlier_members": [],
             "signature": "function findById(\n    string $value,\n): mixed",
             "members": [
                 {
