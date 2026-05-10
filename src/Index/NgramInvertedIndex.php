@@ -93,6 +93,22 @@ final class NgramInvertedIndex
     }
 
     /**
+     * @return array<string,int> string id → integer id mapping
+     */
+    public function getStringToIntMap(): array
+    {
+        return $this->stringToInt;
+    }
+
+    /**
+     * @return array<int,string> integer id → string id mapping
+     */
+    public function getIntToStringMap(): array
+    {
+        return $this->intToString;
+    }
+
+    /**
      * @param array<string,bool>|null $skipIds Block IDs to exclude from results (e.g. exact duplicates already clustered)
      * @param array<int,bool>|null $skipIntIds Integer IDs to exclude from results (when $asIntIds is true)
      * @return list<string|int> candidate block IDs that share at least one rare ngram with $block
