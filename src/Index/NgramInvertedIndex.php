@@ -15,15 +15,22 @@ use Phpdup\Extraction\Block;
  * standard rare-gram pre-filter for large clone-detection corpora —
  * keeps candidate generation near linear in the corpus size.
  *
- * Disk caching: the built postings list is serialized to a cache file
- * keyed by a hash of all block structural hashes. Any change to any
- * block's structural hash invalidates the cache.
+ * Two-level caching:
+ *   L1: APCu (shared memory, sub-millisecond access)
+ *   L2: Disk cache (persistent across runs, keyed by SHA1 of block hashes)
+ *
+ * Any change to any block's structural hash invalidates both caches.
  *
  * Optimization: integer IDs are maintained alongside string IDs for
  * faster set operations in callers like generateCandidatePairs().
  */
 final class NgramInvertedIndex
 {
+    /** APCu key prefix for L1 cache */
+    private const APCU_KEY_PREFIX = 'phpdup:ngramidx:';
+
+    /** TTL for APCu cache: 24 hours */
+    private const APCU_TTL = 86400;
     /** @var array<string,list<string>> ngram → block ids */
     private array $postings = [];
     /** @var array<string,list<int>> ngram → integer block ids */
@@ -155,15 +162,18 @@ final class NgramInvertedIndex
 
             // For long posting lists, sample instead of iterate to avoid O(N²) traversal
             if ($postingLen > $maxPostingSample) {
-                // Fisher-Yates partial sample: pick up to $maxPostingSample items
+                // Use reservoir sampling (Algorithm R) for O(sampleSize) sampling
+                // instead of array_rand which is O(n) due to full array shuffle
                 $sampleSize = min($maxPostingSample, $postingLen);
                 $sample = [];
-                $indices = array_rand($posting, $sampleSize);
-                if (is_int($indices)) {
-                    $sample = [$posting[$indices]];
-                } else {
-                    foreach ($indices as $idx) {
-                        $sample[] = $posting[$idx];
+                for ($i = 0; $i < $sampleSize; $i++) {
+                    $sample[] = $posting[$i];
+                }
+                // Reservoir sampling: for remaining elements, randomly replace
+                for ($i = $sampleSize; $i < $postingLen; $i++) {
+                    $j = random_int(0, $i);
+                    if ($j < $sampleSize) {
+                        $sample[$j] = $posting[$i];
                     }
                 }
                 $posting = $sample;
@@ -220,6 +230,22 @@ final class NgramInvertedIndex
      */
     private function loadFromCache(string $cacheKey): bool
     {
+        // L1: Try APCu first (sub-millisecond, shared memory)
+        if ($this->isApcuEnabled()) {
+            $apcuKey = self::APCU_KEY_PREFIX . $cacheKey;
+            $payload = apcu_fetch($apcuKey, $success);
+            if ($success && is_array($payload)) {
+                $this->postings = $payload['postings'] ?? [];
+                $this->intPostings = $payload['intPostings'] ?? [];
+                $this->intToString = $payload['intToString'] ?? [];
+                $this->stringToInt = $payload['stringToInt'] ?? [];
+                $this->blockCount = $payload['blockCount'] ?? 0;
+                $this->nextIntId = $payload['nextIntId'] ?? 0;
+                return true;
+            }
+        }
+
+        // L2: Fall back to disk cache
         if (!$this->isCacheEnabled()) {
             return false;
         }
@@ -254,11 +280,6 @@ final class NgramInvertedIndex
      */
     private function saveToCache(string $cacheKey, array $blockHashes): void
     {
-        if (!$this->isCacheEnabled()) {
-            return;
-        }
-
-        $cacheFile = $this->cacheFilePath($cacheKey);
         $payload = [
             'postings'    => $this->postings,
             'intPostings' => $this->intPostings,
@@ -269,7 +290,27 @@ final class NgramInvertedIndex
             'blockHashes' => $blockHashes,
         ];
 
+        // L1: Save to APCu for fast access on next run
+        if ($this->isApcuEnabled()) {
+            $apcuKey = self::APCU_KEY_PREFIX . $cacheKey;
+            apcu_store($apcuKey, $payload, self::APCU_TTL);
+        }
+
+        // L2: Save to disk cache for persistence
+        if (!$this->isCacheEnabled()) {
+            return;
+        }
+
+        $cacheFile = $this->cacheFilePath($cacheKey);
         @file_put_contents($cacheFile, serialize($payload), LOCK_EX);
+    }
+
+    /**
+     * Check if APCu is available and enabled.
+     */
+    private function isApcuEnabled(): bool
+    {
+        return function_exists('apcu_enabled') && apcu_enabled();
     }
 
 }

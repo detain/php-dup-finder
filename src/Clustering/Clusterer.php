@@ -7,6 +7,7 @@ use Phpdup\Extraction\Block;
 use Phpdup\Index\BlockIndex;
 use Phpdup\Index\NgramInvertedIndex;
 use Phpdup\Ml\PairScorer;
+use Phpdup\Parallel\WorkerPool;
 use Phpdup\Similarity\ContainmentSimilarity;
 use Phpdup\Similarity\JaccardSimilarity;
 use Phpdup\Similarity\TreeEditDistance;
@@ -175,6 +176,121 @@ final class Clusterer
     }
 
     /**
+     * Parallel variant of generateCandidatePairs() that distributes block
+     * enumeration across multiple workers using pcntl_fork.
+     *
+     * The NgramInvertedIndex is built in the parent process before forking.
+     * After fork, each child inherits the index via copy-on-write (COW)
+     * memory sharing, avoiding the need to serialize/deserialize the index.
+     *
+     * @param callable(int, int, int): mixed|null $onEnumerationProgress
+     * @param array<string,bool>|null $exactDuplicateIds
+     * @return \Generator<array{0:string,1:string}>
+     */
+    public function generateCandidatePairsParallel(
+        BlockIndex $index,
+        int $workers,
+        ?OutputInterface $output = null,
+        ?callable $onEnumerationProgress = null,
+        ?array $exactDuplicateIds = null,
+    ): \Generator {
+        $totalBlocks = $index->size();
+        if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+            $output->writeln(sprintf('ngram-index: building inverted index for %d blocks [%s]', $totalBlocks, MemoryDebug::getMemoryUsage()));
+        }
+
+        // Build the inverted index once in the parent. After fork, children
+        // inherit this via COW - the postings arrays are shared read-only
+        // across processes without duplication.
+        $inverted = new NgramInvertedIndex();
+        $invertedProgressCallback = static function (int $indexed, int $total) use ($output): void {
+            if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG && $indexed % 5000 === 0) {
+                $output->writeln(sprintf('ngram-index: indexed %d / %d blocks [%s]', $indexed, $total, MemoryDebug::getMemoryUsage()));
+            }
+        };
+        $inverted->build($index, $invertedProgressCallback);
+
+        if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+            $output->writeln(sprintf('ngram-index: parallel enumeration using %d workers [%s]', $workers, MemoryDebug::getMemoryUsage()));
+        }
+
+        // Get ID mappings and exact duplicate skip set
+        $stringToInt = $inverted->getStringToIntMap();
+        $intToString = $inverted->getIntToStringMap();
+        $exactDuplicateIntIds = null;
+        if ($exactDuplicateIds !== null) {
+            $exactDuplicateIntIds = [];
+            foreach ($exactDuplicateIds as $id => $_) {
+                if (isset($stringToInt[$id])) {
+                    $exactDuplicateIntIds[$stringToInt[$id]] = true;
+                }
+            }
+        }
+
+        // Partition blocks by integer ID for even distribution across workers
+        $allBlocks = $index->all();
+        $blockChunks = array_chunk($allBlocks, max(1, (int)ceil(count($allBlocks) / $workers)));
+
+        $pool = new WorkerPool($workers);
+        $pairCount = 0;
+        $blockNum = 0;
+        $lastProgressReport = 0;
+        $progressInterval = max(1, (int)($totalBlocks / 50));
+        $lastDebugOutput = microtime(true);
+
+        // Task closure: each worker processes its assigned blocks and yields pairs
+        $task = static function (array $blocks) use ($inverted, $stringToInt, $intToString, $exactDuplicateIntIds): \Generator {
+            $localSeen = [];
+            foreach ($blocks as $a) {
+                $intA = $stringToInt[$a->id] ?? null;
+                if ($intA === null) {
+                    continue;
+                }
+                $candidates = $inverted->candidatesFor($a, 0.01, null, $exactDuplicateIntIds, true);
+                foreach ($candidates as $intB) {
+                    $intKey = $intA < $intB ? ($intA << 32) | $intB : ($intB << 32) | $intA;
+                    if (isset($localSeen[$intKey])) {
+                        continue;
+                    }
+                    $localSeen[$intKey] = true;
+                    yield [$a->id, $intToString[$intB]];
+                }
+            }
+        };
+
+        foreach ($pool->runStreaming($blockChunks, $task) as $pair) {
+            $pairCount++;
+            $blockNum++;
+
+            // Progress callback
+            if ($onEnumerationProgress !== null && $blockNum - $lastProgressReport >= $progressInterval) {
+                $lastProgressReport = $blockNum;
+                $onEnumerationProgress($blockNum, $totalBlocks, $pairCount);
+            }
+
+            // Debug output every 5 seconds
+            if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                $now = microtime(true);
+                if ($now - $lastDebugOutput >= 5.0) {
+                    $lastDebugOutput = $now;
+                    $output->writeln(sprintf('ngram-index: processed %d / %d blocks, %d candidates found [%s]', $blockNum, $totalBlocks, $pairCount, MemoryDebug::getMemoryUsage()));
+                }
+            }
+
+            yield $pair;
+        }
+
+        // Final progress callback
+        if ($onEnumerationProgress !== null && $lastProgressReport !== $blockNum) {
+            $onEnumerationProgress($blockNum, $totalBlocks, $pairCount);
+        }
+
+        if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+            $output->writeln(sprintf('ngram-index: parallel enumeration complete, %d candidate pairs found [%s]', $pairCount, MemoryDebug::getMemoryUsage()));
+        }
+    }
+
+    /**
      * @param list<array{0:string,1:string,2:float}>|null $edges  pre-computed
      *        edges from a parallel scoring run; null means score serially.
      * @return list<Cluster>
@@ -213,7 +329,8 @@ final class Clusterer
             $edges = $this->scorePairsSerially($index);
         }
         foreach ($edges as [$aId, $bId, $sim]) {
-            $key = $aId . '|' . $bId;
+            // Use 64-bit integer key instead of string concatenation for O(1) lookup
+            $key = $uf->canonicalPairKey($aId, $bId);
             $edgeMap[$key] = $sim;
             $uf->union($aId, $bId);
         }
@@ -242,8 +359,9 @@ final class Clusterer
                 for ($i = 0; $i < count($members); $i++) {
                     for ($j = $i + 1; $j < count($members); $j++) {
                         $a = $members[$i]->id; $b = $members[$j]->id;
-                        $key = strcmp($a, $b) < 0 ? "$a|$b" : "$b|$a";
-                        if (isset($edgeMap[$key]) && $edgeMap[$key] < $minSim) {
+                        // Use integer pair key for O(1) lookup — avoids strcmp() overhead
+                        $key = $uf->canonicalPairKey($a, $b);
+                        if ($key !== 0 && isset($edgeMap[$key]) && $edgeMap[$key] < $minSim) {
                             $minSim = $edgeMap[$key];
                         }
                     }
@@ -416,5 +534,23 @@ final class UnionFind
             $x = $this->parent[$x];
         }
         return $x;
+    }
+
+    /**
+     * Generate a canonical 64-bit integer key for a pair of string IDs.
+     * Uses the same ordering convention as generateCandidatePairs:
+     * the smaller integer ID goes in the low 32 bits.
+     * This avoids expensive strcmp() calls when looking up edge pairs.
+     *
+     * @return int 64-bit canonical pair key, or 0 if either ID is unknown
+     */
+    public function canonicalPairKey(string $idA, string $idB): int
+    {
+        $intA = $this->idToInt[$idA] ?? null;
+        $intB = $this->idToInt[$idB] ?? null;
+        if ($intA === null || $intB === null) {
+            return 0;
+        }
+        return $intA < $intB ? ($intA << 32) | $intB : ($intB << 32) | $intA;
     }
 }

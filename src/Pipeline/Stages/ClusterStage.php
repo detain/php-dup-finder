@@ -187,23 +187,43 @@ final class ClusterStage implements CooperativeStageInterface
 
             $workers = $config->workers > 0 ? $config->workers : WorkerPool::detectCpuCount();
 
-            // Parallel enumeration is temporarily disabled due to null ID issue in partitioned processing.
-            // TODO: Re-enable when fixed
-            // if ($workers > 1 && WorkerPool::isAvailable()) {
-            //     if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-            //         $output->writeln(sprintf(
-            //             'clustering: using parallel enumeration across %d workers [%s]',
-            //             $workers,
-            //             MemoryDebug::getMemoryUsage(),
-            //         ));
-            //     }
-            //     $candidatePairs = $clusterer->generateCandidatePairsParallel($index, $workers, $output, $enumProgressCallback);
-            // } else {
-            //     $candidatePairs = $clusterer->generateCandidatePairs($index, $output, $enumProgressCallback);
-            // }
-            $candidatePairs = $clusterer->generateCandidatePairs($index, $output, $enumProgressCallback);
+            // Build exact duplicate skip set once for use in both enumeration and scoring
+            $exactDuplicateIds = [];
+            foreach ($index->hashBuckets() as $hash => $blocks) {
+                if (count($blocks) >= 2) {
+                    foreach ($blocks as $b) {
+                        $exactDuplicateIds[$b->id] = true;
+                    }
+                }
+            }
 
-            // For parallel: we stream by buffering pairs into chunks for dispatch.
+            // Parallel enumeration: NgramInvertedIndex is built in parent process,
+            // then children inherit it via COW memory after fork.
+            if ($workers > 1 && WorkerPool::isAvailable()) {
+                if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                    $output->writeln(sprintf(
+                        'clustering: using parallel enumeration across %d workers [%s]',
+                        $workers,
+                        MemoryDebug::getMemoryUsage(),
+                    ));
+                }
+                $candidatePairs = $clusterer->generateCandidatePairsParallel(
+                    $index,
+                    $workers,
+                    $output,
+                    $enumProgressCallback,
+                    $exactDuplicateIds ?: null,
+                );
+            } else {
+                $candidatePairs = $clusterer->generateCandidatePairs(
+                    $index,
+                    $output,
+                    $enumProgressCallback,
+                    $exactDuplicateIds ?: null,
+                );
+            }
+
+            // For parallel scoring: we stream by buffering pairs into chunks for dispatch.
             // For serial: we use the generator directly with array_chunk().
             $useParallel = $workers > 1 && WorkerPool::isAvailable();
 
