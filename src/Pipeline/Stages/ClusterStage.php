@@ -185,26 +185,23 @@ final class ClusterStage implements CooperativeStageInterface
                 }
             };
 
-            /** @var \Generator<array{0:string,1:string}> $candidatePairs */
             $workers = $config->workers > 0 ? $config->workers : WorkerPool::detectCpuCount();
-            // TODO: Re-enable parallel enumeration once issues are resolved
-            // $useParallelEnumeration = $workers > 1 && WorkerPool::isAvailable();
-            $useParallelEnumeration = false;
 
-            if ($useParallelEnumeration) {
-                if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                    $output->writeln(sprintf(
-                        'clustering: using parallel enumeration across %d workers [%s]',
-                        $workers,
-                        MemoryDebug::getMemoryUsage(),
-                    ));
-                }
-                /** @var \Generator<array{0:string,1:string}> $candidatePairs */
-                $candidatePairs = $clusterer->generateCandidatePairsParallel($index, $workers, $output, $enumProgressCallback);
-            } else {
-                /** @var \Generator<array{0:string,1:string}> $candidatePairs */
-                $candidatePairs = $clusterer->generateCandidatePairs($index, $output, $enumProgressCallback);
-            }
+            // Parallel enumeration is temporarily disabled due to null ID issue in partitioned processing.
+            // TODO: Re-enable when fixed
+            // if ($workers > 1 && WorkerPool::isAvailable()) {
+            //     if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+            //         $output->writeln(sprintf(
+            //             'clustering: using parallel enumeration across %d workers [%s]',
+            //             $workers,
+            //             MemoryDebug::getMemoryUsage(),
+            //         ));
+            //     }
+            //     $candidatePairs = $clusterer->generateCandidatePairsParallel($index, $workers, $output, $enumProgressCallback);
+            // } else {
+            //     $candidatePairs = $clusterer->generateCandidatePairs($index, $output, $enumProgressCallback);
+            // }
+            $candidatePairs = $clusterer->generateCandidatePairs($index, $output, $enumProgressCallback);
 
             // For parallel: we stream by buffering pairs into chunks for dispatch.
             // For serial: we use the generator directly with array_chunk().
