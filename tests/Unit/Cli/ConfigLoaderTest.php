@@ -296,4 +296,35 @@ final class ConfigLoaderTest extends TestCase
         $this->expectExceptionMessage('ir_threshold must be in [0, 1]');
         (new ConfigLoader())->validate(['ir_threshold' => 2.0]);
     }
+
+    public function testMlPairUrlDefaultsToEmpty(): void
+    {
+        $config = (new ConfigLoader())->load(paths: ['src'], configFile: null);
+        $this->assertSame('', $config->mlPairUrl);
+        $this->assertSame(0.80, $config->mlPairThreshold);
+    }
+
+    public function testMlPairUrlAcceptsHttp(): void
+    {
+        $config = (new ConfigLoader())->load(
+            paths: ['src'],
+            configFile: null,
+            overrides: ['ml_pair_url' => 'https://ml.example.com/api'],
+        );
+        $this->assertSame('https://ml.example.com/api', $config->mlPairUrl);
+    }
+
+    public function testMlPairUrlValidationRejectsFileScheme(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('ml_pair_url');
+        (new ConfigLoader())->validate(['ml_pair_url' => 'file:///etc/passwd']);
+    }
+
+    public function testMlPairThresholdValidationRejectsOutOfRange(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('ml_pair_threshold must be in [0, 1]');
+        (new ConfigLoader())->validate(['ml_pair_threshold' => 1.5]);
+    }
 }

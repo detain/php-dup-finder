@@ -55,7 +55,7 @@ use Phpdup\Extraction\Block;
  * host, no `0.0.0.0`. Callers wanting tighter policy should
  * prefilter the URL.
  */
-final class MlPairClient
+final class MlPairClient implements PairScorer
 {
     public function __construct(
         private readonly string $baseUrl,

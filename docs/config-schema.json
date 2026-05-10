@@ -190,6 +190,18 @@
             "default": 0.85,
             "description": "Multiset-Jaccard threshold for the option-5 IR tier. Only consulted when scorer=ir. CLI: --ir-threshold."
         },
+        "ml_pair_url": {
+            "type": "string",
+            "default": "",
+            "description": "External pair-similarity ML sidecar URL (option 6 of docs/plans/orm-db-semantic-dedup.md — clusterer wiring). Empty (the default) disables the tier. When set, the very last clustering tier — POSTs a PairFeatures vector to <URL>/score-pair; pairs at or above ml_pair_threshold form edges. http(s) only; SSRF-hardened (rejects file:// / gopher:// / 0.0.0.0). Returns null on transport failure so unavailability never breaks the run. CLI: --ml-pair-url."
+        },
+        "ml_pair_threshold": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "default": 0.80,
+            "description": "Similarity threshold for the option-6 ML pair tier. Only consulted when ml_pair_url is set. CLI: --ml-pair-threshold."
+        },
         "db_symbols": {
             "type": "object",
             "additionalProperties": false,

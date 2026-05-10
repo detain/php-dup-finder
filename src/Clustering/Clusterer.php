@@ -6,6 +6,7 @@ namespace Phpdup\Clustering;
 use Phpdup\Extraction\Block;
 use Phpdup\Index\BlockIndex;
 use Phpdup\Index\NgramInvertedIndex;
+use Phpdup\Ml\PairScorer;
 use Phpdup\Similarity\ContainmentSimilarity;
 use Phpdup\Similarity\JaccardSimilarity;
 use Phpdup\Similarity\TreeEditDistance;
@@ -55,6 +56,16 @@ final class Clusterer
         // (per the plan's risk-mitigation note).
         private readonly bool $irScoring = false,
         private readonly float $irThreshold = 0.85,
+        // ML pair-tier (option 6). When non-null, the very last
+        // chance for a pair to form an edge: phpdup posts the
+        // PairFeatures vector to the configured /score-pair sidecar
+        // and accepts pairs at or above $mlPairThreshold. The
+        // sidecar returns null on transport failure so unavailability
+        // never breaks the run; this is the same fail-graceful
+        // contract as the IR lifter (per the plan's risk-mitigation
+        // note).
+        private readonly ?PairScorer $mlPairClient = null,
+        private readonly float $mlPairThreshold = 0.80,
     ) {
         $this->containment = new ContainmentSimilarity();
     }
@@ -234,6 +245,16 @@ final class Clusterer
                 $irSim = $this->similarity->similarity($a->irBag, $b->irBag);
                 if ($irSim >= $this->irThreshold) {
                     $edges[] = [$aId, $bId, $irSim];
+                    continue;
+                }
+            }
+            // ML pair-tier (option 6). Last-chance scoring against
+            // an external model. Returns null on transport failure
+            // so unavailability never breaks the run.
+            if ($this->mlPairClient !== null) {
+                $mlScore = $this->mlPairClient->score($a, $b);
+                if ($mlScore !== null && $mlScore['similarity'] >= $this->mlPairThreshold) {
+                    $edges[] = [$aId, $bId, $mlScore['similarity']];
                 }
             }
         }

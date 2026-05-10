@@ -1188,9 +1188,24 @@ the schema changes).
 
 The model itself, the training pipeline, and the labelled corpus
 all live in a sister repository — phpdup ships only the contract
-and the feature extractor. Until a model exists,
-`MlPairClient::score()` is fully optional and the existing tier
-stack is unchanged.
+and the feature extractor.
+
+Once a sidecar is running, point phpdup at it via `--ml-pair-url`
+(or `ml_pair_url` in `phpdup.json`):
+
+```
+bin/phpdup analyze src --ml-pair-url=https://ml.example.com/api \
+                       --ml-pair-threshold=0.85
+```
+
+`Phpdup\Clustering\Clusterer` and `Phpdup\Parallel\PairScoreWorker`
+both consult the configured `Phpdup\Ml\PairScorer` as the **last**
+clustering tier — after structural-hash, AST Jaccard + TED,
+containment, and IR have all rejected a pair. The client returns
+null on transport failure (model unavailable, SSRF-rejected URL,
+malformed response) so the rest of the pipeline keeps running with
+reduced precision rather than failing the run, mirroring the IR
+lifter's fail-graceful contract.
 
 ---
 
