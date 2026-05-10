@@ -155,48 +155,150 @@ final class ClusterStage implements CooperativeStageInterface
                 $output->writeln($msg);
                 $state->pushDebugMessage($msg);
             }
-            $candidatePairs = $clusterer->generateCandidatePairs($index, $output);
-            if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                $msg = sprintf('clustering: generated %d candidate pairs [%s]', count($candidatePairs), MemoryDebug::getMemoryUsage());
-                $output->writeln($msg);
-                $state->pushDebugMessage($msg);
-            }
-            $state->candidatePairs = count($candidatePairs);
-            $state->scoredPairs    = 0;
-            $this->listener->onPairScored(0, $state->candidatePairs);
 
-            if ($state->candidatePairs > 0) {
-                $workers = $config->workers > 0 ? $config->workers : WorkerPool::detectCpuCount();
-                $useParallel = $state->candidatePairs >= 64 && $workers > 1;
+            // Progress callback for enumeration phase - updates TUI state and reports progress
+            $tCluster = microtime(true);
+            $enumProgressCallback = static function (int $blockNum, int $totalBlocks, int $pairCount) use ($state, $output, $tCluster): void {
+                $state->currentTask = sprintf(
+                    'Enumerating candidate pairs (%d / %d blocks, %d pairs found)',
+                    $blockNum,
+                    $totalBlocks,
+                    $pairCount,
+                );
+                $state->stageProgress = $blockNum / $totalBlocks;
+                $state->rssBytes = memory_get_usage(false);
+                $state->peakBytes = memory_get_peak_usage(true);
+
+                // Always output at DEBUG verbosity to show enumeration progress
                 if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                    if ($useParallel && WorkerPool::isAvailable()) {
-                        $pairsPerWorker = (int)ceil($state->candidatePairs / $workers);
-                        $msg = sprintf(
-                            'clustering: starting parallel scoring: %d pairs across %d workers (~%d pairs/worker) [%s]',
-                            $state->candidatePairs,
-                            $workers,
-                            $pairsPerWorker,
-                            MemoryDebug::getMemoryUsage(),
-                        );
-                        $output->writeln($msg);
-                        $state->pushDebugMessage($msg);
-                    } else {
-                        $fallbackReason = $workers <= 1
-                            ? 'workers <= 1'
-                            : (!WorkerPool::isAvailable() ? 'pcntl not available' : 'candidate pairs < 64');
-                        $msg = sprintf(
-                            'clustering: starting serial scoring (%s): %d pairs [%s]',
-                            $fallbackReason,
-                            $state->candidatePairs,
-                            MemoryDebug::getMemoryUsage(),
-                        );
-                        $output->writeln($msg);
-                        $state->pushDebugMessage($msg);
+                    $elapsed = round(microtime(true) - $tCluster, 1);
+                    $msg = sprintf(
+                        'clustering: enumeration | %d / %d blocks | %d candidate pairs | %s elapsed [%s]',
+                        $blockNum,
+                        $totalBlocks,
+                        $pairCount,
+                        $elapsed . 's',
+                        MemoryDebug::getMemoryUsage(),
+                    );
+                    $output->writeln($msg);
+                    $state->pushDebugMessage($msg);
+                }
+            };
+
+            /** @var \Generator<array{0:string,1:string}> $candidatePairs */
+            $candidatePairs = $clusterer->generateCandidatePairs($index, $output, $enumProgressCallback);
+
+            $workers = $config->workers > 0 ? $config->workers : WorkerPool::detectCpuCount();
+            // For parallel: we stream by buffering pairs into chunks for dispatch.
+            // For serial: we use the generator directly with array_chunk().
+            $useParallel = $workers > 1 && WorkerPool::isAvailable();
+
+            if ($useParallel) {
+                if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                    $msg = sprintf(
+                        'clustering: streaming candidate pairs to parallel workers [%s]',
+                        MemoryDebug::getMemoryUsage(),
+                    );
+                    $output->writeln($msg);
+                    $state->pushDebugMessage($msg);
+                }
+                $state->currentTask = sprintf('Scoring candidate pairs across %d workers', $workers);
+                yield Stage::Clustering;
+
+                $scoreWorker = new PairScoreWorker(
+                    index: $index,
+                    similarityThreshold: $config->similarityThreshold,
+                    treeThreshold: $config->treeThreshold,
+                    optionalBlocksEnabled: $config->optionalBlocksEnabled,
+                    containmentThreshold: $config->optionalBlocksContainment,
+                    optionalBlocksMinOverlap: $config->optionalBlocksMinOverlap,
+                    irScoring: $config->scorer === 'ir',
+                    irThreshold: $config->irThreshold,
+                    mlPairUrl: $config->mlPairUrl,
+                    mlPairThreshold: $config->mlPairThreshold,
+                );
+
+                // Streaming parallel: buffer pairs into chunks, dispatch to worker pool,
+                // and yield results immediately — never materializing all 22M pairs.
+                $pool = new WorkerPool(workers: $workers);
+                $task = static function (array $pairs) use ($scoreWorker): \Generator {
+                    foreach (array_chunk($pairs, 256) as $chunk) {
+                        $scored = $scoreWorker->score($chunk);
+                        yield ['__progress' => count($chunk)];
+                        foreach ($scored as $edge) {
+                            yield $edge;
+                        }
+                    }
+                };
+
+                $edges = [];
+                $sinceYield = 0;
+                $lastDebugOutput = microtime(true);
+                $pairBufferSize = 10000;  // Buffer 10000 pairs per dispatch to worker pool
+                $bufferedPairs = [];
+
+                if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                    $msg = sprintf(
+                        'clustering: scoring began at %s [%s]',
+                        date('H:i:s'),
+                        MemoryDebug::getMemoryUsage(),
+                    );
+                    $output->writeln($msg);
+                    $state->pushDebugMessage($msg);
+                }
+
+                foreach ($candidatePairs as $pair) {
+                    $bufferedPairs[] = $pair;
+                    if (count($bufferedPairs) >= $pairBufferSize) {
+                        // Dispatch buffered chunk and stream results
+                        foreach ($pool->runStreaming($bufferedPairs, $task) as $row) {
+                            if (is_array($row) && isset($row['__progress'])) {
+                                $state->scoredPairs += (int)$row['__progress'];
+                            } else {
+                                $edges[] = $row;
+                            }
+                            if (++$sinceYield >= self::YIELD_EVERY) {
+                                $sinceYield = 0;
+                                $state->stageProgress = 0.5;  // Unknown total, use 50% as placeholder
+                                $state->rssBytes = memory_get_usage(false);
+                                $state->peakBytes = memory_get_peak_usage(true);
+                                $this->listener->onPairScored($state->scoredPairs, 0);
+                                $state->currentTask = sprintf(
+                                    'Scoring candidate pairs (%d scored)',
+                                    $state->scoredPairs,
+                                );
+                                yield Stage::Clustering;
+                            }
+                        }
+                        $bufferedPairs = [];
                     }
                 }
-                $state->currentTask = $useParallel && WorkerPool::isAvailable()
-                    ? sprintf('Scoring %d candidate pairs across %d workers', $state->candidatePairs, $workers)
-                    : sprintf('Scoring %d candidate pairs', $state->candidatePairs);
+                // Flush remaining buffered pairs
+                if ($bufferedPairs !== []) {
+                    foreach ($pool->runStreaming($bufferedPairs, $task) as $row) {
+                        if (is_array($row) && isset($row['__progress'])) {
+                            $state->scoredPairs += (int)$row['__progress'];
+                        } else {
+                            $edges[] = $row;
+                        }
+                    }
+                }
+
+                if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                    $elapsed = round(microtime(true) - $tCluster, 1);
+                    $msg = sprintf(
+                        'clustering: scoring complete | %d pairs scored | %s elapsed [%s]',
+                        $state->scoredPairs,
+                        $elapsed . 's',
+                        MemoryDebug::getMemoryUsage(),
+                    );
+                    $output->writeln($msg);
+                    $state->pushDebugMessage($msg);
+                }
+                $this->listener->onPairScored($state->scoredPairs, $state->scoredPairs);
+            } else {
+                // Serial path: use generator directly with array_chunk
+                $state->currentTask = 'Scoring candidate pairs';
                 yield Stage::Clustering;
 
                 $scoreWorker = new PairScoreWorker(
@@ -213,120 +315,49 @@ final class ClusterStage implements CooperativeStageInterface
                 );
 
                 $edges = [];
-                if ($useParallel && WorkerPool::isAvailable()) {
-                    $pool = new WorkerPool(workers: $workers);
-                    $task = static function (array $pairs) use ($scoreWorker): \Generator {
-                        // Sub-batch so the parent receives multiple frames per child,
-                        // letting the TUI repaint while pairs are still being scored.
-                        foreach (array_chunk($pairs, 256) as $chunk) {
-                            $scored = $scoreWorker->score($chunk);
-                            yield ['__progress' => count($chunk)];
-                            foreach ($scored as $edge) {
-                                yield $edge;
-                            }
-                        }
-                    };
-                    $sinceYield = 0;
-                    $lastDebugOutput = microtime(true);
-                    if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                        $msg = sprintf(
-                            'clustering: scoring began at %s [%s]',
-                            date('H:i:s'),
-                            MemoryDebug::getMemoryUsage(),
-                        );
-                        $output->writeln($msg);
-                        $state->pushDebugMessage($msg);
-                    }
-                    foreach ($pool->runStreaming($candidatePairs, $task) as $row) {
-                        if (is_array($row) && isset($row['__progress'])) {
-                            $state->scoredPairs += (int)$row['__progress'];
-                        } else {
-                            $edges[] = $row;
-                        }
-                        if (++$sinceYield >= self::YIELD_EVERY) {
-                            $sinceYield = 0;
-                            $denom = max(1, $state->candidatePairs);
-                            $state->stageProgress = min(0.95, $state->scoredPairs / $denom);
-                            $state->rssBytes = memory_get_usage(false);
-                            $state->peakBytes = memory_get_peak_usage(true);
-                            $this->listener->onPairScored($state->scoredPairs, $state->candidatePairs);
-                            $state->currentTask = sprintf(
-                                'Scoring candidate pairs (%d / %d)',
-                                $state->scoredPairs, $state->candidatePairs,
-                            );
-                            yield Stage::Clustering;
-                        }
-                        // Heartbeat: debug output every 5 seconds so user sees progress
-                        if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                            $now = microtime(true);
-                            if ($now - $lastDebugOutput >= 5.0) {
-                                $lastDebugOutput = $now;
-                                $elapsed = round($now - $tCluster, 1);
-                                $denom = max(1, $state->candidatePairs);
-                                $pct = $state->scoredPairs > 0
-                                    ? sprintf(' (%.1f%%)', 100 * $state->scoredPairs / $denom)
-                                    : '';
-                                $msg = sprintf(
-                                    'clustering: scoring heartbeat%s | %d / %d pairs | %s elapsed [%s]',
-                                    $pct,
-                                    $state->scoredPairs,
-                                    $state->candidatePairs,
-                                    $elapsed . 's',
-                                    MemoryDebug::getMemoryUsage(),
-                                );
-                                $output->writeln($msg);
-                                $state->pushDebugMessage($msg);
-                            }
-                        }
-                    }
-                } else {
-                    // Serial path with periodic yields so the TUI stays responsive.
-                    $sinceYield = 0;
-                    $lastDebugOutput = microtime(true);
-                    $batchSize  = 256;
-                    if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                        $msg = sprintf(
-                            'clustering: serial scoring began at %s [%s]',
-                            date('H:i:s'),
-                            MemoryDebug::getMemoryUsage(),
-                        );
-                        $output->writeln($msg);
-                        $state->pushDebugMessage($msg);
-                    }
-                    foreach (array_chunk($candidatePairs, $batchSize) as $chunk) {
+                $sinceYield = 0;
+                $lastDebugOutput = microtime(true);
+                $batchSize = 256;
+                if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                    $msg = sprintf(
+                        'clustering: serial scoring began at %s [%s]',
+                        date('H:i:s'),
+                        MemoryDebug::getMemoryUsage(),
+                    );
+                    $output->writeln($msg);
+                    $state->pushDebugMessage($msg);
+                }
+                // Stream pairs from generator, accumulating into batches for scoring.
+                // Avoids array_chunk() on Generator which PHPStan doesn't recognize.
+                $chunk = [];
+                foreach ($candidatePairs as $pair) {
+                    $chunk[] = $pair;
+                    if (count($chunk) >= $batchSize) {
+                        $chunkSize = count($chunk);
                         foreach ($scoreWorker->score($chunk) as $edge) {
                             $edges[] = $edge;
                         }
-                        $state->scoredPairs += count($chunk);
-                        $sinceYield += count($chunk);
-                        if ($sinceYield >= self::YIELD_EVERY) {
-                            $sinceYield = 0;
-                            $denom = max(1, $state->candidatePairs);
-                            $state->stageProgress = min(0.95, $state->scoredPairs / $denom);
-                            $state->rssBytes = memory_get_usage(false);
-                            $state->peakBytes = memory_get_peak_usage(true);
-                            $this->listener->onPairScored($state->scoredPairs, $state->candidatePairs);
-                            $state->currentTask = sprintf(
-                                'Scoring candidate pairs (%d / %d)',
-                                $state->scoredPairs, $state->candidatePairs,
-                            );
-                            yield Stage::Clustering;
-                        }
+                        $state->scoredPairs += $chunkSize;
+                        $chunk = [];
+                        // Each batch is exactly YIELD_EVERY size, so we yield after each batch.
+                        $state->stageProgress = 0.5;  // Unknown total, placeholder
+                        $state->rssBytes = memory_get_usage(false);
+                        $state->peakBytes = memory_get_peak_usage(true);
+                        $this->listener->onPairScored($state->scoredPairs, 0);
+                        $state->currentTask = sprintf(
+                            'Scoring candidate pairs (%d scored)',
+                            $state->scoredPairs,
+                        );
+                        yield Stage::Clustering;
                         // Heartbeat: debug output every 5 seconds so user sees progress
                         if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
                             $now = microtime(true);
                             if ($now - $lastDebugOutput >= 5.0) {
                                 $lastDebugOutput = $now;
                                 $elapsed = round($now - $tCluster, 1);
-                                $denom = max(1, $state->candidatePairs);
-                                $pct = $state->scoredPairs > 0
-                                    ? sprintf(' (%.1f%%)', 100 * $state->scoredPairs / $denom)
-                                    : '';
                                 $msg = sprintf(
-                                    'clustering: scoring heartbeat%s | %d / %d pairs | %s elapsed [%s]',
-                                    $pct,
+                                    'clustering: scoring heartbeat | %d pairs scored | %s elapsed [%s]',
                                     $state->scoredPairs,
-                                    $state->candidatePairs,
                                     $elapsed . 's',
                                     MemoryDebug::getMemoryUsage(),
                                 );
@@ -336,7 +367,14 @@ final class ClusterStage implements CooperativeStageInterface
                         }
                     }
                 }
-                $this->listener->onPairScored($state->candidatePairs, $state->candidatePairs);
+                // Flush any remaining pairs in the final chunk
+                if ($chunk !== []) {
+                    foreach ($scoreWorker->score($chunk) as $edge) {
+                        $edges[] = $edge;
+                    }
+                    $state->scoredPairs += count($chunk);
+                }
+                $this->listener->onPairScored($state->scoredPairs, $state->scoredPairs);
             }
         }
 

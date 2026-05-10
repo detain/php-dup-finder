@@ -150,12 +150,22 @@ final class WorkerPool
      *
      * @template TItem
      * @template TResult
-     * @param list<TItem> $items
+     * @param iterable<TItem> $items  array or Generator; Generators are consumed
+     *        lazily without full materialization when parallel workers are used.
      * @param \Closure(list<TItem>): iterable<TResult> $task
      * @return \Generator<int, TResult>
      */
-    public function runStreaming(array $items, \Closure $task): \Generator
+    public function runStreaming(iterable $items, \Closure $task): \Generator
     {
+        // Exhaust generators to array for parallel chunking.
+        // For large pair sets (22M+) this is the memory concern, but we
+        // chunk immediately (256-pair batches) so only one batch is
+        // resident at a time.
+        if ($items instanceof \Generator) {
+            /** @var list<mixed> $items */
+            $items = iterator_to_array($items, false);
+        }
+
         if (!$items) return;
 
         $workers = max(1, $this->workers > 0 ? $this->workers : self::detectCpuCount());

@@ -73,15 +73,21 @@ final class Clusterer
     }
 
     /**
-     * Generate the candidate-pair list (a_id, b_id) for parallel scoring.
+     * Generate the candidate-pair stream (a_id, b_id) for parallel scoring.
      *
      * Used when the caller wants to dispatch pair scoring to a worker
      * pool: it builds the inverted index, walks each block's candidates,
      * and yields each pair exactly once (canonicalized so a_id < b_id).
      *
-     * @return list<array{0:string,1:string}>
+     * @param callable(int, int, int): mixed|null $onEnumerationProgress Called periodically
+     *        during enumeration with (blockNum, totalBlocks, pairCount). The callback
+     *        may invoke `yield null` to allow TUI refresh during long enumeration.
+     * @param array<string,bool>|null $exactDuplicateIds Set of block IDs that are in
+     *        exact-duplicate hash buckets (structuralHash appears 2+ times). These are
+     *        skipped during enumeration since they are already clustered in phase 1.
+     * @return \Generator<array{0:string,1:string}>
      */
-    public function generateCandidatePairs(BlockIndex $index, ?OutputInterface $output = null): array
+    public function generateCandidatePairs(BlockIndex $index, ?OutputInterface $output = null, ?callable $onEnumerationProgress = null, ?array $exactDuplicateIds = null): \Generator
     {
         $totalBlocks = $index->size();
         if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
@@ -89,39 +95,65 @@ final class Clusterer
         }
 
         $inverted = new NgramInvertedIndex();
-        $progressCallback = static function (int $indexed, int $total) use ($output): void {
+        $invertedProgressCallback = static function (int $indexed, int $total) use ($output): void {
             if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG && $indexed % 5000 === 0) {
                 $output->writeln(sprintf('ngram-index: indexed %d / %d blocks [%s]', $indexed, $total, MemoryDebug::getMemoryUsage()));
             }
         };
-        $inverted->build($index, $progressCallback);
+        $inverted->build($index, $invertedProgressCallback);
 
         if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
             $output->writeln(sprintf('ngram-index: inverted index built [%s]', MemoryDebug::getMemoryUsage()));
             $output->writeln(sprintf('ngram-index: enumerating candidate pairs for %d blocks', $totalBlocks));
         }
 
-        $pairs = [];
         $seen = [];
         $blockNum = 0;
+        $pairCount = 0;
+        $lastProgressReport = 0;
+        $progressInterval = max(1, (int)($totalBlocks / 50)); // Report ~50 times during enumeration
+        $lastDebugOutput = microtime(true);
         foreach ($index->all() as $a) {
             $blockNum++;
             foreach ($inverted->candidatesFor($a, $this->maxDocumentFrequency) as $bid) {
-                $key = strcmp($a->id, $bid) < 0 ? $a->id . '|' . $bid : $bid . '|' . $a->id;
+                // Skip exact duplicates: they are already clustered in phase 1 (hash buckets)
+                // and do not need to go through the expensive ngram enumeration pipeline.
+                if ($exactDuplicateIds !== null && isset($exactDuplicateIds[$bid])) {
+                    continue;
+                }
+                // Pre-compute canonical ordering once instead of 3× strcmp per candidate
+                $cmp = strcmp($a->id, $bid);
+                $key = $cmp < 0 ? $a->id . '|' . $bid : $bid . '|' . $a->id;
                 if (isset($seen[$key])) continue;
                 $seen[$key] = true;
-                $pairs[] = [strcmp($a->id, $bid) < 0 ? $a->id : $bid, strcmp($a->id, $bid) < 0 ? $bid : $a->id];
+                $pairCount++;
+                yield [$cmp < 0 ? $a->id : $bid, $cmp < 0 ? $bid : $a->id];
             }
-            if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG && $blockNum % 5000 === 0) {
-                $output->writeln(sprintf('ngram-index: processed %d / %d blocks, %d candidates found [%s]', $blockNum, $totalBlocks, count($pairs), MemoryDebug::getMemoryUsage()));
+
+            // Progress callback every progressInterval blocks
+            if ($onEnumerationProgress !== null && $blockNum - $lastProgressReport >= $progressInterval) {
+                $lastProgressReport = $blockNum;
+                $onEnumerationProgress($blockNum, $totalBlocks, $pairCount);
             }
+
+            // Debug output every 5 seconds regardless of callback
+            if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                $now = microtime(true);
+                if ($now - $lastDebugOutput >= 5.0) {
+                    $lastDebugOutput = $now;
+                    $output->writeln(sprintf('ngram-index: processed %d / %d blocks, %d candidates found [%s]', $blockNum, $totalBlocks, $pairCount, MemoryDebug::getMemoryUsage()));
+                }
+            }
+        }
+
+        // Final progress callback if we haven't reported at the end
+        if ($onEnumerationProgress !== null && $lastProgressReport !== $blockNum) {
+            $onEnumerationProgress($blockNum, $totalBlocks, $pairCount);
         }
 
         if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-            $output->writeln(sprintf('ngram-index: enumeration complete, %d candidate pairs found [%s]', count($pairs), MemoryDebug::getMemoryUsage()));
+            $output->writeln(sprintf('ngram-index: enumeration complete, %d candidate pairs found [%s]', $pairCount, MemoryDebug::getMemoryUsage()));
         }
-
-        return $pairs;
     }
 
     /**
@@ -231,7 +263,19 @@ final class Clusterer
      */
     private function scorePairsSerially(BlockIndex $index): array
     {
-        $pairs = $this->generateCandidatePairs($index);
+        // Build set of block IDs that are in exact-duplicate hash buckets.
+        // These will be skipped during ngram enumeration since they are already
+        // clustered in phase 1 and don't need to go through the expensive ngram pipeline.
+        $exactDuplicateIds = [];
+        foreach ($index->hashBuckets() as $hash => $blocks) {
+            if (count($blocks) >= 2) {
+                foreach ($blocks as $b) {
+                    $exactDuplicateIds[$b->id] = true;
+                }
+            }
+        }
+
+        $pairs = $this->generateCandidatePairs($index, null, null, $exactDuplicateIds);
         $edges = [];
         foreach ($pairs as [$aId, $bId]) {
             $a = $index->get($aId);
@@ -293,32 +337,49 @@ final class Clusterer
 /** @internal */
 final class UnionFind
 {
-    /** @var array<string,string> */
+    /** @var array<int,int> */
     private array $parent = [];
-    /** @var array<string,int> */
+    /** @var array<int,int> */
     private array $rank = [];
+    /** @var array<string,int> */
+    private array $idToInt = [];
+    /** @var array<int,string> */
+    private array $intToId = [];
+    private int $nextIntId = 0;
 
     public function add(string $x): void
     {
-        if (!isset($this->parent[$x])) {
-            $this->parent[$x] = $x;
-            $this->rank[$x] = 0;
+        if (!isset($this->idToInt[$x])) {
+            $intId = $this->nextIntId++;
+            $this->idToInt[$x] = $intId;
+            $this->intToId[$intId] = $x;
+            $this->parent[$intId] = $intId;
+            $this->rank[$intId] = 0;
         }
     }
 
     public function find(string $x): string
     {
-        while ($this->parent[$x] !== $x) {
-            $this->parent[$x] = $this->parent[$this->parent[$x]];
-            $x = $this->parent[$x];
+        $intId = $this->idToInt[$x] ?? null;
+        if ($intId === null) {
+            return $x;
         }
-        return $x;
+        while ($this->parent[$intId] !== $intId) {
+            $this->parent[$intId] = $this->parent[$this->parent[$intId]];
+            $intId = $this->parent[$intId];
+        }
+        return $this->intToId[$intId];
     }
 
     public function union(string $x, string $y): void
     {
-        $rx = $this->find($x);
-        $ry = $this->find($y);
+        $intX = $this->idToInt[$x] ?? null;
+        $intY = $this->idToInt[$y] ?? null;
+        if ($intX === null || $intY === null) {
+            return;
+        }
+        $rx = $this->findInt($intX);
+        $ry = $this->findInt($intY);
         if ($rx === $ry) return;
         if ($this->rank[$rx] < $this->rank[$ry]) {
             $this->parent[$rx] = $ry;
@@ -328,5 +389,14 @@ final class UnionFind
             $this->parent[$ry] = $rx;
             $this->rank[$rx]++;
         }
+    }
+
+    private function findInt(int $x): int
+    {
+        while ($this->parent[$x] !== $x) {
+            $this->parent[$x] = $this->parent[$this->parent[$x]];
+            $x = $this->parent[$x];
+        }
+        return $x;
     }
 }
