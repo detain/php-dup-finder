@@ -327,4 +327,36 @@ final class ConfigLoaderTest extends TestCase
         $this->expectExceptionMessage('ml_pair_threshold must be in [0, 1]');
         (new ConfigLoader())->validate(['ml_pair_threshold' => 1.5]);
     }
+
+    public function testDbSymbolsMethodsMergedFromPerDirectoryConfig(): void
+    {
+        $tmp = sys_get_temp_dir() . '/phpdup-' . uniqid() . '.json';
+        file_put_contents($tmp, json_encode([
+            'db_symbols' => [
+                'methods' => ['myfind' => 'db.read'],
+                'functions' => ['myfunc' => 'db.query'],
+            ],
+        ]));
+        try {
+            $config = (new ConfigLoader())->load(paths: ['src'], configFile: $tmp);
+            $this->assertSame(['myfind' => 'db.read'], $config->dbSymbolsMethods);
+            $this->assertSame(['myfunc' => 'db.query'], $config->dbSymbolsFunctions);
+        } finally {
+            @unlink($tmp);
+        }
+    }
+
+    public function testDbSymbolsMethodsMergedAdditivelyFromOverrides(): void
+    {
+        $config = (new ConfigLoader())->load(
+            paths: ['src'],
+            configFile: null,
+            overrides: [
+                'db_symbols_methods' => ['myfind' => 'db.read'],
+                'db_symbols_functions' => ['myfunc' => 'db.query'],
+            ],
+        );
+        $this->assertSame(['myfind' => 'db.read'], $config->dbSymbolsMethods);
+        $this->assertSame(['myfunc' => 'db.query'], $config->dbSymbolsFunctions);
+    }
 }

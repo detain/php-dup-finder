@@ -1,0 +1,23 @@
+{
+    "_description": "Laminas\\Db (formerly Zend\\Db) symbol equivalence pack. Extends the stock DbOpRegistry with Laminas DB adapter and statement method names. Laminas DB provides a SQL abstraction layer and database adapters for PHP. Use with --profile=db-aware-laminas together with --db-aware to fold Laminas DB call shapes into the same canonical __DB_<OP>__ tokens as the rest of the recognised DB ecosystem. See https://getlaminas.org/",
+    "db_symbols": {
+        "methods": {
+            "select":            "db.read",
+            "fetchAll":          "db.read",
+            "fetchOne":          "db.read",
+            "fetchRow":          "db.read",
+            "fetchObject":       "db.read",
+            "query":             "db.read",
+            "getLastInsertValue": "db.read",
+            "getAdapter":        "db.read",
+            "insert":            "db.write",
+            "update":            "db.write",
+            "delete":            "db.delete",
+            "commit":            "db.write",
+            "rollback":          "db.delete",
+            "beginTransaction":  "db.write",
+            "execute":           "db.execute",
+            "prepare":           "db.execute"
+        }
+    }
+}

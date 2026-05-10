@@ -225,10 +225,55 @@ final class CustomDbSymbolsTest extends TestCase
         $this->assertSame('db.delete', $methods['delete'] ?? null);
     }
 
+    public function testBundledCodeigniterDbSymbolsLoadCleanly(): void
+    {
+        $registry = \Phpdup\Cli\ProfileRegistry::bundled();
+        $this->assertContains('db-aware-codeigniter', $registry->listAvailable());
+        $loaded = $registry->load('db-aware-codeigniter');
+        $this->assertArrayHasKey('db_symbols', $loaded);
+        $methods = $loaded['db_symbols']['methods'];
+        // Verify key CodeIgniter DB methods
+        $this->assertSame('db.read', $methods['get'] ?? null);
+        $this->assertSame('db.write', $methods['insert'] ?? null);
+        $this->assertSame('db.write', $methods['update'] ?? null);
+        $this->assertSame('db.delete', $methods['delete'] ?? null);
+    }
+
+    public function testBundledLaminasDbSymbolsLoadCleanly(): void
+    {
+        $registry = \Phpdup\Cli\ProfileRegistry::bundled();
+        $this->assertContains('db-aware-laminas', $registry->listAvailable());
+        $loaded = $registry->load('db-aware-laminas');
+        $this->assertArrayHasKey('db_symbols', $loaded);
+        $methods = $loaded['db_symbols']['methods'];
+        // Verify key Laminas DB methods
+        $this->assertSame('db.read', $methods['select'] ?? null);
+        $this->assertSame('db.read', $methods['fetchAll'] ?? null);
+        $this->assertSame('db.read', $methods['fetchOne'] ?? null);
+        $this->assertSame('db.write', $methods['insert'] ?? null);
+        $this->assertSame('db.read', $methods['query'] ?? null);
+    }
+
+    public function testBundledYiiDbSymbolsLoadCleanly(): void
+    {
+        $registry = \Phpdup\Cli\ProfileRegistry::bundled();
+        $this->assertContains('db-aware-yii', $registry->listAvailable());
+        $loaded = $registry->load('db-aware-yii');
+        $this->assertArrayHasKey('db_symbols', $loaded);
+        $methods = $loaded['db_symbols']['methods'];
+        // Verify key Yii ActiveRecord methods
+        $this->assertSame('db.read', $methods['find'] ?? null);
+        $this->assertSame('db.read', $methods['findOne'] ?? null);
+        $this->assertSame('db.read', $methods['findAll'] ?? null);
+        $this->assertSame('db.write', $methods['save'] ?? null);
+        $this->assertSame('db.delete', $methods['delete'] ?? null);
+    }
+
     public function testNewDbAwareProfilesCoverKeyCrudOperations(): void
     {
         // Verify all new profiles map the four basic CRUD operations
-        $profiles = ['db-aware-thinkorm', 'db-aware-medoo', 'db-aware-propel',
+        $profiles = ['db-aware-codeigniter', 'db-aware-laminas', 'db-aware-yii',
+                     'db-aware-thinkorm', 'db-aware-medoo', 'db-aware-propel',
                      'db-aware-redbean', 'db-aware-cycle', 'db-aware-phpactiverecord',
                      'db-aware-myadmin-orm'];
         $registry = \Phpdup\Cli\ProfileRegistry::bundled();

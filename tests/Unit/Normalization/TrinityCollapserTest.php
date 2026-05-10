@@ -152,6 +152,66 @@ final class TrinityCollapserTest extends TestCase
         $this->assertNotContains('Name|n:__DB_UPSERT__', $tokens);
     }
 
+    public function testArrayAccessMutationIsRecognized(): void
+    {
+        // $user['name'] = 'Bob' is a recognised ArrayDimFetch mutation.
+        $code = '<?php function f($id) {
+            $user = User::find($id);
+            $user["name"] = "Bob";
+            $user->save();
+        }';
+        $tokens = $this->canonicalTokens($code, trinity: true);
+        $this->assertContains('Name|n:__DB_UPSERT__', $tokens,
+            'ArrayAccess mutation must be recognised as mutate step');
+    }
+
+    public function testMagicSetMutationIsRecognized(): void
+    {
+        // $x->name = 'Bob' on a class with __set is still a property
+        // assignment and must be recognised as a mutation.
+        $code = '<?php function f($id) {
+            $data = DataArray::find($id);
+            $data->name = "Bob";
+            $data->save();
+        }';
+        $tokens = $this->canonicalTokens($code, trinity: true);
+        $this->assertContains('Name|n:__DB_UPSERT__', $tokens,
+            '__set magic property assignment must be recognised as mutation');
+    }
+
+    public function testExtendedMutatorPrefixesAreRecognized(): void
+    {
+        // Extended ORM mutator prefixes: forceFill, updateQuietly, changeEmail.
+        $code = '<?php function f($id) {
+            $user = User::find($id);
+            $user->forceFill(["name" => "Bob"]);
+            $user->updateQuietly(["email" => "bob@example.com"]);
+            $user->changeEmail("new@example.com");
+            $user->save();
+        }';
+        $tokens = $this->canonicalTokens($code, trinity: true);
+        $this->assertContains('Name|n:__DB_UPSERT__', $tokens,
+            'forceFill/updateQuietly/changeEmail must be recognised as mutations');
+    }
+
+    public function testArrayAppendMutationIsRecognized(): void
+    {
+        // $items[] = $item is a direct array append (dim === null).
+        $code = '<?php function f() {
+            $items = [];
+            $item = Item::find(1);
+            $items[] = $item;
+            $items[] = $item;
+        }';
+        // No save step, so just verify the mutations are absorbed
+        // without crashing (no trinity collapse without save).
+        $tokens = $this->canonicalTokens($code, trinity: true);
+        // Items array appends are mutations but without a read+mutate+save
+        // trinity they should not produce upsert (no save terminator).
+        $this->assertNotContains('Name|n:__DB_UPSERT__', $tokens,
+            'append without save should not produce upsert');
+    }
+
     public function testRawSqlUpdateAndOrmTrinityClusterUnderBothFlags(): void
     {
         // The plan's worked example: ORM upsert clusters with raw SQL

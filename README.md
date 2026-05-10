@@ -1107,7 +1107,7 @@ Allowed canonical ops: `db.read`, `db.write`, `db.delete`,
 `db.execute`, `db.query`. Custom entries override stock ones with
 the same name; everything else is additive.
 
-**Bundled symbol packs.** Twenty-five framework-flavoured packs ship
+**Bundled symbol packs.** Twenty-eight framework-flavoured packs ship
 out of the box and can be loaded via `--profile`:
 
 | Profile name                | What it adds                                                                                         |
@@ -1115,7 +1115,9 @@ out of the box and can be loaded via `--profile`:
 | `db-aware-laravel`          | Eloquent / Laravel methods (`firstWhere`, `pluck`, `chunk`, `increment`, raw\* helpers).             |
 | `db-aware-doctrine`         | Doctrine ORM / DBAL (`createQuery`, `executeStatement`, `fetchAssociative*`, transaction helpers).  |
 | `db-aware-cake`             | CakePHP ORM (`patchEntity`, `saveOrFail`, `findThreaded`, `loadInto`).                              |
+| `db-aware-codeigniter`      | CodeIgniter 4 DB Query Builder (`get`, `insert`, `update`, `delete`, `countAll`, `escape`).         |
 | `db-aware-thinkorm`         | ThinkPHP 6.x / think-orm (`find`, `select`, `insert`, `update`, `delete`, `count`, aggregation).   |
+| `db-aware-yii`              | Yii 2 ActiveRecord / DB (`find`, `findOne`, `findAll`, `save`, `insert`, `update`, `delete`, `createCommand`). |
 | `db-aware-medoo`            | Medoo (`select`, `insert`, `update`, `delete`, `create`, `drop`, `query`, `exec`).                 |
 | `db-aware-propel`           | Propel ORM (`doSelect`, `doInsert`, `doUpdate`, `doDelete`, `find`, `save`).                        |
 | `db-aware-redbean`          | RedBeanPHP (`find`, `dispense`, `store`, `trash`, `save`, `load`, `wipe`, `related`).              |
@@ -1137,6 +1139,7 @@ out of the box and can be loaded via `--profile`:
 | `db-aware-couchdb`          | Doctrine CouchDB ODM (`find`, `findBy`, `persist`, `save`, `remove`, `delete`, `refresh`).                                  |
 | `db-aware-couchbase`        | Couchbase SDK (`get`, `upsert`, `insert`, `replace`, `remove`, `lookupIn`, `mutateIn`, `view`, `query`).                    |
 | `db-aware-idiorm`           | Idiorm/Paris (`find`, `findOne`, `where`, `orderBy`, `count`, `create`, `save`, `update`, `delete`).                        |
+| `db-aware-laminas`          | Laminas\Db (formerly Zend\Db) adapter (`select`, `fetchAll`, `fetchOne`, `query`, `insert`, `update`, `delete`).           |
 | `db-aware-phalcon`          | Phalcon ORM (`find`, `findFirst`, `save`, `create`, `update`, `delete`, `refresh`, `query`, `aggregate`, `sum`, `count`, `average`, `min`, `max`). |
 
 Compose them with `--db-aware` for the canonicalisation pass plus

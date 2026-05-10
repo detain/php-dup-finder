@@ -229,6 +229,15 @@ final class ConfigLoader
             if (array_key_exists('max_per_cluster', $ob))    $out['optional_blocks_max_per_cluster']    = $ob['max_per_cluster'];
             if (array_key_exists('min_segment_length', $ob)) $out['optional_blocks_min_segment_length'] = $ob['min_segment_length'];
         }
+        if (isset($data['db_symbols']) && is_array($data['db_symbols'])) {
+            $ds = $data['db_symbols'];
+            if (isset($ds['methods']) && is_array($ds['methods'])) {
+                $out['db_symbols_methods'] = $ds['methods'];
+            }
+            if (isset($ds['functions']) && is_array($ds['functions'])) {
+                $out['db_symbols_functions'] = $ds['functions'];
+            }
+        }
         return $out;
     }
 

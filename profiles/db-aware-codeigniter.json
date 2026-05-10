@@ -1,0 +1,27 @@
+{
+    "_description": "CodeIgniter 4.x DB Query Builder symbol equivalence pack. Extends the stock DbOpRegistry with CodeIgniter 4 query builder method names. CodeIgniter 4 provides a powerful query builder pattern for building SQL queries fluently. Use with --profile=db-aware-codeigniter together with --db-aware to fold CodeIgniter DB call shapes into the same canonical __DB_<OP>__ tokens as the rest of the recognised DB ecosystem. See https://codeigniter.com/",
+    "db_symbols": {
+        "methods": {
+            "get":                "db.read",
+            "getWhere":           "db.read",
+            "countAll":           "db.read",
+            "countAllResults":    "db.read",
+            "getCompiledSelect":  "db.read",
+            "fieldExists":        "db.read",
+            "tableExists":        "db.read",
+            "escape":             "db.read",
+            "escapeStr":          "db.read",
+            "protectIdentifiers": "db.read",
+            "query":              "db.query",
+            "insert":             "db.write",
+            "update":             "db.write",
+            "updateBatch":        "db.write",
+            "replace":            "db.write",
+            "insertBatch":        "db.write",
+            "emptyTable":         "db.write",
+            "truncate":           "db.delete",
+            "delete":             "db.delete",
+            "deleteBatch":        "db.delete"
+        }
+    }
+}

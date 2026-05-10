@@ -266,8 +266,12 @@ final class Config
             perDirectoryOverrides:          $this->perDirectoryOverrides,
             dbAware:                        isset($overrides['db_aware'])         ? (bool)$overrides['db_aware']         : $this->dbAware,
             trinityCollapse:                isset($overrides['trinity_collapse']) ? (bool)$overrides['trinity_collapse'] : $this->trinityCollapse,
-            dbSymbolsMethods:               $this->dbSymbolsMethods,
-            dbSymbolsFunctions:             $this->dbSymbolsFunctions,
+            dbSymbolsMethods:               isset($overrides['db_symbols_methods'])
+    ? array_merge($this->dbSymbolsMethods, $overrides['db_symbols_methods'])
+    : $this->dbSymbolsMethods,
+            dbSymbolsFunctions:             isset($overrides['db_symbols_functions'])
+    ? array_merge($this->dbSymbolsFunctions, $overrides['db_symbols_functions'])
+    : $this->dbSymbolsFunctions,
             scorer:                         isset($overrides['scorer']) ? (string)$overrides['scorer']     : $this->scorer,
             irThreshold:                    isset($overrides['ir_threshold']) ? (float)$overrides['ir_threshold'] : $this->irThreshold,
             mlPairUrl:                      isset($overrides['ml_pair_url']) ? (string)$overrides['ml_pair_url']  : $this->mlPairUrl,

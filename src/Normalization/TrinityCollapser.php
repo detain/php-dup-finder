@@ -228,8 +228,11 @@ final class TrinityCollapser extends NodeVisitorAbstract
 
     /**
      * Whether $stmt is a mutation of $varName — either property
-     * assignment (`$x->p = ...`, `$x->p .= ...`) or a setter call
-     * (`$x->setP(...)`, `$x->p = ...`).
+     * assignment (`$x->p = ...`, `$x->p .= ...`), ArrayAccess
+     * (`$x['key'] = ...`, `$x[] = ...`), or a setter call
+     * (`$x->setP(...)`, `$x->forceFill(...)`).
+     *
+     * @return bool
      */
     private function isMutateOf(Node\Stmt $stmt, string $varName): bool
     {
@@ -243,7 +246,15 @@ final class TrinityCollapser extends NodeVisitorAbstract
             || $expr instanceof Node\Expr\AssignOp
         ) {
             $target = $expr->var;
+            // Property assignment: $x->prop = …
             if ($target instanceof Node\Expr\PropertyFetch
+                && $target->var instanceof Node\Expr\Variable
+                && $target->var->name === $varName
+            ) {
+                return true;
+            }
+            // ArrayDimFetch assignment: $x['key'] = … or $x[] = …
+            if ($target instanceof Node\Expr\ArrayDimFetch
                 && $target->var instanceof Node\Expr\Variable
                 && $target->var->name === $varName
             ) {
@@ -251,16 +262,20 @@ final class TrinityCollapser extends NodeVisitorAbstract
             }
         }
 
-        // $x->setName(…), $x->withFoo(…) — accept any method call
-        // on $x that *looks* like a mutator (set/with/add/remove
-        // prefix, or fluent self-returning).
+        // $x->setName(…), $x->withFoo(…), $x->forceFill(…) — accept
+        // any method call on $x that looks like a mutator (common ORM
+        // prefixes: set, with, add, remove, append, replace, force,
+        // update, change, modify).
         if ($expr instanceof Node\Expr\MethodCall
             && $expr->var instanceof Node\Expr\Variable
             && $expr->var->name === $varName
             && $expr->name instanceof Node\Identifier
         ) {
             $name = strtolower($expr->name->name);
-            foreach (['set', 'with', 'add', 'remove', 'append', 'replace'] as $prefix) {
+            foreach ([
+                'set', 'with', 'add', 'remove', 'append', 'replace',
+                'force', 'update', 'change', 'modify',
+            ] as $prefix) {
                 if (str_starts_with($name, $prefix)) {
                     return true;
                 }

@@ -99,6 +99,12 @@ final class DbOpRegistry
         'push'           => self::OP_WRITE,
         'replace'        => self::OP_WRITE,
         'upsert'         => self::OP_WRITE,
+        'begintransaction' => self::OP_WRITE,
+        'commit'         => self::OP_WRITE,
+        'rollback'       => self::OP_WRITE,
+        'affectedrows'   => self::OP_READ,
+        'insertid'       => self::OP_WRITE,
+        'count'          => self::OP_READ,
 
         // Deletes
         'delete'         => self::OP_DELETE,

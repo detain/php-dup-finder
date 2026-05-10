@@ -1,0 +1,29 @@
+{
+    "_description": "Yii 2 ActiveRecord and DB symbol equivalence pack. Extends the stock DbOpRegistry with Yii 2 query builder and ActiveRecord method names. Yii 2 provides a powerful ActiveRecord implementation for working with databases. Use with --profile=db-aware-yii together with --db-aware to fold Yii DB call shapes into the same canonical __DB_<OP>__ tokens as the rest of the recognised DB ecosystem. See https://www.yiiframework.com/",
+    "db_symbols": {
+        "methods": {
+            "find":              "db.read",
+            "findOne":           "db.read",
+            "findAll":           "db.read",
+            "findBySql":         "db.read",
+            "count":             "db.read",
+            "exists":            "db.read",
+            "one":               "db.read",
+            "all":               "db.read",
+            "getColumnCase":     "db.read",
+            "createCommand":     "db.query",
+            "queryOne":          "db.read",
+            "queryAll":          "db.read",
+            "queryScalar":       "db.read",
+            "queryAllBuilder":   "db.read",
+            "save":              "db.write",
+            "insert":            "db.write",
+            "update":            "db.write",
+            "delete":            "db.delete",
+            "updateAll":         "db.write",
+            "deleteAll":         "db.delete",
+            "insertAll":         "db.write",
+            "upsert":            "db.write"
+        }
+    }
+}

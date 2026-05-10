@@ -102,4 +102,22 @@ final class DbOpRegistryTest extends TestCase
         $this->assertNull($r->lookupMethod('with'));
         $this->assertNull($r->lookupMethod('join'));
     }
+
+    public function testAsyncTransactionMethods(): void
+    {
+        $r = DbOpRegistry::default();
+        // Transaction methods
+        $this->assertSame(DbOpRegistry::OP_WRITE, $r->lookupMethod('beginTransaction'));
+        $this->assertSame(DbOpRegistry::OP_WRITE, $r->lookupMethod('commit'));
+        $this->assertSame(DbOpRegistry::OP_WRITE, $r->lookupMethod('rollback'));
+    }
+
+    public function testAsyncAuxiliaryMethods(): void
+    {
+        $r = DbOpRegistry::default();
+        // Async auxiliary methods
+        $this->assertSame(DbOpRegistry::OP_READ,  $r->lookupMethod('affectedRows'));
+        $this->assertSame(DbOpRegistry::OP_WRITE, $r->lookupMethod('insertId'));
+        $this->assertSame(DbOpRegistry::OP_READ,  $r->lookupMethod('count'));
+    }
 }
