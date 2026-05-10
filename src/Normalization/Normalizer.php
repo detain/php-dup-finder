@@ -42,12 +42,25 @@ final class Normalizer
     public function __construct(
         private readonly string $mode = 'aggressive',
         private readonly ?PluginRegistry $plugins = null,
+        private readonly bool $dbAware = false,
+        private readonly ?DbOpRegistry $dbOpRegistry = null,
     ) {
     }
 
     public function normalize(Block $block): void
     {
         $clone = self::deepClone($block->ast);
+
+        // Pre-pass: rewrite recognised DB calls into canonical
+        // `__DB_<OP>__(...)` synthetic FuncCall nodes BEFORE the
+        // generic visitor runs so name canonicalisation sees the
+        // synthetic op-name (which it preserves verbatim — the
+        // `__DB_` prefix is treated as structural).
+        if ($this->dbAware) {
+            $dbCanon = new DbOpCanonicalizer($this->dbOpRegistry ?? new DbOpRegistry());
+            $dbCanon->apply($clone);
+        }
+
         $traverser = new NodeTraverser();
         $traverser->addVisitor(new CanonicalizingVisitor($this->mode, $this->plugins));
         $stmts = $traverser->traverse([$clone]);
@@ -333,6 +346,12 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
 
     /**
      * Functions whose semantics change clustering — keep their names.
+     *
+     * Synthetic `__DB_<OP>__` calls produced by
+     * {@see DbOpCanonicalizer} are treated structurally so the op
+     * name survives the aggressive name pass; without this, two
+     * canonicalised DB ops would collapse to `__CALL0` and lose the
+     * very signal we just synthesised.
      */
     private static function isStructuralFunction(string $name): bool
     {
@@ -342,6 +361,10 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
             'is_string' => true, 'is_int' => true, 'is_numeric' => true,
             'array_map' => true, 'array_filter' => true, 'array_reduce' => true,
         ];
-        return isset($keep[strtolower($name)]);
+        if (isset($keep[strtolower($name)])) {
+            return true;
+        }
+        // Synthetic DB-op tokens (see DbOpCanonicalizer).
+        return str_starts_with($name, '__DB_');
     }
 }

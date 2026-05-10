@@ -56,16 +56,21 @@ final class PreprocessWorker
             : null;
         $toolFor = static function (Config $cfg) use (&$tooling, $pluginRegistry): array {
             $key = sprintf(
-                '%d|%d|%s|%d|%s|%s',
+                '%d|%d|%s|%d|%s|%s|%d',
                 $cfg->minBlockSize, $cfg->maxBlockSize,
                 $cfg->normalizationMode, $cfg->ngramSize,
                 implode(',', $cfg->allowedKinds),
                 implode(',', $cfg->normalizationPlugins),
+                $cfg->dbAware ? 1 : 0,
             );
             if (!isset($tooling[$key])) {
                 $tooling[$key] = [
                     'extractor'  => new BlockExtractor($cfg->minBlockSize, $cfg->maxBlockSize, $cfg->allowedKinds),
-                    'normalizer' => new Normalizer($cfg->normalizationMode, $pluginRegistry),
+                    'normalizer' => new Normalizer(
+                        mode: $cfg->normalizationMode,
+                        plugins: $pluginRegistry,
+                        dbAware: $cfg->dbAware,
+                    ),
                     'fp'         => new NgramFingerprint($cfg->ngramSize),
                 ];
             }

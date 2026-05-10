@@ -166,6 +166,11 @@
                     "description": "Path to write the structured JSON report to."
                 }
             }
+        },
+        "db_aware": {
+            "type": "boolean",
+            "default": false,
+            "description": "ORM-/DB-aware semantic deduplication (option 1 of docs/plans/orm-db-semantic-dedup.md). When true, the Normalizer runs DbOpCanonicalizer as a pre-pass: recognised database calls across Eloquent, Doctrine, query builders, PDO, mysqli, pg_*, and raw SQL strings rewrite to canonical __DB_<OP>__(\"table\") tokens so equivalent ORM and raw-SQL variants of the same operation cluster together. Off by default — enabling it broadens clustering but raises the false-positive ceiling, so it's an explicit opt-in. CLI: --db-aware."
         }
     }
 }

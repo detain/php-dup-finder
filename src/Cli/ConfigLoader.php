@@ -85,6 +85,7 @@ final class ConfigLoader
             tedWeights: (string)($overrides['ted_weights'] ?? $data['ted_weights'] ?? $base->tedWeights),
             normalizationPlugins: $this->extractNormalizationPlugins($data),
             perDirectoryOverrides: $this->discoverPerDirectoryOverrides($resolvedPaths),
+            dbAware: (bool)($overrides['db_aware'] ?? $data['db_aware'] ?? $base->dbAware),
         );
     }
 
@@ -209,6 +210,7 @@ final class ConfigLoader
             'ted_weights',
             'report',
             'normalization',
+            'db_aware',
         ];
         foreach (array_keys($data) as $k) {
             if (!in_array($k, $known, true)) {
@@ -361,6 +363,9 @@ final class ConfigLoader
         }
         if (array_key_exists('ted_weights', $data)) {
             $assertEnum($data['ted_weights'], 'ted_weights', \Phpdup\Similarity\EditCostModel::MODELS);
+        }
+        if (array_key_exists('db_aware', $data) && !is_bool($data['db_aware'])) {
+            throw new \RuntimeException("db_aware must be a boolean$where");
         }
         if (array_key_exists('normalization', $data)) {
             if (!is_array($data['normalization'])) {

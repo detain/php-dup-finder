@@ -73,6 +73,15 @@ final class Config
         // shallower ones, so children inherit from their parents.
         /** @var array<string, array<string, mixed>> */
         public readonly array $perDirectoryOverrides = [],
+        // ORM- / DB-aware semantic deduplication (option 1).
+        // When true, the Normalizer runs DbOpCanonicalizer as a pre-pass
+        // so recognised database calls across ORMs, query builders, and
+        // raw SQL drivers fold to identical canonical tokens
+        // (`__DB_FIND__`, `__DB_QUERY__`, `__DB_WRITE__`, …) and cluster
+        // together. Off by default — enabling it is opt-in via
+        // `--db-aware` or `db_aware: true` in phpdup.json.
+        // See docs/plans/orm-db-semantic-dedup.md for the full plan.
+        public readonly bool $dbAware = false,
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -194,6 +203,7 @@ final class Config
             tedWeights:                     $this->tedWeights,
             normalizationPlugins:           $this->normalizationPlugins,
             perDirectoryOverrides:          $this->perDirectoryOverrides,
+            dbAware:                        isset($overrides['db_aware'])         ? (bool)$overrides['db_aware']         : $this->dbAware,
         );
     }
 }
