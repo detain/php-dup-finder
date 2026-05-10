@@ -64,10 +64,11 @@ final class PreprocessStage implements CooperativeStageInterface
         $configKey = sha1(serialize([
             $config->minBlockSize, $config->maxBlockSize,
             $config->normalizationMode, $config->ngramSize,
-            // Include dbAware so caches are invalidated when the user
-            // toggles --db-aware between runs (the canonical AST is
-            // structurally different).
+            // Include dbAware + trinityCollapse so caches are
+            // invalidated when the user toggles either flag between
+            // runs (the canonical AST is structurally different).
             $config->dbAware,
+            $config->trinityCollapse,
         ]));
         $store = ($this->useCache && $config->incremental)
             ? new IndexStore($config->cacheDir, $configKey)

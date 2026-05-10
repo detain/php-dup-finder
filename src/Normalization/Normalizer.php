@@ -44,6 +44,7 @@ final class Normalizer
         private readonly ?PluginRegistry $plugins = null,
         private readonly bool $dbAware = false,
         private readonly ?DbOpRegistry $dbOpRegistry = null,
+        private readonly bool $trinityCollapse = false,
     ) {
     }
 
@@ -51,7 +52,19 @@ final class Normalizer
     {
         $clone = self::deepClone($block->ast);
 
-        // Pre-pass: rewrite recognised DB calls into canonical
+        // Pre-pass A — trinity-collapse (option 2).
+        // Detects read → mutate → save and rewrites the three
+        // statements as a single `__DB_UPSERT__("entity")` call. Runs
+        // BEFORE DbOpCanonicalizer so it can pattern-match on the
+        // original read/save call shapes; the synthetic upsert it
+        // produces uses a `__DB_` prefix and is therefore preserved
+        // by name canonicalisation.
+        if ($this->trinityCollapse) {
+            $registry = $this->dbOpRegistry ?? new DbOpRegistry();
+            (new TrinityCollapser($registry))->apply($clone);
+        }
+
+        // Pre-pass B — rewrite recognised DB calls into canonical
         // `__DB_<OP>__(...)` synthetic FuncCall nodes BEFORE the
         // generic visitor runs so name canonicalisation sees the
         // synthetic op-name (which it preserves verbatim — the

@@ -82,6 +82,14 @@ final class Config
         // `--db-aware` or `db_aware: true` in phpdup.json.
         // See docs/plans/orm-db-semantic-dedup.md for the full plan.
         public readonly bool $dbAware = false,
+        // Trinity-collapse (option 2): when true, the Normalizer runs
+        // TrinityCollapser as a pre-pass, detecting the canonical
+        // CRUD trinity (read → mutate → save) and rewriting the
+        // three-statement sequence as a single `__DB_UPSERT__("entity")`
+        // synthetic call so ORM upserts cluster with raw `UPDATE`
+        // queries. Independent of `$dbAware` — the two flags compose;
+        // typical usage enables both via `--db-aware --trinity-collapse`.
+        public readonly bool $trinityCollapse = false,
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -204,6 +212,7 @@ final class Config
             normalizationPlugins:           $this->normalizationPlugins,
             perDirectoryOverrides:          $this->perDirectoryOverrides,
             dbAware:                        isset($overrides['db_aware'])         ? (bool)$overrides['db_aware']         : $this->dbAware,
+            trinityCollapse:                isset($overrides['trinity_collapse']) ? (bool)$overrides['trinity_collapse'] : $this->trinityCollapse,
         );
     }
 }

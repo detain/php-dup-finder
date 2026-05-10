@@ -239,4 +239,29 @@ final class ConfigLoaderTest extends TestCase
         $this->expectExceptionMessage('db_aware must be a boolean');
         (new ConfigLoader())->validate(['db_aware' => 'yes']);
     }
+
+    public function testTrinityCollapseDefaultsOff(): void
+    {
+        $config = (new ConfigLoader())->load(paths: ['src'], configFile: null);
+        $this->assertFalse($config->trinityCollapse);
+    }
+
+    public function testTrinityCollapseReadsFromConfigFile(): void
+    {
+        $tmp = sys_get_temp_dir() . '/phpdup-' . uniqid() . '.json';
+        file_put_contents($tmp, json_encode(['trinity_collapse' => true]));
+        try {
+            $config = (new ConfigLoader())->load(paths: ['src'], configFile: $tmp);
+            $this->assertTrue($config->trinityCollapse);
+        } finally {
+            @unlink($tmp);
+        }
+    }
+
+    public function testTrinityCollapseValidationRejectsNonBoolean(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('trinity_collapse must be a boolean');
+        (new ConfigLoader())->validate(['trinity_collapse' => 1]);
+    }
 }

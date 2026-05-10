@@ -171,6 +171,11 @@
             "type": "boolean",
             "default": false,
             "description": "ORM-/DB-aware semantic deduplication (option 1 of docs/plans/orm-db-semantic-dedup.md). When true, the Normalizer runs DbOpCanonicalizer as a pre-pass: recognised database calls across Eloquent, Doctrine, query builders, PDO, mysqli, pg_*, and raw SQL strings rewrite to canonical __DB_<OP>__(\"table\") tokens so equivalent ORM and raw-SQL variants of the same operation cluster together. Off by default — enabling it broadens clustering but raises the false-positive ceiling, so it's an explicit opt-in. CLI: --db-aware."
+        },
+        "trinity_collapse": {
+            "type": "boolean",
+            "default": false,
+            "description": "Trinity-collapse (option 2 of docs/plans/orm-db-semantic-dedup.md). When true, the Normalizer runs TrinityCollapser as a pre-pass that detects the canonical CRUD trinity (read → mutate → save) and rewrites the three-statement sequence as a single __DB_UPSERT__(\"entity\") synthetic call. Composes with db_aware. Off by default. CLI: --trinity-collapse."
         }
     }
 }

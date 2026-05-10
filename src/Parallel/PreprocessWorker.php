@@ -56,12 +56,13 @@ final class PreprocessWorker
             : null;
         $toolFor = static function (Config $cfg) use (&$tooling, $pluginRegistry): array {
             $key = sprintf(
-                '%d|%d|%s|%d|%s|%s|%d',
+                '%d|%d|%s|%d|%s|%s|%d|%d',
                 $cfg->minBlockSize, $cfg->maxBlockSize,
                 $cfg->normalizationMode, $cfg->ngramSize,
                 implode(',', $cfg->allowedKinds),
                 implode(',', $cfg->normalizationPlugins),
                 $cfg->dbAware ? 1 : 0,
+                $cfg->trinityCollapse ? 1 : 0,
             );
             if (!isset($tooling[$key])) {
                 $tooling[$key] = [
@@ -70,6 +71,7 @@ final class PreprocessWorker
                         mode: $cfg->normalizationMode,
                         plugins: $pluginRegistry,
                         dbAware: $cfg->dbAware,
+                        trinityCollapse: $cfg->trinityCollapse,
                     ),
                     'fp'         => new NgramFingerprint($cfg->ngramSize),
                 ];
