@@ -32,6 +32,14 @@ final class ClusterStage implements CooperativeStageInterface
             $config->optionalBlocksMaxPerCluster,
             $config->optionalBlocksMinSegmentLength,
             $this->exactOnly,
+            // lazy_ast affects whether Block::$ast is null when clusters are cached.
+            // A run with lazy_ast=false will have populated ASTs; reusing a
+            // lazy_ast=true cache entry (or vice-versa) causes RefactorStage to
+            // either load stale nulls or miss required ASTs depending on mode.
+            $config->lazyAst,
+            // ngram_size changes each block's fingerprint and thus candidate pairs
+            // and Jaccard scores — the cached clusters must be invalidated.
+            $config->ngramSize,
         ]));
     }
 

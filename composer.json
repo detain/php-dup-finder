@@ -1,84 +1,139 @@
 {
-    "name": "detain/php-dup-finder",
-    "description": "AST-based PHP duplicate-logic detector and refactoring assistant.",
-    "type": "library",
-    "license": "MIT",
-    "authors": [
-        { "name": "Joe Huss", "email": "detain@interserver.net", "role": "Maintainer" }
-    ],
-    "support": {
-        "issues": "https://github.com/detain/php-dup-finder/issues",
-        "source": "https://github.com/detain/php-dup-finder"
-    },
-    "require": {
-        "php": "^8.1",
-        "ext-hash": "*",
-        "nikic/php-parser": "^5.0",
-        "symfony/console": "^6.4 || ^7.0",
-        "sebastian/diff": "^5.1 || ^6.0",
-        "sugarcraft/candy-core": "dev-master",
-        "sugarcraft/candy-hermit": "dev-master",
-        "sugarcraft/candy-kit": "dev-master",
-        "sugarcraft/candy-log": "dev-master",
-        "sugarcraft/candy-palette": "dev-master",
-        "sugarcraft/candy-sprinkles": "dev-master",
-        "sugarcraft/sugar-bits": "dev-master",
-        "sugarcraft/sugar-charts": "dev-master",
-        "sugarcraft/sugar-crumbs": "dev-master",
-        "sugarcraft/sugar-prompt": "dev-master",
-        "sugarcraft/sugar-spark": "dev-master",
-        "sugarcraft/sugar-stickers": "dev-master",
-        "sugarcraft/sugar-table": "dev-master",
-        "sugarcraft/sugar-toast": "dev-master",
-        "sugarcraft/sugar-veil": "dev-master"
-    },
-    "require-dev": {
-        "humbug/box": "^4.0",
-        "phpstan/phpstan": "^2.1",
-        "phpunit/phpunit": "^10.5",
-        "vimeo/psalm": "6.0.0"
-    },
-    "suggest": {
-        "sugarcraft/candy-shell": "spin/choose/filter/confirm CLI helpers for shell-script integration",
-        "sugarcraft/sugar-wishlist": "Example SSH endpoint picker app illustrating SugarCraft component usage"
-    },
-    "autoload": {
-        "psr-4": {
-            "Phpdup\\": "src/"
-        }
-    },
-    "autoload-dev": {
-        "psr-4": {
-            "Phpdup\\Tests\\": "tests/"
-        }
-    },
-    "bin": ["bin/phpdup"],
-    "minimum-stability": "dev",
-    "prefer-stable": true,
-    "repositories": [
-        { "type": "vcs", "url": "https://github.com/sugarcraft/candy-core" },
-        { "type": "vcs", "url": "https://github.com/sugarcraft/candy-hermit" },
-        { "type": "vcs", "url": "https://github.com/sugarcraft/candy-kit" },
-        { "type": "vcs", "url": "https://github.com/sugarcraft/candy-log" },
-        { "type": "vcs", "url": "https://github.com/sugarcraft/candy-palette" },
-        { "type": "vcs", "url": "https://github.com/sugarcraft/candy-sprinkles" },
-        { "type": "vcs", "url": "https://github.com/sugarcraft/honey-bounce" },
-        { "type": "vcs", "url": "https://github.com/sugarcraft/sugar-bits" },
-        { "type": "vcs", "url": "https://github.com/sugarcraft/sugar-charts" },
-        { "type": "vcs", "url": "https://github.com/sugarcraft/sugar-crumbs" },
-        { "type": "vcs", "url": "https://github.com/sugarcraft/sugar-prompt" },
-        { "type": "vcs", "url": "https://github.com/sugarcraft/sugar-spark" },
-        { "type": "vcs", "url": "https://github.com/sugarcraft/sugar-stickers" },
-        { "type": "vcs", "url": "https://github.com/sugarcraft/sugar-table" },
-        { "type": "vcs", "url": "https://github.com/sugarcraft/sugar-toast" },
-        { "type": "vcs", "url": "https://github.com/sugarcraft/sugar-veil" }
-    ],
-    "config": {
-        "sort-packages": true,
-        "optimize-autoloader": true
-    },
-    "scripts": {
-        "test": "phpunit",
-        "analyze": "bin/phpdup analyze"
+  "name": "detain/php-dup-finder",
+  "description": "AST-based PHP duplicate-logic detector and refactoring assistant.",
+  "type": "library",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Joe Huss",
+      "email": "detain@interserver.net",
+      "role": "Maintainer"
     }
+  ],
+  "support": {
+    "issues": "https://github.com/detain/php-dup-finder/issues",
+    "source": "https://github.com/detain/php-dup-finder"
+  },
+  "require": {
+    "php": "^8.1",
+    "ext-hash": "*",
+    "nikic/php-parser": "^5.0",
+    "symfony/console": "^6.4 || ^7.0",
+    "sebastian/diff": "^5.1 || ^6.0",
+    "sugarcraft/candy-core": "dev-master",
+    "sugarcraft/candy-hermit": "dev-master",
+    "sugarcraft/candy-kit": "dev-master",
+    "sugarcraft/candy-log": "dev-master",
+    "sugarcraft/candy-palette": "dev-master",
+    "sugarcraft/candy-sprinkles": "dev-master",
+    "sugarcraft/sugar-bits": "dev-master",
+    "sugarcraft/sugar-charts": "dev-master",
+    "sugarcraft/sugar-crumbs": "dev-master",
+    "sugarcraft/sugar-prompt": "dev-master",
+    "sugarcraft/sugar-spark": "dev-master",
+    "sugarcraft/sugar-stickers": "dev-master",
+    "sugarcraft/sugar-table": "dev-master",
+    "sugarcraft/sugar-toast": "dev-master",
+    "sugarcraft/sugar-veil": "dev-master"
+  },
+  "require-dev": {
+    "phpstan/phpstan": "^2.1",
+    "phpunit/phpunit": "^10.5",
+    "vimeo/psalm": "6.0.0"
+  },
+  "suggest": {
+    "sugarcraft/candy-shell": "spin/choose/filter/confirm CLI helpers for shell-script integration",
+    "sugarcraft/sugar-wishlist": "Example SSH endpoint picker app illustrating SugarCraft component usage"
+  },
+  "autoload": {
+    "psr-4": {
+      "Phpdup\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Phpdup\\Tests\\": "tests/"
+    }
+  },
+  "bin": [
+    "bin/phpdup"
+  ],
+  "minimum-stability": "dev",
+  "prefer-stable": true,
+  "repositories": [
+    {
+      "type": "vcs",
+      "url": "https://github.com/sugarcraft/candy-core"
+    },
+    {
+      "type": "vcs",
+      "url": "https://github.com/sugarcraft/candy-hermit"
+    },
+    {
+      "type": "vcs",
+      "url": "https://github.com/sugarcraft/candy-kit"
+    },
+    {
+      "type": "vcs",
+      "url": "https://github.com/sugarcraft/candy-log"
+    },
+    {
+      "type": "vcs",
+      "url": "https://github.com/sugarcraft/candy-palette"
+    },
+    {
+      "type": "vcs",
+      "url": "https://github.com/sugarcraft/candy-sprinkles"
+    },
+    {
+      "type": "vcs",
+      "url": "https://github.com/sugarcraft/honey-bounce"
+    },
+    {
+      "type": "vcs",
+      "url": "https://github.com/sugarcraft/sugar-bits"
+    },
+    {
+      "type": "vcs",
+      "url": "https://github.com/sugarcraft/sugar-charts"
+    },
+    {
+      "type": "vcs",
+      "url": "https://github.com/sugarcraft/sugar-crumbs"
+    },
+    {
+      "type": "vcs",
+      "url": "https://github.com/sugarcraft/sugar-prompt"
+    },
+    {
+      "type": "vcs",
+      "url": "https://github.com/sugarcraft/sugar-spark"
+    },
+    {
+      "type": "vcs",
+      "url": "https://github.com/sugarcraft/sugar-stickers"
+    },
+    {
+      "type": "vcs",
+      "url": "https://github.com/sugarcraft/sugar-table"
+    },
+    {
+      "type": "vcs",
+      "url": "https://github.com/sugarcraft/sugar-toast"
+    },
+    {
+      "type": "vcs",
+      "url": "https://github.com/sugarcraft/sugar-veil"
+    }
+  ],
+  "config": {
+    "sort-packages": true,
+    "optimize-autoloader": true
+  },
+  "scripts": {
+    "test": "phpunit",
+    "analyze": "bin/phpdup analyze",
+    "build:phar": "php -d phar.readonly=0 build-phar.php",
+    "verify:phar": "sha256sum phpdup.phar && php phpdup.phar --version"
+  }
 }

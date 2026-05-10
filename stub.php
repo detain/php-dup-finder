@@ -4,8 +4,8 @@
 declare(strict_types=1);
 
 const PHPDUP_PHAR_VERSION  = '0.1.0';
-const PHPDUP_PHAR_BUILT    = '2026-05-09T19:50:58-04:00';
-const PHPDUP_PHAR_COMMIT   = 'b4386bb6';
+const PHPDUP_PHAR_BUILT    = '2026-05-09T19:58:12-04:00';
+const PHPDUP_PHAR_COMMIT   = 'c415f3c7';
 const PHPDUP_PHAR_BRANCH   = 'master';
 
 \Phar::interceptFileFuncs();

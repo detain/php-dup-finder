@@ -338,7 +338,8 @@ HELP
             $size += strlen($chunk);
 
             // Progress every 10 %
-            if (isset($http_response_header[0]) && preg_match('/Content-Length:\s*(\d+)/', implode("\n", $http_response_header), $m)) {
+            if (isset($http_response_header[0]) && preg_match('/Content-Length:\s*(\d+)/',
+                implode("\n", $http_response_header), $m)) {
                 $total = (int)$m[1];
                 if ($total > 0) {
                     $pct = (int)(($size / $total) * 100 / 10) * 10;

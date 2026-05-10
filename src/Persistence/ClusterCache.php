@@ -104,7 +104,10 @@ final class ClusterCache
     {
         $tokens = [];
         foreach ($blocks as $b) {
-            $tokens[] = $b->id . '|' . $b->structuralHash;
+            // Include file path so renamed/moved files invalidate the cache.
+            // Block ids and structural hashes can be identical across renames
+            // (same content, single-file run, or unchanged sorted order).
+            $tokens[] = $b->id . '|' . $b->file . '|' . $b->structuralHash;
         }
         sort($tokens);
         return sha1(implode("\n", $tokens));
