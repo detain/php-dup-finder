@@ -1,0 +1,107 @@
+{
+    "description": "Synthetic fuzz corpus \u2014 every generated file body is a clone of every other under type-2 normalization.",
+    "clusters": [
+        [
+            {
+                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/alpha_000.php",
+                "start": 8,
+                "end": 18
+            },
+            {
+                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/alpha_001.php",
+                "start": 8,
+                "end": 18
+            },
+            {
+                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/alpha_002.php",
+                "start": 8,
+                "end": 18
+            },
+            {
+                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/alpha_003.php",
+                "start": 8,
+                "end": 18
+            },
+            {
+                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/alpha_004.php",
+                "start": 8,
+                "end": 18
+            },
+            {
+                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/beta_000.php",
+                "start": 8,
+                "end": 18
+            },
+            {
+                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/beta_001.php",
+                "start": 8,
+                "end": 18
+            },
+            {
+                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/beta_002.php",
+                "start": 8,
+                "end": 18
+            },
+            {
+                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/beta_003.php",
+                "start": 8,
+                "end": 18
+            },
+            {
+                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/beta_004.php",
+                "start": 8,
+                "end": 18
+            },
+            {
+                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/gamma_000.php",
+                "start": 8,
+                "end": 18
+            },
+            {
+                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/gamma_001.php",
+                "start": 8,
+                "end": 18
+            },
+            {
+                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/gamma_002.php",
+                "start": 8,
+                "end": 18
+            },
+            {
+                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/gamma_003.php",
+                "start": 8,
+                "end": 18
+            },
+            {
+                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/gamma_004.php",
+                "start": 8,
+                "end": 18
+            },
+            {
+                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/delta_000.php",
+                "start": 8,
+                "end": 18
+            },
+            {
+                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/delta_001.php",
+                "start": 8,
+                "end": 18
+            },
+            {
+                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/delta_002.php",
+                "start": 8,
+                "end": 18
+            },
+            {
+                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/delta_003.php",
+                "start": 8,
+                "end": 18
+            },
+            {
+                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/delta_004.php",
+                "start": 8,
+                "end": 18
+            }
+        ]
+    ]
+}
