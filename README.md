@@ -1157,6 +1157,38 @@ the prudent thing to do now is ship the building blocks, validate
 them against real ORM/raw-SQL pairs, and only then commit to the
 clustering integration.
 
+### ML-learned pair similarity (sidecar)
+
+phpdup ships a sidecar contract for **option 6** of the plan: an
+external ML pair-scoring service trained on a labelled corpus that
+includes ORM ↔ raw-SQL examples. The PHP side stays light:
+
+- `Phpdup\Ml\PairFeatures` extracts an 11-field feature vector from
+  a `(blockA, blockB)` pair using the existing dataflow summary,
+  DB op tags, and IR token-stream — no ML libraries required.
+- `Phpdup\Ml\MlPairClient` is the HTTP companion to the existing
+  `MlClient` (cluster-safety scoring). It POSTs the feature vector
+  to `/score-pair` on a configured sidecar and consumes a single
+  `{similarity, confidence}` response.
+- `MlPairClient::score()` returns `null` on transport error, malformed
+  response, or unsafe URL — callers fall back to AST-level scoring
+  without code-path branching, mirroring the IR lifter's
+  fail-graceful pattern.
+
+The wire contract is documented in [`docs/ML.md`](docs/ML.md); the
+labelled-corpus format the sidecar expects is documented in
+[`docs/ml-corpus-format.md`](docs/ml-corpus-format.md). A
+`feature_version` field is embedded in every payload so the sidecar
+can warn when the model was trained against a different feature
+shape (the `PairFeatures::FEATURE_VERSION` constant bumps any time
+the schema changes).
+
+The model itself, the training pipeline, and the labelled corpus
+all live in a sister repository — phpdup ships only the contract
+and the feature extractor. Until a model exists,
+`MlPairClient::score()` is fully optional and the existing tier
+stack is unchanged.
+
 ---
 
 ## TUI mode
