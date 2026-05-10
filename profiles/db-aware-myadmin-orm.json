@@ -1,0 +1,28 @@
+{
+    "_description": "MyAdmin custom ORM (option 4 of docs/plans/orm-db-semantic-dedup.md). Extends the stock DbOpRegistry with method names specific to MyAdmin\\Orm\\* classes that extend Base\\Orm. Use with --profile=db-aware-myadmin-orm together with --db-aware to fold MyAdmin ORM call shapes into the same canonical __DB_<OP>__ tokens as the rest of the recognised DB ecosystem. MyAdmin ORM follows the ActiveRecord pattern with methods like find(), load(), save(), update(), insert(), delete(), and raw query helpers like query(), prepare(), execute(). Getter/setter pairs (getId/setId, getIp/setIp, etc.) are property accessors and are NOT DB operations.",
+    "db_symbols": {
+        "methods": {
+            "find":         "db.read",
+            "load":         "db.read",
+            "get":          "db.read",
+            "all":          "db.read",
+            "first":        "db.read",
+            "count":        "db.read",
+            "search":       "db.read",
+            "queryReturn":  "db.read",
+            "save":         "db.write",
+            "update":       "db.write",
+            "insert":       "db.write",
+            "replace":      "db.write",
+            "create":       "db.write",
+            "store":        "db.write",
+            "delete":       "db.delete",
+            "destroy":      "db.delete",
+            "remove":       "db.delete",
+            "truncate":     "db.delete",
+            "query":        "db.query",
+            "prepare":      "db.execute",
+            "execute":      "db.execute"
+        }
+    }
+}

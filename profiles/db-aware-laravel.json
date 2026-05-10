@@ -27,7 +27,17 @@
             "createorfirst":   "db.write",
             "firstorcreate":   "db.write",
             "incrementeach":   "db.write",
-            "decrementeach":   "db.write"
+            "decrementeach":   "db.write",
+            "table":           "db.read",
+            "select":          "db.read",
+            "statement":       "db.read",
+            "affectingstatement": "db.read",
+            "cursor":          "db.read",
+            "insert":          "db.write",
+            "update":          "db.write",
+            "delete":          "db.write",
+            "upsert":          "db.write",
+            "writestatement":  "db.write"
         }
     }
 }

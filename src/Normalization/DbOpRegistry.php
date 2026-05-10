@@ -175,6 +175,46 @@ final class DbOpRegistry
         'sqlite_query'         => self::OP_QUERY,
         'sqlite_fetch_array'   => self::OP_READ,
         'sqlite_fetch_object'  => self::OP_READ,
+
+        // Firebird / InterBase
+        'ibase_query'         => self::OP_QUERY,
+        'ibase_prepare'       => self::OP_EXECUTE,
+        'ibase_execute'       => self::OP_EXECUTE,
+        'ibase_fetch_row'     => self::OP_READ,
+        'ibase_fetch_assoc'   => self::OP_READ,
+        'ibase_fetch_object'  => self::OP_READ,
+        'ibase_free_result'   => self::OP_READ,
+        'ibase_num_rows'      => self::OP_READ,
+        'ibase_insert_id'     => self::OP_WRITE,
+        'ibase_affected_rows' => self::OP_READ,
+        'ibase_commit'        => self::OP_WRITE,
+        'ibase_rollback'      => self::OP_WRITE,
+        'ibase_trans'         => self::OP_WRITE,
+
+        // MSSQL / DB-Library (php-dblib or old mssql extension)
+        'mssql_query'         => self::OP_QUERY,
+        'mssql_fetch_row'     => self::OP_READ,
+        'mssql_fetch_array'   => self::OP_READ,
+        'mssql_fetch_assoc'   => self::OP_READ,
+        'mssql_fetch_object'  => self::OP_READ,
+        'mssql_num_rows'      => self::OP_READ,
+        'mssql_affected_rows' => self::OP_READ,
+        'mssql_free_result'   => self::OP_READ,
+        'mssql_close'         => self::OP_READ,
+        'mssql_connect'       => self::OP_READ,
+
+        // IBM DB2 / ODBC
+        'db2_prepare'         => self::OP_EXECUTE,
+        'db2_execute'         => self::OP_EXECUTE,
+        'db2_query'           => self::OP_QUERY,
+        'db2_fetch_row'       => self::OP_READ,
+        'db2_fetch_assoc'     => self::OP_READ,
+        'db2_fetch_array'     => self::OP_READ,
+        'db2_fetch_object'    => self::OP_READ,
+        'db2_num_rows'        => self::OP_READ,
+        'db2_affected_rows'   => self::OP_READ,
+        'db2_free_result'     => self::OP_READ,
+        'db2_get_last_insert_id' => self::OP_WRITE,
     ];
 
     /** @var array<string,string> Method-name lookup, lower-cased. */

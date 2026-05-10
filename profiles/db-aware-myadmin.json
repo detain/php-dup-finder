@@ -1,0 +1,21 @@
+{
+    "_description": "MyAdmin-specific DB symbol equivalence pack (option 4 of docs/plans/orm-db-semantic-dedup.md). Extends the stock DbOpRegistry with MyAdmin custom db_abstraction layer method names (MyDb\\Mysqli\\Db and MyDb\\Pdo\\Db). This profile maps the MyAdmin internal database abstraction methods to canonical DB operation tokens, enabling semantic deduplication across codebases that use this custom DB layer.",
+    "db_symbols": {
+        "methods": {
+            "next_record":      "db.read",
+            "fetchObject":      "db.read",
+            "num_rows":         "db.read",
+            "num_fields":       "db.read",
+            "qr":               "db.read",
+            "queryReturn":      "db.read",
+            "affectedRows":     "db.read",
+            "tableNames":       "db.read",
+            "query":            "db.query",
+            "getLastInsertId":  "db.write",
+            "lock":             "db.write",
+            "unlock":           "db.write",
+            "prepare":          "db.execute",
+            "execute":          "db.execute"
+        }
+    }
+}

@@ -239,11 +239,12 @@ observed values, ready to apply.
   relaxed thresholds, medium (<20k) tightens `max-df`, large
   (≥20k) forces `--exact-only` to keep memory in check. Explicit
   CLI flags always override the picks.
-- **Project profiles.** `profiles/{laravel,symfony,doctrine,
-  wordpress,…}.json` ship preset config. `--profile=NAME` selects
-  one explicitly; auto-detect kicks in via project-marker files
-  (`artisan`, `bin/console`, `wp-config.php`, etc.) when no
-  explicit config is given.
+- **Project profiles.** `profiles/{laravel,symfony,drupal,
+  wordpress,myadmin,generic}.json` ship preset config.
+  `--profile=NAME` selects one explicitly; auto-detect kicks in
+  via project-marker files (`artisan`, `bin/console`,
+  `wp-config.php`, `include/Orm`, etc.) when no explicit config
+  is given.
 - **Per-directory config overrides.** `.phpdup.json` files
   discovered at any depth in the scan tree, validated against the
   schema, layered ancestor-first so deeper directories override
@@ -932,9 +933,20 @@ The stock symbol table in `Phpdup\Normalization\DbOpRegistry` covers:
   `mysqli_query`, `mysqli_stmt_execute`, `mysqli_fetch_*`.
 - **PostgreSQL** — `pg_query`, `pg_query_params`, `pg_fetch_*`,
   `pg_insert`, `pg_update`, `pg_delete`.
+- **Firebird / InterBase** — `ibase_query`, `ibase_prepare`,
+  `ibase_execute`, `ibase_fetch_row`, `ibase_fetch_assoc`,
+  `ibase_fetch_object`, `ibase_commit`, `ibase_rollback`.
+- **MSSQL / DB-Library** — `mssql_query`, `mssql_fetch_row`,
+  `mssql_fetch_array`, `mssql_fetch_assoc`, `mssql_fetch_object`,
+  `mssql_num_rows`.
+- **IBM DB2** — `db2_prepare`, `db2_execute`, `db2_query`,
+  `db2_fetch_row`, `db2_fetch_assoc`, `db2_fetch_array`,
+  `db2_fetch_object`, `db2_num_rows`.
 - **Generic CRUD verbs** — any method named `find`, `findById`,
   `save`, `update`, `delete`, `query`, `execute` on an unknown
-  receiver — coarse but high-recall.
+  receiver — coarse but high-recall. Also: `table`, `select`,
+  `insert`, `upsert`, `lock`, `unlock` via the illuminate/database
+  query builder facade (Laravel `DB::table()->...` chains).
 - **Raw SQL strings** — passed to any of the above. The bundled
   `Phpdup\Normalization\SqlTableExtractor` lifts the verb (`SELECT`
   / `INSERT` / `UPDATE` / `DELETE` / `REPLACE` / `TRUNCATE`) and
@@ -1093,7 +1105,7 @@ Allowed canonical ops: `db.read`, `db.write`, `db.delete`,
 `db.execute`, `db.query`. Custom entries override stock ones with
 the same name; everything else is additive.
 
-**Bundled symbol packs.** Nine framework-flavoured packs ship
+**Bundled symbol packs.** Eleven framework-flavoured packs ship
 out of the box and can be loaded via `--profile`:
 
 | Profile name                | What it adds                                                                                         |
@@ -1107,6 +1119,8 @@ out of the box and can be loaded via `--profile`:
 | `db-aware-redbean`          | RedBeanPHP (`find`, `dispense`, `store`, `trash`, `save`, `load`, `wipe`, `related`).              |
 | `db-aware-cycle`            | Cycle ORM (`find`, `findAll`, `persist`, `delete`, `select`, `where`, `aggregate`).                |
 | `db-aware-phpactiverecord`  | PHP ActiveRecord (`find`, `all`, `first`, `last`, `create`, `save`, `update`, `delete`, `destroy`).|
+| `db-aware-myadmin`          | MyAdmin custom db_abstraction (`MyDb\Mysqli\Db`, `MyDb\Pdo\Db` — `query`, `qr`, `next_record`, `prepare`, `execute`). |
+| `db-aware-myadmin-orm`      | MyAdmin custom ORM (`MyAdmin\Orm\*` extending `Base\Orm` — `find`, `load`, `save`, `update`, `insert`, `delete`, `truncate`). |
 
 Compose them with `--db-aware` for the canonicalisation pass plus
 the stock DB call coverage. The user's own `db_symbols` in

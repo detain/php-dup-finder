@@ -15,7 +15,7 @@ namespace Phpdup\Cli;
 final class ProjectProfileDetector
 {
     /** @var list<string> */
-    private const KNOWN_PROFILES = ['laravel', 'symfony', 'drupal', 'wordpress', 'generic'];
+    private const KNOWN_PROFILES = ['laravel', 'symfony', 'drupal', 'wordpress', 'myadmin', 'generic'];
 
     /**
      * @param list<string> $paths
@@ -49,6 +49,9 @@ final class ProjectProfileDetector
         if ($this->any($root, ['wp-config.php', 'wp-config-sample.php', 'wp-includes/version.php'])) {
             return 'wordpress';
         }
+        if ($this->dirExists($root, ['include/Orm', 'vendor/detain/db_abstraction'])) {
+            return 'myadmin';
+        }
         if ($this->any($root, ['composer.json'])) {
             return 'generic';
         }
@@ -60,6 +63,17 @@ final class ProjectProfileDetector
     {
         foreach ($relPaths as $rel) {
             if (is_file($root . DIRECTORY_SEPARATOR . $rel)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** @param list<string> $relPaths */
+    private function dirExists(string $root, array $relPaths): bool
+    {
+        foreach ($relPaths as $rel) {
+            if (is_dir($root . DIRECTORY_SEPARATOR . $rel)) {
                 return true;
             }
         }

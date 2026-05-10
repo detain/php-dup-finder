@@ -196,11 +196,41 @@ final class CustomDbSymbolsTest extends TestCase
         $this->assertSame('db.delete', $methods['destroy'] ?? null);
     }
 
+    public function testBundledMyadminDbSymbolsLoadCleanly(): void
+    {
+        $registry = \Phpdup\Cli\ProfileRegistry::bundled();
+        $this->assertContains('db-aware-myadmin', $registry->listAvailable());
+        $loaded = $registry->load('db-aware-myadmin');
+        $this->assertArrayHasKey('db_symbols', $loaded);
+        $methods = $loaded['db_symbols']['methods'];
+        // Verify key MyAdmin db_abstraction methods
+        $this->assertSame('db.read', $methods['next_record'] ?? null);
+        $this->assertSame('db.read', $methods['qr'] ?? null);
+        $this->assertSame('db.query', $methods['query'] ?? null);
+        $this->assertSame('db.write', $methods['getLastInsertId'] ?? null);
+        $this->assertSame('db.execute', $methods['prepare'] ?? null);
+    }
+
+    public function testBundledMyadminOrmDbSymbolsLoadCleanly(): void
+    {
+        $registry = \Phpdup\Cli\ProfileRegistry::bundled();
+        $this->assertContains('db-aware-myadmin-orm', $registry->listAvailable());
+        $loaded = $registry->load('db-aware-myadmin-orm');
+        $this->assertArrayHasKey('db_symbols', $loaded);
+        $methods = $loaded['db_symbols']['methods'];
+        // Verify key MyAdmin ORM methods
+        $this->assertSame('db.read', $methods['find'] ?? null);
+        $this->assertSame('db.read', $methods['load'] ?? null);
+        $this->assertSame('db.write', $methods['save'] ?? null);
+        $this->assertSame('db.delete', $methods['delete'] ?? null);
+    }
+
     public function testNewDbAwareProfilesCoverKeyCrudOperations(): void
     {
         // Verify all new profiles map the four basic CRUD operations
         $profiles = ['db-aware-thinkorm', 'db-aware-medoo', 'db-aware-propel',
-                     'db-aware-redbean', 'db-aware-cycle', 'db-aware-phpactiverecord'];
+                     'db-aware-redbean', 'db-aware-cycle', 'db-aware-phpactiverecord',
+                     'db-aware-myadmin-orm'];
         $registry = \Phpdup\Cli\ProfileRegistry::bundled();
         foreach ($profiles as $name) {
             $loaded = $registry->load($name);
