@@ -26,6 +26,7 @@ final class JsonReporter
     {
         return [
             'phpdup_version' => '0.1.0',
+            'schema_version' => JsonSchemaSpec::SCHEMA_VERSION,
             'summary' => [
                 'files'        => $report->files,
                 'blocks'       => $report->blocks,
