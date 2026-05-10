@@ -122,6 +122,31 @@ HELP
             return $this->failed($io, 'Could not fetch release info from GitHub. Check your network / API rate limits.');
         }
 
+        // Detect a "no releases yet" / 404 response. The GitHub API returns
+        // {"message":"Not Found","status":"404",...} as a 200-shaped JSON body
+        // when ignore_errors is on, so we have to inspect the body.
+        if (
+            !isset($release['tag_name'])
+            && (
+                ($release['status'] ?? '') === '404'
+                || ($release['message'] ?? '') === 'Not Found'
+            )
+        ) {
+            $io->warning([
+                'No releases have been published for this repository yet.',
+                '  Repository: https://github.com/detain/php-dup-finder',
+                '  Once a tag is pushed and the release workflow publishes',
+                '  phpdup.phar + phpdup.phar.sha256 as assets, this command',
+                '  will be able to update.',
+            ]);
+            // Dry-run treats this as informational, not an error.
+            if ($dryRun) {
+                $io->success('Dry-run complete — no release available yet, nothing to do.');
+                return 0;
+            }
+            return $this->failed($io, 'No release available to install.');
+        }
+
         $tagName   = $release['tag_name']    ?? 'unknown';
         $prerelease = (bool)($release['prerelease'] ?? false);
         $draft      = (bool)($release['draft']      ?? false);
