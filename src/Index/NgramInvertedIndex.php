@@ -21,12 +21,20 @@ final class NgramInvertedIndex
     private array $postings = [];
     private int $blockCount = 0;
 
-    public function build(BlockIndex $index): void
+    /**
+     * @param callable(int $indexed, int $total): void|null $progressCallback
+     */
+    public function build(BlockIndex $index, ?callable $progressCallback = null): void
     {
         $this->postings = [];
         $this->blockCount = $index->size();
+        $indexed = 0;
         foreach ($index->all() as $b) {
             $this->indexBlock($b);
+            $indexed++;
+            if ($progressCallback !== null) {
+                $progressCallback($indexed, $this->blockCount);
+            }
         }
     }
 

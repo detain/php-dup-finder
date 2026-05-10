@@ -146,18 +146,36 @@ final class PreprocessWorker
         $fileIdx = 0;
         foreach ($files as $path) {
             ++$fileIdx;
+            if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                $output->writeln(sprintf('worker: parsing file %d/%d: %s [%s]', $fileIdx, count($files), $path, MemoryDebug::getMemoryUsage()));
+            }
             $stmts = $cache->get($path);
             if ($stmts === null) {
+                if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                    $output->writeln(sprintf('worker: cache miss, parsing: %s', $path));
+                }
                 $stmts = $parser->parseFile($path);
                 if ($stmts === null) {
+                    if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                        $output->writeln(sprintf('worker: parse error for %s: %s', $path, $parser->lastError?->getMessage() ?? 'unknown'));
+                    }
                     $out[] = ['type' => 'error', 'file' => $path, 'message' => $parser->lastError?->getMessage() ?? 'parse error'];
                     continue;
                 }
                 $cache->put($path, $stmts);
+            } else {
+                if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                    $output->writeln(sprintf('worker: cache hit for: %s', $path));
+                }
             }
             $cfg   = $this->config->effectiveFor($path);
             $tools = $toolFor($cfg);
+            $blockCount = 0;
             foreach ($tools['extractor']->extract($path, $stmts) as $block) {
+                ++$blockCount;
+                if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                    $output->writeln(sprintf('worker:   extracted block kind=%s size=%d from %s', $block->kind, $block->size, $path));
+                }
                 $tools['normalizer']->normalize($block);
                 $block->structuralHash = $hasher->hash($block->canonical);
                 $block->ngramBag = $tools['fp']->fingerprint($block->canonical);
@@ -183,6 +201,13 @@ final class PreprocessWorker
                     $block->unloadAst();
                 }
                 $out[] = ['type' => 'block', 'file' => $path, 'block' => $block];
+            }
+            if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                if ($blockCount === 0) {
+                    $output->writeln(sprintf('worker:   no blocks extracted from %s (kind=%s, minBlockSize=%d)', $path, $cfg->allowedKinds === [] ? 'all' : implode(',', $cfg->allowedKinds), $cfg->minBlockSize));
+                } else {
+                    $output->writeln(sprintf('worker:   extracted %d blocks from %s', $blockCount, $path));
+                }
             }
             // Trigger PHP's cyclic GC and clear per-cycle memory caches
             // every 10 files to prevent memory buildup from serialize/

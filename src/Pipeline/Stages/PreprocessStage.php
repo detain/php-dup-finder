@@ -145,6 +145,9 @@ final class PreprocessStage implements CooperativeStageInterface
             $processedFilesSet = [];
             $sinceYield        = 0;
 
+            if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                $output->writeln(sprintf('preprocess: collecting results from workers... [%s]', MemoryDebug::getMemoryUsage()));
+            }
             foreach ($pool->runStreaming($toProcess, $task) as $row) {
                 $processedFilesSet[$row['file']] = true;
                 if ($row['type'] === 'error') {
@@ -171,8 +174,14 @@ final class PreprocessStage implements CooperativeStageInterface
             unset($processedFilesSet);
 
             if ($store !== null) {
+                if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                    $output->writeln(sprintf('preprocess: saving %d files to cache... [%s]', count($perFileBlocks), MemoryDebug::getMemoryUsage()));
+                }
                 foreach ($perFileBlocks as $file => $list) {
                     $store->save($file, $list);
+                }
+                if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                    $output->writeln(sprintf('preprocess: cache save complete [%s]', MemoryDebug::getMemoryUsage()));
                 }
             }
             unset($perFileBlocks);
@@ -183,8 +192,14 @@ final class PreprocessStage implements CooperativeStageInterface
         }
 
         // Assign IDs (after collecting from all sources).
+        if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+            $output->writeln(sprintf('preprocess: assigning IDs to %d blocks... [%s]', count($blocks), MemoryDebug::getMemoryUsage()));
+        }
         foreach ($blocks as $i => $b) {
             $b->id = substr($b->structuralHash, 0, 8) . '_' . $i;
+        }
+        if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+            $output->writeln(sprintf('preprocess: ID assignment complete, transitioning to next stage... [%s]', MemoryDebug::getMemoryUsage()));
         }
 
         $state->blocks = $blocks;

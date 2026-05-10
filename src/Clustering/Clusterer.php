@@ -10,6 +10,8 @@ use Phpdup\Ml\PairScorer;
 use Phpdup\Similarity\ContainmentSimilarity;
 use Phpdup\Similarity\JaccardSimilarity;
 use Phpdup\Similarity\TreeEditDistance;
+use Phpdup\Util\MemoryDebug;
+use Symfony\Component\Console\Output\OutputInterface;
 
 /**
  * Two-phase clustering:
@@ -79,20 +81,46 @@ final class Clusterer
      *
      * @return list<array{0:string,1:string}>
      */
-    public function generateCandidatePairs(BlockIndex $index): array
+    public function generateCandidatePairs(BlockIndex $index, ?OutputInterface $output = null): array
     {
+        $totalBlocks = $index->size();
+        if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+            $output->writeln(sprintf('ngram-index: building inverted index for %d blocks [%s]', $totalBlocks, MemoryDebug::getMemoryUsage()));
+        }
+
         $inverted = new NgramInvertedIndex();
-        $inverted->build($index);
+        $progressCallback = static function (int $indexed, int $total) use ($output): void {
+            if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG && $indexed % 5000 === 0) {
+                $output->writeln(sprintf('ngram-index: indexed %d / %d blocks [%s]', $indexed, $total, MemoryDebug::getMemoryUsage()));
+            }
+        };
+        $inverted->build($index, $progressCallback);
+
+        if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+            $output->writeln(sprintf('ngram-index: inverted index built [%s]', MemoryDebug::getMemoryUsage()));
+            $output->writeln(sprintf('ngram-index: enumerating candidate pairs for %d blocks', $totalBlocks));
+        }
+
         $pairs = [];
         $seen = [];
+        $blockNum = 0;
         foreach ($index->all() as $a) {
+            $blockNum++;
             foreach ($inverted->candidatesFor($a, $this->maxDocumentFrequency) as $bid) {
                 $key = strcmp($a->id, $bid) < 0 ? $a->id . '|' . $bid : $bid . '|' . $a->id;
                 if (isset($seen[$key])) continue;
                 $seen[$key] = true;
                 $pairs[] = [strcmp($a->id, $bid) < 0 ? $a->id : $bid, strcmp($a->id, $bid) < 0 ? $bid : $a->id];
             }
+            if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG && $blockNum % 5000 === 0) {
+                $output->writeln(sprintf('ngram-index: processed %d / %d blocks, %d candidates found [%s]', $blockNum, $totalBlocks, count($pairs), MemoryDebug::getMemoryUsage()));
+            }
         }
+
+        if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+            $output->writeln(sprintf('ngram-index: enumeration complete, %d candidate pairs found [%s]', count($pairs), MemoryDebug::getMemoryUsage()));
+        }
+
         return $pairs;
     }
 
