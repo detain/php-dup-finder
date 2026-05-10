@@ -1,0 +1,26 @@
+{
+    "_description": "Dibi-specific DB symbol equivalence pack (option 4 of docs/plans/orm-db-semantic-dedup.md). Extends the stock DbOpRegistry with Dibi method names. Dibi is a Czech PHP database abstraction library that provides a powerful and flexible interface for database operations. Use with --profile=db-aware-dibi together with --db-aware. See https://dibiphp.com",
+    "db_symbols": {
+        "methods": {
+            "query":           "db.query",
+            "queryAll":        "db.read",
+            "querySingle":     "db.read",
+            "fetchAll":        "db.read",
+            "fetch":           "db.read",
+            "fetchAllPairs":   "db.read",
+            "fetchAssoc":      "db.read",
+            "fetchSingle":     "db.read",
+            "fetchRow":        "db.read",
+            "test":            "db.read",
+            "free":            "db.read",
+            "getInfo":         "db.read",
+            "getAffectedRows": "db.read",
+            "getLastInsertId": "db.read",
+            "begin":           "db.execute",
+            "commit":          "db.execute",
+            "rollback":        "db.execute",
+            "translator":      "db.query",
+            "connected":       "db.read"
+        }
+    }
+}

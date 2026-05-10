@@ -1,0 +1,28 @@
+{
+    "_description": "Atlas.PDO-specific DB symbol equivalence pack (option 4 of docs/plans/orm-db-semantic-dedup.md). Extends the stock DbOpRegistry with Atlas.PDO method names. Atlas.PDO is a PDO wrapper library from the Atlas framework that provides a fluent interface for database operations. Use with --profile=db-aware-atlas together with --db-aware. See https://github.com/atlasphp/Atlas.PDO",
+    "db_symbols": {
+        "methods": {
+            "fetchAll":        "db.read",
+            "fetchAssoc":      "db.read",
+            "fetchColumn":     "db.read",
+            "fetchGroup":      "db.read",
+            "fetchOne":        "db.read",
+            "fetchRow":        "db.read",
+            "fetchSelect":     "db.read",
+            "fetchInsert":     "db.write",
+            "fetchUpdate":     "db.write",
+            "fetchDelete":     "db.delete",
+            "yieldAll":        "db.read",
+            "yieldAssoc":      "db.read",
+            "yieldColumn":     "db.read",
+            "yieldGroup":      "db.read",
+            "yieldOne":        "db.read",
+            "yieldRow":        "db.read",
+            "exec":            "db.execute",
+            "lastInsertId":    "db.read",
+            "begin":           "db.execute",
+            "commit":          "db.execute",
+            "rollback":        "db.execute"
+        }
+    }
+}

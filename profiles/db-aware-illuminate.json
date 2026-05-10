@@ -1,0 +1,29 @@
+{
+    "_description": "Illuminate Database (Laravel's standalone DB component) symbol equivalence pack (option 4 of docs/plans/orm-db-semantic-dedup.md). Extends the stock DbOpRegistry with illuminate/database query builder method names. Use with --profile=db-aware-illuminate together with --db-aware. The Illuminate Database Capsule provides a full query builder via DB::table()->... and also supports raw expressions via DB::raw(). See https://github.com/illuminate/database",
+    "db_symbols": {
+        "methods": {
+            "table":               "db.read",
+            "select":              "db.read",
+            "cursor":              "db.read",
+            "fetch":               "db.read",
+            "pluck":               "db.read",
+            "value":               "db.read",
+            "first":               "db.read",
+            "find":                "db.read",
+            "count":               "db.read",
+            "exists":              "db.read",
+            "doesntexist":         "db.read",
+            "insert":              "db.write",
+            "insertgetid":         "db.write",
+            "update":              "db.write",
+            "increment":           "db.write",
+            "decrement":           "db.write",
+            "delete":              "db.delete",
+            "truncate":            "db.delete",
+            "statement":           "db.execute",
+            "affectingstatement":  "db.execute",
+            "unprepared":          "db.execute",
+            "raw":                 "db.query"
+        }
+    }
+}

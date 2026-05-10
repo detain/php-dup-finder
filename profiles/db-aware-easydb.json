@@ -1,0 +1,27 @@
+{
+    "_description": "EasyDB-specific DB symbol equivalence pack (option 4 of docs/plans/orm-db-semantic-dedup.md). Extends the stock DbOpRegistry with EasyDB method names. EasyDB is a lightweight PHP database wrapper that provides a simple and secure interface for database operations. Use with --profile=db-aware-easydb together with --db-aware. See https://github.com/Josh斯潘迪特/easy-db",
+    "db_symbols": {
+        "methods": {
+            "query":           "db.query",
+            "queryAll":        "db.read",
+            "queryOne":        "db.read",
+            "queryRow":        "db.read",
+            "queryColumn":     "db.read",
+            "querySingle":     "db.read",
+            "fetch":           "db.read",
+            "fetchAll":        "db.read",
+            "fetchColumn":     "db.read",
+            "fetchOne":        "db.read",
+            "fetchRow":        "db.read",
+            "iterator":        "db.read",
+            "safeQuery":       "db.query",
+            "execute":         "db.execute",
+            "build":           "db.query",
+            "column":          "db.read",
+            "row":             "db.read",
+            "cell":            "db.read",
+            "all":             "db.read",
+            "ind":             "db.read"
+        }
+    }
+}

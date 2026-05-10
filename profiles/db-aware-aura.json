@@ -1,0 +1,27 @@
+{
+    "_description": "Aura.Sql-specific DB symbol equivalence pack (option 4 of docs/plans/orm-db-semantic-dedup.md). Extends the stock DbOpRegistry with Aura.Sql method names. Aura.Sql is a PHP database abstraction library that provides aPDO-like interface with additional features. Use with --profile=db-aware-aura together with --db-aware. See https://github.com/auraphp/Aura.Sql",
+    "db_symbols": {
+        "methods": {
+            "fetchAll":        "db.read",
+            "fetchOne":        "db.read",
+            "fetchRow":        "db.read",
+            "fetchColumn":     "db.read",
+            "fetchPairs":      "db.read",
+            "fetchValue":      "db.read",
+            "fetch":           "db.read",
+            "yieldAll":        "db.read",
+            "yieldOne":        "db.read",
+            "yieldRow":        "db.read",
+            "query":           "db.query",
+            "execute":         "db.execute",
+            "perform":         "db.execute",
+            "exec":            "db.execute",
+            "quote":           "db.query",
+            "quoteName":       "db.query",
+            "quoteValue":      "db.query",
+            "reconnect":       "db.execute",
+            "affectedRows":    "db.read",
+            "lastInsertId":    "db.read"
+        }
+    }
+}
