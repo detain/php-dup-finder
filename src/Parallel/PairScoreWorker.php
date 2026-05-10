@@ -53,6 +53,13 @@ final class PairScoreWorker
     public function score(array $pairs): array
     {
         $jaccard     = new JaccardSimilarity();
+        // Pre-warm ML client in the child process before entering the scoring loop.
+        // This avoids the curl-init cost on the first ML pair while preserving
+        // per-fork handle isolation (runs after pcntl_fork in WorkerPool).
+        $client = $this->mlPairUrl !== '' ? ($this->mlPairClient ??= new MlPairClient(
+            baseUrl: $this->mlPairUrl,
+            timeoutSec: $this->mlPairTimeoutSec,
+        )) : null;
         $ted         = new TreeEditDistance();
         $containment = new ContainmentSimilarity();
         $edges = [];
@@ -97,13 +104,8 @@ final class PairScoreWorker
             }
             // ML pair-tier (option 6). Last-chance scoring against
             // an external model — see {@see \Phpdup\Clustering\Clusterer}
-            // for the full rationale. The client is built lazily so
-            // each fork has its own curl handle.
-            if ($this->mlPairUrl !== '') {
-                $client = $this->mlPairClient ??= new MlPairClient(
-                    baseUrl: $this->mlPairUrl,
-                    timeoutSec: $this->mlPairTimeoutSec,
-                );
+            // for the full rationale. Client is pre-warmed at start of score().
+            if ($client !== null) {
                 $mlScore = $client->score($a, $b);
                 if ($mlScore !== null && $mlScore['similarity'] >= $this->mlPairThreshold) {
                     $edges[] = [$aId, $bId, $mlScore['similarity']];
