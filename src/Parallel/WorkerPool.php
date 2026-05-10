@@ -168,6 +168,7 @@ final class WorkerPool
         $pipes    = [];   // parent socket per chunk index
         $pids     = [];
         $buffers  = [];
+        $gcCounter = 0;
 
         foreach ($chunks as $idx => $chunk) {
             $pair = @stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
@@ -259,7 +260,11 @@ final class WorkerPool
                 }
                 // Help PHP's cyclic GC collect any objects created during
                 // deserialize/unserialize round-trips before the next select.
-                gc_collect_cycles();
+                // Collect every 10 iterations to reduce overhead during high-volume streaming.
+                if (++$gcCounter >= 10) {
+                    $gcCounter = 0;
+                    gc_collect_cycles();
+                }
             }
         } finally {
             foreach ($pipes as $sock) @fclose($sock);
