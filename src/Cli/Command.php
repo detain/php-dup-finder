@@ -63,6 +63,8 @@ final class Command extends SymfonyCommand
             ->addOption('timeseries', null, InputOption::VALUE_REQUIRED, 'Append a JSONL summary record (commit-tagged) to FILE for tracking duplicate debt over time')
             ->addOption('graphviz', null, InputOption::VALUE_REQUIRED, 'Write a Graphviz DOT graph (file→cluster bipartite) to FILE — render with `dot -Tpng FILE -o out.png`')
             ->addOption('plantuml', null, InputOption::VALUE_REQUIRED, 'Write a PlantUML class diagram to FILE — render with `plantuml FILE`')
+            ->addOption('refactor-patch', null, InputOption::VALUE_REQUIRED, 'Emit one .patch file per cluster into DIR — heuristic, manual-review-required.')
+            ->addOption('refactor-tests', null, InputOption::VALUE_REQUIRED, 'Emit a PHPUnit test skeleton per cluster into DIR (data-provider rows mirror hole observations).')
             ->addOption('diff', null, InputOption::VALUE_REQUIRED, 'Write per-cluster unified diffs into DIR')
             ->addOption('patch', null, InputOption::VALUE_REQUIRED, 'Write a single cumulative patch file containing every cluster diff')
             ->addOption('limit', null, InputOption::VALUE_REQUIRED, 'Show at most N clusters in CLI output', 50)
@@ -113,6 +115,7 @@ Options grouped by category:
    --html, --json, --sarif, --gitlab-sast, --checkstyle,
    --csv, --prometheus, --timeseries,
    --graphviz, --plantuml,
+   --refactor-patch, --refactor-tests,
    --diff, --patch, --limit, --sort, --stats,
    --summary-only, --clusters
 
@@ -318,6 +321,8 @@ HELP;
             'timeseriesFile' => $input->getOption('timeseries'),
             'graphvizFile'   => $input->getOption('graphviz'),
             'plantumlFile'   => $input->getOption('plantuml'),
+            'refactorPatchDir' => $input->getOption('refactor-patch'),
+            'refactorTestsDir' => $input->getOption('refactor-tests'),
             'cliVerbosity'   => $cliVerbosity,
             'minSafety'      => $input->getOption('min-safety') !== null ? (float)$input->getOption('min-safety') : 0.0,
             'pagerMode'      => (string)($input->getOption('pager') ?? Pager::MODE_NEVER),
@@ -355,6 +360,8 @@ HELP;
                         graphvizFile:   $reportArgs['graphvizFile'],
                         plantumlFile:   $reportArgs['plantumlFile'],
                         pagerMode:      $reportArgs['pagerMode'],
+                        refactorPatchDir: $reportArgs['refactorPatchDir'],
+                        refactorTestsDir: $reportArgs['refactorTestsDir'],
                     ),
                 ],
                 stopAfter: $stopAfter,
