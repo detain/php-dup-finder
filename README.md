@@ -860,9 +860,15 @@ phpdup's type-4 scaffold:
 
 - `Phpdup\Semantic\DataflowSummarizer` — walks the block once and
   emits `(vars, calls, returns, sideEffects)`.
+- `Phpdup\Semantic\DbOperationTagger` — separately walks the block
+  and emits a `tag → count` multiset of recognised database
+  operations (`db.read`, `db.write`, `db.delete`, `db.execute`,
+  `db.query`). Library- and extension-agnostic by design — see
+  [Behavioural-tag scoring](#behavioural-tag-scoring) below.
 - `Phpdup\Similarity\BehaviouralSimilarity` — weighted Jaccard
   over those summaries (var-set 1×, call-multiset 2×,
-  return-shape 2×, side-effect-flag 1×) → `[0,1]` score.
+  return-shape 2×, side-effect-flag 1×, DB-op-tag multiset 2×) →
+  `[0,1]` score.
 - `Phpdup\Semantic\CallGraph` and `Phpdup\Semantic\ControlFlowGraph`
   — coarse per-block summaries used by future type-4 boost paths.
 
@@ -1025,8 +1031,38 @@ combination), and runs as a *pre-pass* before `DbOpCanonicalizer`
 so the collapser can pattern-match on the original read/save call
 shapes.
 
-The full plan — including the follow-up phases (behavioural-tag
-scoring, IR lift) that build on this option — is in
+### Behavioural-tag scoring
+
+The Type-4 behavioural scorer (`Phpdup\Similarity\BehaviouralSimilarity`)
+gains a fifth band: a **DB op-tag multiset Jaccard** weighted equally
+with the existing call-name and return-shape bands.
+
+`Phpdup\Semantic\DbOperationTagger` walks each block once and produces
+a coarse `tag → count` summary:
+
+```
+['db.read' => 2, 'db.write' => 1, 'db.execute' => 1]
+```
+
+Two functions with the same DB-shape — same number of reads, writes,
+deletes, executes, and queries — score similarly under the tag band
+*regardless of which library or extension* delivers each operation.
+That collapses the library/extension axis (Eloquent vs Doctrine vs
+PDO vs mysqli vs `pg_*`) without needing per-pair surface analysis.
+
+The tag band is a *no-op* for blocks that do not touch the database
+(empty bag vs empty bag is `1.0` by convention) so non-DB code is
+unaffected. The behavioural scorer's total weight is now `1 + 2 + 2 +
+1 + 2 = 8` (variables + calls + returns + side-effects + DB tags),
+normalised back to `[0, 1]`.
+
+The tagger reuses the same `DbOpRegistry` as `DbOpCanonicalizer`, so
+the recognised call set is consistent across the canonicalisation
+and scoring layers, and synthetic `__DB_<OP>__` calls produced by
+`--db-aware` / `--trinity-collapse` are also tagged correctly.
+
+The full plan — including the follow-up phase (IR lift) that builds
+on these options — is in
 [`docs/plans/orm-db-semantic-dedup.md`](docs/plans/orm-db-semantic-dedup.md).
 
 ---

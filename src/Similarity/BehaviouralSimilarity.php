@@ -5,6 +5,7 @@ namespace Phpdup\Similarity;
 
 use PhpParser\Node;
 use Phpdup\Semantic\DataflowSummarizer;
+use Phpdup\Semantic\DbOperationTagger;
 
 /**
  * Type-4 (behavioural) similarity between two AST subtrees.
@@ -14,20 +15,34 @@ use Phpdup\Semantic\DataflowSummarizer;
  * compute the same observable I/O. BehaviouralSimilarity scores
  * them by overlap of their dataflow summaries:
  *
- *   - var-name intersection (with weight 1)
- *   - call-name multiset Jaccard (weight 2 — strongest signal)
+ *   - var-name intersection (weight 1)
+ *   - call-name multiset Jaccard (weight 2 — strongest baseline signal)
  *   - return-shape Jaccard (weight 2)
  *   - matching side-effect flag (weight 1)
+ *   - **DB op-tag multiset Jaccard (weight 2 — option 3 of
+ *     `docs/plans/orm-db-semantic-dedup.md`)**: when both blocks
+ *     touch the database, the tag-shape (`db.read`, `db.write`,
+ *     `db.delete`, `db.query`, `db.execute`) collapses across
+ *     library/extension swaps so an Eloquent two-read/one-write
+ *     function clusters with the equivalent PDO two-read/one-write
+ *     function regardless of call-name overlap.
  *
- * The total is normalised to [0, 1]. Used as a Type-3 fallback
- * scorer in {@see \Phpdup\Clustering\Clusterer} when both Jaccard
- * and TED reject — gated behind a config flag because false-
- * positive risk is materially higher than for type-1/2/3.
+ * The total is normalised to [0, 1]. The DB-op band is a *no-op*
+ * for blocks that do not touch the database (its Jaccard against
+ * an empty bag is 1.0 by convention) so non-DB code is unaffected
+ * — the band kicks in only when at least one of the two blocks
+ * has tagged operations.
+ *
+ * Used as a Type-3 fallback scorer in {@see \Phpdup\Clustering\Clusterer}
+ * when both Jaccard and TED reject — gated behind a config flag
+ * because false-positive risk is materially higher than for
+ * type-1/2/3.
  */
 final class BehaviouralSimilarity
 {
     public function __construct(
         private readonly DataflowSummarizer $summarizer = new DataflowSummarizer(),
+        private readonly DbOperationTagger $dbTagger = new DbOperationTagger(),
     ) {
     }
 
@@ -36,14 +51,18 @@ final class BehaviouralSimilarity
         $sa = $this->summarizer->summarize($a);
         $sb = $this->summarizer->summarize($b);
 
+        $tagsA = $this->dbTagger->tag($a);
+        $tagsB = $this->dbTagger->tag($b);
+
         $w = 0.0;
         $w += $this->jaccardSet($sa['vars'], $sb['vars']);
         $w += 2.0 * $this->jaccardMultiset($sa['calls'], $sb['calls']);
         $w += 2.0 * $this->jaccardReturns($sa['returns'], $sb['returns']);
         $w += $sa['sideEffects'] === $sb['sideEffects'] ? 1.0 : 0.0;
+        $w += 2.0 * $this->jaccardMultiset($tagsA, $tagsB);
 
-        // Total possible weight is 1 + 2 + 2 + 1 = 6.
-        return $w / 6.0;
+        // Total possible weight is 1 + 2 + 2 + 1 + 2 = 8.
+        return $w / 8.0;
     }
 
     /**
