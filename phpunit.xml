@@ -16,6 +16,9 @@
         <testsuite name="Golden">
             <directory>tests/Golden</directory>
         </testsuite>
+        <testsuite name="Fuzz">
+            <directory>tests/Fuzz</directory>
+        </testsuite>
     </testsuites>
     <source>
         <include>
