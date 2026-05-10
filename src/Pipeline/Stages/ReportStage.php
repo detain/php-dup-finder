@@ -20,6 +20,8 @@ use Phpdup\Reporting\JsonReporter;
 use Phpdup\Reporting\PlantumlReporter;
 use Phpdup\Reporting\PrometheusReporter;
 use Phpdup\Reporting\Ranker;
+use Phpdup\Reporting\RefactorPatchReporter;
+use Phpdup\Reporting\RefactorTestReporter;
 use Phpdup\Reporting\Report;
 use Phpdup\Reporting\SarifReporter;
 use Phpdup\Reporting\TimeseriesReporter;
@@ -43,6 +45,8 @@ final class ReportStage implements StageInterface
         private readonly ?string $graphvizFile = null,
         private readonly ?string $plantumlFile = null,
         private readonly string $pagerMode = Pager::MODE_NEVER,
+        private readonly ?string $refactorPatchDir = null,
+        private readonly ?string $refactorTestsDir = null,
     ) {}
 
     public function name(): Stage
@@ -161,6 +165,14 @@ final class ReportStage implements StageInterface
         if ($this->plantumlFile !== null) {
             (new PlantumlReporter())->writeTo($report, $this->plantumlFile);
             $output->writeln("<info>phpdup</info> plantuml file → {$this->plantumlFile}");
+        }
+        if ($this->refactorPatchDir !== null) {
+            (new RefactorPatchReporter())->writeTo($report, $this->refactorPatchDir);
+            $output->writeln("<info>phpdup</info> refactor patches → {$this->refactorPatchDir}/");
+        }
+        if ($this->refactorTestsDir !== null) {
+            (new RefactorTestReporter())->writeTo($report, $this->refactorTestsDir);
+            $output->writeln("<info>phpdup</info> refactor test skeletons → {$this->refactorTestsDir}/");
         }
     }
 
