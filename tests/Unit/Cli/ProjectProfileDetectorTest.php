@@ -79,6 +79,138 @@ final class ProjectProfileDetectorTest extends TestCase
         ProfileRegistry::bundled()->load('does-not-exist');
     }
 
+    public function testDoctrinePackageDetectsDbAwareDoctrine(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['doctrine/orm' => '^2.0']])]);
+        $this->assertSame('db-aware-doctrine', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testDoctrineBundlePackageDetectsDbAwareDoctrine(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['doctrine/doctrine-bundle' => '^2.0']])]);
+        $this->assertSame('db-aware-doctrine', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testCycleOrmPackageDetectsDbAwareCycle(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['cycle/orm' => '^3.0']])]);
+        $this->assertSame('db-aware-cycle', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testPropelPackageDetectsDbAwarePropel(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['propel/propel' => '^2.0']])]);
+        $this->assertSame('db-aware-propel', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testPropelOrmPackageDetectsDbAwarePropel(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['propelorm/propel' => '^2.0']])]);
+        $this->assertSame('db-aware-propel', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testRedbeanPackageDetectsDbAwareRedbean(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['gabordemooij/redbean' => '^5.0']])]);
+        $this->assertSame('db-aware-redbean', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testCakeOrmPackageDetectsDbAwareCake(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['cakephp/orm' => '^4.0']])]);
+        $this->assertSame('db-aware-cake', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testMedooPackageDetectsDbAwareMedoo(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['catfan/medoo' => '^2.0']])]);
+        $this->assertSame('db-aware-medoo', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testPhpActiverecordPackageDetectsDbAwarePhpactiverecord(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['php-activerecord/php-activerecord' => '^1.0']])]);
+        $this->assertSame('db-aware-phpactiverecord', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testThinkormPackageDetectsDbAwareThinkorm(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['topthink/think-orm' => '^2.0']])]);
+        $this->assertSame('db-aware-thinkorm', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testPredisPackageDetectsDbAwareRedis(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['predis/predis' => '^2.0']])]);
+        $this->assertSame('db-aware-redis', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testCredisPackageDetectsDbAwareRedis(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['colinmollenhour/credis' => '^1.0']])]);
+        $this->assertSame('db-aware-redis', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testPhpredisPackageDetectsDbAwareRedis(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['phpredis/phpredis' => '^5.0']])]);
+        $this->assertSame('db-aware-redis', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testMongoDBPackageDetectsDbAwareMongodb(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['mongodb/mongodb' => '^1.0']])]);
+        $this->assertSame('db-aware-mongodb', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testElasticsearchPackageDetectsDbAwareElasticsearch(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['elasticsearch/elasticsearch' => '^8.0']])]);
+        $this->assertSame('db-aware-elasticsearch', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testNeo4jPhpClientPackageDetectsDbAwareNeo4j(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['laudis/neo4j-php-client' => '^2.0']])]);
+        $this->assertSame('db-aware-neo4j', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testInfluxdbClientPackageDetectsDbAwareInfluxdb(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['influxdata/influxdb-client-php' => '^2.0']])]);
+        $this->assertSame('db-aware-influxdb', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testCouchdbOdmPackageDetectsDbAwareCouchdb(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['doctrine/couchdb-odm' => '^1.0']])]);
+        $this->assertSame('db-aware-couchdb', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testCouchbasePackageDetectsDbAwareCouchbase(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['couchbase/couchbase' => '^4.0']])]);
+        $this->assertSame('db-aware-couchbase', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testIdiormPackageDetectsDbAwareIdiorm(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['j4mie/idiorm' => '^1.0']])]);
+        $this->assertSame('db-aware-idiorm', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testParisPackageDetectsDbAwareIdiorm(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['paris/paris' => '^1.0']])]);
+        $this->assertSame('db-aware-idiorm', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testPhalconPackageDetectsDbAwarePhalcon(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['phalcon/cphalcon' => '^5.0']])]);
+        $this->assertSame('db-aware-phalcon', (new ProjectProfileDetector())->detect([$root]));
+    }
+
     /** @param array<string,string> $files */
     private function mkproject(array $files): string
     {
