@@ -164,14 +164,20 @@ final class AptedDistance
 
         $fd = array_fill(0, $rows, array_fill(0, $cols, 0));
         // Pre-compute per-node integer costs (scaled to keep int DP).
+        // The `max(0, …)` calls assert non-negativity for psalm — both
+        // expressions are mathematically ≥ 0 (iL is the leftmost-leaf
+        // index of $i, and $r/$c start at 1) but psalm can't prove it
+        // from the loop bounds alone.
         $costA = [];
         for ($r = 1; $r < $rows; $r++) {
-            $costA[$r] = (int)round($this->costModel->cost($L1[$iL + $r - 1]) * $this->scaler);
+            $absI = max(0, $iL + $r - 1);
+            $costA[$r] = (int)round($this->costModel->cost($L1[$absI]) * $this->scaler);
             $fd[$r][0] = $fd[$r - 1][0] + $costA[$r];
         }
         $costB = [];
         for ($c = 1; $c < $cols; $c++) {
-            $costB[$c] = (int)round($this->costModel->cost($L2[$jL + $c - 1]) * $this->scaler);
+            $absJ = max(0, $jL + $c - 1);
+            $costB[$c] = (int)round($this->costModel->cost($L2[$absJ]) * $this->scaler);
             $fd[0][$c] = $fd[0][$c - 1] + $costB[$c];
         }
 

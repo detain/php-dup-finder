@@ -35,11 +35,14 @@ final class FuzzCorpusGenerator
         if (!is_dir($dir)) {
             @mkdir($dir, 0o775, true);
         }
-        $rng = new \Random\Randomizer(new \Random\Engine\Mt19937($this->seed));
+        // Seeded mt_rand keeps generation deterministic for fuzz tests.
+        // We explicitly avoid \Random\Randomizer because that class is
+        // PHP 8.2+ and this codebase's floor is 8.1.
+        mt_srand($this->seed);
         $manifest = [];
         foreach ($plan as $template => $rows) {
             foreach ($rows as $idx => $holes) {
-                $code = $this->renderTemplate($template, $holes, $idx, $rng);
+                $code = $this->renderTemplate($template, $holes, $idx);
                 $file = sprintf('%s/%s_%03d.php', $dir, $template, $idx);
                 file_put_contents($file, $code);
                 $manifest[] = ['file' => $file, 'template' => $template, 'row' => $idx];
@@ -49,10 +52,10 @@ final class FuzzCorpusGenerator
     }
 
     /** @param array<string,string> $holes */
-    private function renderTemplate(string $template, array $holes, int $idx, \Random\Randomizer $rng): string
+    private function renderTemplate(string $template, array $holes, int $idx): string
     {
-        $value     = $holes['value']     ?? (string)$rng->getInt(1, 99);
-        $threshold = $holes['threshold'] ?? (string)$rng->getInt(1, 99);
+        $value     = $holes['value']     ?? (string)mt_rand(1, 99);
+        $threshold = $holes['threshold'] ?? (string)mt_rand(1, 99);
         $callee    = $holes['callee']    ?? 'doThing';
         $namespace = "Generated\\{$template}_{$idx}";
 

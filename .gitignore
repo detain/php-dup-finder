@@ -8,3 +8,12 @@
 /coverage.xml
 /coverage-html/
 /.caliber/
+/bench/corpora/
+/bench/results/run-*.json
+
+# Built phar artifacts (produced by build-phar.php / release workflow)
+/phpdup.phar
+/phpdup.phar.sha256
+/phpdup.phar.gz
+/phpdup.phar.bz2
+
