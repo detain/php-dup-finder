@@ -82,6 +82,7 @@ final class ConfigLoader
             optionalBlocksMaxPerCluster:  (int)($overrides['optional_blocks_max_per_cluster'] ?? $optBlock['max_per_cluster'] ?? $base->optionalBlocksMaxPerCluster),
             optionalBlocksMinSegmentLength: (int)($overrides['optional_blocks_min_segment_length'] ?? $optBlock['min_segment_length'] ?? $base->optionalBlocksMinSegmentLength),
             sort: (string)($overrides['sort'] ?? $data['sort'] ?? $base->sort),
+            tedWeights: (string)($overrides['ted_weights'] ?? $data['ted_weights'] ?? $base->tedWeights),
             normalizationPlugins: $this->extractNormalizationPlugins($data),
             perDirectoryOverrides: $this->discoverPerDirectoryOverrides($resolvedPaths),
         );
@@ -205,6 +206,7 @@ final class ConfigLoader
             'kinds',
             'optional_blocks',
             'sort',
+            'ted_weights',
             'report',
             'normalization',
         ];
@@ -356,6 +358,9 @@ final class ConfigLoader
             } catch (\InvalidArgumentException $e) {
                 throw new \RuntimeException("sort: {$e->getMessage()}$where");
             }
+        }
+        if (array_key_exists('ted_weights', $data)) {
+            $assertEnum($data['ted_weights'], 'ted_weights', \Phpdup\Similarity\EditCostModel::MODELS);
         }
         if (array_key_exists('normalization', $data)) {
             if (!is_array($data['normalization'])) {

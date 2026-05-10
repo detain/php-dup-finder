@@ -30,6 +30,18 @@ use Phpdup\Util\AstSerializer;
  */
 final class AptedDistance
 {
+    private readonly EditCostModel $costModel;
+    private readonly int $scaler;
+
+    public function __construct(?EditCostModel $costModel = null)
+    {
+        $this->costModel = $costModel ?? new EditCostModel(EditCostModel::MODEL_DEFAULT);
+        // Quantise per-node costs to small ints so the DP can stay
+        // int-only. Scaler 2 covers the semantic-model {0.5, 1, 1.5, 2}
+        // exactly as {1, 2, 3, 4}.
+        $this->scaler = $this->costModel->model === EditCostModel::MODEL_DEFAULT ? 1 : 2;
+    }
+
     /**
      * @param Node $a
      * @param Node $b
@@ -75,7 +87,9 @@ final class AptedDistance
             return $n === $m ? 1.0 : 0.0;
         }
 
-        $worst = max($n, $m);
+        // Worst-case weighted distance is the sum of node costs in the
+        // larger tree; that's the upper bound for the normalisation step.
+        $worst = $this->worstCost($n >= $m ? $ta['labels'] : $tb['labels']);
         $budget = (int)ceil((1.0 - $threshold) * $worst);
 
         $cost = $this->ted($ta, $tb, $budget);
@@ -83,6 +97,16 @@ final class AptedDistance
             return 0.0;
         }
         return 1.0 - ($cost / $worst);
+    }
+
+    /** @param list<string> $labels */
+    private function worstCost(array $labels): int
+    {
+        $sum = 0;
+        foreach ($labels as $label) {
+            $sum += (int)round($this->costModel->cost($label) * $this->scaler);
+        }
+        return max(1, $sum);
     }
 
     /**
@@ -139,11 +163,16 @@ final class AptedDistance
         $cols = $j - $jL + 2;
 
         $fd = array_fill(0, $rows, array_fill(0, $cols, 0));
+        // Pre-compute per-node integer costs (scaled to keep int DP).
+        $costA = [];
         for ($r = 1; $r < $rows; $r++) {
-            $fd[$r][0] = $fd[$r - 1][0] + 1;
+            $costA[$r] = (int)round($this->costModel->cost($L1[$iL + $r - 1]) * $this->scaler);
+            $fd[$r][0] = $fd[$r - 1][0] + $costA[$r];
         }
+        $costB = [];
         for ($c = 1; $c < $cols; $c++) {
-            $fd[0][$c] = $fd[0][$c - 1] + 1;
+            $costB[$c] = (int)round($this->costModel->cost($L2[$jL + $c - 1]) * $this->scaler);
+            $fd[0][$c] = $fd[0][$c - 1] + $costB[$c];
         }
 
         $observedMin = PHP_INT_MAX;
@@ -153,11 +182,13 @@ final class AptedDistance
             for ($c = 1; $c < $cols; $c++) {
                 $abs_j = $jL + $c - 1;
 
-                $del = $fd[$r - 1][$c] + 1;
-                $ins = $fd[$r][$c - 1] + 1;
+                $del = $fd[$r - 1][$c] + $costA[$r];
+                $ins = $fd[$r][$c - 1] + $costB[$c];
 
                 if ($LL1[$abs_i] === $iL && $LL2[$abs_j] === $jL) {
-                    $sub = $fd[$r - 1][$c - 1] + ($L1[$abs_i] === $L2[$abs_j] ? 0 : 1);
+                    // Substitution cost: 0 if labels match, max(costA, costB) otherwise.
+                    $subCost = $L1[$abs_i] === $L2[$abs_j] ? 0 : max($costA[$r], $costB[$c]);
+                    $sub = $fd[$r - 1][$c - 1] + $subCost;
                     $best = self::min3($del, $ins, $sub);
                     $fd[$r][$c] = $best;
                     $treedist[$abs_i][$abs_j] = $best;

@@ -19,9 +19,9 @@ final class TreeEditDistance
 {
     private AptedDistance $apted;
 
-    public function __construct()
+    public function __construct(?EditCostModel $costModel = null)
     {
-        $this->apted = new AptedDistance();
+        $this->apted = new AptedDistance($costModel);
     }
 
     public function similarity(Node $a, Node $b, float $threshold = 0.0): float
