@@ -3,6 +3,11 @@ declare(strict_types=1);
 
 namespace Phpdup\Tests\Unit\Refactor;
 
+use PhpParser\Node;
+use PhpParser\Node\Arg;
+use PhpParser\Node\Expr\FuncCall;
+use PhpParser\Node\Name;
+use PhpParser\Node\Scalar\String_;
 use PhpParser\Node\Stmt\Function_;
 use PHPUnit\Framework\TestCase;
 use Phpdup\Clustering\Cluster;
@@ -218,17 +223,61 @@ final class PatternRecognizerTest extends TestCase
         return $blocks;
     }
 
-    public function testQueryBuilderChainTagFromCallName(): void
+    public function testDbOpTagAddedWhenClusterContainsDbReadCall(): void
     {
-        // Build a block whose AST contains a `createQueryBuilder()` call so the
-        // node-finder path picks it up.
-        $parser    = new AstParser();
-        $extractor = new BlockExtractor(minSize: 1);
-        $stmts = $parser->parseCode('<?php function findActive() { return $this->em->createQueryBuilder()->select("u")->from(User::class, "u")->getQuery()->getResult(); }');
-        $blocks = $extractor->extract('virtual.php', $stmts);
-        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        $block = $this->blockWithDbCall('__DB_READ__', 'users');
+        $cluster = new Cluster('TEST', [$block, $block], 1.0, false);
         (new PatternRecognizer())->tag($cluster);
-        $this->assertContains('query-builder-chain', $cluster->patternTags);
+        $this->assertContains('db-op', $cluster->patternTags);
+    }
+
+    public function testDbOpTagAddedWhenClusterContainsDbWriteCall(): void
+    {
+        $block = $this->blockWithDbCall('__DB_WRITE__', 'users');
+        $cluster = new Cluster('TEST', [$block, $block], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('db-op', $cluster->patternTags);
+    }
+
+    public function testDbOpTagAddedWhenClusterContainsDbUpsertCall(): void
+    {
+        $block = $this->blockWithDbCall('__DB_UPSERT__', 'users');
+        $cluster = new Cluster('TEST', [$block, $block], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('db-op', $cluster->patternTags);
+    }
+
+    public function testDbOpTagAbsentWhenClusterHasNoDbCalls(): void
+    {
+        $cluster = new Cluster('TEST', $this->dummyMembers(), 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertNotContains('db-op', $cluster->patternTags);
+    }
+
+    private function blockWithDbCall(string $funcName, string $table): Block
+    {
+        $syntheticCall = new FuncCall(
+            new Name($funcName),
+            [new Arg(new String_($table))]
+        );
+        $syntheticCall->setAttribute('phpdup.dbOp', 'db.' . strtolower(substr($funcName, 5, -2)));
+
+        $function = new Node\Stmt\Function_('testFunc', [
+            'stmts' => [new Node\Stmt\Return_($syntheticCall)],
+        ]);
+
+        $block = new Block(
+            file: 'test.php',
+            range: new LineRange(1, 3),
+            kind: 'function',
+            namespace: null,
+            class: null,
+            name: 'testFunc',
+            ast: $function,
+        );
+        $block->canonical = $function;
+
+        return $block;
     }
 
     /** @return list<Block> */

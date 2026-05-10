@@ -60,6 +60,7 @@ final class PatternRecognizer
         if ($this->isErrorHandler($cluster))         $tags[] = 'error-handler';
         if ($this->isBuilderChain($cluster))         $tags[] = 'builder-chain';
         if ($this->isContainerRegistration($cluster)) $tags[] = 'container-registration';
+        if ($this->isDbOp($cluster))                 $tags[] = 'db-op';
         $cluster->patternTags = $tags;
     }
 
@@ -489,6 +490,35 @@ final class PatternRecognizer
                     return true;
                 }
                 return false;
+            });
+            if (!empty($hits)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Database-operation tag: cluster contains __DB_READ__, __DB_WRITE__,
+     * __DB_UPSERT__ or similar synthetic function calls produced by the
+     * DbOpCanonicalizer during --db-aware normalization.
+     */
+    private function isDbOp(Cluster $cluster): bool
+    {
+        $finder = new NodeFinder();
+        foreach ($cluster->members as $m) {
+            if ($m->ast === null) continue;
+            $funcCalls = $finder->findInstanceOf([$m->ast], Node\Expr\FuncCall::class);
+            foreach ($funcCalls as $call) {
+                if (!$call instanceof Node\Expr\FuncCall) continue;
+                if ($call->name instanceof Node\Name) {
+                    $name = $call->name->toString();
+                    if (str_starts_with($name, '__DB_') && str_ends_with($name, '__')) {
+                        return true;
+                    }
+                }
+            }
+            // Also check for phpdup.dbOp attribute on any node
+            $hits = $finder->find([$m->ast], static function (Node $n): bool {
+                return $n->hasAttribute('phpdup.dbOp');
             });
             if (!empty($hits)) return true;
         }

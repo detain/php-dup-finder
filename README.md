@@ -119,7 +119,7 @@ observed values, ready to apply.
   using LCS over per-statement structural hashes when stmt arrays
   differ in length. Disagreements become typed parameter holes;
   per-statement gaps become defaulted boolean parameters.
-- **Pattern recognition** (21 tags). Tags clusters that match
+- **Pattern recognition** (22 tags). Tags clusters that match
   well-known refactor archetypes — structural, domain, framework:
   - **Structural:** `sql-builder` · `crud-handler` ·
     `validation-chain` · `strategy` · `config-driven` ·
@@ -129,7 +129,9 @@ observed values, ready to apply.
     (literal SQL string in body) · `http-call` (Guzzle / cURL /
     `wp_remote_*` shapes) · `error-handler` (try-catch with logger
     or rethrow) · `builder-chain` (≥3 method-call chain) ·
-    `container-registration` (DI binders).
+    `container-registration` (DI binders) · `db-op` (DB operation
+    shape — `__DB_READ__` / `__DB_WRITE__` / `__DB_UPSERT__` tokens
+    produced by `--db-aware` canonicalisation).
   - **Framework (IX.A):** `controller-action` (Laravel/Symfony
     controllers) · `migration` (Laravel/Doctrine migrations) ·
     `eloquent-model` (`App\\Models\\…`) · `repository-method`
@@ -1105,7 +1107,7 @@ Allowed canonical ops: `db.read`, `db.write`, `db.delete`,
 `db.execute`, `db.query`. Custom entries override stock ones with
 the same name; everything else is additive.
 
-**Bundled symbol packs.** Eleven framework-flavoured packs ship
+**Bundled symbol packs.** Sixteen framework-flavoured packs ship
 out of the box and can be loaded via `--profile`:
 
 | Profile name                | What it adds                                                                                         |
@@ -1121,6 +1123,12 @@ out of the box and can be loaded via `--profile`:
 | `db-aware-phpactiverecord`  | PHP ActiveRecord (`find`, `all`, `first`, `last`, `create`, `save`, `update`, `delete`, `destroy`).|
 | `db-aware-myadmin`          | MyAdmin custom db_abstraction (`MyDb\Mysqli\Db`, `MyDb\Pdo\Db` — `query`, `qr`, `next_record`, `prepare`, `execute`). |
 | `db-aware-myadmin-orm`      | MyAdmin custom ORM (`MyAdmin\Orm\*` extending `Base\Orm` — `find`, `load`, `save`, `update`, `insert`, `delete`, `truncate`). |
+| `db-aware-illuminate`       | Illuminate Database standalone (`DB::table()`, `DB::select()`, `DB::insert()`, `DB::update()`, `DB::delete()`, `DB::raw()`). |
+| `db-aware-aura`             | Aura.Sql (`fetchAll`, `fetchOne`, `query`, `execute`, `quote`, `begin/commit/rollback`).                                      |
+| `db-aware-atlas`            | Atlas.PDO (`fetchAll`, `fetchAssoc`, `fetchSelect`, `begin/commit/rollback`).                                                 |
+| `db-aware-easydb`           | EasyDB (`query`, `fetchAll`, `fetchOne`, `iterator`, `safeQuery`, `build`).                                                   |
+| `db-aware-dibi`             | Dibi (`query`, `fetchAll`, `fetch`, `test`, `begin/commit/rollback`).                                                         |
+| `db-aware-pixie`            | Pixie Query Builder (`table`, `get`, `insert`, `update`, `delete`, `where`, `orderBy`).                                      |
 
 Compose them with `--db-aware` for the canonicalisation pass plus
 the stock DB call coverage. The user's own `db_symbols` in
