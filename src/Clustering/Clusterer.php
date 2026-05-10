@@ -107,6 +107,21 @@ final class Clusterer
             $output->writeln(sprintf('ngram-index: enumerating candidate pairs for %d blocks', $totalBlocks));
         }
 
+        // Get integer ID mapping from the inverted index for efficient pair key generation
+        $stringToInt = $inverted->getStringToIntMap();
+        $intToString = $inverted->getIntToStringMap();
+
+        // Convert exact duplicate IDs to integer IDs for the skip set
+        $exactDuplicateIntIds = null;
+        if ($exactDuplicateIds !== null) {
+            $exactDuplicateIntIds = [];
+            foreach ($exactDuplicateIds as $id => $_) {
+                if (isset($stringToInt[$id])) {
+                    $exactDuplicateIntIds[$stringToInt[$id]] = true;
+                }
+            }
+        }
+
         $seen = [];
         $blockNum = 0;
         $pairCount = 0;
@@ -115,16 +130,22 @@ final class Clusterer
         $lastDebugOutput = microtime(true);
         foreach ($index->all() as $a) {
             $blockNum++;
-            // candidatesFor() returns array and filters exact duplicates internally via $skipIds
-            $candidates = $inverted->candidatesFor($a, $this->maxDocumentFrequency, $exactDuplicateIds);
-            foreach ($candidates as $bid) {
-                // Pre-compute canonical ordering once instead of 3× strcmp per candidate
-                $cmp = strcmp($a->id, $bid);
-                $key = $cmp < 0 ? $a->id . '|' . $bid : $bid . '|' . $a->id;
-                if (isset($seen[$key])) continue;
-                $seen[$key] = true;
+            $intA = $stringToInt[$a->id] ?? null;
+            if ($intA === null) {
+                continue;
+            }
+            // candidatesFor() returns integer candidate IDs when asIntIds=true
+            $candidates = $inverted->candidatesFor($a, $this->maxDocumentFrequency, null, $exactDuplicateIntIds, true);
+            foreach ($candidates as $intB) {
+                // Use integer pair key: ($minInt << 32) | $maxInt — fits in 64-bit integer
+                $intKey = $intA < $intB ? ($intA << 32) | $intB : ($intB << 32) | $intA;
+                if (isset($seen[$intKey])) {
+                    continue;
+                }
+                $seen[$intKey] = true;
                 $pairCount++;
-                yield [$cmp < 0 ? $a->id : $bid, $cmp < 0 ? $bid : $a->id];
+                // Convert integer IDs back to strings when yielding
+                yield [$a->id, $intToString[$intB]];
             }
 
             // Progress callback every progressInterval blocks
