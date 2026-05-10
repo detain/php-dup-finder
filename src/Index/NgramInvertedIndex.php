@@ -72,16 +72,17 @@ final class NgramInvertedIndex
     }
 
     /**
-     * @return \Generator<string> candidate block ids that share at least one
-     *                             rare ngram with $block, excluding $block itself.
+     * @param array<string,bool>|null $skipIds Block IDs to exclude from results (e.g. exact duplicates already clustered)
+     * @return list<string> candidate block IDs that share at least one rare ngram with $block
      */
-    public function candidatesFor(Block $block, float $maxDocumentFrequency): \Generator
+    public function candidatesFor(Block $block, float $maxDocumentFrequency, ?array $skipIds = null): array
     {
         if ($block->ngramBag === null) {
-            return;
+            return [];
         }
         $maxDf = max(1, (int)floor($this->blockCount * $maxDocumentFrequency));
         $seen = [];
+        $candidates = [];
         foreach (array_keys($block->ngramBag) as $gram) {
             $posting = $this->postings[$gram] ?? [];
             if (count($posting) > $maxDf) {
@@ -91,12 +92,16 @@ final class NgramInvertedIndex
                 if ($otherId === $block->id) {
                     continue;
                 }
+                if ($skipIds !== null && isset($skipIds[$otherId])) {
+                    continue;
+                }
                 if (!isset($seen[$otherId])) {
                     $seen[$otherId] = true;
-                    yield $otherId;
+                    $candidates[] = $otherId;
                 }
             }
         }
+        return $candidates;
     }
 
     private function computeCacheKey(BlockIndex $index): string

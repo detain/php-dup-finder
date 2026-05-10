@@ -115,12 +115,9 @@ final class Clusterer
         $lastDebugOutput = microtime(true);
         foreach ($index->all() as $a) {
             $blockNum++;
-            foreach ($inverted->candidatesFor($a, $this->maxDocumentFrequency) as $bid) {
-                // Skip exact duplicates: they are already clustered in phase 1 (hash buckets)
-                // and do not need to go through the expensive ngram enumeration pipeline.
-                if ($exactDuplicateIds !== null && isset($exactDuplicateIds[$bid])) {
-                    continue;
-                }
+            // candidatesFor() returns array and filters exact duplicates internally via $skipIds
+            $candidates = $inverted->candidatesFor($a, $this->maxDocumentFrequency, $exactDuplicateIds);
+            foreach ($candidates as $bid) {
                 // Pre-compute canonical ordering once instead of 3× strcmp per candidate
                 $cmp = strcmp($a->id, $bid);
                 $key = $cmp < 0 ? $a->id . '|' . $bid : $bid . '|' . $a->id;
