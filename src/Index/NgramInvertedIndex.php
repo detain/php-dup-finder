@@ -66,7 +66,7 @@ final class NgramInvertedIndex
         if ($b->ngramBag === null) {
             return;
         }
-        foreach (array_keys($b->ngramBag) as $gram) {
+        foreach ($b->ngramBag as $gram => $count) {
             $this->postings[$gram][] = $b->id;
         }
     }
@@ -106,11 +106,11 @@ final class NgramInvertedIndex
 
     private function computeCacheKey(BlockIndex $index): string
     {
-        $hashes = [];
+        $key = '';
         foreach ($index->all() as $b) {
-            $hashes[] = $b->structuralHash;
+            $key = sha1($key . $b->structuralHash);
         }
-        return sha1(implode('|', $hashes));
+        return $key;
     }
 
     private function cacheFilePath(string $cacheKey): string
