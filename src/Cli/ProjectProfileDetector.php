@@ -27,6 +27,23 @@ final class ProjectProfileDetector
         'db-aware-easydb',
         'db-aware-dibi',
         'db-aware-pixie',
+        'db-aware-doctrine',
+        'db-aware-cycle',
+        'db-aware-propel',
+        'db-aware-redbean',
+        'db-aware-cake',
+        'db-aware-medoo',
+        'db-aware-phpactiverecord',
+        'db-aware-thinkorm',
+        'db-aware-redis',
+        'db-aware-mongodb',
+        'db-aware-elasticsearch',
+        'db-aware-neo4j',
+        'db-aware-influxdb',
+        'db-aware-couchdb',
+        'db-aware-couchbase',
+        'db-aware-idiorm',
+        'db-aware-phalcon',
         'generic',
     ];
 
@@ -82,6 +99,57 @@ final class ProjectProfileDetector
         }
         if ($this->hasComposerPackage($root, 'usmanhalalit/pixie')) {
             return 'db-aware-pixie';
+        }
+        if ($this->hasComposerPackage($root, 'doctrine/orm') || $this->hasComposerPackage($root, 'doctrine/doctrine-bundle')) {
+            return 'db-aware-doctrine';
+        }
+        if ($this->hasComposerPackage($root, 'cycle/orm')) {
+            return 'db-aware-cycle';
+        }
+        if ($this->hasComposerPackage($root, 'propel/propel') || $this->hasComposerPackage($root, 'propelorm/propel')) {
+            return 'db-aware-propel';
+        }
+        if ($this->hasComposerPackage($root, 'gabordemooij/redbean')) {
+            return 'db-aware-redbean';
+        }
+        if ($this->hasComposerPackage($root, 'cakephp/orm')) {
+            return 'db-aware-cake';
+        }
+        if ($this->hasComposerPackage($root, 'catfan/medoo')) {
+            return 'db-aware-medoo';
+        }
+        if ($this->hasComposerPackage($root, 'php-activerecord/php-activerecord')) {
+            return 'db-aware-phpactiverecord';
+        }
+        if ($this->hasComposerPackage($root, 'topthink/think-orm')) {
+            return 'db-aware-thinkorm';
+        }
+        if ($this->hasComposerPackage($root, 'predis/predis') || $this->hasComposerPackage($root, 'colinmollenhour/credis') || $this->hasComposerPackage($root, 'phpredis/phpredis')) {
+            return 'db-aware-redis';
+        }
+        if ($this->hasComposerPackage($root, 'mongodb/mongodb')) {
+            return 'db-aware-mongodb';
+        }
+        if ($this->hasComposerPackage($root, 'elasticsearch/elasticsearch')) {
+            return 'db-aware-elasticsearch';
+        }
+        if ($this->hasComposerPackage($root, 'laudis/neo4j-php-client')) {
+            return 'db-aware-neo4j';
+        }
+        if ($this->hasComposerPackage($root, 'influxdata/influxdb-client-php')) {
+            return 'db-aware-influxdb';
+        }
+        if ($this->hasComposerPackage($root, 'doctrine/couchdb-odm')) {
+            return 'db-aware-couchdb';
+        }
+        if ($this->hasComposerPackage($root, 'couchbase/couchbase')) {
+            return 'db-aware-couchbase';
+        }
+        if ($this->hasComposerPackage($root, 'j4mie/idiorm') || $this->hasComposerPackage($root, 'paris/paris')) {
+            return 'db-aware-idiorm';
+        }
+        if ($this->hasComposerPackage($root, 'phalcon/cphalcon')) {
+            return 'db-aware-phalcon';
         }
         if ($this->any($root, ['composer.json'])) {
             return 'generic';
