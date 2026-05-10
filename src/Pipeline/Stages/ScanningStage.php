@@ -9,6 +9,7 @@ use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Pipeline\Stage;
 use Phpdup\Scanning\FileScanner;
+use Phpdup\Util\MemoryDebug;
 use Symfony\Component\Console\Output\OutputInterface;
 
 final class ScanningStage implements CooperativeStageInterface
@@ -47,8 +48,14 @@ final class ScanningStage implements CooperativeStageInterface
                 $files[] = $path;
                 $state->scannedFiles = ++$state->totalFiles;
                 $this->listener->onFileScanned($state->scannedFiles, $state->totalFiles);
+                if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG && $state->totalFiles % 100 === 0) {
+                    $output->writeln(sprintf('scanning: discovered file %s [%s]', $path, MemoryDebug::getMemoryUsage()));
+                }
                 if (++$sinceYield >= self::YIELD_INTERVAL) {
                     $sinceYield = 0;
+                    if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                        $output->writeln(sprintf('scanning: %d files scanned so far [%s]', $state->totalFiles, MemoryDebug::getMemoryUsage()));
+                    }
                     yield Stage::Scanning;
                 }
             }

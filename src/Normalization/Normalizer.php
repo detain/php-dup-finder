@@ -80,10 +80,72 @@ final class Normalizer
         $block->canonical = $stmts[0];
     }
 
-    /** Deep-clone via serialization — PhpParser nodes are plain PHP objects. */
+    /**
+     * Deep-clone a PhpParser Node recursively without serialization overhead.
+     *
+     * PhpParser nodes are plain PHP objects with properties that may contain:
+     * - Scalar values (string, int, float, bool)
+     * - Arrays of child nodes
+     * - Single child nodes
+     * - null
+     */
     public static function deepClone(Node $node): Node
     {
-        return unserialize(serialize($node));
+        return self::copyNode($node);
+    }
+
+    /**
+     * Recursively copy a node and all its child nodes.
+     *
+     * @internal
+     */
+    private static function copyNode(Node $node): Node
+    {
+        $clone = (clone $node);
+
+        $reflection = new \ReflectionClass($node);
+        foreach ($reflection->getProperties() as $property) {
+            $property->setAccessible(true);
+
+            if (!$property->isInitialized($clone)) {
+                continue;
+            }
+
+            $value = $property->getValue($clone);
+
+            if ($value === null) {
+                continue;
+            }
+
+            if (is_array($value)) {
+                $property->setValue($clone, self::copyArray($value));
+            } elseif ($value instanceof Node) {
+                $property->setValue($clone, self::copyNode($value));
+            }
+        }
+
+        return $clone;
+    }
+
+    /**
+     * Deep-copy an array, cloning any Node instances encountered.
+     *
+     * @param array<mixed> $array
+     * @return array<mixed>
+     */
+    private static function copyArray(array $array): array
+    {
+        $result = [];
+        foreach ($array as $key => $value) {
+            if ($value instanceof Node) {
+                $result[$key] = self::copyNode($value);
+            } elseif (is_array($value)) {
+                $result[$key] = self::copyArray($value);
+            } else {
+                $result[$key] = $value;
+            }
+        }
+        return $result;
     }
 }
 

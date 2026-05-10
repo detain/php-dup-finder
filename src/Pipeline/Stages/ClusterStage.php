@@ -16,6 +16,7 @@ use Phpdup\Pipeline\Stage;
 use Phpdup\Similarity\EditCostModel;
 use Phpdup\Similarity\JaccardSimilarity;
 use Phpdup\Similarity\TreeEditDistance;
+use Phpdup\Util\MemoryDebug;
 use Symfony\Component\Console\Output\OutputInterface;
 
 final class ClusterStage implements CooperativeStageInterface
@@ -242,6 +243,9 @@ final class ClusterStage implements CooperativeStageInterface
                 /** @var array{0: string, 1: string, 2: float} $e */
                 $pureEdges[] = $e;
             }
+        }
+        if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+            $output->writeln(sprintf('clustering: forming clusters from %d edges [%s]', count($pureEdges), MemoryDebug::getMemoryUsage()));
         }
         $state->clusters = $clusterer->cluster($index, $pureEdges);
         $state->timings['cluster'] = microtime(true) - $tCluster;

@@ -15,6 +15,8 @@ use Phpdup\Normalization\Normalizer;
 use Phpdup\Normalization\PluginRegistry;
 use Phpdup\Parsing\AstCache;
 use Phpdup\Parsing\AstParser;
+use Phpdup\Util\MemoryDebug;
+use Symfony\Component\Console\Output\OutputInterface;
 
 /**
  * Per-worker preprocessing routine: parse → extract → normalize →
@@ -77,8 +79,12 @@ final class PreprocessWorker
      * @param list<string> $files
      * @return list<array{type: 'block'|'error'|'skipped', file: string, block?: Block, message?: string}>
      */
-    public function process(array $files): array
+    public function process(array $files, ?OutputInterface $output = null): array
     {
+        if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+            $output->writeln(sprintf('worker: processing %d files in batch [%s]', count($files), MemoryDebug::getMemoryUsage()));
+        }
+
         $cache  = new AstCache($this->config->cacheDir);
         $parser = new AstParser();
         $hasher = new SubtreeHasher();
@@ -137,7 +143,9 @@ final class PreprocessWorker
         };
 
         $out = [];
+        $fileIdx = 0;
         foreach ($files as $path) {
+            ++$fileIdx;
             $stmts = $cache->get($path);
             if ($stmts === null) {
                 $stmts = $parser->parseFile($path);
@@ -165,8 +173,30 @@ final class PreprocessWorker
                         $block->irBag = self::tokenMultiset($tools['irPrinter']->tokens($ir));
                     }
                 }
+                // Drop the original AST now that canonicalization + all
+                // downstream consumers (hashing, fingerprinting, IR) are
+                // done.  AntiUnifier reloads via BlockAstLoader on demand.
+                // Only unload when lazyAst is enabled; otherwise keep the
+                // AST in memory for RefactorStage (which has no loader when
+                // lazyAst=false).
+                if ($cfg->lazyAst) {
+                    $block->unloadAst();
+                }
                 $out[] = ['type' => 'block', 'file' => $path, 'block' => $block];
             }
+            // Trigger PHP's cyclic GC and clear per-cycle memory caches
+            // every 10 files to prevent memory buildup from serialize/
+            // unserialize operations in Normalizer::deepClone().
+            if ($fileIdx % 10 === 0) {
+                gc_collect_cycles();
+                gc_mem_caches();
+            }
+        }
+        if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+            $blockRows = array_filter($out, static fn(array $row): bool => $row['type'] === 'block');
+            $blockCount = count($blockRows);
+            $fileCount = count(array_unique(array_map(static fn(array $row): string => $row['file'], $blockRows)));
+            $output->writeln(sprintf('worker: normalized %d blocks from %d files [%s]', $blockCount, $fileCount, MemoryDebug::getMemoryUsage()));
         }
         return $out;
     }

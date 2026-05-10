@@ -12,6 +12,7 @@ use Phpdup\Pipeline\NullProgressListener;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Pipeline\Stage;
+use Phpdup\Util\MemoryDebug;
 use Symfony\Component\Console\Output\OutputInterface;
 
 final class PreprocessStage implements CooperativeStageInterface
@@ -32,11 +33,15 @@ final class PreprocessStage implements CooperativeStageInterface
 
     private function checkMemory(OutputInterface $output): void
     {
+        $rssMb = (int)floor(memory_get_peak_usage(true) / (1024 * 1024));
+        // Debug: always emit memory RSS when verbosity is DEBUG.
+        if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+            $output->writeln(sprintf('<debug>phpdup</debug> preprocess check: %s</debug>', MemoryDebug::getMemoryUsage()));
+        }
         if ($this->maxMemoryMb <= 0) {
             return;
         }
-        $rssMb = (int)floor(memory_get_peak_usage(true) / (1024 * 1024));
-        if ($rssMb > $this->maxMemoryMb) {
+        if ($rssMb > $this->maxMemoryMb && $output->getVerbosity() >= OutputInterface::VERBOSITY_VERBOSE) {
             $output->writeln(sprintf(
                 "<comment>phpdup: peak RSS %d MB exceeded --max-memory=%d. Consider --exact-only or a larger --min-block-size.</comment>",
                 $rssMb, $this->maxMemoryMb,
@@ -91,6 +96,9 @@ final class PreprocessStage implements CooperativeStageInterface
         $toProcess  = [];
         $sinceYield = 0;
         if ($store !== null) {
+            if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                $output->writeln(sprintf('preprocess: checking cache for %d files [%s]', count($files), MemoryDebug::getMemoryUsage()));
+            }
             foreach ($files as $f) {
                 $cached = $store->load($f);
                 if ($cached !== null) {
@@ -106,6 +114,9 @@ final class PreprocessStage implements CooperativeStageInterface
                 }
                 if (++$sinceYield >= self::YIELD_EVERY) {
                     $sinceYield = 0;
+                    if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                        $output->writeln(sprintf('preprocess: cache check progress %d/%d files [%s]', $state->scannedFiles, count($files), MemoryDebug::getMemoryUsage()));
+                    }
                     yield Stage::Preprocessing;
                 }
             }
@@ -122,7 +133,13 @@ final class PreprocessStage implements CooperativeStageInterface
             $worker = new PreprocessWorker($config);
             $workerCount = $config->workers > 0 ? $config->workers : WorkerPool::detectCpuCount();
             $pool = new WorkerPool(workers: $workerCount);
-            $task = static fn(array $batch): array => $worker->process($batch);
+            $task = static function (array $batch) use ($worker, $output): array {
+                return $worker->process($batch, $output);
+            };
+
+            if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                $output->writeln(sprintf('preprocess: processing %d files across %d workers [%s]', count($toProcess), $workerCount, MemoryDebug::getMemoryUsage()));
+            }
 
             $perFileBlocks     = [];
             $processedFilesSet = [];
@@ -142,6 +159,9 @@ final class PreprocessStage implements CooperativeStageInterface
 
                 if (++$sinceYield >= self::YIELD_EVERY) {
                     $sinceYield = 0;
+                    if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                        $output->writeln(sprintf('preprocess: processed %d files, %d blocks so far [%s]', $state->processedFiles, count($blocks), MemoryDebug::getMemoryUsage()));
+                    }
                     $this->listener->onFilePreprocessed(
                         $state->processedFiles, $state->reusedFiles, $state->parseErrors,
                     );

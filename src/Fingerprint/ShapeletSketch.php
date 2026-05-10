@@ -75,21 +75,13 @@ final class ShapeletSketch
     /**
      * Hamming weight: count of set bits in $x.
      *
-     * The textbook bit-twiddling popcount uses an unsigned multiply at
-     * the end. PHP only exposes signed 64-bit ints, so we sum nibbles
-     * directly via the SWAR pattern up through step 3 and fold the
-     * resulting per-byte counts manually. Marginally slower than the
-     * single-multiply variant but correct for the full int range.
+     * Uses GMP extension for correct unsigned 64-bit arithmetic, avoiding
+     * PHP's arithmetic right-shift on negative values which produces floats.
      */
     public static function popcount(int $x): int
     {
-        $x = $x - (($x >> 1) & 0x5555555555555555);
-        $x = ($x & 0x3333333333333333) + (($x >> 2) & 0x3333333333333333);
-        $x = ($x + ($x >> 4)) & 0x0F0F0F0F0F0F0F0F;
-        $sum = 0;
-        for ($shift = 0; $shift < 64; $shift += 8) {
-            $sum += ($x >> $shift) & 0xFF;
-        }
-        return $sum;
+        // Convert signed int to unsigned 64-bit GMP integer for correct popcount.
+        // sprintf('%u', $x) gives the unsigned 64-bit string representation.
+        return gmp_popcount(gmp_init(sprintf('%u', $x), 10));
     }
 }

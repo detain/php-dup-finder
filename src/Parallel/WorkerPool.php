@@ -257,6 +257,9 @@ final class WorkerPool
                         unset($pipes[$idx]);
                     }
                 }
+                // Help PHP's cyclic GC collect any objects created during
+                // deserialize/unserialize round-trips before the next select.
+                gc_collect_cycles();
             }
         } finally {
             foreach ($pipes as $sock) @fclose($sock);
