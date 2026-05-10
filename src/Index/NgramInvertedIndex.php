@@ -18,12 +18,22 @@ use Phpdup\Extraction\Block;
  * Disk caching: the built postings list is serialized to a cache file
  * keyed by a hash of all block structural hashes. Any change to any
  * block's structural hash invalidates the cache.
+ *
+ * Optimization: integer IDs are maintained alongside string IDs for
+ * faster set operations in callers like generateCandidatePairs().
  */
 final class NgramInvertedIndex
 {
     /** @var array<string,list<string>> ngram → block ids */
     private array $postings = [];
+    /** @var array<string,list<int>> ngram → integer block ids */
+    private array $intPostings = [];
+    /** @var array<int,string> integer id → string id */
+    private array $intToString = [];
+    /** @var array<string,int> string id → integer id */
+    private array $stringToInt = [];
     private int $blockCount = 0;
+    private int $nextIntId = 0;
 
     public function __construct(
         private readonly string $cacheDir = '',
@@ -46,7 +56,11 @@ final class NgramInvertedIndex
         }
 
         $this->postings = [];
+        $this->intPostings = [];
+        $this->intToString = [];
+        $this->stringToInt = [];
         $this->blockCount = $index->size();
+        $this->nextIntId = 0;
         $indexed = 0;
         $allHashes = [];
         foreach ($index->all() as $b) {
@@ -66,16 +80,24 @@ final class NgramInvertedIndex
         if ($b->ngramBag === null) {
             return;
         }
+
+        // Assign integer ID for this block
+        $intId = $this->nextIntId++;
+        $this->stringToInt[$b->id] = $intId;
+        $this->intToString[$intId] = $b->id;
+
         foreach ($b->ngramBag as $gram => $count) {
             $this->postings[$gram][] = $b->id;
+            $this->intPostings[$gram][] = $intId;
         }
     }
 
     /**
      * @param array<string,bool>|null $skipIds Block IDs to exclude from results (e.g. exact duplicates already clustered)
-     * @return list<string> candidate block IDs that share at least one rare ngram with $block
+     * @param array<int,bool>|null $skipIntIds Integer IDs to exclude from results (when $asIntIds is true)
+     * @return list<string|int> candidate block IDs that share at least one rare ngram with $block
      */
-    public function candidatesFor(Block $block, float $maxDocumentFrequency, ?array $skipIds = null): array
+    public function candidatesFor(Block $block, float $maxDocumentFrequency, ?array $skipIds = null, ?array $skipIntIds = null, bool $asIntIds = false): array
     {
         if ($block->ngramBag === null) {
             return [];
@@ -83,17 +105,28 @@ final class NgramInvertedIndex
         $maxDf = max(1, (int)floor($this->blockCount * $maxDocumentFrequency));
         $seen = [];
         $candidates = [];
+
+        // When returning int IDs, use intPostings and int-based skip set
+        $postings = $asIntIds ? $this->intPostings : $this->postings;
+        $blockKey = $asIntIds ? ($this->stringToInt[$block->id] ?? null) : $block->id;
+
         foreach (array_keys($block->ngramBag) as $gram) {
-            $posting = $this->postings[$gram] ?? [];
+            $posting = $postings[$gram] ?? [];
             if (count($posting) > $maxDf) {
                 continue; // too common to be informative
             }
             foreach ($posting as $otherId) {
-                if ($otherId === $block->id) {
+                if ($blockKey !== null && $otherId === $blockKey) {
                     continue;
                 }
-                if ($skipIds !== null && isset($skipIds[$otherId])) {
-                    continue;
+                if ($asIntIds) {
+                    if ($skipIntIds !== null && isset($skipIntIds[$otherId])) {
+                        continue;
+                    }
+                } else {
+                    if ($skipIds !== null && isset($skipIds[$otherId])) {
+                        continue;
+                    }
                 }
                 if (!isset($seen[$otherId])) {
                     $seen[$otherId] = true;
@@ -148,7 +181,11 @@ final class NgramInvertedIndex
         }
 
         $this->postings = $payload['postings'] ?? [];
+        $this->intPostings = $payload['intPostings'] ?? [];
+        $this->intToString = $payload['intToString'] ?? [];
+        $this->stringToInt = $payload['stringToInt'] ?? [];
         $this->blockCount = $payload['blockCount'] ?? 0;
+        $this->nextIntId = $payload['nextIntId'] ?? 0;
 
         return true;
     }
@@ -165,7 +202,11 @@ final class NgramInvertedIndex
         $cacheFile = $this->cacheFilePath($cacheKey);
         $payload = [
             'postings'    => $this->postings,
+            'intPostings' => $this->intPostings,
+            'intToString' => $this->intToString,
+            'stringToInt' => $this->stringToInt,
             'blockCount'  => $this->blockCount,
+            'nextIntId'   => $this->nextIntId,
             'blockHashes' => $blockHashes,
         ];
 
