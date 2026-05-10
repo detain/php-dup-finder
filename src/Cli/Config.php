@@ -55,6 +55,9 @@ final class Config
         // Format: KEY[:DIRECTION]. See \Phpdup\Reporting\ClusterSort::ALL_KEYS.
         // Default preserves the long-standing "biggest impact first" ordering.
         public readonly string $sort = 'impact:desc',
+        // Tree-edit cost model: 'default' = unit costs (legacy), 'semantic'
+        // weights method calls / control flow heavier than literals.
+        public readonly string $tedWeights = 'default',
         /** @var list<string> Fully-qualified class names that implement
          *                    {@see \Phpdup\Normalization\NormalizationPlugin}.
          *                    Resolved at preprocess-stage time. */
@@ -95,6 +98,11 @@ final class Config
         // Validate the sort spec eagerly so misconfigured CLI/config calls
         // fail at load time instead of inside the Ranker.
         \Phpdup\Reporting\ClusterSort::parse($sort);
+        if (!in_array($tedWeights, \Phpdup\Similarity\EditCostModel::MODELS, true)) {
+            throw new \InvalidArgumentException(
+                "ted_weights must be one of " . implode('|', \Phpdup\Similarity\EditCostModel::MODELS)
+            );
+        }
     }
 
     /** @param list<string> $paths */
@@ -183,6 +191,7 @@ final class Config
             optionalBlocksMaxPerCluster:    $this->optionalBlocksMaxPerCluster,
             optionalBlocksMinSegmentLength: $this->optionalBlocksMinSegmentLength,
             sort:                           $this->sort,
+            tedWeights:                     $this->tedWeights,
             normalizationPlugins:           $this->normalizationPlugins,
             perDirectoryOverrides:          $this->perDirectoryOverrides,
         );

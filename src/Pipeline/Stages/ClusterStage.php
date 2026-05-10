@@ -13,6 +13,7 @@ use Phpdup\Pipeline\NullProgressListener;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Pipeline\Stage;
+use Phpdup\Similarity\EditCostModel;
 use Phpdup\Similarity\JaccardSimilarity;
 use Phpdup\Similarity\TreeEditDistance;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -122,7 +123,7 @@ final class ClusterStage implements CooperativeStageInterface
         $tCluster = microtime(true);
         $clusterer = new Clusterer(
             similarity: new JaccardSimilarity(),
-            tree: new TreeEditDistance(),
+            tree: new TreeEditDistance(new EditCostModel($config->tedWeights)),
             similarityThreshold: $config->similarityThreshold,
             treeThreshold: $config->treeThreshold,
             maxDocumentFrequency: $config->maxDocumentFrequency,
