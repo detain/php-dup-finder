@@ -53,9 +53,18 @@ final class PairScoreWorker
     public function score(array $pairs): array
     {
         $jaccard     = new JaccardSimilarity();
+        // Pre-warm ML client in the child process before entering the scoring loop.
+        // This avoids the curl-init cost on the first ML pair while preserving
+        // per-fork handle isolation (runs after pcntl_fork in WorkerPool).
+        $client = $this->mlPairUrl !== '' ? ($this->mlPairClient ??= new MlPairClient(
+            baseUrl: $this->mlPairUrl,
+            timeoutSec: $this->mlPairTimeoutSec,
+        )) : null;
         $ted         = new TreeEditDistance();
         $containment = new ContainmentSimilarity();
-        $edges = [];
+        $edges       = [];
+        // Collect ML candidates for batch scoring (avoids per-pair HTTP latency).
+        $mlCandidates = []; // list<array{0: Block, 1: Block, 2: string, 3: string}>
         foreach ($pairs as [$aId, $bId]) {
             $a = $this->index->get($aId);
             $b = $this->index->get($bId);
@@ -95,21 +104,39 @@ final class PairScoreWorker
                     continue;
                 }
             }
-            // ML pair-tier (option 6). Last-chance scoring against
-            // an external model — see {@see \Phpdup\Clustering\Clusterer}
-            // for the full rationale. The client is built lazily so
-            // each fork has its own curl handle.
-            if ($this->mlPairUrl !== '') {
-                $client = $this->mlPairClient ??= new MlPairClient(
-                    baseUrl: $this->mlPairUrl,
-                    timeoutSec: $this->mlPairTimeoutSec,
-                );
-                $mlScore = $client->score($a, $b);
-                if ($mlScore !== null && $mlScore['similarity'] >= $this->mlPairThreshold) {
-                    $edges[] = [$aId, $bId, $mlScore['similarity']];
+            // ML pair-tier (option 6). Collect for batch scoring to amortize HTTP overhead.
+            if ($client !== null) {
+                $mlCandidates[] = [$a, $b, $aId, $bId];
+            }
+        }
+
+        // Batch ML scoring — single HTTP round-trip for all candidates.
+        // Falls back to individual scoring if batch endpoint is unavailable.
+        if ($mlCandidates !== []) {
+            // Extract just the Block pairs for the batch API.
+            $mlBlockPairs = array_map(
+                static fn(array $c): array => [$c[0], $c[1]],
+                $mlCandidates,
+            );
+            $batchResults = $client->scoreBatch($mlBlockPairs);
+            if ($batchResults !== null) {
+                foreach ($mlCandidates as $idx => [$a, $b, $aId, $bId]) {
+                    $mlScore = $batchResults[$idx] ?? null;
+                    if ($mlScore !== null && $mlScore['similarity'] >= $this->mlPairThreshold) {
+                        $edges[] = [$aId, $bId, $mlScore['similarity']];
+                    }
+                }
+            } else {
+                // Batch failed — fall back to individual scoring.
+                foreach ($mlCandidates as [$a, $b, $aId, $bId]) {
+                    $mlScore = $client->score($a, $b);
+                    if ($mlScore !== null && $mlScore['similarity'] >= $this->mlPairThreshold) {
+                        $edges[] = [$aId, $bId, $mlScore['similarity']];
+                    }
                 }
             }
         }
+
         return $edges;
     }
 }

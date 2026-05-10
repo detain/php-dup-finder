@@ -108,6 +108,75 @@ final class MlPairClient implements PairScorer
     }
 
     /**
+     * Score multiple `(A, B)` block pairs in a single HTTP request.
+     *
+     * Uses the /score-batch endpoint which accepts:
+     *   POST /score-batch
+     *   { "pairs": [[features_a, features_b], ...] }
+     *
+     * Server responds:
+     *   { "results": [[similarity, confidence], ...] }
+     *
+     * Falls back to null on any error so callers can retry individually.
+     *
+     * @param list<array{0: Block, 1: Block}> $pairs
+     * @return list<array{similarity: float, confidence: float}|null>|null
+     *         Null on transport error or malformed response.
+     */
+    public function scoreBatch(array $pairs): ?array
+    {
+        if ($this->baseUrl === '' || $pairs === []) {
+            return null;
+        }
+        $url = rtrim($this->baseUrl, '/') . '/score-batch';
+        if (!MlClient::isAllowedUrl($url)) {
+            return null;
+        }
+
+        $payload = [];
+        foreach ($pairs as [$a, $b]) {
+            $payload[] = $this->features->extract($a, $b);
+        }
+
+        try {
+            $body = json_encode(['pairs' => $payload], JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            return null;
+        }
+
+        $resp = $this->postJson($url, $body);
+        if ($resp === null) {
+            return null;
+        }
+
+        try {
+            $decoded = json_decode($resp, true, 8, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            return null;
+        }
+
+        if (!is_array($decoded) || !isset($decoded['results']) || !is_array($decoded['results'])) {
+            return null;
+        }
+
+        $results = [];
+        foreach ($decoded['results'] as $r) {
+            if (!is_array($r) || count($r) < 2) {
+                $results[] = null;
+                continue;
+            }
+            $similarity = isset($r['similarity']) ? (float)$r['similarity'] : (is_numeric($r[0] ?? null) ? (float)$r[0] : null);
+            $confidence = isset($r['confidence']) ? (float)$r['confidence'] : (is_numeric($r[1] ?? null) ? (float)$r[1] : null);
+            if ($similarity !== null && $confidence !== null) {
+                $results[] = ['similarity' => $similarity, 'confidence' => $confidence];
+            } else {
+                $results[] = null;
+            }
+        }
+        return $results;
+    }
+
+    /**
      * @return string|null Raw response body, or null on transport error.
      */
     private function postJson(string $url, string $body): ?string
