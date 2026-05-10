@@ -1107,7 +1107,7 @@ Allowed canonical ops: `db.read`, `db.write`, `db.delete`,
 `db.execute`, `db.query`. Custom entries override stock ones with
 the same name; everything else is additive.
 
-**Bundled symbol packs.** Sixteen framework-flavoured packs ship
+**Bundled symbol packs.** Twenty-five framework-flavoured packs ship
 out of the box and can be loaded via `--profile`:
 
 | Profile name                | What it adds                                                                                         |
@@ -1129,6 +1129,15 @@ out of the box and can be loaded via `--profile`:
 | `db-aware-easydb`           | EasyDB (`query`, `fetchAll`, `fetchOne`, `iterator`, `safeQuery`, `build`).                                                   |
 | `db-aware-dibi`             | Dibi (`query`, `fetchAll`, `fetch`, `test`, `begin/commit/rollback`).                                                         |
 | `db-aware-pixie`            | Pixie Query Builder (`table`, `get`, `insert`, `update`, `delete`, `where`, `orderBy`).                                      |
+| `db-aware-redis`            | Redis (Predis, Credis, phpredis) — `get`, `set`, `mget`, `mset`, `hget`, `hset`, `del`, `expire`, etc.                      |
+| `db-aware-mongodb`          | MongoDB driver (`find`, `findOne`, `insertOne`, `insertMany`, `updateOne`, `deleteOne`, `aggregate`, `count`, etc.).         |
+| `db-aware-elasticsearch`    | Elasticsearch PHP client (`search`, `index`, `get`, `mget`, `bulk`, `delete`, `update`, `count`, `scroll`, `msearch`).     |
+| `db-aware-neo4j`            | Neo4j PHP client (`run`, `match`, `create`, `merge`, `set`, `delete`, `detachDelete`).                                      |
+| `db-aware-influxdb`         | InfluxDB client (`query`, `write`, `ping`, `bucket`, `organization`, `flux`).                                               |
+| `db-aware-couchdb`          | Doctrine CouchDB ODM (`find`, `findBy`, `persist`, `save`, `remove`, `delete`, `refresh`).                                  |
+| `db-aware-couchbase`        | Couchbase SDK (`get`, `upsert`, `insert`, `replace`, `remove`, `lookupIn`, `mutateIn`, `view`, `query`).                    |
+| `db-aware-idiorm`           | Idiorm/Paris (`find`, `findOne`, `where`, `orderBy`, `count`, `create`, `save`, `update`, `delete`).                        |
+| `db-aware-phalcon`          | Phalcon ORM (`find`, `findFirst`, `save`, `create`, `update`, `delete`, `refresh`, `query`, `aggregate`, `sum`, `count`, `average`, `min`, `max`). |
 
 Compose them with `--db-aware` for the canonicalisation pass plus
 the stock DB call coverage. The user's own `db_symbols` in
