@@ -49,7 +49,8 @@ final class Command extends SymfonyCommand
             ->addOption('auto-tune', null, InputOption::VALUE_NONE, 'Probe the corpus before analysis and pick min-block-size / max-df / min-impact based on size; --exact-only is forced on for very large trees. Picked profile is printed; explicit CLI overrides take precedence.')
             ->addOption('profile', null, InputOption::VALUE_REQUIRED, 'Apply a project profile (laravel|symfony|drupal|wordpress|generic|auto) to seed framework-aware excludes + tuning. "auto" sniffs the scan path for known markers. Explicit CLI flags + --config win over profile values.')
             ->addOption('min-safety', null, InputOption::VALUE_REQUIRED, 'Drop clusters whose refactor-safety score (0..1) is below this threshold. 0 = report all (default).')
-            ->addOption('ted-weights', null, InputOption::VALUE_REQUIRED, 'Tree-edit cost model: default|semantic. semantic weights method calls / control flow heavier than literals.');
+            ->addOption('ted-weights', null, InputOption::VALUE_REQUIRED, 'Tree-edit cost model: default|semantic. semantic weights method calls / control flow heavier than literals.')
+            ->addOption('db-aware', null, InputOption::VALUE_NONE, 'ORM-/DB-aware semantic dedup: rewrite recognised database calls (Eloquent, Doctrine, PDO, mysqli, pg_*, raw SQL) to canonical __DB_<OP>__ tokens during normalisation so equivalent ORM and raw-SQL variants cluster together. Off by default — opt-in for ORM-heavy codebases. See docs/plans/orm-db-semantic-dedup.md.');
 
         // ── Output / reports ───────────────────────────────────────────────
         $this
@@ -108,7 +109,7 @@ Options grouped by category:
    --min-block-size, --mode, --similarity, --max-df,
    --optional-blocks, --optional-blocks-containment,
    --min-impact, --min-safety, --exact-only, --kinds, --auto-tune,
-   --ted-weights,
+   --ted-weights, --db-aware,
    --profile
 
  <comment>Output / reports</comment>
@@ -157,6 +158,9 @@ HELP;
             'sort'                        => $input->getOption('sort'),
             'ted_weights'                 => $input->getOption('ted-weights'),
         ], fn($v) => $v !== null);
+        if ($input->getOption('db-aware')) {
+            $overrides['db_aware'] = true;
+        }
         $obFlag = $input->getOption('optional-blocks');
         if ($obFlag !== null) {
             $obFlag = strtolower((string)$obFlag);

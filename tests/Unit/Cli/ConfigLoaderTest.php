@@ -198,4 +198,45 @@ final class ConfigLoaderTest extends TestCase
             @unlink($tmp);
         }
     }
+
+    public function testDbAwareDefaultsOff(): void
+    {
+        $config = (new ConfigLoader())->load(paths: ['src'], configFile: null);
+        $this->assertFalse($config->dbAware);
+    }
+
+    public function testDbAwareReadsFromConfigFile(): void
+    {
+        $tmp = sys_get_temp_dir() . '/phpdup-' . uniqid() . '.json';
+        file_put_contents($tmp, json_encode(['db_aware' => true]));
+        try {
+            $config = (new ConfigLoader())->load(paths: ['src'], configFile: $tmp);
+            $this->assertTrue($config->dbAware);
+        } finally {
+            @unlink($tmp);
+        }
+    }
+
+    public function testDbAwareOverrideBeatsConfigFile(): void
+    {
+        $tmp = sys_get_temp_dir() . '/phpdup-' . uniqid() . '.json';
+        file_put_contents($tmp, json_encode(['db_aware' => false]));
+        try {
+            $config = (new ConfigLoader())->load(
+                paths: ['src'],
+                configFile: $tmp,
+                overrides: ['db_aware' => true],
+            );
+            $this->assertTrue($config->dbAware);
+        } finally {
+            @unlink($tmp);
+        }
+    }
+
+    public function testDbAwareValidationRejectsNonBoolean(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('db_aware must be a boolean');
+        (new ConfigLoader())->validate(['db_aware' => 'yes']);
+    }
 }

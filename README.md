@@ -58,6 +58,7 @@ observed values, ready to apply.
   - [Lazy AST loading](#lazy-ast-loading)
 - [Type-3 / optional-segment detection](#type-3--optional-segment-detection)
 - [Type-4 / behavioural similarity](#type-4--behavioural-similarity-experimental)
+- [ORM- / DB-aware semantic deduplication](#orm---db-aware-semantic-deduplication)
 - [TUI mode](#tui-mode)
 - [Watch mode](#watch-mode)
 - [SIGINT soft-cancel](#sigint-soft-cancel)
@@ -874,6 +875,111 @@ for the algorithmic reference and
 [`docs/plans/orm-db-semantic-dedup.md`](docs/plans/orm-db-semantic-dedup.md)
 for how this connects to the broader plan for ORM/DB
 semantic-equivalence detection.
+
+---
+
+## ORM- / DB-aware semantic deduplication
+
+Stock AST clustering misses duplicates that the developer thinks of as
+"the same operation" because the surface call shape is different —
+typically when the same database write/read is expressed via an ORM
+in one place and via raw SQL in another. The four examples below all
+perform the **same write**, but none cluster without `--db-aware`:
+
+```php
+// Eloquent
+$user = User::find($id);
+$user->name = 'Bob';
+$user->save();
+
+// Doctrine
+$user = $em->find(User::class, $id);
+$user->setName('Bob');
+$em->flush();
+
+// Raw PDO
+$pdo->query("UPDATE users SET name = 'Bob' WHERE id = {$id}");
+
+// Query builder
+$db->table('users')->where('id', $id)->update(['name' => 'Bob']);
+```
+
+Pass `--db-aware` and phpdup runs `Phpdup\Normalization\DbOpCanonicalizer`
+as a pre-pass during normalisation. It rewrites recognised database
+calls into canonical synthetic FuncCalls — `__DB_FIND__("user")`,
+`__DB_QUERY__("users", "SELECT")`, `__DB_WRITE__("users")` etc. —
+so equivalent variants produce identical token streams and cluster
+together in tier-1 / tier-2.
+
+### What is recognised
+
+The stock symbol table in `Phpdup\Normalization\DbOpRegistry` covers:
+
+- **Eloquent / Laravel** — `Model::find`, `Model::all`,
+  `Model::create`, `DB::table`, `DB::select`, `Model::where(...)
+  ->first|get|update|delete()`, etc.
+- **Doctrine ORM** — `EntityManager::find`, `EntityManager::flush`,
+  `EntityManager::persist`, `Repository::findOneBy`, `Repository::findAll`.
+- **PDO** — `PDO::query`, `PDO::prepare`, `PDOStatement::execute`,
+  `PDOStatement::fetch*`.
+- **mysqli (object + procedural)** — `mysqli::query`,
+  `mysqli_query`, `mysqli_stmt_execute`, `mysqli_fetch_*`.
+- **PostgreSQL** — `pg_query`, `pg_query_params`, `pg_fetch_*`,
+  `pg_insert`, `pg_update`, `pg_delete`.
+- **Generic CRUD verbs** — any method named `find`, `findById`,
+  `save`, `update`, `delete`, `query`, `execute` on an unknown
+  receiver — coarse but high-recall.
+- **Raw SQL strings** — passed to any of the above. The bundled
+  `Phpdup\Normalization\SqlTableExtractor` lifts the verb (`SELECT`
+  / `INSERT` / `UPDATE` / `DELETE` / `REPLACE` / `TRUNCATE`) and
+  the primary table out of the literal string so the verb shows
+  up as a token in the synthesised `__DB_<OP>__` call.
+
+### How it slots into the pipeline
+
+```
+   1. ScanningStage
+   2. PreprocessStage
+        a. AstParser       → plain AST
+        b. BlockExtractor  → (file, kind, range)
+        c. Normalizer
+              ├── DbOpCanonicalizer  ← only when --db-aware
+              └── CanonicalizingVisitor (vars, literals, names)
+        d. SubtreeHasher + NgramFingerprint
+   3. ClusterStage
+   4. RefactorStage
+   5. ReportStage
+```
+
+DbOpCanonicalizer runs **before** the standard variable / literal /
+name passes so the synthesised `__DB_<OP>__` token names survive the
+aggressive name-canonicalisation pass (they're treated as structural
+function names, like `isset` or `count`).
+
+### Risk profile and false positives
+
+`--db-aware` is intentionally biased toward **high recall** — a few
+benign false positives (e.g. an unrelated `query()` method on a
+non-DB class folding to `__DB_QUERY__`) are cheaper than missing
+real ORM ↔ raw-SQL clones. Two safeguards:
+
+1. **Off by default.** Tier-1 AST-only clustering remains the
+   unmodified path; nothing in the existing report stream changes
+   without `--db-aware`.
+2. **Cache invalidated on toggle.** `Phpdup\Pipeline\Stages\PreprocessStage`
+   includes `dbAware` in its config-key hash, so flipping the flag
+   between runs reprocesses every file rather than reusing
+   stale-canonicalised blocks.
+
+For per-project tuning, the `DbOpRegistry` constructor accepts
+`customMethodOps` and `customFunctionOps` maps so you can extend or
+override the stock dispatch table — wire that into a normalisation
+plugin (see [Normalisation plugins](#normalisation-plugins)) for
+project-specific rewrites.
+
+The full plan — including the follow-up phases (trinity-collapse,
+behavioural-tag scoring, IR lift) that build on this option — is in
+[`docs/plans/orm-db-semantic-dedup.md`](docs/plans/orm-db-semantic-dedup.md).
 
 ---
 

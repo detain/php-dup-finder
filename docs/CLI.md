@@ -47,6 +47,7 @@ for the full JSON-Schema-compatible spec.
 | `--max-memory MB`                          | `0` (off)      | Soft RSS ceiling. When peak RSS exceeds this mid-pipeline, phpdup logs a warning and suggests `--exact-only`. |
 | `--optional-blocks on\|off`                | `on`           | Type-3 / "optional segment" detection master switch. See [Type-3 detection](../README.md#type-3--optional-segment-detection). |
 | `--optional-blocks-containment N`          | `0.85`         | Containment-fallback threshold for the type-3 path (`0..1`).                                      |
+| `--db-aware`                               | off            | ORM-/DB-aware semantic deduplication: rewrite recognised database calls (Eloquent, Doctrine, query builders, PDO, mysqli, pg_*, raw SQL strings) to canonical `__DB_<OP>__("table")` tokens during normalisation so equivalent ORM/raw-SQL variants of the same operation cluster together. Off by default — opt-in for ORM-heavy codebases. See [`docs/plans/orm-db-semantic-dedup.md`](plans/orm-db-semantic-dedup.md). |
 
 ### Output
 
