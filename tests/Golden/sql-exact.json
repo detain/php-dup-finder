@@ -31,6 +31,7 @@
                 "sql-query"
             ],
             "outlier_members": [],
+            "architectural_findings": [],
             "signature": "function findById(\n    string $value,\n): mixed",
             "members": [
                 {

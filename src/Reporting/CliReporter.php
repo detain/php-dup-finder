@@ -185,6 +185,22 @@ final class CliReporter
             $out->writeln('  ' . $this->renderTags($c->patternTags, $theme, $decorated));
         }
 
+        if ($c->architecturalFindings) {
+            $out->writeln('');
+            $out->writeln(Section::header('Architectural notes', $theme, leftPad: 2, width: $width));
+            foreach ($c->architecturalFindings as $f) {
+                $out->writeln(sprintf(
+                    '  [%s] %s — %s',
+                    strtoupper($f->severity),
+                    $f->code,
+                    $f->message,
+                ));
+                if ($f->suggestion !== null) {
+                    $out->writeln('       ↳ ' . $f->suggestion);
+                }
+            }
+        }
+
         $confLine = sprintf('confidence %.2f · safety %.2f', $c->confidence, $c->safety);
         $worst = min($c->confidence, $c->safety);
         $out->writeln('  ' . match (true) {

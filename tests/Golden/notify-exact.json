@@ -28,6 +28,7 @@
                 "config-driven"
             ],
             "outlier_members": [],
+            "architectural_findings": [],
             "signature": "function notifyByThreshold(\n    int $threshold,\n    string $value,\n): mixed",
             "members": [
                 {
@@ -100,6 +101,7 @@
                 "config-driven"
             ],
             "outlier_members": [],
+            "architectural_findings": [],
             "signature": "function extractedFunction(\n    int $threshold,\n    string $value,\n): mixed",
             "members": [
                 {
