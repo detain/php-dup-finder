@@ -1,0 +1,32 @@
+{
+    "_description": "CakePHP-specific DB symbol equivalence pack (option 4 of docs/plans/orm-db-semantic-dedup.md). Extends the stock DbOpRegistry with CakePHP ORM method names that aren't covered by the generic CRUD-verb pattern. Use with --profile=db-aware-cake together with --db-aware to fold Cake-specific call shapes into the same canonical __DB_<OP>__ tokens as the rest of the recognised DB ecosystem.",
+    "db_symbols": {
+        "methods": {
+            "newentity":            "db.write",
+            "patchentity":          "db.write",
+            "newentities":          "db.write",
+            "patchentities":        "db.write",
+            "saveorfail":           "db.write",
+            "savemany":             "db.write",
+            "savemanyorfail":       "db.write",
+            "deleteall":            "db.delete",
+            "deletemany":           "db.delete",
+            "deleteorfail":         "db.delete",
+            "updateall":            "db.write",
+            "exists":               "db.read",
+            "find":                 "db.read",
+            "findall":              "db.read",
+            "findlist":             "db.read",
+            "findthreaded":         "db.read",
+            "loadinto":             "db.read",
+            "get":                  "db.read",
+            "getorcreate":          "db.write",
+            "first":                "db.read",
+            "firstorfail":          "db.read",
+            "all":                  "db.read",
+            "toarray":              "db.read",
+            "tolist":               "db.read",
+            "extract":              "db.read"
+        }
+    }
+}

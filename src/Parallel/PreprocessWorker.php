@@ -8,6 +8,7 @@ use Phpdup\Extraction\Block;
 use Phpdup\Extraction\BlockExtractor;
 use Phpdup\Fingerprint\NgramFingerprint;
 use Phpdup\Fingerprint\SubtreeHasher;
+use Phpdup\Normalization\DbOpRegistry;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Normalization\PluginRegistry;
 use Phpdup\Parsing\AstCache;
@@ -35,6 +36,24 @@ final class PreprocessWorker
     }
 
     /**
+     * Order-stable serialisation of a string→string map for use in
+     * tooling-cache keys. Sorting by key keeps the hash deterministic
+     * across phpdup runs even when the user's `db_symbols` map is
+     * authored in a different order.
+     *
+     * @param array<string,string> $map
+     */
+    private static function serializeStringMap(array $map): string
+    {
+        ksort($map);
+        $out = '';
+        foreach ($map as $k => $v) {
+            $out .= $k . '=' . $v . ',';
+        }
+        return $out;
+    }
+
+    /**
      * @param list<string> $files
      * @return list<array{type: 'block'|'error'|'skipped', file: string, block?: Block, message?: string}>
      */
@@ -56,21 +75,33 @@ final class PreprocessWorker
             : null;
         $toolFor = static function (Config $cfg) use (&$tooling, $pluginRegistry): array {
             $key = sprintf(
-                '%d|%d|%s|%d|%s|%s|%d|%d',
+                '%d|%d|%s|%d|%s|%s|%d|%d|%s|%s',
                 $cfg->minBlockSize, $cfg->maxBlockSize,
                 $cfg->normalizationMode, $cfg->ngramSize,
                 implode(',', $cfg->allowedKinds),
                 implode(',', $cfg->normalizationPlugins),
                 $cfg->dbAware ? 1 : 0,
                 $cfg->trinityCollapse ? 1 : 0,
+                self::serializeStringMap($cfg->dbSymbolsMethods),
+                self::serializeStringMap($cfg->dbSymbolsFunctions),
             );
             if (!isset($tooling[$key])) {
+                // Build the DbOpRegistry with the user's symbol overlay
+                // once per config-key so every block in this worker
+                // batch shares the same lookup tables.
+                $dbRegistry = ($cfg->dbSymbolsMethods === [] && $cfg->dbSymbolsFunctions === [])
+                    ? null
+                    : new DbOpRegistry(
+                        customMethodOps: $cfg->dbSymbolsMethods,
+                        customFunctionOps: $cfg->dbSymbolsFunctions,
+                    );
                 $tooling[$key] = [
                     'extractor'  => new BlockExtractor($cfg->minBlockSize, $cfg->maxBlockSize, $cfg->allowedKinds),
                     'normalizer' => new Normalizer(
                         mode: $cfg->normalizationMode,
                         plugins: $pluginRegistry,
                         dbAware: $cfg->dbAware,
+                        dbOpRegistry: $dbRegistry,
                         trinityCollapse: $cfg->trinityCollapse,
                     ),
                     'fp'         => new NgramFingerprint($cfg->ngramSize),

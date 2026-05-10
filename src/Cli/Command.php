@@ -531,6 +531,18 @@ HELP;
         if (array_key_exists('kinds', $data)) {
             $out['allowed_kinds'] = $data['kinds'];
         }
+        // Option 4: profiles may ship a `db_symbols` symbol-equivalence
+        // pack. Map the nested shape onto the flat
+        // `db_symbols_methods` / `db_symbols_functions` overrides
+        // that ConfigLoader::extractDbSymbols() consumes.
+        if (isset($data['db_symbols']) && is_array($data['db_symbols'])) {
+            if (isset($data['db_symbols']['methods']) && is_array($data['db_symbols']['methods'])) {
+                $out['db_symbols_methods'] = $data['db_symbols']['methods'];
+            }
+            if (isset($data['db_symbols']['functions']) && is_array($data['db_symbols']['functions'])) {
+                $out['db_symbols_functions'] = $data['db_symbols']['functions'];
+            }
+        }
         return $out;
     }
 

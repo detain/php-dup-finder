@@ -1061,6 +1061,52 @@ the recognised call set is consistent across the canonicalisation
 and scoring layers, and synthetic `__DB_<OP>__` calls produced by
 `--db-aware` / `--trinity-collapse` are also tagged correctly.
 
+### Symbol equivalence classes
+
+The stock `DbOpRegistry` covers the obvious surface area but every
+codebase has wrappers, helpers, and homegrown façades that do DB
+work without using a recognised name. **Option 4** of the plan
+exposes a user-extensible symbol equivalence registry: declare in
+`phpdup.json` (or in a profile JSON) that `app_db_get`,
+`MyRepo::lookup`, and `LegacyDb::raw` all mean the same thing as
+the stock entries — and they fold to the same canonical
+`__DB_<OP>__` tokens.
+
+```json
+{
+    "db_aware": true,
+    "db_symbols": {
+        "methods": {
+            "lookup":     "db.read",
+            "persistMe":  "db.write",
+            "wipe":       "db.delete"
+        },
+        "functions": {
+            "app_db_get":   "db.read",
+            "app_db_query": "db.query"
+        }
+    }
+}
+```
+
+Allowed canonical ops: `db.read`, `db.write`, `db.delete`,
+`db.execute`, `db.query`. Custom entries override stock ones with
+the same name; everything else is additive.
+
+**Bundled symbol packs.** Three framework-flavoured packs ship
+out of the box and can be loaded via `--profile`:
+
+| Profile name           | What it adds                                                           |
+|------------------------|------------------------------------------------------------------------|
+| `db-aware-laravel`     | Eloquent / Laravel methods (`firstWhere`, `pluck`, `chunk`, `increment`, raw\* helpers). |
+| `db-aware-doctrine`    | Doctrine ORM / DBAL (`createQuery`, `executeStatement`, `fetchAssociative*`, transaction helpers). |
+| `db-aware-cake`        | CakePHP ORM (`patchEntity`, `saveOrFail`, `findThreaded`, `loadInto`). |
+
+Compose them with `--db-aware` for the canonicalisation pass plus
+the stock DB call coverage. The user's own `db_symbols` in
+`phpdup.json` win over profile-provided symbols, which in turn
+win over the stock registry.
+
 The full plan — including the follow-up phase (IR lift) that builds
 on these options — is in
 [`docs/plans/orm-db-semantic-dedup.md`](docs/plans/orm-db-semantic-dedup.md).

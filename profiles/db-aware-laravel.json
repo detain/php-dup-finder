@@ -1,0 +1,33 @@
+{
+    "_description": "Laravel-specific DB symbol equivalence pack (option 4 of docs/plans/orm-db-semantic-dedup.md). Extends the stock DbOpRegistry with Eloquent / Laravel-flavoured method names that aren't covered by the generic CRUD-verb pattern. Use with --profile=db-aware-laravel together with --db-aware to fold Laravel-specific call shapes into the same canonical __DB_<OP>__ tokens as the rest of the recognised DB ecosystem. Compose with profiles/laravel.json (the framework profile) when both kinds of tuning apply.",
+    "db_symbols": {
+        "methods": {
+            "firstwhere":      "db.read",
+            "firstornew":      "db.read",
+            "firstornull":     "db.read",
+            "soledelegated":   "db.read",
+            "sole":            "db.read",
+            "exists":          "db.read",
+            "doesntexist":     "db.read",
+            "value":           "db.read",
+            "pluck":           "db.read",
+            "chunk":           "db.read",
+            "chunkbyid":       "db.read",
+            "lazy":            "db.read",
+            "lazybyid":        "db.read",
+            "increment":       "db.write",
+            "decrement":       "db.write",
+            "touch":           "db.write",
+            "saveorfail":      "db.write",
+            "freshlymade":     "db.write",
+            "raw":             "db.query",
+            "rawselect":       "db.read",
+            "rawupdate":       "db.write",
+            "rawdelete":       "db.delete",
+            "createorfirst":   "db.write",
+            "firstorcreate":   "db.write",
+            "incrementeach":   "db.write",
+            "decrementeach":   "db.write"
+        }
+    }
+}

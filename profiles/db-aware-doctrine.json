@@ -1,0 +1,37 @@
+{
+    "_description": "Doctrine-specific DB symbol equivalence pack (option 4 of docs/plans/orm-db-semantic-dedup.md). Extends the stock DbOpRegistry with Doctrine ORM / DBAL method names that aren't covered by the generic CRUD-verb pattern. Use with --profile=db-aware-doctrine together with --db-aware so Doctrine-specific call shapes (the EntityManager unit-of-work API, DBAL fetch methods, Repository-level helpers) fold into the same canonical __DB_<OP>__ tokens as the rest of the recognised DB ecosystem.",
+    "db_symbols": {
+        "methods": {
+            "createquery":           "db.query",
+            "createquerybuilder":    "db.query",
+            "createnamedquery":      "db.query",
+            "createnativequery":     "db.query",
+            "executequery":          "db.query",
+            "executestatement":      "db.execute",
+            "fetchassociative":      "db.read",
+            "fetchnumeric":          "db.read",
+            "fetchone":              "db.read",
+            "fetchallassociative":   "db.read",
+            "fetchallnumeric":       "db.read",
+            "fetchallkeyvalue":      "db.read",
+            "fetchfirstcolumn":      "db.read",
+            "iterateassociative":    "db.read",
+            "getsinglescalarresult": "db.read",
+            "getsingleresult":       "db.read",
+            "getarrayresult":        "db.read",
+            "getoneornullresult":    "db.read",
+            "getresult":             "db.read",
+            "scalar":                "db.read",
+            "merge":                 "db.write",
+            "detach":                "db.write",
+            "refresh":               "db.read",
+            "lock":                  "db.read",
+            "clear":                 "db.write",
+            "transactional":         "db.execute",
+            "wrapintransaction":     "db.execute",
+            "begintransaction":      "db.execute",
+            "commit":                "db.execute",
+            "rollback":              "db.execute"
+        }
+    }
+}

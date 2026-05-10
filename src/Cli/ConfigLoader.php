@@ -87,7 +87,51 @@ final class ConfigLoader
             perDirectoryOverrides: $this->discoverPerDirectoryOverrides($resolvedPaths),
             dbAware: (bool)($overrides['db_aware'] ?? $data['db_aware'] ?? $base->dbAware),
             trinityCollapse: (bool)($overrides['trinity_collapse'] ?? $data['trinity_collapse'] ?? $base->trinityCollapse),
+            dbSymbolsMethods: $this->extractDbSymbols($data, $overrides, 'methods'),
+            dbSymbolsFunctions: $this->extractDbSymbols($data, $overrides, 'functions'),
         );
+    }
+
+    /**
+     * Extract a DB-symbol equivalence map (option 4 of
+     * docs/plans/orm-db-semantic-dedup.md) from a parsed config and
+     * the override dict, lower-casing keys and discarding entries
+     * whose op-tag is not one of the recognised `db.*` constants.
+     *
+     * The override path accepts a single composite key
+     * (`db_symbols_methods` / `db_symbols_functions`) so callers
+     * built from CLI flags or programmatic config can flatten the
+     * nested shape.
+     *
+     * @param array<string,mixed> $data
+     * @param array<string,mixed> $overrides
+     * @return array<string,string>
+     */
+    private function extractDbSymbols(array $data, array $overrides, string $bucket): array
+    {
+        $direct = $overrides['db_symbols_' . $bucket] ?? null;
+        if (!is_array($direct)) {
+            $section = $data['db_symbols'] ?? null;
+            $direct  = is_array($section) && is_array($section[$bucket] ?? null) ? $section[$bucket] : [];
+        }
+        $allowed = [
+            \Phpdup\Normalization\DbOpRegistry::OP_READ,
+            \Phpdup\Normalization\DbOpRegistry::OP_WRITE,
+            \Phpdup\Normalization\DbOpRegistry::OP_DELETE,
+            \Phpdup\Normalization\DbOpRegistry::OP_EXECUTE,
+            \Phpdup\Normalization\DbOpRegistry::OP_QUERY,
+        ];
+        $out = [];
+        foreach ($direct as $name => $op) {
+            if (!is_string($name) || $name === '' || !is_string($op)) {
+                continue;
+            }
+            if (!in_array($op, $allowed, true)) {
+                continue;
+            }
+            $out[strtolower($name)] = $op;
+        }
+        return $out;
     }
 
     /**
@@ -213,6 +257,7 @@ final class ConfigLoader
             'normalization',
             'db_aware',
             'trinity_collapse',
+            'db_symbols',
         ];
         foreach (array_keys($data) as $k) {
             if (!in_array($k, $known, true)) {
@@ -371,6 +416,39 @@ final class ConfigLoader
         }
         if (array_key_exists('trinity_collapse', $data) && !is_bool($data['trinity_collapse'])) {
             throw new \RuntimeException("trinity_collapse must be a boolean$where");
+        }
+        if (array_key_exists('db_symbols', $data)) {
+            if (!is_array($data['db_symbols'])) {
+                throw new \RuntimeException("db_symbols must be an object$where");
+            }
+            $allowedBuckets = ['methods', 'functions'];
+            foreach (array_keys($data['db_symbols']) as $bucket) {
+                if (!in_array($bucket, $allowedBuckets, true)) {
+                    throw new \RuntimeException(
+                        "Unknown config key 'db_symbols.$bucket' (allowed: methods|functions)$where",
+                    );
+                }
+                if (!is_array($data['db_symbols'][$bucket])) {
+                    throw new \RuntimeException("db_symbols.$bucket must be an object$where");
+                }
+                $allowedOps = [
+                    \Phpdup\Normalization\DbOpRegistry::OP_READ,
+                    \Phpdup\Normalization\DbOpRegistry::OP_WRITE,
+                    \Phpdup\Normalization\DbOpRegistry::OP_DELETE,
+                    \Phpdup\Normalization\DbOpRegistry::OP_EXECUTE,
+                    \Phpdup\Normalization\DbOpRegistry::OP_QUERY,
+                ];
+                foreach ($data['db_symbols'][$bucket] as $name => $op) {
+                    if (!is_string($name) || $name === '') {
+                        throw new \RuntimeException("db_symbols.$bucket keys must be non-empty strings$where");
+                    }
+                    if (!is_string($op) || !in_array($op, $allowedOps, true)) {
+                        throw new \RuntimeException(
+                            "db_symbols.$bucket.$name must be one of " . implode('|', $allowedOps) . "$where",
+                        );
+                    }
+                }
+            }
         }
         if (array_key_exists('normalization', $data)) {
             if (!is_array($data['normalization'])) {
