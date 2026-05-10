@@ -8,6 +8,8 @@ use Phpdup\Extraction\Block;
 use Phpdup\Extraction\BlockExtractor;
 use Phpdup\Fingerprint\NgramFingerprint;
 use Phpdup\Fingerprint\SubtreeHasher;
+use Phpdup\Ir\IrLifter;
+use Phpdup\Ir\IrPrinter;
 use Phpdup\Normalization\DbOpRegistry;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Normalization\PluginRegistry;
@@ -54,6 +56,24 @@ final class PreprocessWorker
     }
 
     /**
+     * Fold a flat token list into a `token → count` multiset.
+     *
+     * Used by the option-5 IR-tier preprocessing path to produce a
+     * shape compatible with {@see \Phpdup\Similarity\JaccardSimilarity}.
+     *
+     * @param list<string> $tokens
+     * @return array<string,int>
+     */
+    private static function tokenMultiset(array $tokens): array
+    {
+        $bag = [];
+        foreach ($tokens as $t) {
+            $bag[$t] = ($bag[$t] ?? 0) + 1;
+        }
+        return $bag;
+    }
+
+    /**
      * @param list<string> $files
      * @return list<array{type: 'block'|'error'|'skipped', file: string, block?: Block, message?: string}>
      */
@@ -75,7 +95,7 @@ final class PreprocessWorker
             : null;
         $toolFor = static function (Config $cfg) use (&$tooling, $pluginRegistry): array {
             $key = sprintf(
-                '%d|%d|%s|%d|%s|%s|%d|%d|%s|%s',
+                '%d|%d|%s|%d|%s|%s|%d|%d|%s|%s|%s',
                 $cfg->minBlockSize, $cfg->maxBlockSize,
                 $cfg->normalizationMode, $cfg->ngramSize,
                 implode(',', $cfg->allowedKinds),
@@ -84,6 +104,7 @@ final class PreprocessWorker
                 $cfg->trinityCollapse ? 1 : 0,
                 self::serializeStringMap($cfg->dbSymbolsMethods),
                 self::serializeStringMap($cfg->dbSymbolsFunctions),
+                $cfg->scorer,
             );
             if (!isset($tooling[$key])) {
                 // Build the DbOpRegistry with the user's symbol overlay
@@ -105,6 +126,11 @@ final class PreprocessWorker
                         trinityCollapse: $cfg->trinityCollapse,
                     ),
                     'fp'         => new NgramFingerprint($cfg->ngramSize),
+                    // IR machinery is constructed lazily — only present
+                    // when scorer=ir to keep the default path's startup
+                    // cost unchanged.
+                    'irLifter'   => $cfg->scorer === 'ir' ? new IrLifter($dbRegistry ?? new DbOpRegistry()) : null,
+                    'irPrinter'  => $cfg->scorer === 'ir' ? new IrPrinter() : null,
                 ];
             }
             return $tooling[$key];
@@ -127,6 +153,18 @@ final class PreprocessWorker
                 $tools['normalizer']->normalize($block);
                 $block->structuralHash = $hasher->hash($block->canonical);
                 $block->ngramBag = $tools['fp']->fingerprint($block->canonical);
+                // Option-5 IR-tier preprocessing: lift the block's
+                // *original* AST (pre-canonicalisation, so library
+                // surface still informs the lifter's pattern matchers)
+                // and store the printed-token multiset on the block.
+                // A null lift result leaves $irBag null, which the
+                // Clusterer treats as "skip the IR tier for this pair".
+                if ($tools['irLifter'] !== null && $block->ast !== null) {
+                    $ir = $tools['irLifter']->lift($block->ast);
+                    if ($ir !== null) {
+                        $block->irBag = self::tokenMultiset($tools['irPrinter']->tokens($ir));
+                    }
+                }
                 $out[] = ['type' => 'block', 'file' => $path, 'block' => $block];
             }
         }

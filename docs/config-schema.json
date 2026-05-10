@@ -177,6 +177,19 @@
             "default": false,
             "description": "Trinity-collapse (option 2 of docs/plans/orm-db-semantic-dedup.md). When true, the Normalizer runs TrinityCollapser as a pre-pass that detects the canonical CRUD trinity (read → mutate → save) and rewrites the three-statement sequence as a single __DB_UPSERT__(\"entity\") synthetic call. Composes with db_aware. Off by default. CLI: --trinity-collapse."
         },
+        "scorer": {
+            "type": "string",
+            "enum": ["default", "ir"],
+            "default": "default",
+            "description": "Scoring tier set (option 5 of docs/plans/orm-db-semantic-dedup.md — clusterer wiring). 'default' = stock AST-tier scoring (Jaccard + TED + containment). 'ir' = also enable the IR-tier fallback after AST tiers reject: lift both blocks to canonical IR (Phpdup\\Ir\\IrLifter) and Jaccard their token bags. Pairs at or above ir_threshold form edges. CLI: --scorer."
+        },
+        "ir_threshold": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "default": 0.85,
+            "description": "Multiset-Jaccard threshold for the option-5 IR tier. Only consulted when scorer=ir. CLI: --ir-threshold."
+        },
         "db_symbols": {
             "type": "object",
             "additionalProperties": false,

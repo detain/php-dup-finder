@@ -73,6 +73,11 @@ final class PreprocessStage implements CooperativeStageInterface
             $config->trinityCollapse,
             $config->dbSymbolsMethods,
             $config->dbSymbolsFunctions,
+            // Scorer mode controls whether IR token bags are
+            // pre-computed during preprocessing; flipping it must
+            // invalidate so the cached Block records carry (or omit)
+            // their irBag consistently with the live config.
+            $config->scorer,
         ]));
         $store = ($this->useCache && $config->incremental)
             ? new IndexStore($config->cacheDir, $configKey)

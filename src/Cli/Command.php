@@ -51,7 +51,9 @@ final class Command extends SymfonyCommand
             ->addOption('min-safety', null, InputOption::VALUE_REQUIRED, 'Drop clusters whose refactor-safety score (0..1) is below this threshold. 0 = report all (default).')
             ->addOption('ted-weights', null, InputOption::VALUE_REQUIRED, 'Tree-edit cost model: default|semantic. semantic weights method calls / control flow heavier than literals.')
             ->addOption('db-aware', null, InputOption::VALUE_NONE, 'ORM-/DB-aware semantic dedup: rewrite recognised database calls (Eloquent, Doctrine, PDO, mysqli, pg_*, raw SQL) to canonical __DB_<OP>__ tokens during normalisation so equivalent ORM and raw-SQL variants cluster together. Off by default — opt-in for ORM-heavy codebases. See docs/plans/orm-db-semantic-dedup.md.')
-            ->addOption('trinity-collapse', null, InputOption::VALUE_NONE, 'Detect the canonical CRUD trinity (read → mutate → save) and rewrite the three-statement sequence as a single __DB_UPSERT__("entity") synthetic call so ORM upserts cluster with raw UPDATE queries. Composes with --db-aware. Off by default. See option 2 of docs/plans/orm-db-semantic-dedup.md.');
+            ->addOption('trinity-collapse', null, InputOption::VALUE_NONE, 'Detect the canonical CRUD trinity (read → mutate → save) and rewrite the three-statement sequence as a single __DB_UPSERT__("entity") synthetic call so ORM upserts cluster with raw UPDATE queries. Composes with --db-aware. Off by default. See option 2 of docs/plans/orm-db-semantic-dedup.md.')
+            ->addOption('scorer', null, InputOption::VALUE_REQUIRED, 'Scoring tier set: default | ir. "ir" enables option-5 IR-tier fallback — when AST Jaccard / TED / containment all reject a pair, lift both blocks to the canonical IR (Phpdup\\Ir\\IrLifter) and Jaccard their token bags. Pairs at or above --ir-threshold form edges weighted by the IR similarity. Off by default.', 'default')
+            ->addOption('ir-threshold', null, InputOption::VALUE_REQUIRED, 'IR-tier multiset-Jaccard threshold (0..1). Pairs at or above this score form edges. Default 0.85.');
 
         // ── Output / reports ───────────────────────────────────────────────
         $this
@@ -111,6 +113,7 @@ Options grouped by category:
    --optional-blocks, --optional-blocks-containment,
    --min-impact, --min-safety, --exact-only, --kinds, --auto-tune,
    --ted-weights, --db-aware, --trinity-collapse,
+   --scorer, --ir-threshold,
    --profile
 
  <comment>Output / reports</comment>
@@ -164,6 +167,19 @@ HELP;
         }
         if ($input->getOption('trinity-collapse')) {
             $overrides['trinity_collapse'] = true;
+        }
+        $scorerOpt = $input->getOption('scorer');
+        if ($scorerOpt !== null) {
+            $scorerOpt = strtolower((string)$scorerOpt);
+            if (!in_array($scorerOpt, ['default', 'ir'], true)) {
+                $output->writeln('<error>phpdup: --scorer must be one of default|ir</error>');
+                return 2;
+            }
+            $overrides['scorer'] = $scorerOpt;
+        }
+        $irThresholdOpt = $input->getOption('ir-threshold');
+        if ($irThresholdOpt !== null) {
+            $overrides['ir_threshold'] = (float)$irThresholdOpt;
         }
         $obFlag = $input->getOption('optional-blocks');
         if ($obFlag !== null) {

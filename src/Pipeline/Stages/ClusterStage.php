@@ -131,6 +131,8 @@ final class ClusterStage implements CooperativeStageInterface
             optionalBlocksEnabled:    $config->optionalBlocksEnabled,
             containmentThreshold:     $config->optionalBlocksContainment,
             optionalBlocksMinOverlap: $config->optionalBlocksMinOverlap,
+            irScoring:                $config->scorer === 'ir',
+            irThreshold:              $config->irThreshold,
         );
 
         $edges = null;
@@ -152,12 +154,14 @@ final class ClusterStage implements CooperativeStageInterface
                 yield Stage::Clustering;
 
                 $scoreWorker = new PairScoreWorker(
-                    $index,
-                    $config->similarityThreshold,
-                    $config->treeThreshold,
-                    $config->optionalBlocksEnabled,
-                    $config->optionalBlocksContainment,
-                    $config->optionalBlocksMinOverlap,
+                    index: $index,
+                    similarityThreshold: $config->similarityThreshold,
+                    treeThreshold: $config->treeThreshold,
+                    optionalBlocksEnabled: $config->optionalBlocksEnabled,
+                    containmentThreshold: $config->optionalBlocksContainment,
+                    optionalBlocksMinOverlap: $config->optionalBlocksMinOverlap,
+                    irScoring: $config->scorer === 'ir',
+                    irThreshold: $config->irThreshold,
                 );
 
                 $edges = [];
