@@ -46,7 +46,7 @@ final class ClusterStage implements CooperativeStageInterface
     }
 
     /** Yield to the runtime every N edges streamed from the pair-score workers. */
-    private const YIELD_EVERY = 64;
+    private const YIELD_EVERY = 256;
 
     private readonly ProgressListener $listener;
 
