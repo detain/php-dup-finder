@@ -40,6 +40,40 @@ final class BehaviouralSimilarityTest extends TestCase
         $this->assertTrue($summary['sideEffects']);
     }
 
+    public function testDbTagBoostsScoreForCrossLibraryReads(): void
+    {
+        // Two functions doing the same single-read operation across
+        // different DB libraries should score *higher* than the
+        // baseline call-name Jaccard alone — the DB op-tag band
+        // collapses the library/extension swap.
+        $eloquent = $this->stmts('<?php function f($id) { return User::find($id); }');
+        $pdo      = $this->stmts('<?php function f($pdo, $id) {
+            $stmt = $pdo->prepare("SELECT * FROM users WHERE id = ?");
+            $stmt->execute([$id]);
+            return $stmt->fetch();
+        }');
+        $sim = (new BehaviouralSimilarity())->similarity($eloquent, $pdo);
+        // Bare AST signal (call names like find vs prepare) gives a
+        // very low score; the tag band lifts it materially.
+        $this->assertGreaterThan(0.2, $sim,
+            'cross-library DB reads should score noticeably above zero with the tag band');
+    }
+
+    public function testNonDbBlocksAreUnaffectedByTagBand(): void
+    {
+        // Pure-arithmetic blocks have empty tag bags — the tag-Jaccard
+        // is 1.0 by convention (both empty) which contributes the
+        // maximum from that band but doesn't *create* spurious
+        // similarity by itself; identical pure functions still score
+        // high overall, distinct ones still score low.
+        $a = $this->stmts('<?php function add($x, $y) { return $x + $y; }');
+        $b = $this->stmts('<?php function send($p) { $http->post("/api", $p); echo "ok"; }');
+        // Different shapes still score low even though tag-Jaccard=1
+        // (both have empty tag bags) because every other band is
+        // very different.
+        $this->assertLessThan(0.55, (new BehaviouralSimilarity())->similarity($a, $b));
+    }
+
     private function stmts(string $code): \PhpParser\Node
     {
         $stmts = (new AstParser())->parseCode($code);
