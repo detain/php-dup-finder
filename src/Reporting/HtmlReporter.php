@@ -163,14 +163,23 @@ final class HtmlReporter
 
 <?php if ($c->holes): ?>
 <section><h2>Holes</h2>
-<table class="holes"><thead><tr>
+<p class="hole-help">
+  Edit <em>Suggested</em> / <em>Type</em> below to tweak the abstraction.
+  Changes persist in <code>localStorage</code> and don't affect the
+  source file. Click <em>Copy as JSON</em> to export.
+</p>
+<table class="holes" data-cluster-id="<?= htmlspecialchars($c->id) ?>"><thead><tr>
   <th>Placeholder</th><th>Suggested</th><th>Type</th><th>Kind</th><th>Observed</th>
 </tr></thead><tbody>
 <?php foreach ($c->holes as $h): ?>
-<tr class="hole-<?= htmlspecialchars($h->kind) ?>">
+<tr class="hole-<?= htmlspecialchars($h->kind) ?>" data-hole="<?= htmlspecialchars($h->placeholder) ?>">
   <td><code><?= htmlspecialchars($h->placeholder) ?></code></td>
-  <td><code><?= htmlspecialchars($h->suggestedName) ?></code></td>
-  <td><?= htmlspecialchars($h->inferredType) ?></td>
+  <td><input class="hole-name"
+             data-default="<?= htmlspecialchars($h->suggestedName) ?>"
+             value="<?= htmlspecialchars($h->suggestedName) ?>"></td>
+  <td><input class="hole-type"
+             data-default="<?= htmlspecialchars($h->inferredType) ?>"
+             value="<?= htmlspecialchars($h->inferredType) ?>"></td>
   <td><?= htmlspecialchars($h->kind) ?>
       <?php if ($h->kind === 'optional_block'): ?>
         <span class="badge optional">type-3</span>
@@ -192,6 +201,11 @@ final class HtmlReporter
 </tr>
 <?php endforeach; ?>
 </tbody></table>
+<p class="hole-actions">
+  <button class="copy-tweaks" type="button">Copy tweaks as JSON</button>
+  <button class="reset-tweaks" type="button">Reset to defaults</button>
+  <span class="copy-status" hidden>copied!</span>
+</p>
 </section>
 <?php endif; ?>
 
@@ -346,6 +360,71 @@ final class HtmlReporter
       }
     });
   });
+
+  // Hole-tweaker UI. Per-cluster: persist edits to localStorage,
+  // apply on load, expose copy-as-JSON and reset buttons.
+  document.querySelectorAll('table.holes[data-cluster-id]').forEach(table => {
+    const clusterId = table.dataset.clusterId;
+    const storeKey = 'phpdup-tweaks-' + clusterId;
+    const restore = () => {
+      try {
+        const raw = localStorage.getItem(storeKey);
+        if (!raw) return;
+        const data = JSON.parse(raw);
+        Object.entries(data).forEach(([placeholder, fields]) => {
+          const row = table.querySelector('tr[data-hole="' + placeholder + '"]');
+          if (!row) return;
+          if (fields.suggestedName !== undefined) {
+            row.querySelector('input.hole-name').value = fields.suggestedName;
+          }
+          if (fields.inferredType !== undefined) {
+            row.querySelector('input.hole-type').value = fields.inferredType;
+          }
+        });
+      } catch (e) { /* ignore corrupt cache */ }
+    };
+    const persist = () => {
+      const data = {};
+      table.querySelectorAll('tbody tr[data-hole]').forEach(row => {
+        const placeholder = row.dataset.hole;
+        const nameInput = row.querySelector('input.hole-name');
+        const typeInput = row.querySelector('input.hole-type');
+        const fields = {};
+        if (nameInput.value !== nameInput.dataset.default) fields.suggestedName = nameInput.value;
+        if (typeInput.value !== typeInput.dataset.default) fields.inferredType  = typeInput.value;
+        if (Object.keys(fields).length) data[placeholder] = fields;
+      });
+      try { localStorage.setItem(storeKey, JSON.stringify(data)); } catch (e) { /* quota */ }
+    };
+
+    restore();
+    table.querySelectorAll('input').forEach(i => i.addEventListener('input', persist));
+
+    const section = table.parentElement;
+    const copyBtn  = section.querySelector('.copy-tweaks');
+    const resetBtn = section.querySelector('.reset-tweaks');
+    const status   = section.querySelector('.copy-status');
+    if (copyBtn) copyBtn.addEventListener('click', async () => {
+      const data = {};
+      table.querySelectorAll('tbody tr[data-hole]').forEach(row => {
+        const placeholder = row.dataset.hole;
+        data[placeholder] = {
+          suggestedName: row.querySelector('input.hole-name').value,
+          inferredType:  row.querySelector('input.hole-type').value,
+        };
+      });
+      const json = JSON.stringify({ cluster_id: clusterId, holes: data }, null, 2);
+      try { await navigator.clipboard.writeText(json); } catch (e) { /* ignore */ }
+      if (status) {
+        status.hidden = false;
+        setTimeout(() => { status.hidden = true; }, 1200);
+      }
+    });
+    if (resetBtn) resetBtn.addEventListener('click', () => {
+      table.querySelectorAll('input').forEach(i => { i.value = i.dataset.default; });
+      try { localStorage.removeItem(storeKey); } catch (e) { /* ignore */ }
+    });
+  });
 })();
 JS;
     }
@@ -387,6 +466,12 @@ th.sorted-desc::after { content: ' ▼'; font-size: 10px; }
 .diff .del { background: var(--del); display: block; }
 .diff .hunk { background: var(--hunk); color: var(--muted); display: block; }
 .holes code { background: white; border: 1px solid var(--border); padding: 1px 4px; border-radius: 3px; }
+.holes input { font-family: monospace; padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; min-width: 8rem; }
+.hole-help { color: var(--muted); font-size: 0.92em; margin-top: 0.5rem; }
+.hole-actions { margin-top: 0.6rem; }
+.hole-actions button { padding: 4px 10px; border: 1px solid var(--border); border-radius: 4px; background: white; cursor: pointer; }
+.hole-actions button:hover { background: var(--bg); }
+.copy-status { color: var(--accent); margin-left: 0.6rem; font-size: 0.9em; }
 .hole-optional_block { background: #fffbeb; }
 .hole-optional_block td { border-bottom-color: #fde68a; }
 .absent { color: #d97706; font-style: italic; }
