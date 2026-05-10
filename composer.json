@@ -21,6 +21,7 @@
     "symfony/console": "^6.4 || ^7.0",
     "sebastian/diff": "^5.1 || ^6.0",
     "sugarcraft/candy-core": "dev-master",
+    "sugarcraft/candy-zone": "dev-master",
     "sugarcraft/candy-hermit": "dev-master",
     "sugarcraft/candy-kit": "dev-master",
     "sugarcraft/candy-log": "dev-master",
@@ -64,6 +65,10 @@
     {
       "type": "vcs",
       "url": "https://github.com/sugarcraft/candy-core"
+    },
+    {
+      "type": "vcs",
+      "url": "https://github.com/sugarcraft/candy-zone"
     },
     {
       "type": "vcs",
