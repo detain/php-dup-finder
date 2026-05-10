@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Phpdup\Parsing;
 
 use PhpParser\Node;
+use Phpdup\Persistence\SerializedClassAllowList;
 
 /**
  * Disk-backed AST cache keyed by file content hash + parser version.
@@ -12,6 +13,11 @@ use PhpParser\Node;
  * objects with no closures so this round-trips fine. The cache key
  * includes the parser package version so a parser bump invalidates
  * everything automatically.
+ *
+ * Deserialization is restricted to the PhpParser node namespace via
+ * {@see SerializedClassAllowList::parserClasses()}; any unexpected
+ * class hiding in a tampered cache file decodes as an
+ * `__PHP_Incomplete_Class` and is treated as a miss.
  */
 final class AstCache
 {
@@ -49,8 +55,19 @@ final class AstCache
         if ($blob === false) {
             return null;
         }
-        $data = @unserialize($blob, ['allowed_classes' => true]);
-        return is_array($data) ? $data : null;
+        $data = @unserialize($blob, ['allowed_classes' => SerializedClassAllowList::parserClasses()]);
+        if (!is_array($data)) {
+            return null;
+        }
+        // If any element decoded as __PHP_Incomplete_Class the blob was
+        // tampered with or written by an incompatible parser version —
+        // refuse to feed it back to downstream stages.
+        foreach ($data as $node) {
+            if ($node instanceof \__PHP_Incomplete_Class) {
+                return null;
+            }
+        }
+        return $data;
     }
 
     /**
