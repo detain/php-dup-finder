@@ -51,7 +51,7 @@ bin/phpdup completion bash > ~/.local/share/bash-completion/completions/phpdup
 
 **Report** (`src/Reporting/`): one reporter per format — `CliReporter.php`, `JsonReporter.php`, `HtmlReporter.php`, `SarifReporter.php`, `GitLabSastReporter.php`, `CheckstyleReporter.php`, `CsvReporter.php`, `PrometheusReporter.php`, `TimeseriesReporter.php`, `DiffReporter.php`, `GraphvizReporter.php`, `PlantumlReporter.php`, `RefactorPatchReporter.php`, `RefactorTestReporter.php`. Ordering via `Ranker.php` + `SafetyScorer.php` + `ClusterSort.php`; payload type `Report.php`.
 
-**Parallelism** (`src/Parallel/`): `WorkerPool.php` uses `pcntl_fork` + `stream_select`-multiplexed socketpairs; `runStreaming()` yields per-record. Workers: `PreprocessWorker.php`, `PairScoreWorker.php`, `RefactorWorker.php`. Falls back to serial when `pcntl_*` unavailable.
+**Parallelism** (`src/Parallel/`): `WorkerPool.php` uses `pcntl_fork` + `stream_select`-multiplexed socketpairs; `runStreaming()` yields per-record. Workers: `PreprocessWorker.php`, `PairScoreWorker.php`, `RefactorWorker.php`, `NgramEnumerationWorker.php`. Falls back to serial when `pcntl_*` unavailable.
 
 **TUI / Watch** (`src/Tui/`, `src/Watch/`): `TuiRunner.php` wraps `SugarCraft\Core\Program`. `PhpdupModel.php` implements `Model` + `ProgressListener` and pumps the pipeline generator on `StagePumpedMsg`. View state: `src/Tui/ViewState.php`. `WatchRunner.php` drives re-analysis via `React\EventLoop` poll.
 

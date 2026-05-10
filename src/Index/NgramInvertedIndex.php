@@ -111,10 +111,21 @@ final class NgramInvertedIndex
     /**
      * @param array<string,bool>|null $skipIds Block IDs to exclude from results (e.g. exact duplicates already clustered)
      * @param array<int,bool>|null $skipIntIds Integer IDs to exclude from results (when $asIntIds is true)
+     * @param int $maxCandidates Maximum candidates to return per block. Prevents O(N²) explosion when a block
+     *        shares rare ngrams with many others. For clustering, a representative sample is sufficient.
+     * @param int $maxPostingSample Maximum posting list size to iterate fully. Posting lists exceeding this
+     *        are randomly sampled. Prevents O(N²) posting traversal for boilerplate-heavy corpora.
      * @return list<string|int> candidate block IDs that share at least one rare ngram with $block
      */
-    public function candidatesFor(Block $block, float $maxDocumentFrequency, ?array $skipIds = null, ?array $skipIntIds = null, bool $asIntIds = false): array
-    {
+    public function candidatesFor(
+        Block $block,
+        float $maxDocumentFrequency,
+        ?array $skipIds = null,
+        ?array $skipIntIds = null,
+        bool $asIntIds = false,
+        int $maxCandidates = 5000,
+        int $maxPostingSample = 500,
+    ): array {
         if ($block->ngramBag === null) {
             return [];
         }
@@ -126,12 +137,44 @@ final class NgramInvertedIndex
         $postings = $asIntIds ? $this->intPostings : $this->postings;
         $blockKey = $asIntIds ? ($this->stringToInt[$block->id] ?? null) : $block->id;
 
-        foreach (array_keys($block->ngramBag) as $gram) {
+        // Shuffle ngram order for unbiased sampling when we hit the candidate cap
+        $grams = array_keys($block->ngramBag);
+        shuffle($grams);
+
+        foreach ($grams as $gram) {
+            // Early termination if we've collected enough candidates
+            if (count($candidates) >= $maxCandidates) {
+                break;
+            }
+
             $posting = $postings[$gram] ?? [];
-            if (count($posting) > $maxDf) {
+            $postingLen = count($posting);
+            if ($postingLen > $maxDf) {
                 continue; // too common to be informative
             }
+
+            // For long posting lists, sample instead of iterate to avoid O(N²) traversal
+            if ($postingLen > $maxPostingSample) {
+                // Fisher-Yates partial sample: pick up to $maxPostingSample items
+                $sampleSize = min($maxPostingSample, $postingLen);
+                $sample = [];
+                $indices = array_rand($posting, $sampleSize);
+                if (is_int($indices)) {
+                    $sample = [$posting[$indices]];
+                } else {
+                    foreach ($indices as $idx) {
+                        $sample[] = $posting[$idx];
+                    }
+                }
+                $posting = $sample;
+            }
+
             foreach ($posting as $otherId) {
+                // Early termination check inside the loop
+                if (count($candidates) >= $maxCandidates) {
+                    break 2;
+                }
+
                 if ($blockKey !== null && $otherId === $blockKey) {
                     continue;
                 }

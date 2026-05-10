@@ -7,6 +7,8 @@ use Phpdup\Extraction\Block;
 use Phpdup\Index\BlockIndex;
 use Phpdup\Index\NgramInvertedIndex;
 use Phpdup\Ml\PairScorer;
+use Phpdup\Parallel\NgramEnumerationWorker;
+use Phpdup\Parallel\WorkerPool;
 use Phpdup\Similarity\ContainmentSimilarity;
 use Phpdup\Similarity\JaccardSimilarity;
 use Phpdup\Similarity\TreeEditDistance;
@@ -172,6 +174,176 @@ final class Clusterer
         if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
             $output->writeln(sprintf('ngram-index: enumeration complete, %d candidate pairs found [%s]', $pairCount, MemoryDebug::getMemoryUsage()));
         }
+    }
+
+    /**
+     * Generate candidate pairs using parallel enumeration across multiple workers.
+     *
+     * Partitions blocks by integer ID range and processes each partition in parallel.
+     * Each worker only emits pairs where intA < intB (canonical ordering), ensuring
+     * each pair is emitted exactly once across all workers.
+     *
+     * Falls back to serial enumeration when workers <= 1 or pcntl_fork is unavailable.
+     *
+     * @param callable(int, int, int): mixed|null $onEnumerationProgress Called periodically
+     *        during enumeration with (blockNum, totalBlocks, pairCount).
+     * @param array<string,bool>|null $exactDuplicateIds Set of block IDs that are in
+     *        exact-duplicate hash buckets. These are skipped during enumeration.
+     * @return \Generator<array{0:string,1:string}>
+     */
+    public function generateCandidatePairsParallel(
+        BlockIndex $index,
+        int $workers,
+        ?OutputInterface $output = null,
+        ?callable $onEnumerationProgress = null,
+        ?array $exactDuplicateIds = null,
+    ): \Generator {
+        $totalBlocks = $index->size();
+        if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+            $output->writeln(sprintf('ngram-index: building inverted index for %d blocks [%s]', $totalBlocks, MemoryDebug::getMemoryUsage()));
+        }
+
+        $inverted = new NgramInvertedIndex();
+        $invertedProgressCallback = static function (int $indexed, int $total) use ($output): void {
+            if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG && $indexed % 5000 === 0) {
+                $output->writeln(sprintf('ngram-index: indexed %d / %d blocks [%s]', $indexed, $total, MemoryDebug::getMemoryUsage()));
+            }
+        };
+        $inverted->build($index, $invertedProgressCallback);
+
+        if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+            $output->writeln(sprintf('ngram-index: inverted index built [%s]', MemoryDebug::getMemoryUsage()));
+            $output->writeln(sprintf('ngram-index: enumerating candidate pairs for %d blocks across %d workers', $totalBlocks, $workers));
+        }
+
+        $stringToInt = $inverted->getStringToIntMap();
+        $intToString = $inverted->getIntToStringMap();
+        $maxIntId = count($intToString);
+
+        // Convert exact duplicate IDs to integer IDs for the skip set
+        $exactDuplicateIntIds = null;
+        if ($exactDuplicateIds !== null) {
+            $exactDuplicateIntIds = [];
+            foreach ($exactDuplicateIds as $id => $_) {
+                if (isset($stringToInt[$id])) {
+                    $exactDuplicateIntIds[$stringToInt[$id]] = true;
+                }
+            }
+        }
+
+        // Fall back to serial if pcntl_fork is unavailable or workers <= 1
+        if ($workers <= 1 || !WorkerPool::isAvailable()) {
+            yield from $this->generateCandidatePairs($index, $output, $onEnumerationProgress, $exactDuplicateIds);
+            return;
+        }
+
+        // Partition blocks by integer ID range across workers
+        // Each worker processes blocks where minIntId <= intId < maxIntId
+        $ranges = $this->partitionIdRanges(0, $maxIntId, $workers);
+
+        if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+            $output->writeln(sprintf('ngram-index: partitioned %d blocks into %d ranges', $maxIntId, count($ranges)));
+        }
+
+        // Build partition items: each item is [minIntId, maxIntId, blocksInRange]
+        // We partition blocks upfront so each worker gets its blocks directly
+        $partitionItems = [];
+        foreach ($ranges as [$minId, $maxId]) {
+            $blocksInRange = [];
+            foreach ($index->all() as $block) {
+                $intId = $stringToInt[$block->id] ?? null;
+                if ($intId !== null && $intId >= $minId && $intId < $maxId) {
+                    $blocksInRange[] = $block;
+                }
+            }
+            if ($blocksInRange !== []) {
+                $partitionItems[] = [$minId, $maxId, $blocksInRange];
+            }
+        }
+
+        // If partitionItems is empty or only has one partition, fall back to serial
+        if (count($partitionItems) <= 1) {
+            if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                $output->writeln('ngram-index: falling back to serial enumeration (single partition)');
+            }
+            yield from $this->generateCandidatePairs($index, $output, $onEnumerationProgress, $exactDuplicateIds);
+            return;
+        }
+
+        $pool = new WorkerPool(workers: $workers);
+        $maxDocFreq = $this->maxDocumentFrequency;
+        $task = static function (array $chunk) use ($stringToInt, $intToString, $maxDocFreq, $inverted): array {
+            // WorkerPool::runStreaming() chunks items and passes each chunk to the task.
+            // Each chunk contains one or more partition items: [minId, maxId, blocks]
+            $allPairs = [];
+            foreach ($chunk as $partition) {
+                [$minId, $maxId, $blocks] = $partition;
+                // Create a worker for this partition - it processes blocks directly
+                $worker = new NgramEnumerationWorker(
+                    index: NgramEnumerationWorker::createIndexFromBlocks($blocks),
+                    inverted: $inverted,
+                    stringToInt: $stringToInt,
+                    intToString: $intToString,
+                    maxDocumentFrequency: $maxDocFreq,
+                    minIntId: $minId,
+                    maxIntId: $maxId,
+                    maxCandidates: 5000,
+                    maxPostingSample: 500,
+                );
+                $pairs = $worker->enumerateForPartition();
+                foreach ($pairs as $pair) {
+                    $allPairs[] = $pair;
+                }
+            }
+            return $allPairs;
+        };
+
+        $totalPairs = 0;
+        $lastProgressReport = 0;
+        $progressInterval = max(1, (int)($totalBlocks / 50));
+
+        foreach ($pool->runStreaming($partitionItems, $task) as $pairs) {
+            foreach ($pairs as $pair) {
+                $totalPairs++;
+                yield $pair;
+            }
+
+            // Progress reporting
+            if ($onEnumerationProgress !== null && $totalPairs % 10000 < count($pairs)) {
+                $onEnumerationProgress($totalBlocks, $totalBlocks, $totalPairs);
+            }
+
+            if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG && $totalPairs % 50000 < count($pairs)) {
+                $output->writeln(sprintf('ngram-index: enumerated %d candidate pairs [%s]', $totalPairs, MemoryDebug::getMemoryUsage()));
+            }
+        }
+
+        if ($onEnumerationProgress !== null) {
+            $onEnumerationProgress($totalBlocks, $totalBlocks, $totalPairs);
+        }
+
+        if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+            $output->writeln(sprintf('ngram-index: parallel enumeration complete, %d candidate pairs found [%s]', $totalPairs, MemoryDebug::getMemoryUsage()));
+        }
+    }
+
+    /**
+     * Partition an integer range [0, $max) into $n roughly equal sub-ranges.
+     *
+     * @return list<array{0:int,1:int}> List of [minId, maxId] pairs
+     */
+    private function partitionIdRanges(int $minId, int $maxId, int $n): array
+    {
+        $ranges = [];
+        $size = max(1, (int)ceil(($maxId - $minId) / $n));
+        for ($i = 0; $i < $n; $i++) {
+            $start = $minId + ($i * $size);
+            $end = min($maxId, $start + $size);
+            if ($start < $end) {
+                $ranges[] = [$start, $end];
+            }
+        }
+        return $ranges;
     }
 
     /**
