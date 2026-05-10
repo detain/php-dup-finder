@@ -72,13 +72,13 @@ final class NgramInvertedIndex
     }
 
     /**
-     * @return list<string> candidate block ids that share at least one
-     *                      rare ngram with $block, excluding $block itself.
+     * @return \Generator<string> candidate block ids that share at least one
+     *                             rare ngram with $block, excluding $block itself.
      */
-    public function candidatesFor(Block $block, float $maxDocumentFrequency): array
+    public function candidatesFor(Block $block, float $maxDocumentFrequency): \Generator
     {
         if ($block->ngramBag === null) {
-            return [];
+            return;
         }
         $maxDf = max(1, (int)floor($this->blockCount * $maxDocumentFrequency));
         $seen = [];
@@ -91,10 +91,12 @@ final class NgramInvertedIndex
                 if ($otherId === $block->id) {
                     continue;
                 }
-                $seen[$otherId] = true;
+                if (!isset($seen[$otherId])) {
+                    $seen[$otherId] = true;
+                    yield $otherId;
+                }
             }
         }
-        return array_keys($seen);
     }
 
     private function computeCacheKey(BlockIndex $index): string
@@ -164,4 +166,5 @@ final class NgramInvertedIndex
 
         @file_put_contents($cacheFile, serialize($payload), LOCK_EX);
     }
+
 }
