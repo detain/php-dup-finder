@@ -3,6 +3,9 @@ declare(strict_types=1);
 
 namespace Phpdup\Pipeline\Stages;
 
+use Phpdup\Architecture\Analyzers\AntiPatternAnalyzer;
+use Phpdup\Architecture\Analyzers\DesignPatternAnalyzer;
+use Phpdup\Architecture\Analyzers\SolidAnalyzer;
 use Phpdup\Cli\Pager;
 use Phpdup\Parallel\WorkerPool;
 use Phpdup\Pipeline\PipelineState;
@@ -84,6 +87,19 @@ final class ReportStage implements StageInterface
         // similarity to the rest of their cluster). Reporters surface
         // these via Cluster::$outlierMemberIds.
         $clusters = (new CoherenceAnalyzer())->analyze($clusters);
+
+        // Architectural analysis: emit Finding[] per cluster covering
+        // SOLID violations, design-pattern matches, and anti-patterns.
+        $analyzers = [new SolidAnalyzer(), new DesignPatternAnalyzer(), new AntiPatternAnalyzer()];
+        foreach ($clusters as $c) {
+            $findings = [];
+            foreach ($analyzers as $a) {
+                foreach ($a->analyze($c) as $f) {
+                    $findings[] = $f;
+                }
+            }
+            $c->architecturalFindings = $findings;
+        }
 
         $report = new Report(
             files: count($state->files),

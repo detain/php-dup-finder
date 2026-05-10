@@ -57,6 +57,14 @@ final class Cluster
     public array $outlierMemberIds = [];
 
     /**
+     * Architectural findings emitted by registered
+     * {@see \Phpdup\Architecture\ArchitecturalAnalyzer}s.
+     *
+     * @var list<\Phpdup\Architecture\Finding>
+     */
+    public array $architecturalFindings = [];
+
+    /**
      * @param list<Block> $members
      */
     public function __construct(string $id, array $members, float $similarity, bool $exact)

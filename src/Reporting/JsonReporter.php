@@ -59,6 +59,13 @@ final class JsonReporter
             'impact'       => $c->impact,
             'pattern_tags' => $c->patternTags,
             'outlier_members' => $c->outlierMemberIds,
+            'architectural_findings' => array_map(static fn(\Phpdup\Architecture\Finding $f) => [
+                'analyzer'   => $f->analyzer,
+                'code'       => $f->code,
+                'severity'   => $f->severity,
+                'message'    => $f->message,
+                'suggestion' => $f->suggestion,
+            ], $c->architecturalFindings),
             'signature'    => $c->signature,
             'members' => array_map(static fn($m) => [
                 'file'      => $m->file,
