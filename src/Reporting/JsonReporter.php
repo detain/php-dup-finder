@@ -58,6 +58,7 @@ final class JsonReporter
             'safety'       => round($c->safety, 4),
             'impact'       => $c->impact,
             'pattern_tags' => $c->patternTags,
+            'outlier_members' => $c->outlierMemberIds,
             'signature'    => $c->signature,
             'members' => array_map(static fn($m) => [
                 'file'      => $m->file,

@@ -141,9 +141,15 @@ final class CliReporter
         $out->writeln(Section::header($headLabel, $theme, leftPad: 2, width: $width));
 
         // Members table
+        $outliers = array_flip($c->outlierMemberIds);
         $memberTable = Table::new()->border(Border::rounded())->headers('LOCATION', 'KIND', 'QUALIFIED NAME');
-        foreach ($c->members as $m) {
-            $memberTable = $memberTable->row($m->location(), $m->kind, $m->qualifiedName());
+        foreach ($c->members as $idx => $m) {
+            $marker = isset($outliers[$idx]) ? ' ⚠ outlier' : '';
+            $memberTable = $memberTable->row(
+                $m->location() . $marker,
+                $m->kind,
+                $m->qualifiedName(),
+            );
         }
         $out->writeln($memberTable->render());
 

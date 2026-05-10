@@ -10,6 +10,7 @@ use Phpdup\Pipeline\Stage;
 use Phpdup\Pipeline\StageInterface;
 use Phpdup\Reporting\CheckstyleReporter;
 use Phpdup\Reporting\CliReporter;
+use Phpdup\Reporting\CoherenceAnalyzer;
 use Phpdup\Reporting\CsvReporter;
 use Phpdup\Reporting\DiffReporter;
 use Phpdup\Reporting\GitLabSastReporter;
@@ -74,6 +75,11 @@ final class ReportStage implements StageInterface
             sort:       \Phpdup\Reporting\ClusterSort::parse($config->sort),
             minSafety:  $this->minSafety,
         ))->rank($state->clusters);
+
+        // Coherence analysis: flag outlier members (low mean pairwise
+        // similarity to the rest of their cluster). Reporters surface
+        // these via Cluster::$outlierMemberIds.
+        $clusters = (new CoherenceAnalyzer())->analyze($clusters);
 
         $report = new Report(
             files: count($state->files),

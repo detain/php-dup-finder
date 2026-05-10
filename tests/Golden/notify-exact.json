@@ -27,6 +27,7 @@
             "pattern_tags": [
                 "config-driven"
             ],
+            "outlier_members": [],
             "signature": "function notifyByThreshold(\n    int $threshold,\n    string $value,\n): mixed",
             "members": [
                 {
@@ -98,6 +99,7 @@
             "pattern_tags": [
                 "config-driven"
             ],
+            "outlier_members": [],
             "signature": "function extractedFunction(\n    int $threshold,\n    string $value,\n): mixed",
             "members": [
                 {
