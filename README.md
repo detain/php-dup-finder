@@ -1107,9 +1107,55 @@ the stock DB call coverage. The user's own `db_symbols` in
 `phpdup.json` win over profile-provided symbols, which in turn
 win over the stock registry.
 
-The full plan — including the follow-up phase (IR lift) that builds
-on these options — is in
-[`docs/plans/orm-db-semantic-dedup.md`](docs/plans/orm-db-semantic-dedup.md).
+### IR — intermediate representation lift
+
+`Phpdup\Ir\` is the foundational scaffold for **option 5** of the
+plan: a canonical, language-/library-agnostic representation that
+sits between the PHP AST and the similarity scorer.
+
+```
+Block (PHP AST) → IR (canonical operation graph) → fingerprint / score
+```
+
+The IR replaces PHP-specific syntax (the difference between `$x->y`
+and `$x['y']`, between `for` and `foreach`, between `if/else` and
+`match`) with a small set of operation-shaped nodes:
+
+| IR node          | Lifts from                                                            |
+|------------------|-----------------------------------------------------------------------|
+| `DbReadIr`       | `Model::find`, `$em->find(...)`, `$pdo->query("SELECT …")`, `pg_*` reads. |
+| `DbWriteIr`      | `$x->save`, `$em->flush`, `$pdo->query("UPDATE …")`, `pg_insert/update`. |
+| `DbDeleteIr`     | `Model::destroy`, `$em->remove`, `DELETE FROM …`, `TRUNCATE …`.       |
+| `DbQueryIr`      | Generic `query`/`exec` calls with no clean read/write classification. |
+| `DbExecuteIr`    | `prepare`/`execute`-style two-phase calls.                             |
+| `AssignIr`       | Local assignments — LHS shape collapsed to `var`/`prop`/`index`/…     |
+| `BranchIr`       | `if`/`else`, `match`, `switch` (unfolded into nested branches), ternaries. |
+| `LoopIr`         | `for`, `foreach`, `while`, `do-while` — keyword distinction erased.   |
+| `CallIr`         | Any unrecognised method/function/static call.                         |
+| `ReturnIr`       | `return [expr];` and bare `return;`.                                  |
+| `VarIr`          | Variable references (name collapsed to `__V`).                        |
+| `LiteralIr`      | Scalar literals (only the *type* — `str`/`int`/`float`/`bool`/`null` — survives). |
+| `BlockIr`        | Statement sequences (function/method bodies, branch arms, loop bodies). |
+
+`Phpdup\Ir\IrLifter` walks a PhpParser AST and produces an IR tree.
+Lifting is **partial by design**: unrecognised input shapes (e.g.
+`eval`, `goto`, complex variable-variables) fall through to a
+generic `CallIr` carrying the node class name; if the lift fails
+outright the lifter returns `null` and callers fall back to
+AST-level scoring (per the plan's risk-mitigation note).
+
+`Phpdup\Ir\IrPrinter` produces a deterministic token stream and a
+human-readable pretty-print. `Phpdup\Ir\IrSimilarity` scores two
+IR trees: `1.0` for identical printed-token streams (a SHA-1-hash
+fast path is exposed via `IrSimilarity::hash()`), then a
+multiset-Jaccard fallback for partial overlap.
+
+The wire-up of the IR scorer into the `Clusterer` as a fifth tier
+behind `--scorer=ir` is intentionally deferred to a follow-up
+delivery — the plan calls option 5 a research-grade "Phase 3" and
+the prudent thing to do now is ship the building blocks, validate
+them against real ORM/raw-SQL pairs, and only then commit to the
+clustering integration.
 
 ---
 
