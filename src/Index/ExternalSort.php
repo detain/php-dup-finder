@@ -50,23 +50,44 @@ final class ExternalSort
         try {
             yield from $this->mergeRuns($runs);
         } finally {
-            foreach ($runs as $f) @unlink($f);
+            // Clean up every run file even if the consumer iterates
+            // partially, throws, or breaks out of the generator.
+            foreach ($runs as $f) {
+                @unlink($f);
+            }
         }
     }
 
-    /** @param list<array{0:string,1:string}> $buffer */
+    /**
+     * Sort a buffered run in memory and persist it to a tempnam file.
+     *
+     * @param list<array{0:string,1:string}> $buffer
+     * @return string Path to the on-disk sorted run.
+     * @throws \RuntimeException When tempnam returns false (no writable
+     *         temp dir) or the run file cannot be opened for writing.
+     */
     private function flushRun(array $buffer): string
     {
         usort($buffer, static fn(array $a, array $b) => strcmp($a[0], $b[0]));
-        $tmp = (string)tempnam($this->tempDir, 'phpdup-extsort-');
+        $tmp = tempnam($this->tempDir, 'phpdup-extsort-');
+        if ($tmp === false) {
+            throw new \RuntimeException(
+                "ExternalSort: tempnam() failed in {$this->tempDir}"
+            );
+        }
         $h = fopen($tmp, 'w');
         if ($h === false) {
+            // Make sure we don't leak the empty placeholder tempnam created.
+            @unlink($tmp);
             throw new \RuntimeException("ExternalSort: cannot open run file {$tmp}");
         }
-        foreach ($buffer as [$k, $v]) {
-            fwrite($h, $k . "\t" . $v . "\n");
+        try {
+            foreach ($buffer as [$k, $v]) {
+                fwrite($h, $k . "\t" . $v . "\n");
+            }
+        } finally {
+            fclose($h);
         }
-        fclose($h);
         return $tmp;
     }
 
@@ -83,12 +104,16 @@ final class ExternalSort
      */
     private function mergeRuns(array $runs): \Generator
     {
-        if ($runs === []) return;
+        if ($runs === []) {
+            return;
+        }
         $handles = [];
         $heads   = [];
         foreach ($runs as $idx => $path) {
             $h = fopen($path, 'r');
-            if ($h === false) continue;
+            if ($h === false) {
+                continue;
+            }
             $handles[$idx] = $h;
             $line = fgets($h);
             if ($line !== false) {
@@ -110,7 +135,9 @@ final class ExternalSort
                         $minIdx = $idx;
                     }
                 }
-                if ($minIdx === null) break;
+                if ($minIdx === null) {
+                    break;
+                }
                 $line = $heads[$minIdx];
                 $tab = strpos($line, "\t");
                 if ($tab !== false) {
@@ -126,7 +153,9 @@ final class ExternalSort
                 }
             }
         } finally {
-            foreach ($handles as $h) @fclose($h);
+            foreach ($handles as $h) {
+                @fclose($h);
+            }
         }
     }
 }
