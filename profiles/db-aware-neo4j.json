@@ -1,0 +1,23 @@
+{
+    "_description": "Neo4j PHP client (laudis/neo4j-php-client) symbol equivalence pack. Extends the stock DbOpRegistry with Neo4j Cypher query method names. Use with --profile=db-aware-neo4j together with --db-aware. Neo4j is a popular graph database. See https://github.com/laudis-technologies/neo4j-php-client",
+    "db_symbols": {
+        "methods": {
+            "run":           "db.read",
+            "runingle":      "db.read",
+            "first":         "db.read",
+            "getTransaction": "db.read",
+            "beginTransaction": "db.execute",
+            "match":         "db.read",
+            "matchOne":      "db.read",
+            "find":          "db.read",
+            "create":        "db.write",
+            "merge":         "db.write",
+            "set":           "db.write",
+            "attach":        "db.write",
+            "addLabels":     "db.write",
+            "removeLabels":  "db.write",
+            "delete":        "db.delete",
+            "detachDelete":  "db.delete"
+        }
+    }
+}

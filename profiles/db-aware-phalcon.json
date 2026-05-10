@@ -1,0 +1,27 @@
+{
+    "_description": "Phalcon ORM symbol equivalence pack. Extends the stock DbOpRegistry with Phalcon ORM method names. Use with --profile=db-aware-phalcon together with --db-aware. Phalcon is a high-performance PHP framework with an ORM built on C extensions. See https://github.com/phalcon/cphalcon",
+    "db_symbols": {
+        "methods": {
+            "find":              "db.read",
+            "findFirst":         "db.read",
+            "findBy":            "db.read",
+            "findFirstBy":       "db.read",
+            "query":             "db.read",
+            "aggregate":         "db.read",
+            "sum":               "db.read",
+            "average":           "db.read",
+            "min":               "db.read",
+            "max":               "db.read",
+            "count":             "db.read",
+            "get":               "db.read",
+            "save":              "db.write",
+            "create":            "db.write",
+            "update":            "db.write",
+            "delete":            "db.delete",
+            "refresh":           "db.write",
+            "writeAttribute":    "db.write",
+            "getRelated":        "db.read",
+            "remove":            "db.delete"
+        }
+    }
+}

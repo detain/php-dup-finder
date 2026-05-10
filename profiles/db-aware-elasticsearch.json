@@ -1,0 +1,38 @@
+{
+    "_description": "Elasticsearch PHP client symbol equivalence pack. Extends the stock DbOpRegistry with Elasticsearch client method names. Use with --profile=db-aware-elasticsearch together with --db-aware. Elasticsearch is a distributed search and analytics engine. See https://github.com/elastic/elasticsearch-php",
+    "db_symbols": {
+        "methods": {
+            "search":                "db.read",
+            "searchScroll":          "db.read",
+            "clearScroll":           "db.read",
+            "get":                   "db.read",
+            "getSource":             "db.read",
+            "mget":                  "db.read",
+            "exists":                "db.read",
+            "existsSource":          "db.read",
+            "explain":               "db.read",
+            "count":                 "db.read",
+            "countDocuments":        "db.read",
+            "searchTemplate":        "db.read",
+            "msearch":               "db.read",
+            "msearchTemplate":       "db.read",
+            "fieldCaps":             "db.read",
+            "rankEval":              "db.read",
+            "evaluate":              "db.read",
+            "index":                 "db.write",
+            "create":                "db.write",
+            "update":                "db.write",
+            "bulk":                  "db.write",
+            "delete":                "db.delete",
+            "deleteByQuery":         "db.delete",
+            "deleteByQueryRethrottle": "db.delete",
+            "updateByQuery":         "db.write",
+            "reindex":               "db.write",
+            "updateSettings":        "db.write",
+            "putIndexTemplate":      "db.write",
+            "deleteIndex":           "db.delete",
+            "deleteIndexTemplate":   "db.delete",
+            "deleteTemplate":        "db.delete"
+        }
+    }
+}

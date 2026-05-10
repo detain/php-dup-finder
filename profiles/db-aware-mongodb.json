@@ -1,0 +1,34 @@
+{
+    "_description": "MongoDB driver symbol equivalence pack. Extends the stock DbOpRegistry with MongoDB driver method names. Use with --profile=db-aware-mongodb together with --db-aware. MongoDB is a popular document-oriented NoSQL database. See https://github.com/mongodb/mongo-php-driver",
+    "db_symbols": {
+        "methods": {
+            "find":                      "db.read",
+            "findOne":                   "db.read",
+            "findOneAndDelete":          "db.read",
+            "findOneAndUpdate":          "db.read",
+            "findOneAndReplace":         "db.read",
+            "aggregate":                 "db.read",
+            "count":                     "db.read",
+            "countDocuments":            "db.read",
+            "estimatedDocumentCount":    "db.read",
+            "distinct":                  "db.read",
+            "group":                     "db.read",
+            "mapReduce":                 "db.read",
+            "insertOne":                 "db.write",
+            "insertMany":                "db.write",
+            "updateOne":                 "db.write",
+            "updateMany":                "db.write",
+            "replaceOne":                "db.write",
+            "save":                      "db.write",
+            "deleteOne":                 "db.delete",
+            "deleteMany":                "db.delete",
+            "drop":                      "db.delete",
+            "remove":                    "db.delete",
+            "bulkWrite":                 "db.write",
+            "createIndex":               "db.execute",
+            "dropIndex":                 "db.execute",
+            "dropIndexes":               "db.execute",
+            "explain":                   "db.read"
+        }
+    }
+}

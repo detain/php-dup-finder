@@ -1,0 +1,16 @@
+{
+    "_description": "InfluxDB PHP client (influxdata/influxdb-client-php) symbol equivalence pack. Extends the stock DbOpRegistry with InfluxDB client method names. Use with --profile=db-aware-influxdb together with --db-aware. InfluxDB is a popular time-series database. See https://github.com/influxdata/influxdb-client-php",
+    "db_symbols": {
+        "methods": {
+            "query":          "db.read",
+            "queryAsync":     "db.read",
+            "ping":           "db.read",
+            "bucket":         "db.read",
+            "organization":   "db.read",
+            "flux":           "db.read",
+            "write":          "db.write",
+            "writeAsync":     "db.write",
+            "flush":          "db.write"
+        }
+    }
+}

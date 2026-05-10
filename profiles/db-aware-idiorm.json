@@ -1,0 +1,36 @@
+{
+    "_description": "Idiorm/Paris ORM symbol equivalence pack. Extends the stock DbOpRegistry with Idiorm and Paris ORM method names. Use with --profile=db-aware-idiorm together with --db-aware. Idiorm is a lightweight ORM for PHP. Paris is an active-record ORM built on top of Idiorm. See https://github.com/j4mie/idiorm",
+    "db_symbols": {
+        "methods": {
+            "find":            "db.read",
+            "findOne":         "db.read",
+            "findMany":        "db.read",
+            "where":           "db.read",
+            "whereEqual":      "db.read",
+            "whereNotEqual":   "db.read",
+            "whereIn":         "db.read",
+            "whereNotIn":      "db.read",
+            "whereLike":       "db.read",
+            "whereNotLike":    "db.read",
+            "orderBy":         "db.read",
+            "orderByDesc":     "db.read",
+            "limit":           "db.read",
+            "offset":          "db.read",
+            "count":           "db.read",
+            "sum":             "db.read",
+            "avg":             "db.read",
+            "min":             "db.read",
+            "max":             "db.read",
+            "findOneById":     "db.read",
+            "create":          "db.write",
+            "save":            "db.write",
+            "update":          "db.write",
+            "set":             "db.write",
+            "setExpr":         "db.write",
+            "setFrom":         "db.write",
+            "delete":          "db.delete",
+            "deleteMany":      "db.delete",
+            "remove":          "db.delete"
+        }
+    }
+}

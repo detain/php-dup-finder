@@ -1,0 +1,19 @@
+{
+    "_description": "Doctrine CouchDB ODM symbol equivalence pack. Extends the stock DbOpRegistry with Doctrine CouchDB ODM method names. Use with --profile=db-aware-couchdb together with --db-aware. CouchDB is a document database. See https://github.com/doctrine/couchdb-odm",
+    "db_symbols": {
+        "methods": {
+            "find":         "db.read",
+            "findBy":       "db.read",
+            "findOneBy":    "db.read",
+            "refresh":      "db.read",
+            "contains":     "db.read",
+            "persist":      "db.write",
+            "save":         "db.write",
+            "upload":       "db.write",
+            "create":       "db.write",
+            "remove":       "db.delete",
+            "delete":       "db.delete",
+            "deleteAttachment": "db.delete"
+        }
+    }
+}

@@ -1,0 +1,24 @@
+{
+    "_description": "Couchbase PHP SDK symbol equivalence pack. Extends the stock DbOpRegistry with Couchbase SDK method names. Use with --profile=db-aware-couchbase together with --db-aware. Couchbase is a NoSQL document database with built-in caching. See https://github.com/couchbase/couchbase-php-sdk",
+    "db_symbols": {
+        "methods": {
+            "get":             "db.read",
+            "getMulti":        "db.read",
+            "getAndLock":      "db.read",
+            "getAndTouch":     "db.read",
+            "lookupIn":        "db.read",
+            "getReplica":      "db.read",
+            "view":            "db.read",
+            "query":           "db.read",
+            "upsert":          "db.write",
+            "insert":          "db.write",
+            "replace":         "db.write",
+            "mutateIn":        "db.write",
+            "touch":           "db.write",
+            "append":          "db.write",
+            "prepend":         "db.write",
+            "decrement":       "db.write",
+            "increment":       "db.write"
+        }
+    }
+}
