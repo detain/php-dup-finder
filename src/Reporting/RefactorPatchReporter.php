@@ -25,6 +25,9 @@ use Phpdup\Extraction\Block;
  */
 final class RefactorPatchReporter
 {
+    /**
+     * Write one `.patch` file per cluster under `$dir`.
+     */
     public function writeTo(Report $report, string $dir): void
     {
         if ($dir !== '' && !is_dir($dir)) {
@@ -39,6 +42,13 @@ final class RefactorPatchReporter
         }
     }
 
+    /**
+     * Build the textual patch for one cluster.
+     *
+     * The patch is intentionally non-applicable: it adds an
+     * abstraction skeleton plus per-member hint comments so a human
+     * reviewer can wire up the call sites themselves.
+     */
     public function buildPatch(Cluster $cluster): string
     {
         $unsafe = $this->detectUnsafe($cluster);
@@ -85,20 +95,36 @@ final class RefactorPatchReporter
         return $patch;
     }
 
-    /** Returns a textual reason why the cluster shouldn't auto-patch, or null. */
+    /**
+     * @return string|null A short reason why the cluster cannot be
+     *         auto-patched, or null when mechanical replacement is OK.
+     */
     private function detectUnsafe(Cluster $cluster): ?string
     {
         foreach ($cluster->members as $m) {
             $src = $this->memberSource($m);
-            if ($src === null) continue;
-            if (str_contains($src, '$this->'))           return 'member uses $this — needs context-aware extraction';
-            if (preg_match('/\b(self|static|parent)::/', $src)) return 'member uses self::/static::/parent:: — class-bound';
-            if (str_contains($src, 'yield'))             return 'member is a generator (yield)';
-            if (preg_match('/\bfunction\s*\(/', $src))   return 'member declares a closure (capture analysis required)';
+            if ($src === null) {
+                continue;
+            }
+            if (str_contains($src, '$this->')) {
+                return 'member uses $this — needs context-aware extraction';
+            }
+            if (preg_match('/\b(self|static|parent)::/', $src) === 1) {
+                return 'member uses self::/static::/parent:: — class-bound';
+            }
+            if (str_contains($src, 'yield')) {
+                return 'member is a generator (yield)';
+            }
+            if (preg_match('/\bfunction\s*\(/', $src) === 1) {
+                return 'member declares a closure (capture analysis required)';
+            }
         }
         return null;
     }
 
+    /**
+     * Render a unified-diff hint pointing at one cluster member.
+     */
     private function memberHint(Block $member, string $clusterId, int $idx): string
     {
         $loc = "{$member->file}:{$member->range->start}-{$member->range->end}";
@@ -106,16 +132,28 @@ final class RefactorPatchReporter
              . "#   replace body with: return \\Refactored\\f_{$clusterId}(...);\n";
     }
 
+    /**
+     * Read the source bytes for a member's range, returning null when
+     * the file is unreadable or no longer exists.
+     */
     private function memberSource(Block $member): ?string
     {
-        if (!is_file($member->file)) return null;
+        if (!is_file($member->file)) {
+            return null;
+        }
         $lines = @file($member->file, FILE_IGNORE_NEW_LINES);
-        if ($lines === false) return null;
+        if ($lines === false) {
+            return null;
+        }
         $start = max(0, $member->range->start - 1);
         $end   = min(count($lines), $member->range->end);
         return implode("\n", array_slice($lines, $start, $end - $start));
     }
 
+    /**
+     * Prefix every line of `$text` with `$prefix` (used to render `+`
+     * lines for the synthetic diff).
+     */
     private function prefixLines(string $text, string $prefix): string
     {
         $out = '';

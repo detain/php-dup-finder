@@ -27,7 +27,9 @@ final class MutationTester
     }
 
     /**
-     * @return list<string> short reason strings; empty list = no
+     * Probe a cluster for behavioural divergence between members.
+     *
+     * @return list<string> Short reason strings; empty list = no
      *                      static divergence detected.
      */
     public function probe(Cluster $cluster): array
@@ -35,9 +37,13 @@ final class MutationTester
         $reasons = [];
         $sideEffectCount = 0;
         foreach ($cluster->members as $m) {
-            if ($m->ast === null) continue;
+            if ($m->ast === null) {
+                continue;
+            }
             $summary = $this->summarizer->summarize($m->ast);
-            if ($summary['sideEffects']) $sideEffectCount++;
+            if ($summary['sideEffects']) {
+                $sideEffectCount++;
+            }
         }
         if ($sideEffectCount > 0 && $sideEffectCount < count($cluster->members)) {
             $reasons[] = sprintf(
