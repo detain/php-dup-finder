@@ -250,7 +250,10 @@ observed values, ready to apply.
 - **Per-directory config overrides.** `.phpdup.json` files
   discovered at any depth in the scan tree, validated against the
   schema, layered ancestor-first so deeper directories override
-  parents.
+  parents.  Symbols (`db_symbols.methods` and `db_symbols.functions`)
+  are additive — per-directory symbols **append** to root-config
+  symbols rather than replacing them, allowing incremental extension
+  without full duplication.
 - **User-defined normalization plugins.** Implement
   `Phpdup\Normalization\NormalizationPlugin`, register the FQCN in
   `phpdup.json -> normalization.plugins[]`, and your plugin runs
@@ -944,6 +947,36 @@ The stock symbol table in `Phpdup\Normalization\DbOpRegistry` covers:
 - **IBM DB2** — `db2_prepare`, `db2_execute`, `db2_query`,
   `db2_fetch_row`, `db2_fetch_assoc`, `db2_fetch_array`,
   `db2_fetch_object`, `db2_num_rows`.
+- **Async MySQL clients** — `amphp/mysql`
+  (`amysql_query`, `amysql_fetch_assoc`, `amysql_fetch_row`,
+  `amysql_free_result`), friends-of-reactphp/mysql
+  (`react_mysql_query`, `react_mysql_fetch_assoc`,
+  `react_mysql_fetch_row`), Swoole Coroutine MySQL
+  (`swoole_mysql_query`, `swoole_mysql_fetch_assoc`,
+  `swoole_mysql_fetch_row`), OpenSwoole MySQL
+  (`openswoole_mysql_query`), Workerman mysql
+  (`workerman_mysql_query`).
+- **Async PostgreSQL clients** — `amphp/postgres`
+  (`apg_query`, `apg_fetch_assoc`, `apg_fetch_row`,
+  `apg_free_result`), `reactphp/postgres`
+  (`react_pg_query`, `react_pg_fetch_assoc`,
+  `react_pg_fetch_row`), Swoole coroutine postgres
+  (`swoole_postgres_query`).
+- **Oracle OCI8** — `oci_parse`, `oci_execute`, `oci_fetch`,
+  `oci_fetch_assoc`, `oci_fetch_row`, `oci_fetch_object`,
+  `oci_free_statement`, `oci_commit`, `oci_rollback`.
+- **Cassandra (phpcassa)** — `phpcassa_query`,
+  `phpcassa_fetch`.
+- **LevelDB** — `leveldb_get`, `leveldb_put`, `leveldb_delete`,
+  `leveldb_open`.
+- **Memcached** — `memcached_get`, `memcached_set`,
+  `memcached_add`, `memcached_replace`, `memcached_delete`,
+  `memcached_increment`, `memcached_decrement`,
+  `memcached_flush`.
+- **Async transaction methods** — `beginTransaction`,
+  `commit`, `rollback` are classified `OP_WRITE`; auxiliary
+  methods `affectedRows` → `OP_READ`, `insertId` → `OP_WRITE`,
+  `count` → `OP_READ`.
 - **Generic CRUD verbs** — any method named `find`, `findById`,
   `save`, `update`, `delete`, `query`, `execute` on an unknown
   receiver — coarse but high-recall. Also: `table`, `select`,
@@ -1035,6 +1068,19 @@ where:
   (`$x->save()`, `$x->update()`), Doctrine flush (`$em->flush()`),
   or `$em->persist($x)` (with `$x` matching the bound variable as
   the first argument).
+
+**Mutation detection improvements.** The collapser recognises
+additional mutation patterns beyond simple property assignment:
+
+- **ArrayAccess / array assignment** — `$x['key'] = value` via
+  `Node\Expr\ArrayDimFetch` on the bound variable.
+- **Direct array append** — `$x[] = value` appends on the bound
+  variable.
+- **Extended ORM mutator prefixes** — setter-method prefixes
+  `force`, `update`, `change`, `modify` are recognised in addition
+  to the base `set` / `with` / `add` / `remove` / `append` /
+  `replace` set, so idioms like `$x->forceUpdate(...)` or
+  `$x->changeName(...)` are correctly classified as mutations.
 
 Any unrelated statement between the read and save abandons the
 trinity — the dataflow walker is intentionally conservative; false
