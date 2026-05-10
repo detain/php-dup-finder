@@ -49,7 +49,7 @@ bin/phpdup completion bash > ~/.local/share/bash-completion/completions/phpdup
 
 **Refactor** (`src/Refactor/`): `AntiUnifier.php` does LCS over per-stmt structural hashes → typed `Hole.php`s; `ParameterSynthesizer.php` infers types/names; `SignatureBuilder.php` emits `function name(...): mixed`; `PatternRecognizer.php` tags clusters (`config-driven`, `sql-builder`, `crud-handler`, `validation-chain`, `strategy`, `state-machine`, `optional-segments`). Lazy AST reload via `src/Extraction/BlockAstLoader.php`.
 
-**Report** (`src/Reporting/`): one reporter per format — `CliReporter.php`, `JsonReporter.php`, `HtmlReporter.php`, `SarifReporter.php`, `GitLabSastReporter.php`, `CheckstyleReporter.php`, `CsvReporter.php`, `PrometheusReporter.php`, `TimeseriesReporter.php`, `DiffReporter.php`, `GraphvizReporter.php`, `PlantumlReporter.php`. Ordering via `Ranker.php` + `SafetyScorer.php` + `ClusterSort.php`; payload type `Report.php`.
+**Report** (`src/Reporting/`): one reporter per format — `CliReporter.php`, `JsonReporter.php`, `HtmlReporter.php`, `SarifReporter.php`, `GitLabSastReporter.php`, `CheckstyleReporter.php`, `CsvReporter.php`, `PrometheusReporter.php`, `TimeseriesReporter.php`, `DiffReporter.php`, `GraphvizReporter.php`, `PlantumlReporter.php`, `RefactorPatchReporter.php`, `RefactorTestReporter.php`. Ordering via `Ranker.php` + `SafetyScorer.php` + `ClusterSort.php`; payload type `Report.php`.
 
 **Parallelism** (`src/Parallel/`): `WorkerPool.php` uses `pcntl_fork` + `stream_select`-multiplexed socketpairs; `runStreaming()` yields per-record. Workers: `PreprocessWorker.php`, `PairScoreWorker.php`, `RefactorWorker.php`. Falls back to serial when `pcntl_*` unavailable.
 
@@ -91,7 +91,6 @@ bin/phpdup completion bash > ~/.local/share/bash-completion/completions/phpdup
 - **CLI flag** — add option in `src/Cli/Command.php`, thread through `src/Cli/ConfigLoader.php`, validate in `src/Cli/Config.php`, then update `docs/config-schema.json` and `docs/CLI.md`.
 - **Language profile** — add `profiles/<framework>.json` + a marker check in `src/Cli/ProjectProfileDetector.php`; cover with `tests/Unit/Cli/`.
 
-<!-- caliber:managed:pre-commit -->
 ## Before Committing
 
 **IMPORTANT:** Before every git commit, you MUST ensure Caliber syncs agent configs with the latest code changes.
@@ -112,28 +111,18 @@ grep -q "caliber" .git/hooks/pre-commit 2>/dev/null && echo "hook-active" || ech
 **`caliber config`** takes no flags — it runs an interactive provider setup. Do not pass `--provider`, `--api-key`, or `--endpoint`.
 
 If `caliber` is not found, tell the user: "This project uses Caliber for agent config sync. Run /setup-caliber to get set up."
-<!-- /caliber:managed:pre-commit -->
-
-<!-- caliber:managed:learnings -->
 ## Session Learnings
 
 Read `CALIBER_LEARNINGS.md` for patterns and anti-patterns learned from previous sessions.
 These are auto-extracted from real tool usage — treat them as project-specific rules.
-<!-- /caliber:managed:learnings -->
-
-<!-- caliber:managed:model-config -->
 ## Model Configuration
 
 Recommended default: `claude-sonnet-4-6` with high effort (stronger reasoning; higher cost and latency than smaller models).
 Smaller/faster models trade quality for speed and cost — pick what fits the task.
 Pin your choice (`/model` in Claude Code, or `CALIBER_MODEL` when using Caliber with an API provider) so upstream default changes do not silently change behavior.
 
-<!-- /caliber:managed:model-config -->
-
-<!-- caliber:managed:sync -->
 ## Context Sync
 
 This project uses [Caliber](https://github.com/caliber-ai-org/ai-setup) to keep AI agent configs in sync across Claude Code, Cursor, Copilot, and Codex.
 Configs update automatically before each commit via `caliber refresh`.
 If the pre-commit hook is not set up, run `/setup-caliber` to configure everything automatically.
-<!-- /caliber:managed:sync -->
