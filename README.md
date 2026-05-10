@@ -35,30 +35,51 @@ observed values, ready to apply.
 
 - [Features](#features)
 - [Installation](#installation)
+  - [PHAR (recommended)](#installation-phar)
+  - [Composer](#via-composer)
+  - [From source](#from-source)
+- [Self-update](#self-update)
 - [Quick start](#quick-start)
 - [How it works](#how-it-works)
   - [Pipeline](#pipeline)
   - [Normalization modes](#normalization-modes)
   - [Clustering](#clustering)
+  - [Two-tier TED pre-filter](#two-tier-ted-pre-filter)
   - [Anti-unification](#anti-unification)
+  - [Multi-seed search](#multi-seed-search)
   - [Pattern recognition](#pattern-recognition)
+  - [Architectural analyzers](#architectural-analyzers)
+  - [Cluster coherence (outlier detection)](#cluster-coherence-outlier-detection)
+  - [Refactor-safety scoring](#refactor-safety-scoring)
   - [Ranking](#ranking)
   - [Parallelism](#parallelism)
   - [Incremental indexing](#incremental-indexing)
+  - [Persistent cluster cache](#persistent-cluster-cache)
   - [Lazy AST loading](#lazy-ast-loading)
 - [Type-3 / optional-segment detection](#type-3--optional-segment-detection)
+- [Type-4 / behavioural similarity](#type-4--behavioural-similarity-experimental)
 - [TUI mode](#tui-mode)
 - [Watch mode](#watch-mode)
+- [SIGINT soft-cancel](#sigint-soft-cancel)
+- [`phpdup serve` REST API](#phpdup-serve-rest-api)
 - [Output formats](#output-formats)
 - [Configuration](#configuration)
+  - [Per-directory overrides](#per-directory-overrides)
+  - [Project profiles](#project-profiles)
+  - [Auto-tune](#auto-tune)
+  - [Normalization plugins](#normalization-plugins)
 - [CLI reference](#cli-reference)
 - [Programmatic use](#programmatic-use)
 - [Examples](#examples)
 - [Static analysis & config validation](#static-analysis--config-validation)
 - [Benchmarks](#benchmarks)
+  - [Comparative benchmark suite](#comparative-benchmark-suite)
+  - [Feature matrix](#feature-matrix)
+  - [Internal scaling benchmark](#internal-scaling-benchmark)
 - [Architecture](#architecture)
 - [Testing](#testing)
 - [Performance](#performance)
+- [Roadmap](#roadmap)
 - [FAQ](#faq)
 - [Contributing](#contributing)
 - [License](#license)
@@ -69,10 +90,15 @@ observed values, ready to apply.
 
 - **Semantic, not textual.** Compares AST structure, not source text — so
   whitespace, comments, and identifier renames don't fool it.
-- **Three clone types.** Type-1 (exact), type-2 (renamed variables /
-  literals), and **type-3** (statements present in some members but
+- **All four clone types.** Type-1 (exact), type-2 (renamed variables
+  / literals), **type-3** (statements present in some members but
   absent from others — see
-  [Type-3 / optional-segment detection](#type-3--optional-segment-detection)).
+  [Type-3 / optional-segment detection](#type-3--optional-segment-detection)),
+  and an experimental **type-4** behavioural-similarity scorer that
+  catches I/O-equivalent code with structurally different
+  implementations (e.g. `foreach`-accumulator vs `array_reduce`,
+  `switch` vs `match`). See
+  [Type-4 / behavioural similarity](#type-4--behavioural-similarity-experimental).
 - **Parameter discovery.** For every cluster, identifies the literals,
   identifiers, method names, class names, *and entire optional code
   segments* that vary, and proposes them as parameters of a suggested
@@ -92,31 +118,85 @@ observed values, ready to apply.
   using LCS over per-statement structural hashes when stmt arrays
   differ in length. Disagreements become typed parameter holes;
   per-statement gaps become defaulted boolean parameters.
-- **Pattern recognition.** Tags clusters that match well-known refactor
-  archetypes:
-  - `sql-builder`        — string concat feeding `query`/`prepare`/`exec`/`fetch`
-  - `crud-handler`       — names contain `create`/`read`/`update`/`delete` or `select`/`insert`/`fetch`/`find`
-  - `validation-chain`   — short-circuit `if`-then-throw/return chains
-  - `strategy`           — single hole on a method/function name
-  - `config-driven`      — only literal holes
-  - `state-machine`      — `switch`/`match` block
-  - `optional-segments`  — at least one optional_block hole (type-3)
+- **Pattern recognition** (21 tags). Tags clusters that match
+  well-known refactor archetypes — structural, domain, framework:
+  - **Structural:** `sql-builder` · `crud-handler` ·
+    `validation-chain` · `strategy` · `config-driven` ·
+    `state-machine` · `optional-segments`.
+  - **Domain (I.A.2-7):** `loop-map` (foreach + accumulator append) ·
+    `loop-filter` (foreach + leading guard-continue) · `sql-query`
+    (literal SQL string in body) · `http-call` (Guzzle / cURL /
+    `wp_remote_*` shapes) · `error-handler` (try-catch with logger
+    or rethrow) · `builder-chain` (≥3 method-call chain) ·
+    `container-registration` (DI binders).
+  - **Framework (IX.A):** `controller-action` (Laravel/Symfony
+    controllers) · `migration` (Laravel/Doctrine migrations) ·
+    `eloquent-model` (`App\\Models\\…`) · `repository-method`
+    (`*Repository::find/get/save…`) · `event-listener` ·
+    `service-provider` (Laravel SP / Symfony Bundle) ·
+    `query-builder-chain` (Doctrine/Eloquent QB entry points).
+- **Architectural analyzers** (IX.B). Beyond the pattern tags,
+  three analyzers post-process every cluster and emit
+  `architectural_findings[]` with severity + remedial suggestion:
+  - **SOLID** — flags SRP-mixed bodies (persistence + side-effect
+    calls in one block) and DIP-violating concrete-class-string
+    holes.
+  - **Design pattern** — recognises Strategy / Factory / Builder
+    shapes from existing tags + hole types.
+  - **Anti-pattern** — Long Parameter List (>5 holes), Primitive
+    Obsession (all holes scalar primitives).
+- **Cluster coherence** (VI.A.3). Per-cluster outlier detection
+  via mean pairwise n-gram Jaccard; flags members that don't
+  belong with the rest. Surfaces as `outlier_members[]` in JSON
+  and a ⚠ marker in CLI.
+- **Refactor-safety scoring** (VI.A.1). Combines hole type-safety,
+  cross-namespace span, member count, and pattern-tag deltas into
+  a `[0,1]` score. `--min-safety` filters clusters that look risky
+  to mechanically extract.
 - **Impact-ranked output.** Clusters sorted by how many lines disappear
   if the abstraction is applied, with a separate confidence score that
   flags risky refactors (subtree-level holes, cross-namespace spans).
-- **Seven output formats.**
-  - SugarCraft-styled colorized **CLI** (with a `--plain` switch).
-  - Structured **JSON** (machine-readable, full cluster + hole metadata
-    including `present_in_members[]` for type-3 holes).
-  - Interactive **HTML** site (sortable/filterable index, mini-map of
-    cluster impact, copy-signature buttons, syntax-highlighted code,
-    optional-segment rows tinted amber).
-  - **SARIF 2.1.0** (GitHub Code Scanning / GitLab Code Quality, with
-    grouping fingerprints + `optionalSegmentCount`).
-  - **GitLab SAST v15.x** (MR security widget, severity-bucketed by
-    impact).
+- **Twelve output formats.**
+  - SugarCraft-styled colorized **CLI** (with a `--plain` switch
+    and `--summary-only` / `--clusters` verbosity modes).
+  - Structured **JSON** (machine-readable, full cluster + hole
+    metadata including `present_in_members[]` for type-3 holes,
+    `outlier_members[]`, `architectural_findings[]`,
+    `safety` score; carries a `schema_version` field —
+    [`docs/JETBRAINS_PLUGIN.md`](docs/JETBRAINS_PLUGIN.md) is the
+    stable contract for IDE plugins).
+  - Interactive **HTML** site (sortable/filterable index, mini-map
+    of cluster impact, copy-signature buttons, syntax-highlighted
+    code, optional-segment rows tinted amber, **per-hole tweaker
+    UI** with `localStorage` persistence + JSON export).
+  - **SARIF 2.1.0** (GitHub Code Scanning / GitLab Code Quality,
+    with grouping fingerprints + `optionalSegmentCount`).
+  - **GitLab SAST v15.x** (MR security widget, severity-bucketed
+    by impact).
   - **Unified diffs** per cluster + cumulative `--patch` file.
-  - **Checkstyle XML** (Jenkins/Sonar/Bitbucket consumers).
+  - **Checkstyle XML** (Jenkins / Sonar / Bitbucket consumers).
+  - **CSV** (`--csv=FILE`) — one row per cluster member with
+    similarity / impact / safety / signature for spreadsheets and
+    BI ingest.
+  - **Prometheus** text-format (`--prometheus=FILE`) —
+    `phpdup_clusters_total`, `phpdup_total_impact`, per-tag
+    counters; ready for pushgateway scraping.
+  - **Time-series JSONL** (`--timeseries=FILE`) — one append-only
+    line per run, commit-tagged via `GIT_COMMIT` / `GITHUB_SHA` /
+    `CI_COMMIT_SHA`; lets you track duplicate debt over time in
+    BigQuery / ClickHouse / Elastic.
+  - **Graphviz DOT** (`--graphviz=FILE`) — file→cluster bipartite
+    graph; render with `dot -Tpng …`.
+  - **PlantUML** (`--plantuml=FILE`) — class diagram with cluster
+    packages and pattern-tag stereotypes.
+  - **Refactor patches** (`--refactor-patch=DIR`) — heuristic,
+    manual-review-required `.patch` per cluster: adds a
+    `Refactored/<id>.php` skeleton plus per-member edit hints.
+    Bails to a manual-review header when `$this`/`self::`/yield/
+    closure capture would make mechanical replacement unsafe.
+  - **PHPUnit test skeletons** (`--refactor-tests=DIR`) — one
+    `markTestIncomplete()` test class per cluster with a data
+    provider populated from observed hole values.
 - **Optional SugarCraft TUI** (`--tui`). Four-pane FlexBox dashboard
   driven by the cooperative pipeline — counts, sparkline, OSC 9;4
   taskbar progress all build up live frame-by-frame as work
@@ -126,9 +206,53 @@ observed values, ready to apply.
   poll-based `React\EventLoop` timer; `Ctrl+C` exits cleanly. Combines
   with `--tui` for a live dashboard that resets and rebuilds on every
   change.
+- **SIGINT soft-cancel.** First `Ctrl+C` flips
+  `PipelineState::$cancelled`; cooperative stages check it between
+  yields, short-circuit to the Reporting stage, and produce a
+  partial report. Second `Ctrl+C` falls back to the default kill.
+  Exit code is the canonical 130.
+- **REST API server** (`phpdup serve`). Minimal HTTP service for
+  in-house dashboards, CI integrations, and the playground
+  front-end. Routes: `GET /healthz`, `POST /analyze` (sync),
+  `POST /jobs` + `GET /jobs/{id}` (async-shaped). Hand-rolled HTTP/1.1
+  parser — no ReactPHP dep. SSRF guard, Content-Length cap,
+  JSON_THROW_ON_ERROR, default bind to `127.0.0.1`. See
+  [`docs/SERVER.md`](docs/SERVER.md).
+- **PHAR distribution.** `phpdup.phar` is published with every
+  release plus a sha256 sidecar; download once, run anywhere with
+  PHP 8.1+ and `ext-phar`. `phpdup self-update` (aliases
+  `update` / `upgrade`) replaces the running binary in place after
+  hash verification. Build locally with
+  `php -d phar.readonly=0 build-phar.php`. See
+  [`docs/PHAR.md`](docs/PHAR.md).
 - **Block-kind filter** (`--kinds=method,closure`). Drops non-matching
   block kinds at extraction time so clustering only sees what you
   asked for.
+- **PHP 8.x syntax-surface canonicalisation.** `match` arms collapsed
+  to switch-equivalent token shape, named arguments reordered to
+  lexicographic order, attributes stripped in `aggressive` mode —
+  so syntactic-only differences across PHP 8.0 → 8.4 don't fool
+  clustering.
+- **Auto-tune** (`--auto-tune`). Probes the corpus before analysis
+  and picks size-appropriate defaults: tiny (<200 files) gets
+  relaxed thresholds, medium (<20k) tightens `max-df`, large
+  (≥20k) forces `--exact-only` to keep memory in check. Explicit
+  CLI flags always override the picks.
+- **Project profiles.** `profiles/{laravel,symfony,doctrine,
+  wordpress,…}.json` ship preset config. `--profile=NAME` selects
+  one explicitly; auto-detect kicks in via project-marker files
+  (`artisan`, `bin/console`, `wp-config.php`, etc.) when no
+  explicit config is given.
+- **Per-directory config overrides.** `.phpdup.json` files
+  discovered at any depth in the scan tree, validated against the
+  schema, layered ancestor-first so deeper directories override
+  parents.
+- **User-defined normalization plugins.** Implement
+  `Phpdup\Normalization\NormalizationPlugin`, register the FQCN in
+  `phpdup.json -> normalization.plugins[]`, and your plugin runs
+  after the built-in passes for project-specific canonicalisation
+  (e.g. unify SDK alias methods, project-specific identifier
+  normalisation).
 - **Schema-validated config.** `phpdup.json` is checked against
   [`docs/config-schema.json`](docs/config-schema.json) at load time;
   `--validate-config` exits with the field path on the first violation
@@ -151,34 +275,105 @@ observed values, ready to apply.
   instead of blocking on the slowest worker. The classic
   collect-and-return `run()` is now a thin synchronous drain over the
   same code path.
-- **Parallelized preprocessing and pair scoring.** `pcntl_fork`
-  worker pool batches files for parse + extract + normalize +
-  fingerprint, and candidate pairs for Jaccard + tree-edit-distance
-  scoring. Auto CPU detection, serial fallback when pcntl is
-  unavailable.
-- **APTED-style tree edit distance.** Zhang-Shasha forest-distance DP
-  with heavy-path child ordering and bounded early termination —
-  correct on all tree shapes.
+- **Parallelized preprocessing, pair scoring, and refactor.**
+  `pcntl_fork` worker pool batches files for parse + extract +
+  normalize + fingerprint (`PreprocessWorker`); candidate pairs
+  for Jaccard + tree-edit scoring (`PairScoreWorker`); and
+  per-cluster anti-unification + tagging (`RefactorWorker`).
+  Auto CPU detection, serial fallback when pcntl is unavailable.
+- **APTED-style tree edit distance with weighted edits.**
+  Zhang-Shasha forest-distance DP with heavy-path child ordering
+  and bounded early termination, plus a
+  `--ted-weights={default,semantic}` cost model that gives method
+  calls cost 2.0, control flow 1.5, literals 0.5 — better proxy
+  for behavioural similarity than unit costs.
+- **Two-tier TED pre-filter.** Before the O(n²) DP runs, a
+  size-delta check + 64-bit (node-type, depth) shapelet sketch
+  reject obviously-different pairs in ~10 ALU ops. See
+  [Two-tier TED pre-filter](#two-tier-ted-pre-filter).
+- **Three candidate-pair indexes.** `NgramInvertedIndex` (default,
+  small / medium corpora), `BloomCandidateIndex` (drop-in
+  replacement that holds a fixed-size 2 KiB filter per block —
+  trades posting-list memory for O(n²) bit-overlap scoring on
+  huge corpora), and `LshIndex` (MinHash signatures + 32-band /
+  4-row LSH — near-constant lookup time per block).
+- **External-sort streaming-clustering primitive.** Disk-backed
+  K-way merge sort over (key, payload) tuples — foundation for
+  clustering corpora that don't fit in RAM.
 - **Incremental indexing.** Per-file block snapshots keyed by content
   hash + parser version + config key. Editing one file leaves the
   other 999 snapshots intact.
+- **Persistent cluster cache** (II.B.4). Snapshots the final
+  cluster list to `<cacheDir>/clusters.idx` after every successful
+  run. Re-running on an unchanged corpus skips Cluster + Refactor
+  stages entirely. Wholesale invalidation on any block change.
 - **Lazy AST loading.** Original ASTs are dropped after fingerprinting
   and reloaded on demand only for blocks that end up in clusters. RSS
   scales sub-linearly with corpus size.
-- **AST cache.** SHA-1 keyed disk cache (versioned to the parser
-  release) so warm-cache runs skip parsing entirely.
+- **AST + token caches.** SHA-1 keyed disk caches (`AstCache` for
+  full Stmt[] and `TokenCache` for raw token streams), both
+  versioned to the parser release so warm-cache runs skip parsing
+  entirely.
+- **Comparative benchmark suite.** `bench/run-all.sh` runs phpdup
+  alongside phpcpd / pmd-cpd / jscpd / simian on a curated mix of
+  real OSS corpora (Symfony Console, Laravel HTTP, PHPUnit,
+  WordPress core) plus a synthetic-fuzz corpus with known ground
+  truth — emits wall-time / RSS / cluster-count comparison plus
+  precision/recall/F1 on the synthetic set. See
+  [Benchmarks](#benchmarks) and `bench/feature-matrix.md`.
 - **Memory ceiling.** `--max-memory=MB` warns and suggests
   `--exact-only` if peak RSS exceeds the threshold mid-pipeline.
 - **`--stage` halt point.** `--stage=clustering` runs the pipeline only
   up to (and including) clustering and stops — useful for debugging
   incremental cache hits or profiling individual stages.
-- **Production-ready PHP.** Strict types throughout, PSR-4 autoloaded,
-  PHPStan level 6 clean, Psalm baseline-tracked, **165+** PHPUnit
-  tests, requires PHP 8.1+.
+- **Production-ready PHP.** Strict types throughout, PSR-4
+  autoloaded, PHPStan level 6 clean, Psalm errorLevel 6 clean
+  (no baseline), **396+** PHPUnit tests across four suites
+  (Unit, Integration, Golden snapshots, Fuzz detection-rate),
+  requires PHP 8.1+.
 
 ---
 
 ## Installation
+
+<a id="installation-phar"></a>
+### PHAR (recommended)
+
+The fastest way to try phpdup. Download the self-contained `phpdup.phar`
+from the latest GitHub release, verify the SHA-256, and drop it on
+your PATH:
+
+```bash
+curl -sSLO https://github.com/detain/php-dup-finder/releases/latest/download/phpdup.phar
+curl -sSLO https://github.com/detain/php-dup-finder/releases/latest/download/phpdup.phar.sha256
+sha256sum --check phpdup.phar.sha256
+
+chmod +x phpdup.phar
+sudo mv phpdup.phar /usr/local/bin/phpdup
+```
+
+Requirements: PHP 8.1+ with `ext-phar`. The phar is ~7 MB.
+
+Once installed, keep it current with the built-in self-updater:
+
+```bash
+phpdup self-update         # download & swap the binary in place
+phpdup self-update --dry-run   # check what's available, change nothing
+```
+
+`update` and `upgrade` are aliases. See [Self-update](#self-update)
+for the full flow + offline notes.
+
+Build the phar yourself (e.g. for a private fork):
+
+```bash
+composer install --no-dev --optimize-autoloader
+php -d phar.readonly=0 build-phar.php
+```
+
+See [`docs/PHAR.md`](docs/PHAR.md) for the full distribution flow,
+release process, and troubleshooting (`phar.readonly`, ext-phar on
+shared hosting, etc.).
 
 ### Via Composer
 
@@ -217,7 +412,49 @@ Requirements:
 - ext-hash (for `xxh128`)
 - ext-pcntl + ext-posix (optional — without them phpdup runs serially
   with no other change)
-- Composer
+- ext-phar (for the phar distribution; not needed for source/composer)
+- ext-curl (optional; preferred over streams for `MlClient` and the
+  self-updater's HTTP fetches)
+- Composer (for source / composer install only)
+
+---
+
+## Self-update
+
+When phpdup is installed as a phar, it can replace itself in place
+with the latest GitHub release:
+
+```bash
+phpdup self-update           # download, verify sha256, swap
+phpdup self-update --dry-run # report the latest tag, change nothing
+phpdup update                # alias
+phpdup upgrade               # alias
+```
+
+The flow:
+
+1. Resolves `https://api.github.com/repos/detain/php-dup-finder/releases/latest`.
+2. Downloads `phpdup.phar` and `phpdup.phar.sha256` from the release
+   assets to a temp dir.
+3. Verifies the SHA-256 — refuses to swap on mismatch.
+4. Renames the running binary to `phpdup.phar.old` (rollback safety),
+   moves the new phar into place, and marks it executable.
+5. Prints the new version.
+
+Requires write access to wherever the phar lives (i.e. don't put it
+in `/usr/local/bin` if you wouldn't `sudo` to update; install per-
+user under `~/.local/bin` instead). Falls back gracefully when
+GitHub returns "no releases yet" (`{"message":"Not Found"}`) so a
+fresh fork can still call `--dry-run` without erroring out.
+
+Composer / source installs don't use `self-update` — pull and
+re-install the usual way:
+
+```bash
+composer update detain/php-dup-finder
+# or, for a source clone:
+git pull && composer install
+```
 
 ---
 
@@ -608,6 +845,38 @@ when stmt arrays differ in length.
 
 ---
 
+## Type-4 / behavioural similarity (experimental)
+
+Type-1/2/3 detection compares **shape** — what tokens the AST emits.
+Type-4 detection compares **behaviour** — what data flows through
+the block, what calls it makes, what it returns. Two functions that
+compute the same value with structurally different implementations
+(`foreach` accumulator vs `array_reduce`, recursion vs iteration,
+`switch` vs `match`) cluster under type-4 even when AST similarity
+rejects them.
+
+phpdup's type-4 scaffold:
+
+- `Phpdup\Semantic\DataflowSummarizer` — walks the block once and
+  emits `(vars, calls, returns, sideEffects)`.
+- `Phpdup\Similarity\BehaviouralSimilarity` — weighted Jaccard
+  over those summaries (var-set 1×, call-multiset 2×,
+  return-shape 2×, side-effect-flag 1×) → `[0,1]` score.
+- `Phpdup\Semantic\CallGraph` and `Phpdup\Semantic\ControlFlowGraph`
+  — coarse per-block summaries used by future type-4 boost paths.
+
+Type-4 has higher false-positive risk than type-1/2/3 by design.
+Today it's a foundational scaffold; the live wiring into the
+clusterer (as a fourth-tier fallback after Jaccard + APTED +
+containment all reject) is gated behind a future `--type4` flag.
+See [`docs/algorithms/anti-unification.md`](docs/algorithms/anti-unification.md)
+for the algorithmic reference and
+[`docs/plans/orm-db-semantic-dedup.md`](docs/plans/orm-db-semantic-dedup.md)
+for how this connects to the broader plan for ORM/DB
+semantic-equivalence detection.
+
+---
+
 ## TUI mode
 
 `--tui` opens a SugarCraft dashboard that drives the analysis pipeline
@@ -671,18 +940,110 @@ panes drop to zero before climbing back up.
 
 ---
 
+## SIGINT soft-cancel
+
+Pressing `Ctrl+C` mid-analysis (outside `--watch`) doesn't drop the
+work in progress. `Phpdup\Cli\SignalHandler` registers an async
+SIGINT handler that flips `PipelineState::$cancelled`; the
+cooperative pipeline checks this between stages and short-circuits
+straight to the Reporting stage. The user gets a partial report
+covering whatever clusters had already formed, plus a non-zero
+exit code (130, the canonical SIGINT code) so CI workflows can
+distinguish "user cancelled" from "clean run".
+
+A second `Ctrl+C` restores the default SIGINT handler so a truly
+stuck process can still be killed with the third-time-is-default
+escape hatch.
+
+---
+
+## `phpdup serve` REST API
+
+`phpdup serve` boots a minimal HTTP service on top of the analysis
+pipeline. Useful for in-house dashboards, CI integrations, and a
+hosted-backend playground front-end.
+
+```bash
+phpdup serve --host 127.0.0.1 --port 8080
+```
+
+Routes:
+
+| Method | Path           | Body                              | Returns |
+|--------|----------------|-----------------------------------|---------|
+| GET    | `/healthz`     | —                                 | `text/plain "ok"` |
+| POST   | `/analyze`     | JSON: `{"paths":["src","lib"]}`   | full JSON report |
+| POST   | `/jobs`        | JSON: same as `/analyze`          | `202 {"job_id":"…"}` |
+| GET    | `/jobs/{id}`   | —                                 | job status + result |
+
+Implementation is intentionally dependency-light:
+`stream_socket_server` plus a hand-rolled HTTP/1.1 parser. No
+ReactPHP / Amp dep — for high-traffic deployments, swap in
+Roadrunner / FrankenPHP / FPM behind nginx and reuse
+`Phpdup\Server\Application` directly.
+
+Security defaults:
+
+- Default bind is `127.0.0.1` — exposing it externally requires a
+  reverse proxy.
+- Content-Length is capped at 16 MB.
+- JSON parsing uses `JSON_THROW_ON_ERROR` and returns 400 on
+  malformed bodies.
+- The `Application` class is fully transport-agnostic and
+  unit-tested without networking.
+
+See [`docs/SERVER.md`](docs/SERVER.md) for the full contract,
+deployment notes, and the playground architecture.
+
+---
+
 ## Output formats
 
 ```bash
 bin/phpdup analyze src \
-    --json        phpdup.json \
-    --html        phpdup-report \
-    --sarif       phpdup.sarif \
-    --gitlab-sast phpdup.gitlab.json \
-    --diff        ./phpdup-diffs \
-    --patch       phpdup.patch \
-    --checkstyle  phpdup.xml
+    --json           phpdup.json \
+    --html           phpdup-report \
+    --sarif          phpdup.sarif \
+    --gitlab-sast    phpdup.gitlab.json \
+    --diff           ./phpdup-diffs \
+    --patch          phpdup.patch \
+    --checkstyle     phpdup.xml \
+    --csv            phpdup.csv \
+    --prometheus     phpdup.prom \
+    --timeseries     phpdup-history.jsonl \
+    --graphviz       phpdup.dot \
+    --plantuml       phpdup.puml \
+    --refactor-patch ./phpdup-refactors \
+    --refactor-tests ./phpdup-refactor-tests
 ```
+
+phpdup ships **twelve** output formats; the additions over the
+classic five are:
+
+- **CSV** (`--csv=FILE`) — flat one-row-per-cluster-member; ideal
+  for spreadsheets / BI ingest. Multi-line signatures are
+  collapsed to one line so consumers don't have to handle embedded
+  newlines.
+- **Prometheus** text-format (`--prometheus=FILE`) — `# HELP` /
+  `# TYPE` annotated gauges suitable for `pushgateway` scraping or
+  CI dashboards. Per-pattern-tag counters included.
+- **Time-series JSONL** (`--timeseries=FILE`) — one append-only
+  line per run, commit-tagged via `GIT_COMMIT` / `GITHUB_SHA` /
+  `CI_COMMIT_SHA` / `BUILD_VCS_NUMBER` (with `.git/HEAD` fallback)
+  so duplicate-debt curves over time are trivial to track.
+- **Graphviz DOT** (`--graphviz=FILE`) — file→cluster bipartite
+  graph; render with `dot -Tpng phpdup.dot -o phpdup.png`.
+- **PlantUML** (`--plantuml=FILE`) — class-diagram-style with each
+  cluster as a `package` and pattern-tag stereotypes.
+- **Refactor patches** (`--refactor-patch=DIR`) — heuristic, manual-
+  review-required `.patch` files. Each adds a
+  `Refactored/<id>.php` skeleton with the suggested abstraction
+  signature plus per-member edit hints. Bails to a manual-review
+  header when `$this`/`self::`/`yield`/closure capture would make
+  mechanical replacement unsafe.
+- **PHPUnit test skeletons** (`--refactor-tests=DIR`) — one
+  `markTestIncomplete()` test class per cluster with a
+  `casesProvider()` populated from observed hole values.
 
 ![phpdup emitting all five machine-readable formats in one run](docs/media/output-formats.gif)
 
@@ -1397,25 +1758,209 @@ CI runs three layers of static checks on every push and PR:
 
 ## Benchmarks
 
-Same corpus, same config, on a real PHP application's `include/Api/`
-directory: 530 files, 3,295 comparable blocks, 96 clusters reported.
+phpdup ships a real comparative benchmark harness — not synthetic
+microbenchmarks. The suite runs phpdup alongside the other PHP
+duplicate-detection tools that anyone might reach for, on a curated
+mix of public OSS corpora, and reports wall time, peak RSS, cluster
+counts, plus precision / recall / F1 against ground truth. It's
+designed to be **honest** — phpdup is not the best tool in every
+cell, and the matrix below says so out loud.
 
-| Configuration                                          | Wall time | vs serial |
-|--------------------------------------------------------|----------:|----------:|
-| serial (`--workers 1`), cold cache                     | 61.13 s   | 1.00×     |
-| 4 workers, cold cache                                  | 30.39 s   | 2.01×     |
-| 8 workers, cold cache                                  | 21.11 s   | 2.90×     |
-| 16 workers, cold cache                                 | 17.47 s   | 3.50×     |
-| 8 workers, `--exact-only`                              |  5.74 s   | 10.65×    |
+### Comparative benchmark suite
 
-Cluster output is byte-identical across configurations — the speedups
-don't come from skipping work. APTED does correct Zhang-Shasha work
-(slower per pair than a bounded heuristic would be); the user-visible
-win comes from parallelism stacking on top.
+```bash
+bench/run-all.sh
+```
 
-For a full breakdown including stage timings, the honest discussion of
-diminishing returns past 8 workers, and tuning recommendations for
-codebases >5,000 blocks, see [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+That's the whole flow:
+
+1. Auto-download `phpcpd.phar` (phar-only; ~3 MB).
+2. `npm install jscpd@4` into `bench/tools/` (skipped if no node).
+3. Shallow-clone OSS corpora (Symfony Console, Laravel HTTP,
+   PHPUnit, WordPress core).
+4. Generate the synthetic-fuzz corpus deterministically.
+5. Run every available tool against every corpus with a per-tool
+   wall-time cap.
+6. Score each tool's output against the synthetic corpus's
+   `.ground-truth.json`.
+
+Outputs:
+
+- `bench/results/latest.md` — per (tool, corpus) wall time / RSS /
+  cluster count.
+- `bench/results/detection-rate.md` — per-tool precision / recall /
+  F1 on the synthetic corpus (the only fair-fight scenario, since
+  we know the right answer).
+
+Tools probed (auto-skipped when missing — `—` in the table):
+
+| Tool        | Source                                | Auto-installed |
+|-------------|---------------------------------------|----------------|
+| **phpdup**  | `bin/phpdup` (this repo)              | always         |
+| phpcpd      | `bench/tools/phpcpd.phar`             | yes            |
+| pmd-cpd     | system `pmd cpd`                      | no — install separately |
+| jscpd       | `bench/tools/node_modules/.bin/jscpd` | yes (npm)      |
+| simian      | system `simian`                       | no — commercial |
+
+See [`bench/README.md`](bench/README.md) for adding new tools or
+corpora, and `bench/feature-matrix.md` for the capability comparison.
+
+### Feature matrix
+
+A hand-curated 40+ row capability comparison vs phpcpd, pmd-cpd,
+jscpd, and simian — full table in
+[`bench/feature-matrix.md`](bench/feature-matrix.md). The summary:
+
+**Where phpdup wins:**
+
+- **Suggested-refactor output.** No other tool produces a
+  parameterised function signature, hole inventory, and unified-diff
+  patches. If your goal is "I want to refactor the duplicates",
+  phpdup is the only practical choice.
+- **Type-3 detection.** `--optional-blocks` finds clones that
+  differ in optional segments — phpcpd / pmd-cpd / jscpd require
+  contiguous identical token runs and miss this entirely.
+- **Reporter coverage.** phpdup ships 12 output formats including
+  SARIF, GitLab SAST, Prometheus, Graphviz, and time-series JSONL.
+  None of the others ship more than three.
+- **Pattern-tag classification.** Tagging clusters as `sql-builder`,
+  `crud-handler`, `controller-action`, etc. is unique and lets you
+  filter / route findings by type.
+- **Live workflow.** `--watch` + TUI is for the inner-loop developer
+  who wants feedback as they refactor; nothing else covers this.
+- **Honesty.** phpdup ships a synthetic-fuzz ground-truth scorer
+  (`bench/score.php`) and publishes precision/recall — the others
+  publish neither.
+
+**Where phpdup loses:**
+
+- **Pure speed for exact clones.** phpcpd's tokenizer is dead
+  simple and beats phpdup's AST + APTED pipeline on raw wall time
+  when all you want is "is anything copy-pasted verbatim?". Use
+  `phpdup --exact-only` to close most of that gap.
+- **Cold-start RSS for tiny inputs.** phpcpd peaks ~50 MB; phpdup
+  peaks ~60–80 MB because it loads php-parser, Symfony Console,
+  and the whole pipeline scaffolding.
+- **Mature IDE integration.** PMD has a JetBrains plugin going back
+  over a decade; phpdup has none yet (the contract for a future
+  IntelliJ plugin lives at
+  [`docs/JETBRAINS_PLUGIN.md`](docs/JETBRAINS_PLUGIN.md)). If your
+  team already lives inside PhpStorm's PMD inspections, that's a
+  real lock-in.
+- **Multi-language support.** jscpd handles PHP, JS/TS, Python,
+  Java, Ruby, Go, Rust, etc. from a single binary. phpdup is
+  PHP-only by design.
+- **Maintenance perception.** phpcpd is archived but it's the
+  historical default — many CI pipelines still run it.
+
+**Quick chooser:**
+
+| If you need…                         | Reach for…  |
+|--------------------------------------|-------------|
+| Refactor-actionable output, type-3 detection, pattern tags, any of the unique reporters | **phpdup** |
+| A fast exact-clone gate in CI, no other features | phpcpd |
+| JetBrains IDE inspection / polyglot Java + PHP project | pmd-cpd |
+| Multi-language: PHP + JS + Python + … from one binary | jscpd |
+| Commercial line-based diff finder | simian |
+
+### Internal scaling benchmark
+
+phpdup's own parallel scaling on a real PHP corpus
+(`include/Api/`: 530 files, 3,295 comparable blocks, 96 clusters):
+
+| Configuration                              | Wall time | vs serial |
+|--------------------------------------------|----------:|----------:|
+| serial (`--workers 1`), cold cache         | 61.13 s   | 1.00×     |
+| 4 workers, cold cache                      | 30.39 s   | 2.01×     |
+| 8 workers, cold cache                      | 21.11 s   | 2.90×     |
+| 16 workers, cold cache                     | 17.47 s   | 3.50×     |
+| 8 workers, `--exact-only`                  |  5.74 s   | 10.65×    |
+
+Cluster output is byte-identical across configurations — the
+speedups don't come from skipping work. APTED does correct
+Zhang-Shasha work (slower per pair than a bounded heuristic would
+be); the user-visible win comes from parallelism stacking on top.
+
+Reproduce on your own corpus:
+
+```bash
+rm -rf .phpdup-cache
+/usr/bin/time -f "%e s wall, %M KB rss" \
+  bin/phpdup analyze /path/to/your/code \
+    --min-impact 100 --stats --workers 8 --no-cache
+```
+
+#### Wall-time stage breakdown (8 workers, cold cache)
+
+| Stage         | Time   | Share | Implementation                                       |
+|---------------|-------:|------:|------------------------------------------------------|
+| Preprocess    | 1.4 s  |  7%   | Parse + extract + normalize + fingerprint, parallel  |
+| Cluster       | 14.3 s | 68%   | APTED + parallel candidate-pair scoring              |
+| Refactor      | 4.2 s  | 20%   | Anti-unify + synthesize + pattern-tag (parallel via `RefactorWorker`) |
+| Reporting/IO  | 1.2 s  |  5%   |                                                      |
+| **Total**     | 21.1 s | 100%  | Peak RSS 464 MB                                      |
+
+Clustering still dominates, with the parallel TED workload itself
+being the largest single chunk.
+
+#### Honest reporting on what doesn't pay off
+
+- **APTED alone is a serial regression.** Correct, but slower than
+  the older bounded top-down: 61 s vs 35 s on this corpus, single
+  thread. The win has to come from parallelism stacking on top.
+- **Diminishing returns past 8 workers.** 16 → 8 saves 4 s; the
+  serial sections impose an Amdahl's-law ceiling at ~2× on this
+  corpus.
+- **Lazy AST is currently no faster than full-memory mode at this
+  scale** — the ~2 s reload overhead roughly cancels the small RSS
+  saving. The default (`lazy_ast: true`) is conservative; if you
+  have a large host, set it to `false` in `phpdup.json` for a speed
+  bump.
+- **Incremental warm-cache savings are modest** when the cluster
+  phase dominates total wall time. Incremental shines when the
+  corpus grows by a few files per run.
+- **Persistent cluster cache** wins big on no-change re-runs — it
+  skips Cluster + Refactor entirely. But invalidates wholesale on
+  any block change, so it's "warm" only when no source moved.
+
+#### Tuning knobs that move the needle
+
+- `--workers N` — parallelism level (0 = auto-detect).
+- `--exact-only` — skip near-duplicate detection. **5.74 s wall** on
+  the corpus above (8 workers) — the fastest "is this clean?" gate.
+- `--similarity` (default 0.80) — raising prunes more pairs before
+  TED.
+- `--min-block-size` (default 8) — fewer blocks, fewer pairs.
+- `--max-df` (default 0.01) — stricter rare-gram cutoff.
+- `--auto-tune` — picks the size-appropriate combination of the
+  above based on your corpus shape; explicit flags still win.
+- `--ted-weights=semantic` — weights method calls heavier than
+  literals; slower per pair, but better at clustering behavioural
+  near-duplicates.
+- `--no-incremental` — disable per-file index snapshots.
+- `--no-lazy-ast` — keep all original ASTs in RAM.
+
+For exploratory analysis on any codebase:
+
+```bash
+bin/phpdup analyze src --auto-tune --workers $(nproc)
+```
+
+CI gate (exact clones only, fastest):
+
+```bash
+bin/phpdup analyze src --exact-only --min-impact 30 --workers 8
+```
+
+Massive monorepo (low memory budget):
+
+```bash
+bin/phpdup analyze src \
+  --workers $(nproc) \
+  --min-block-size 20 \
+  --similarity 0.88
+# lazy_ast and incremental are on by default.
+```
 
 ---
 
@@ -1562,6 +2107,37 @@ uploads Clover coverage to Codecov.
 
 Both live under `.phpdup-cache/` next to the project root and are
 safe to delete at any time.
+
+---
+
+## Roadmap
+
+Active planning docs:
+
+- **ORM / DB-aware semantic deduplication** —
+  [`docs/plans/orm-db-semantic-dedup.md`](docs/plans/orm-db-semantic-dedup.md).
+  Six-option matrix (DB-call canonical token rewrite,
+  read→mutate→save trinity collapse, behavioural call-graph
+  similarity, symbol equivalence-class registry, IR lift, ML-
+  learned similarity) with a recommended phased rollout. Closes
+  the gap where today an Eloquent `User::find()->save()` and an
+  equivalent raw-SQL `UPDATE` don't cluster.
+- **LSP server** — deferred until the persistent cluster cache
+  earns its keep on real workloads (it just shipped). LSP needs
+  incremental file-change re-scoring, which the cluster cache
+  unblocks.
+- **Streaming clustering for >10M-block corpora** —
+  `Phpdup\Index\ExternalSort` is the on-disk K-way merge primitive;
+  the wired-in clusterer path is the next layer of work.
+- **VSCode extension** — depends on LSP.
+
+Architectural decisions live under
+[`docs/adr/`](docs/adr/) and algorithm references under
+[`docs/algorithms/`](docs/algorithms/). Tutorials are in
+[`docs/tutorials/`](docs/tutorials/), CI integration recipes in
+[`docs/CI.md`](docs/CI.md), and the IDE-plugin / playground
+contracts in [`docs/JETBRAINS_PLUGIN.md`](docs/JETBRAINS_PLUGIN.md)
++ [`docs/PLAYGROUND.md`](docs/PLAYGROUND.md).
 
 ---
 
