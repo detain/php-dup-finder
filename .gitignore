@@ -8,7 +8,19 @@
 /coverage.xml
 /coverage-html/
 /.caliber/
+
+# Benchmark suite — keep scripts + .ground-truth.json + feature-matrix.md;
+# ignore downloaded tools, cloned corpora (re-fetched by run-all.sh), and
+# per-run results JSON.
+/bench/tools/
 /bench/corpora/
+/bench/corpora/laravel-framework-illuminate-http/
+/bench/corpora/symfony-console/
+/bench/corpora/phpunit/
+/bench/corpora/wordpress-core-wp-includes/
+/bench/corpora/synthetic-fuzz/*.php
+/bench/results/*.json
+/bench/results/*.md
 /bench/results/run-*.json
 
 # Built phar artifacts (produced by build-phar.php / release workflow)
@@ -16,4 +28,3 @@
 /phpdup.phar.sha256
 /phpdup.phar.gz
 /phpdup.phar.bz2
-
