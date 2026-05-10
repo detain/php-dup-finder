@@ -89,6 +89,8 @@ final class ConfigLoader
             trinityCollapse: (bool)($overrides['trinity_collapse'] ?? $data['trinity_collapse'] ?? $base->trinityCollapse),
             dbSymbolsMethods: $this->extractDbSymbols($data, $overrides, 'methods'),
             dbSymbolsFunctions: $this->extractDbSymbols($data, $overrides, 'functions'),
+            scorer: (string)($overrides['scorer'] ?? $data['scorer'] ?? $base->scorer),
+            irThreshold: (float)($overrides['ir_threshold'] ?? $data['ir_threshold'] ?? $base->irThreshold),
         );
     }
 
@@ -258,6 +260,8 @@ final class ConfigLoader
             'db_aware',
             'trinity_collapse',
             'db_symbols',
+            'scorer',
+            'ir_threshold',
         ];
         foreach (array_keys($data) as $k) {
             if (!in_array($k, $known, true)) {
@@ -416,6 +420,12 @@ final class ConfigLoader
         }
         if (array_key_exists('trinity_collapse', $data) && !is_bool($data['trinity_collapse'])) {
             throw new \RuntimeException("trinity_collapse must be a boolean$where");
+        }
+        if (array_key_exists('scorer', $data)) {
+            $assertEnum($data['scorer'], 'scorer', ['default', 'ir']);
+        }
+        if (array_key_exists('ir_threshold', $data)) {
+            $assertFloat01($data['ir_threshold'], 'ir_threshold');
         }
         if (array_key_exists('db_symbols', $data)) {
             if (!is_array($data['db_symbols'])) {

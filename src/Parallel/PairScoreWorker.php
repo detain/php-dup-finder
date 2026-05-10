@@ -29,6 +29,10 @@ final class PairScoreWorker
         private readonly bool $optionalBlocksEnabled = true,
         private readonly float $containmentThreshold = 0.85,
         private readonly float $optionalBlocksMinOverlap = 0.6,
+        // IR-tier fallback — see {@see \Phpdup\Clustering\Clusterer}
+        // for the full rationale. Mirrors the serial scorer there.
+        private readonly bool $irScoring = false,
+        private readonly float $irThreshold = 0.85,
     ) {
     }
 
@@ -62,11 +66,24 @@ final class PairScoreWorker
                 continue;
             }
             // Jaccard rejected — try the type-3 / containment path.
-            if (!$this->optionalBlocksEnabled) continue;
-            $cont  = $containment->similarity($bagA, $bagB);
-            $ratio = $containment->sizeRatio($bagA, $bagB);
-            if ($cont < $this->containmentThreshold || $ratio < $this->optionalBlocksMinOverlap) continue;
-            $edges[] = [$aId, $bId, $cont];
+            if ($this->optionalBlocksEnabled) {
+                $cont  = $containment->similarity($bagA, $bagB);
+                $ratio = $containment->sizeRatio($bagA, $bagB);
+                if ($cont >= $this->containmentThreshold && $ratio >= $this->optionalBlocksMinOverlap) {
+                    $edges[] = [$aId, $bId, $cont];
+                    continue;
+                }
+            }
+            // IR-tier fallback (option 5). Mirrors the Clusterer::scorePairsSerially
+            // logic: lift-rejected pairs (irBag == null on either side)
+            // are silently skipped so unliftable shapes don't pollute
+            // the cluster set.
+            if ($this->irScoring && $a->irBag !== null && $b->irBag !== null) {
+                $irSim = $jaccard->similarity($a->irBag, $b->irBag);
+                if ($irSim >= $this->irThreshold) {
+                    $edges[] = [$aId, $bId, $irSim];
+                }
+            }
         }
         return $edges;
     }

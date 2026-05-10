@@ -103,6 +103,18 @@ final class Config
         // name variant. Lower-cased keys, values as above.
         /** @var array<string,string> */
         public readonly array $dbSymbolsFunctions = [],
+        // Scorer mode (option 5 of docs/plans/orm-db-semantic-dedup.md
+        // — clusterer wiring). 'default' = stock AST-tier scoring;
+        // 'ir' = IR-tier fallback enabled, lifting both blocks via
+        // {@see \Phpdup\Ir\IrLifter} and producing a token-bag for
+        // Jaccard scoring after the AST-level Jaccard has rejected.
+        // Off by default; CLI: `--scorer=ir`.
+        public readonly string $scorer = 'default',
+        // IR-tier Jaccard threshold (option 5). Pairs whose IR token
+        // multiset Jaccard meets-or-exceeds this score are emitted
+        // as edges with the IR similarity as the edge weight, after
+        // AST Jaccard + TED + containment have all rejected.
+        public readonly float $irThreshold = 0.85,
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -132,6 +144,12 @@ final class Config
             throw new \InvalidArgumentException(
                 "ted_weights must be one of " . implode('|', \Phpdup\Similarity\EditCostModel::MODELS)
             );
+        }
+        if (!in_array($scorer, ['default', 'ir'], true)) {
+            throw new \InvalidArgumentException("scorer must be one of default|ir, got: $scorer");
+        }
+        if ($irThreshold < 0 || $irThreshold > 1) {
+            throw new \InvalidArgumentException("ir_threshold out of range");
         }
     }
 
@@ -228,6 +246,8 @@ final class Config
             trinityCollapse:                isset($overrides['trinity_collapse']) ? (bool)$overrides['trinity_collapse'] : $this->trinityCollapse,
             dbSymbolsMethods:               $this->dbSymbolsMethods,
             dbSymbolsFunctions:             $this->dbSymbolsFunctions,
+            scorer:                         isset($overrides['scorer']) ? (string)$overrides['scorer']     : $this->scorer,
+            irThreshold:                    isset($overrides['ir_threshold']) ? (float)$overrides['ir_threshold'] : $this->irThreshold,
         );
     }
 }

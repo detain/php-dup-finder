@@ -1150,12 +1150,15 @@ IR trees: `1.0` for identical printed-token streams (a SHA-1-hash
 fast path is exposed via `IrSimilarity::hash()`), then a
 multiset-Jaccard fallback for partial overlap.
 
-The wire-up of the IR scorer into the `Clusterer` as a fifth tier
-behind `--scorer=ir` is intentionally deferred to a follow-up
-delivery — the plan calls option 5 a research-grade "Phase 3" and
-the prudent thing to do now is ship the building blocks, validate
-them against real ORM/raw-SQL pairs, and only then commit to the
-clustering integration.
+The IR scorer is wired into the `Clusterer` as a fifth tier behind
+`--scorer=ir`. When AST Jaccard / TED / containment all reject a
+pair, the clusterer falls back to multiset Jaccard over the
+pre-computed IR token bags (`Block::$irBag`, populated by
+`PreprocessWorker` when `scorer=ir`); pairs at or above
+`--ir-threshold` (default `0.85`) form edges weighted by the IR
+similarity. Lift failure on either block leaves `irBag` null and
+the IR tier silently skips that pair, preserving the plan's
+risk-mitigation note ("fall back to AST scoring on lift failure").
 
 ### ML-learned pair similarity (sidecar)
 

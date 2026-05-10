@@ -45,6 +45,16 @@ final class Clusterer
         private readonly bool $optionalBlocksEnabled = true,
         private readonly float $containmentThreshold = 0.85,
         private readonly float $optionalBlocksMinOverlap = 0.6,
+        // IR-tier (option 5 of docs/plans/orm-db-semantic-dedup.md):
+        // when enabled, after the AST-level Jaccard / TED / containment
+        // chain rejects a pair, fall back to multiset-Jaccard over the
+        // pre-computed IR token bags ({@see Block::$irBag}). Pairs at
+        // or above $irThreshold emit edges weighted by the IR
+        // similarity. The IR bag is null when lifting failed for
+        // either block; in that case the IR tier is silently skipped
+        // (per the plan's risk-mitigation note).
+        private readonly bool $irScoring = false,
+        private readonly float $irThreshold = 0.85,
     ) {
         $this->containment = new ContainmentSimilarity();
     }
@@ -207,11 +217,25 @@ final class Clusterer
             // it a near-duplicate-with-optional-segments and let AntiUnifier handle
             // the LCS alignment. Edge similarity is the containment score so the
             // Ranker can still distinguish strong subsets from marginal ones.
-            if (!$this->optionalBlocksEnabled) continue;
-            $cont  = $this->containment->similarity($bagA, $bagB);
-            $ratio = $this->containment->sizeRatio($bagA, $bagB);
-            if ($cont < $this->containmentThreshold || $ratio < $this->optionalBlocksMinOverlap) continue;
-            $edges[] = [$aId, $bId, $cont];
+            $cont = null;
+            if ($this->optionalBlocksEnabled) {
+                $cont  = $this->containment->similarity($bagA, $bagB);
+                $ratio = $this->containment->sizeRatio($bagA, $bagB);
+                if ($cont >= $this->containmentThreshold && $ratio >= $this->optionalBlocksMinOverlap) {
+                    $edges[] = [$aId, $bId, $cont];
+                    continue;
+                }
+            }
+            // IR-tier fallback (option 5). Compares pre-computed IR
+            // token bags by multiset Jaccard. Skipped when either bag
+            // is null (i.e. the lift failed) so an unliftable shape
+            // never silently boosts a pair.
+            if ($this->irScoring && $a->irBag !== null && $b->irBag !== null) {
+                $irSim = $this->similarity->similarity($a->irBag, $b->irBag);
+                if ($irSim >= $this->irThreshold) {
+                    $edges[] = [$aId, $bId, $irSim];
+                }
+            }
         }
         return $edges;
     }

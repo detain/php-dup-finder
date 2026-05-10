@@ -264,4 +264,36 @@ final class ConfigLoaderTest extends TestCase
         $this->expectExceptionMessage('trinity_collapse must be a boolean');
         (new ConfigLoader())->validate(['trinity_collapse' => 1]);
     }
+
+    public function testScorerDefaultsToDefault(): void
+    {
+        $config = (new ConfigLoader())->load(paths: ['src'], configFile: null);
+        $this->assertSame('default', $config->scorer);
+        $this->assertSame(0.85, $config->irThreshold);
+    }
+
+    public function testScorerOverrideSetsIrMode(): void
+    {
+        $config = (new ConfigLoader())->load(
+            paths: ['src'],
+            configFile: null,
+            overrides: ['scorer' => 'ir', 'ir_threshold' => 0.9],
+        );
+        $this->assertSame('ir', $config->scorer);
+        $this->assertSame(0.9, $config->irThreshold);
+    }
+
+    public function testScorerValidationRejectsUnknownTier(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('scorer must be one of default|ir');
+        (new ConfigLoader())->validate(['scorer' => 'magic']);
+    }
+
+    public function testIrThresholdValidationRejectsOutOfRange(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('ir_threshold must be in [0, 1]');
+        (new ConfigLoader())->validate(['ir_threshold' => 2.0]);
+    }
 }

@@ -28,6 +28,18 @@ final class Block
     /** @var array<string,int>|null token -> count */
     public ?array $ngramBag = null;
 
+    /**
+     * IR token-bag fingerprint (multiset of {@see \Phpdup\Ir\IrPrinter}
+     * tokens), populated by {@see \Phpdup\Parallel\PreprocessWorker}
+     * only when `--scorer=ir` is on. Null otherwise — and null is what
+     * {@see \Phpdup\Clustering\Clusterer} treats as "fall back to
+     * AST-level scoring", per option 5 of
+     * `docs/plans/orm-db-semantic-dedup.md`'s risk-mitigation note.
+     *
+     * @var array<string,int>|null
+     */
+    public ?array $irBag = null;
+
     /** @var array<string,mixed> bookkeeping for normalization holes */
     public array $holeMap = [];
 
