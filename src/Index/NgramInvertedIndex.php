@@ -208,11 +208,14 @@ final class NgramInvertedIndex
 
     private function computeCacheKey(BlockIndex $index): string
     {
-        $key = '';
+        $hashes = [];
         foreach ($index->all() as $b) {
-            $key = sha1($key . $b->structuralHash);
+            $hashes[] = $b->structuralHash;
         }
-        return $key;
+        // Sort for canonical order — ensures same cache key regardless of
+        // $index->all() iteration order (which may vary by PHP version/insertion order).
+        sort($hashes);
+        return sha1(implode('', $hashes));
     }
 
     private function cacheFilePath(string $cacheKey): string

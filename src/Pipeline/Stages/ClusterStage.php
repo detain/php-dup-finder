@@ -143,6 +143,7 @@ final class ClusterStage implements CooperativeStageInterface
                 ? new \Phpdup\Ml\MlPairClient(baseUrl: $config->mlPairUrl)
                 : null,
             mlPairThreshold:          $config->mlPairThreshold,
+            ngramCacheDir:            $config->cacheDir,
         );
 
         $edges = null;

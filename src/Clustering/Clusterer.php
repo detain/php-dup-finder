@@ -69,6 +69,10 @@ final class Clusterer
         // note).
         private readonly ?PairScorer $mlPairClient = null,
         private readonly float $mlPairThreshold = 0.80,
+        // Cache directory for NgramInvertedIndex disk cache. Enables persistent
+        // caching across runs so the inverted index is only rebuilt when block
+        // content changes. Empty string = no disk cache (use APCu if available).
+        private readonly string $ngramCacheDir = '',
     ) {
         $this->containment = new ContainmentSimilarity();
     }
@@ -95,7 +99,7 @@ final class Clusterer
             $output->writeln(sprintf('ngram-index: building inverted index for %d blocks [%s]', $totalBlocks, MemoryDebug::getMemoryUsage()));
         }
 
-        $inverted = new NgramInvertedIndex();
+        $inverted = new NgramInvertedIndex($this->ngramCacheDir);
         $invertedProgressCallback = static function (int $indexed, int $total) use ($output): void {
             if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG && $indexed % 5000 === 0) {
                 $output->writeln(sprintf('ngram-index: indexed %d / %d blocks [%s]', $indexed, $total, MemoryDebug::getMemoryUsage()));
@@ -202,7 +206,7 @@ final class Clusterer
         // Build the inverted index once in the parent. After fork, children
         // inherit this via COW - the postings arrays are shared read-only
         // across processes without duplication.
-        $inverted = new NgramInvertedIndex();
+        $inverted = new NgramInvertedIndex($this->ngramCacheDir);
         $invertedProgressCallback = static function (int $indexed, int $total) use ($output): void {
             if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG && $indexed % 5000 === 0) {
                 $output->writeln(sprintf('ngram-index: indexed %d / %d blocks [%s]', $indexed, $total, MemoryDebug::getMemoryUsage()));
