@@ -120,4 +120,84 @@ final class DbOpRegistryTest extends TestCase
         $this->assertSame(DbOpRegistry::OP_WRITE, $r->lookupMethod('insertId'));
         $this->assertSame(DbOpRegistry::OP_READ,  $r->lookupMethod('count'));
     }
+
+    public function testAsyncAmphpMySqlFunctions(): void
+    {
+        $r = DbOpRegistry::default();
+        $this->assertSame(DbOpRegistry::OP_QUERY, $r->lookupFunction('amysql_query'));
+        $this->assertSame(DbOpRegistry::OP_READ,  $r->lookupFunction('amysql_fetch_assoc'));
+    }
+
+    public function testAsyncReactMySqlFunctions(): void
+    {
+        $r = DbOpRegistry::default();
+        $this->assertSame(DbOpRegistry::OP_QUERY, $r->lookupFunction('react_mysql_query'));
+        $this->assertSame(DbOpRegistry::OP_READ,  $r->lookupFunction('react_mysql_fetch_assoc'));
+    }
+
+    public function testAsyncSwooleCoroutineMySqlFunctions(): void
+    {
+        $r = DbOpRegistry::default();
+        $this->assertSame(DbOpRegistry::OP_QUERY, $r->lookupFunction('swoole_mysql_query'));
+        $this->assertSame(DbOpRegistry::OP_READ,  $r->lookupFunction('swoole_mysql_fetch_assoc'));
+    }
+
+    public function testAsyncWorkermanMySqlFunctions(): void
+    {
+        $r = DbOpRegistry::default();
+        $this->assertSame(DbOpRegistry::OP_QUERY, $r->lookupFunction('workerman_mysql_query'));
+    }
+
+    public function testAsyncAmphpPostgresFunctions(): void
+    {
+        $r = DbOpRegistry::default();
+        $this->assertSame(DbOpRegistry::OP_QUERY, $r->lookupFunction('apg_query'));
+        $this->assertSame(DbOpRegistry::OP_READ,  $r->lookupFunction('apg_fetch_assoc'));
+    }
+
+    public function testAsyncReactPostgresFunctions(): void
+    {
+        $r = DbOpRegistry::default();
+        $this->assertSame(DbOpRegistry::OP_QUERY, $r->lookupFunction('react_pg_query'));
+        $this->assertSame(DbOpRegistry::OP_READ,  $r->lookupFunction('react_pg_fetch_assoc'));
+    }
+
+    public function testAsyncSwooleCoroutinePostgresFunctions(): void
+    {
+        $r = DbOpRegistry::default();
+        $this->assertSame(DbOpRegistry::OP_QUERY, $r->lookupFunction('swoole_postgres_query'));
+    }
+
+    public function testOracleOci8Functions(): void
+    {
+        $r = DbOpRegistry::default();
+        $this->assertSame(DbOpRegistry::OP_EXECUTE, $r->lookupFunction('oci_parse'));
+        $this->assertSame(DbOpRegistry::OP_EXECUTE, $r->lookupFunction('oci_execute'));
+        $this->assertSame(DbOpRegistry::OP_READ,    $r->lookupFunction('oci_fetch'));
+        $this->assertSame(DbOpRegistry::OP_WRITE,   $r->lookupFunction('oci_commit'));
+        $this->assertSame(DbOpRegistry::OP_WRITE,   $r->lookupFunction('oci_rollback'));
+    }
+
+    public function testCassandraPhpcassaFunctions(): void
+    {
+        $r = DbOpRegistry::default();
+        $this->assertSame(DbOpRegistry::OP_QUERY, $r->lookupFunction('phpcassa_query'));
+        $this->assertSame(DbOpRegistry::OP_READ,  $r->lookupFunction('phpcassa_fetch'));
+    }
+
+    public function testLevelDbFunctions(): void
+    {
+        $r = DbOpRegistry::default();
+        $this->assertSame(DbOpRegistry::OP_READ,    $r->lookupFunction('leveldb_get'));
+        $this->assertSame(DbOpRegistry::OP_WRITE,   $r->lookupFunction('leveldb_put'));
+        $this->assertSame(DbOpRegistry::OP_DELETE,  $r->lookupFunction('leveldb_delete'));
+    }
+
+    public function testMemcachedFunctions(): void
+    {
+        $r = DbOpRegistry::default();
+        $this->assertSame(DbOpRegistry::OP_READ,    $r->lookupFunction('memcached_get'));
+        $this->assertSame(DbOpRegistry::OP_WRITE,   $r->lookupFunction('memcached_set'));
+        $this->assertSame(DbOpRegistry::OP_DELETE,  $r->lookupFunction('memcached_delete'));
+    }
 }

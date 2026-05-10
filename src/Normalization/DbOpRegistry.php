@@ -221,6 +221,77 @@ final class DbOpRegistry
         'db2_affected_rows'   => self::OP_READ,
         'db2_free_result'     => self::OP_READ,
         'db2_get_last_insert_id' => self::OP_WRITE,
+
+        // -------------------- Async MySQL --------------------
+
+        // amphp/mysql
+        'amysql_query'          => self::OP_QUERY,
+        'amysql_fetch_assoc'   => self::OP_READ,
+        'amysql_fetch_row'     => self::OP_READ,
+        'amysql_free_result'   => self::OP_READ,
+
+        // reactphp/mysql
+        'react_mysql_query'    => self::OP_QUERY,
+        'react_mysql_fetch_assoc' => self::OP_READ,
+        'react_mysql_fetch_row'   => self::OP_READ,
+
+        // Swoole Coroutine MySQL
+        'swoole_mysql_query'   => self::OP_QUERY,
+        'swoole_mysql_fetch_assoc' => self::OP_READ,
+        'swoole_mysql_fetch_row'   => self::OP_READ,
+
+        // OpenSwoole MySQL (same as Swoole)
+        'openswoole_mysql_query' => self::OP_QUERY,
+
+        // Workerman mysql
+        'workerman_mysql_query' => self::OP_QUERY,
+
+        // -------------------- Async PostgreSQL --------------------
+
+        // amphp/postgres
+        'apg_query'            => self::OP_QUERY,
+        'apg_fetch_assoc'     => self::OP_READ,
+        'apg_fetch_row'       => self::OP_READ,
+        'apg_free_result'     => self::OP_READ,
+
+        // reactphp/postgres
+        'react_pg_query'      => self::OP_QUERY,
+        'react_pg_fetch_assoc' => self::OP_READ,
+        'react_pg_fetch_row'  => self::OP_READ,
+
+        // Swoole coroutine postgres
+        'swoole_postgres_query' => self::OP_QUERY,
+
+        // -------------------- Oracle (OCI8) --------------------
+        'oci_parse'           => self::OP_EXECUTE,
+        'oci_execute'         => self::OP_EXECUTE,
+        'oci_fetch'           => self::OP_READ,
+        'oci_fetch_assoc'     => self::OP_READ,
+        'oci_fetch_row'       => self::OP_READ,
+        'oci_fetch_object'    => self::OP_READ,
+        'oci_free_statement'  => self::OP_READ,
+        'oci_commit'          => self::OP_WRITE,
+        'oci_rollback'        => self::OP_WRITE,
+
+        // -------------------- Cassandra (phpcassa) --------------------
+        'phpcassa_query'      => self::OP_QUERY,
+        'phpcassa_fetch'      => self::OP_READ,
+
+        // -------------------- LevelDB --------------------
+        'leveldb_get'         => self::OP_READ,
+        'leveldb_put'         => self::OP_WRITE,
+        'leveldb_delete'      => self::OP_DELETE,
+        'leveldb_open'        => self::OP_READ,
+
+        // -------------------- Memcached --------------------
+        'memcached_get'       => self::OP_READ,
+        'memcached_set'       => self::OP_WRITE,
+        'memcached_add'       => self::OP_WRITE,
+        'memcached_replace'   => self::OP_WRITE,
+        'memcached_delete'    => self::OP_DELETE,
+        'memcached_increment' => self::OP_WRITE,
+        'memcached_decrement' => self::OP_WRITE,
+        'memcached_flush'     => self::OP_WRITE,
     ];
 
     /** @var array<string,string> Method-name lookup, lower-cased. */
