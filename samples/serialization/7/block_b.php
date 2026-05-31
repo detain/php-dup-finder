@@ -1,0 +1,111 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Export;
+
+class ProductCsvExporter
+{
+    private string $delimiter = ',';
+    private string $enclosure = '"';
+    private string $lineEnding = "\r\n";
+
+    public function export(array $products, string $filepath): int
+    {
+        $handle = fopen($filepath, 'w');
+
+        if ($handle === false) {
+            throw new \RuntimeException("Cannot open file for writing: {$filepath}");
+        }
+
+        $this->writeHeader($handle);
+        $rowCount = 0;
+
+        foreach ($products as $product) {
+            $this->writeRow($handle, $product);
+            $rowCount++;
+        }
+
+        fclose($handle);
+
+        return $rowCount;
+    }
+
+    public function exportToString(array $products): string
+    {
+        $handle = fopen('php://memory', 'r+');
+
+        $this->writeHeader($handle);
+
+        foreach ($products as $product) {
+            $this->writeRow($handle, $product);
+        }
+
+        rewind($handle);
+        $content = stream_get_contents($handle);
+        fclose($handle);
+
+        return $content;
+    }
+
+    private function writeHeader($handle): void
+    {
+        $headers = [
+            'ID',
+            'Name',
+            'Description',
+            'Price Amount',
+            'Price Currency',
+            'Category ID',
+            'Image URL',
+            'Stock Quantity',
+            'Is Available',
+            'Tags',
+            'Created At',
+            'Updated At'
+        ];
+
+        fputcsv($handle, $headers, $this->delimiter, $this->enclosure, $this->lineEnding);
+    }
+
+    private function writeRow($handle, Product $product): void
+    {
+        $row = [
+            $product->getId(),
+            $product->getName(),
+            $product->getDescription() ?? '',
+            (string)$product->getPrice(),
+            $product->getCurrency(),
+            $product->getCategoryId(),
+            $product->getImageUrl() ?? '',
+            (string)$product->getStockQuantity(),
+            $product->isAvailable() ? 'Yes' : 'No',
+            implode(';', $product->getTags()),
+            $product->getCreatedAt()->format('Y-m-d H:i:s'),
+            $product->getUpdatedAt()?->format('Y-m-d H:i:s') ?? ''
+        ];
+
+        fputcsv($handle, $row, $this->delimiter, $this->enclosure, $this->lineEnding);
+    }
+
+    public function generateFilename(string $prefix = 'export'): string
+    {
+        $timestamp = date('Y-m-d_His');
+        return "{$prefix}_{$timestamp}.csv";
+    }
+
+    public function setDelimiter(string $delimiter): void
+    {
+        $this->delimiter = $delimiter;
+    }
+
+    public function setEnclosure(string $enclosure): void
+    {
+        $this->enclosure = $enclosure;
+    }
+
+    public function getContentType(): string
+    {
+        return 'text/csv; charset=utf-8';
+    }
+}

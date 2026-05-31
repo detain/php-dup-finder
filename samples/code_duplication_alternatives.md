@@ -1,0 +1,5 @@
+[sebastianbergmann/phpcpd: Copy/Paste Detector (CPD) for PHP code.](https://github.com/sebastianbergmann/phpcpd)
+[phpmd/phpmd: PHPMD is a spin-off project of PHP Depend and aims to be a PHP equivalent of the well known Java tool PMD. PHPMD can be seen as an user friendly frontend application for the raw metrics stream measured by PHP Depend.](https://github.com/phpmd/phpmd)
+[phpstan/phpstan: PHP Static Analysis Tool - discover bugs in your code without running it!](https://github.com/phpstan/phpstan)
+[vimeo/psalm: A PHP static analysis tool for finding errors and security vulnerabilities in PHP applications](https://github.com/vimeo/psalm)
+[kucherenko/jscpd: Copy/paste detector for programming source code, supports 223 formats. AI-ready with token-efficient reporter, skill and MCP server.](https://github.com/kucherenko/jscpd)

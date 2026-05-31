@@ -1,0 +1,3604 @@
+{
+  "types": [
+    {
+      "name": "algorithm",
+      "description": "Algorithm duplication occurs when the same algorithmic pattern is applied to different data with different thresholds and adjustments. Each variant maintains the same computational structure while applying different business rules.",
+      "sample_count": 20,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_algorithm_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_algorithm_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_algorithm_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_algorithm_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_algorithm_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_algorithm_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_algorithm_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_algorithm_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_algorithm_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_algorithm_duplication_10.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 11,
+          "source_file": "type_algorithm_duplication_21.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 12,
+          "source_file": "type_algorithm_duplication_22.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 13,
+          "source_file": "type_algorithm_duplication_23.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 14,
+          "source_file": "type_algorithm_duplication_24.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 15,
+          "source_file": "type_algorithm_duplication_25.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 16,
+          "source_file": "type_algorithm_duplication_26.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 17,
+          "source_file": "type_algorithm_duplication_27.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 18,
+          "source_file": "type_algorithm_duplication_28.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 19,
+          "source_file": "type_algorithm_duplication_29.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 20,
+          "source_file": "type_algorithm_duplication_30.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "architectural",
+      "description": "Three ETL importers (CSV contacts, JSON inventory, XML invoices) each reimplement the parser \u2192 transformer \u2192 loader pipeline. Each module ships a Parser that yields raw rows, a Transformer that normalizes them into module DTOs, and a Loader that batches inserts in a transaction with `flush()`. The architecture is duplicated; only parse format and target schema differ.",
+      "sample_count": 10,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_architectural_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_architectural_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_architectural_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_architectural_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_architectural_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_architectural_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_architectural_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_architectural_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_architectural_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_architectural_duplication_10.md",
+          "source_dir": "samples"
+        }
+      ]
+    },
+    {
+      "name": "behavioral",
+      "description": "Repeated permission and capability verification logic across different modules. Each module implements role-based access control with identical patterns.",
+      "sample_count": 20,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_behavioral_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_behavioral_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_behavioral_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_behavioral_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_behavioral_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_behavioral_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_behavioral_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_behavioral_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_behavioral_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_behavioral_duplication_10.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 11,
+          "source_file": "type_behavioral_duplication_31.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 12,
+          "source_file": "type_behavioral_duplication_32.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 13,
+          "source_file": "type_behavioral_duplication_33.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 14,
+          "source_file": "type_behavioral_duplication_34.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 15,
+          "source_file": "type_behavioral_duplication_35.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 16,
+          "source_file": "type_behavioral_duplication_36.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 17,
+          "source_file": "type_behavioral_duplication_37.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 18,
+          "source_file": "type_behavioral_duplication_38.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 19,
+          "source_file": "type_behavioral_duplication_39.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 20,
+          "source_file": "type_behavioral_duplication_40.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "build",
+      "description": "Build duplication occurs when identical deployment configuration patterns (health checks, readiness probes, environment variable setup, resource limits) are duplicated across multiple container or service deployment configurations. This anti-pattern emerges in microservices architectures where each service needs similar operational concerns but lacks a shared configuration template or base spec, leading to copy-pasted YAML or JSON deployment manifests.",
+      "sample_count": 9,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_build_duplication_1.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 2,
+          "source_file": "type_build_duplication_3.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 3,
+          "source_file": "type_build_duplication_4.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 4,
+          "source_file": "type_build_duplication_5.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 5,
+          "source_file": "type_build_duplication_6.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 6,
+          "source_file": "type_build_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 7,
+          "source_file": "type_build_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 8,
+          "source_file": "type_build_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 9,
+          "source_file": "type_build_duplication_10.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "caching",
+      "description": "Caching duplication occurs when identical cache management patterns - invalidation logic, refresh strategies, TTL handling, and cache warming - are implemented repeatedly for different data types. Each cache handler follows the same architectural template while only the domain data and keys differ, creating code duplication across the caching layer.",
+      "sample_count": 10,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_caching_duplication_1.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 2,
+          "source_file": "type_caching_duplication_2.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 3,
+          "source_file": "type_caching_duplication_3.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 4,
+          "source_file": "type_caching_duplication_4.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 5,
+          "source_file": "type_caching_duplication_5.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 6,
+          "source_file": "type_caching_duplication_6.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 7,
+          "source_file": "type_caching_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 8,
+          "source_file": "type_caching_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 9,
+          "source_file": "type_caching_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 10,
+          "source_file": "type_caching_duplication_10.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "clone_type_1",
+      "description": "Type 1 duplication occurs when developers copy and paste code with only comments changed. This is common in rate limiting implementations where different algorithms (fixed window, sliding window, token bucket) are implemented with nearly identical surrounding infrastructure code.",
+      "sample_count": 20,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_clone_type_1_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_clone_type_1_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_clone_type_1_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_clone_type_1_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_clone_type_1_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_clone_type_1_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_clone_type_1_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_clone_type_1_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_clone_type_1_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_clone_type_1_duplication_10.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 11,
+          "source_file": "type_clone_type_1_duplication_1.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 12,
+          "source_file": "type_clone_type_1_duplication_2.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 13,
+          "source_file": "type_clone_type_1_duplication_3.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 14,
+          "source_file": "type_clone_type_1_duplication_4.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 15,
+          "source_file": "type_clone_type_1_duplication_5.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 16,
+          "source_file": "type_clone_type_1_duplication_6.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 17,
+          "source_file": "type_clone_type_1_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 18,
+          "source_file": "type_clone_type_1_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 19,
+          "source_file": "type_clone_type_1_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 20,
+          "source_file": "type_clone_type_1_duplication_10.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "clone_type_2",
+      "description": "Type 2 duplication occurs when identical logic is implemented multiple times with only variable and method names changed. The code structure, control flow, and algorithmic approach remain the same. This often happens in billing/invoicing systems where the same calculation and generation logic is applied to different billing entities.",
+      "sample_count": 10,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_clone_type_2_duplication_4.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 2,
+          "source_file": "type_clone_type_2_duplication_5.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 3,
+          "source_file": "type_clone_type_2_duplication_6.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 4,
+          "source_file": "type_clone_type_2_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 5,
+          "source_file": "type_clone_type_2_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 6,
+          "source_file": "type_clone_type_2_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 7,
+          "source_file": "type_clone_type_2_duplication_10.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 8,
+          "source_file": "type_clone_type_2_duplication_11.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 9,
+          "source_file": "type_clone_type_2_duplication_12.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 10,
+          "source_file": "type_clone_type_2_duplication_13.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "clone_type_3",
+      "description": "Type 3 duplication occurs when code blocks are similar but have differences in variable names, literals, and minor structural variations. The overall logic flow is preserved but with adaptations. This commonly happens in router/dispatcher classes.",
+      "sample_count": 15,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_clone_type_3_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 2,
+          "source_file": "type_clone_type_3_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 3,
+          "source_file": "type_clone_type_3_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 4,
+          "source_file": "type_clone_type_3_duplication_10.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 5,
+          "source_file": "type_clone_type_3_duplication_11.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 6,
+          "source_file": "type_clone_type_3_duplication_12.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 7,
+          "source_file": "type_clone_type_3_duplication_13.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 8,
+          "source_file": "type_clone_type_3_duplication_14.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 9,
+          "source_file": "type_clone_type_3_duplication_15.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 10,
+          "source_file": "type_clone_type_3_duplication_16.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 11,
+          "source_file": "type_clone_type_3_duplication_17.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 12,
+          "source_file": "type_clone_type_3_duplication_18.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 13,
+          "source_file": "type_clone_type_3_duplication_19.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 14,
+          "source_file": "type_clone_type_3_duplication_20.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 15,
+          "source_file": "type_clone_type_3_duplication_21.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "clone_type_4",
+      "description": "Type 4 duplication occurs when logically equivalent operations are implemented through different algorithmic approaches. Caching strategies (LRU vs LFU vs TTL-based), memory management approaches, or retry mechanisms all accomplish the same goals. This duplication type is important because different algorithms have different performance and resource tradeoffs.",
+      "sample_count": 10,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_clone_type_4_duplication_11.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 2,
+          "source_file": "type_clone_type_4_duplication_12.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 3,
+          "source_file": "type_clone_type_4_duplication_13.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 4,
+          "source_file": "type_clone_type_4_duplication_14.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 5,
+          "source_file": "type_clone_type_4_duplication_15.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 6,
+          "source_file": "type_clone_type_4_duplication_16.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 7,
+          "source_file": "type_clone_type_4_duplication_17.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 8,
+          "source_file": "type_clone_type_4_duplication_18.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 9,
+          "source_file": "type_clone_type_4_duplication_19.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 10,
+          "source_file": "type_clone_type_4_duplication_20.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "configuration",
+      "description": "Configuration duplication occurs when identical retry policies, circuit breaker thresholds, and fallback behaviors are scattered across multiple external service clients. When the same backoff strategy, timeout values, or failure thresholds need to be updated, developers must find and modify every copy, risking inconsistent behavior and potential outages when some copies are forgotten.",
+      "sample_count": 20,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_configuration_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_configuration_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_configuration_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_configuration_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_configuration_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_configuration_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_configuration_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_configuration_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_configuration_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_configuration_duplication_10.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 11,
+          "source_file": "type_configuration_duplication_1.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 12,
+          "source_file": "type_configuration_duplication_2.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 13,
+          "source_file": "type_configuration_duplication_3.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 14,
+          "source_file": "type_configuration_duplication_4.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 15,
+          "source_file": "type_configuration_duplication_5.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 16,
+          "source_file": "type_configuration_duplication_6.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 17,
+          "source_file": "type_configuration_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 18,
+          "source_file": "type_configuration_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 19,
+          "source_file": "type_configuration_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 20,
+          "source_file": "type_configuration_duplication_10.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "copy_paste",
+      "description": "Copy Paste Duplication duplication examples",
+      "sample_count": 60,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_copy_paste_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_copy_paste_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_copy_paste_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_copy_paste_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_copy_paste_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_copy_paste_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_copy_paste_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_copy_paste_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_copy_paste_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_copy_paste_duplication_10.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 11,
+          "source_file": "type_copy_paste_duplication_1.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 12,
+          "source_file": "type_copy_paste_duplication_2.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 13,
+          "source_file": "type_copy_paste_duplication_3.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 14,
+          "source_file": "type_copy_paste_duplication_4.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 15,
+          "source_file": "type_copy_paste_duplication_5.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 16,
+          "source_file": "type_copy_paste_duplication_6.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 17,
+          "source_file": "type_copy_paste_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 18,
+          "source_file": "type_copy_paste_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 19,
+          "source_file": "type_copy_paste_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 20,
+          "source_file": "type_copy_paste_duplication_10.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 21,
+          "source_file": "type_copy_paste_duplication_11.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 22,
+          "source_file": "type_copy_paste_duplication_12.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 23,
+          "source_file": "type_copy_paste_duplication_13.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 24,
+          "source_file": "type_copy_paste_duplication_14.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 25,
+          "source_file": "type_copy_paste_duplication_15.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 26,
+          "source_file": "type_copy_paste_duplication_16.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 27,
+          "source_file": "type_copy_paste_duplication_17.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 28,
+          "source_file": "type_copy_paste_duplication_18.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 29,
+          "source_file": "type_copy_paste_duplication_19.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 30,
+          "source_file": "type_copy_paste_duplication_20.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 31,
+          "source_file": "type_copy_paste_duplication_21.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 32,
+          "source_file": "type_copy_paste_duplication_22.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 33,
+          "source_file": "type_copy_paste_duplication_23.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 34,
+          "source_file": "type_copy_paste_duplication_24.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 35,
+          "source_file": "type_copy_paste_duplication_25.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 36,
+          "source_file": "type_copy_paste_duplication_26.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 37,
+          "source_file": "type_copy_paste_duplication_27.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 38,
+          "source_file": "type_copy_paste_duplication_28.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 39,
+          "source_file": "type_copy_paste_duplication_29.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 40,
+          "source_file": "type_copy_paste_duplication_30.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 41,
+          "source_file": "type_copy_paste_duplication_31.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 42,
+          "source_file": "type_copy_paste_duplication_32.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 43,
+          "source_file": "type_copy_paste_duplication_33.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 44,
+          "source_file": "type_copy_paste_duplication_34.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 45,
+          "source_file": "type_copy_paste_duplication_35.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 46,
+          "source_file": "type_copy_paste_duplication_36.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 47,
+          "source_file": "type_copy_paste_duplication_37.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 48,
+          "source_file": "type_copy_paste_duplication_38.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 49,
+          "source_file": "type_copy_paste_duplication_39.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 50,
+          "source_file": "type_copy_paste_duplication_40.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 51,
+          "source_file": "type_copy_paste_duplication_41.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 52,
+          "source_file": "type_copy_paste_duplication_42.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 53,
+          "source_file": "type_copy_paste_duplication_43.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 54,
+          "source_file": "type_copy_paste_duplication_44.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 55,
+          "source_file": "type_copy_paste_duplication_45.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 56,
+          "source_file": "type_copy_paste_duplication_46.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 57,
+          "source_file": "type_copy_paste_duplication_47.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 58,
+          "source_file": "type_copy_paste_duplication_48.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 59,
+          "source_file": "type_copy_paste_duplication_49.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 60,
+          "source_file": "type_copy_paste_duplication_50.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "cross_service",
+      "description": "Inventory reservation rules (effective stock = on-hand minus reserved minus safety-stock, with backorder allowance for tier-1 SKUs) are independently coded in the cart service, the warehouse service, and the order service. Each service answers \"is X reservable\" differently, leading to oversells when the cart and warehouse disagree.",
+      "sample_count": 10,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_cross_service_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_cross_service_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_cross_service_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_cross_service_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_cross_service_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_cross_service_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_cross_service_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_cross_service_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_cross_service_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_cross_service_duplication_10.md",
+          "source_dir": "samples"
+        }
+      ]
+    },
+    {
+      "name": "data",
+      "description": "Data duplication occurs when error codes, message formats, and logging configurations are repeated across multiple error handling classes. This makes it difficult to maintain consistent error handling and can lead to inconsistent user-facing messages.",
+      "sample_count": 20,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_data_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_data_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_data_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_data_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_data_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_data_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_data_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_data_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_data_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_data_duplication_10.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 11,
+          "source_file": "type_data_duplication_1.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 12,
+          "source_file": "type_data_duplication_2.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 13,
+          "source_file": "type_data_duplication_3.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 14,
+          "source_file": "type_data_duplication_4.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 15,
+          "source_file": "type_data_duplication_5.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 16,
+          "source_file": "type_data_duplication_6.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 17,
+          "source_file": "type_data_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 18,
+          "source_file": "type_data_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 19,
+          "source_file": "type_data_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 20,
+          "source_file": "type_data_duplication_10.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "dependency",
+      "description": "Dependency duplication occurs when the same authentication service is manually injected into multiple service classes rather than being centralized through a security context or authentication facade. This leads to duplicated authentication code, inconsistent authorization checks, and difficulty in changing authentication mechanisms.",
+      "sample_count": 10,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_dependency_duplication_1.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 2,
+          "source_file": "type_dependency_duplication_2.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 3,
+          "source_file": "type_dependency_duplication_3.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 4,
+          "source_file": "type_dependency_duplication_4.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 5,
+          "source_file": "type_dependency_duplication_5.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 6,
+          "source_file": "type_dependency_duplication_6.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 7,
+          "source_file": "type_dependency_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 8,
+          "source_file": "type_dependency_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 9,
+          "source_file": "type_dependency_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 10,
+          "source_file": "type_dependency_duplication_10.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "dependency_config",
+      "description": "Configuration service or config accessor is injected into many handlers, creating repetitive constructor parameters. When configuration structure changes (e.g., adding environment-specific overrides), developers must modify every handler that receives the config.",
+      "sample_count": 1,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_dependency_duplication_config_13.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "dependency_database",
+      "description": "Database connection or EntityManager is passed to every repository, creating constructor bloat and making it difficult to swap out the database connection or add connection pooling. This pattern should use a base repository class or dependency injection container autowiring.",
+      "sample_count": 1,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_dependency_duplication_database_12.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "dependency_logger",
+      "description": "Logger injection via constructors is duplicated across nearly every service class. When a new logging field is needed (e.g., adding request ID context), developers must modify every service that accepts a logger, creating a massive change that should be centralized.",
+      "sample_count": 1,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_dependency_duplication_logger_11.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "documentation",
+      "description": "Error code documentation duplication occurs when the same API rate limiting policies, throttle configurations, and quota management rules are documented across multiple disconnected sources including API documentation, code comments, admin dashboards, and SDK implementations. When rate limits change, these scattered documents become inconsistent, leading to unexpected API rejections and frustrated developers.",
+      "sample_count": 10,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_documentation_duplication_1.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 2,
+          "source_file": "type_documentation_duplication_2.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 3,
+          "source_file": "type_documentation_duplication_3.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 4,
+          "source_file": "type_documentation_duplication_4.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 5,
+          "source_file": "type_documentation_duplication_5.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 6,
+          "source_file": "type_documentation_duplication_6.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 7,
+          "source_file": "type_documentation_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 8,
+          "source_file": "type_documentation_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 9,
+          "source_file": "type_documentation_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 10,
+          "source_file": "type_documentation_duplication_10.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "documentation_api",
+      "description": "API parameter documentation is frequently duplicated across OpenAPI specs, controller docblocks, and model PHPDoc annotations. When a parameter changes, developers must update multiple locations, and inconsistencies often slip through, leading to confusing or incorrect documentation.",
+      "sample_count": 1,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_documentation_duplication_api_8.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "documentation_business",
+      "description": "Business rule documentation is scattered across code comments, README files, and ticket comments. When business rules change, not all documentation locations are updated, leading to contradictory or outdated information that causes confusion for developers and stakeholders.",
+      "sample_count": 1,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_documentation_duplication_business_9.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "documentation_deployment",
+      "description": "Deployment steps are often documented in multiple places\u2014runbooks, README files, and deployment scripts\u2014creating maintenance burden and the risk of inconsistent information. When deployment procedures change, developers must remember to update all documentation locations or risk confusion during critical deployments.",
+      "sample_count": 1,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_documentation_duplication_deployment_10.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "error_handling_fallback",
+      "description": "Fallback behavior patterns\u2014handling cache misses, service unavailability, and timeout scenarios\u2014are frequently duplicated across the codebase. Each service implements its own fallback logic, leading to inconsistent behavior and code duplication when the pattern should be centralized.",
+      "sample_count": 1,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_error_handling_duplication_fallback_6.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "error_handling_logging",
+      "description": "Exception logging patterns are often duplicated across service layers, with each module implementing its own try-catch blocks that log errors with varying formats, levels, and context data. This inconsistency makes debugging difficult and creates redundant logging code throughout the codebase.",
+      "sample_count": 1,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_error_handling_duplication_logging_5.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "error_handling_retry",
+      "description": "API retry logic with exponential backoff is often duplicated across services that need to handle transient failures. Payment gateways, shipping API clients, and inventory synchronization systems each implement their own retry mechanisms, leading to inconsistent behavior and potential infinite loops or missed rate limiting.",
+      "sample_count": 1,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_error_handling_duplication_retry_4.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "event",
+      "description": "Event duplication in campaign management handlers occurs when identical workflow patterns for status changes, notifications, and data updates are implemented repeatedly for different campaign states. Each handler follows the same architectural template - state mutation, notification dispatch, analytics recording, and audit logging - while only the domain logic differs.",
+      "sample_count": 10,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_event_duplication_1.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 2,
+          "source_file": "type_event_duplication_2.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 3,
+          "source_file": "type_event_duplication_3.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 4,
+          "source_file": "type_event_duplication_4.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 5,
+          "source_file": "type_event_duplication_5.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 6,
+          "source_file": "type_event_duplication_6.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 7,
+          "source_file": "type_event_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 8,
+          "source_file": "type_event_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 9,
+          "source_file": "type_event_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 10,
+          "source_file": "type_event_duplication_10.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "functional",
+      "description": "Three controllers build a paginated response payload for a `/articles` endpoint. One uses raw arrays with manual link assembly, one builds a Fractal-style resource transformer, and one delegates to a JSON:API serializer. All emit the same wire shape: `data`, `meta.pagination`, and `links.{first,prev,next,last}` keys that downstream clients consume identically.",
+      "sample_count": 10,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_functional_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_functional_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_functional_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_functional_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_functional_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_functional_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_functional_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_functional_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_functional_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_functional_duplication_10.md",
+          "source_dir": "samples"
+        }
+      ]
+    },
+    {
+      "name": "knowledge",
+      "description": "Knowledge duplication is the practice of defining the same business rule or constant in multiple locations, leading to maintenance challenges and potential inconsistencies when the business rule changes.",
+      "sample_count": 20,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_knowledge_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_knowledge_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_knowledge_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_knowledge_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_knowledge_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_knowledge_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_knowledge_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_knowledge_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_knowledge_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_knowledge_duplication_10.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 11,
+          "source_file": "type_knowledge_duplication_11.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 12,
+          "source_file": "type_knowledge_duplication_12.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 13,
+          "source_file": "type_knowledge_duplication_13.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 14,
+          "source_file": "type_knowledge_duplication_14.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 15,
+          "source_file": "type_knowledge_duplication_15.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 16,
+          "source_file": "type_knowledge_duplication_16.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 17,
+          "source_file": "type_knowledge_duplication_17.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 18,
+          "source_file": "type_knowledge_duplication_18.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 19,
+          "source_file": "type_knowledge_duplication_19.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 20,
+          "source_file": "type_knowledge_duplication_20.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "lexical",
+      "description": "Three pricing functions (shipping cost, insurance premium, loan-origination fee) cascade through four if/elseif/else tiers comparing an amount against numeric thresholds. Token shape `if ($amount < $t1) { return ...; } elseif ($amount < $t2) { return ...; } elseif ($amount < $t3) { return ...; } else { return ...; }` is identical at the lexeme level across all three.",
+      "sample_count": 10,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_lexical_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_lexical_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_lexical_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_lexical_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_lexical_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_lexical_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_lexical_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_lexical_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_lexical_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_lexical_duplication_10.md",
+          "source_dir": "samples"
+        }
+      ]
+    },
+    {
+      "name": "localization",
+      "description": "Localization duplication occurs when identical internationalization handling patterns - translation key management, locale detection, formatting logic, and pluralization rules - are implemented repeatedly for different content types or modules. Each handler follows the same structural template while only the domain-specific keys and content differ, creating code duplication across the localization layer.",
+      "sample_count": 10,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_localization_duplication_1.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 2,
+          "source_file": "type_localization_duplication_2.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 3,
+          "source_file": "type_localization_duplication_3.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 4,
+          "source_file": "type_localization_duplication_4.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 5,
+          "source_file": "type_localization_duplication_5.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 6,
+          "source_file": "type_localization_duplication_6.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 7,
+          "source_file": "type_localization_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 8,
+          "source_file": "type_localization_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 9,
+          "source_file": "type_localization_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 10,
+          "source_file": "type_localization_duplication_10.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "logic",
+      "description": "Logic duplication occurs when the same conditional business rules for enabling/disabling features, gates, or capabilities are repeated across different parts of the application. Feature flag evaluations, capability checks, or entitlement validations get duplicated rather than centralized, creating maintenance issues when rules evolve.",
+      "sample_count": 10,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_logic_duplication_21.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 2,
+          "source_file": "type_logic_duplication_22.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 3,
+          "source_file": "type_logic_duplication_23.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 4,
+          "source_file": "type_logic_duplication_24.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 5,
+          "source_file": "type_logic_duplication_25.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 6,
+          "source_file": "type_logic_duplication_26.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 7,
+          "source_file": "type_logic_duplication_27.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 8,
+          "source_file": "type_logic_duplication_28.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 9,
+          "source_file": "type_logic_duplication_29.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 10,
+          "source_file": "type_logic_duplication_30.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "mapping",
+      "description": "Payment and billing systems frequently need to map transaction data to different representations: merchant records, customer receipts, API responses, and audit logs. When each representation duplicates field mapping logic, any change to transaction attributes requires coordinated updates across multiple unrelated modules.",
+      "sample_count": 10,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_mapping_duplication_1.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 2,
+          "source_file": "type_mapping_duplication_2.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 3,
+          "source_file": "type_mapping_duplication_3.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 4,
+          "source_file": "type_mapping_duplication_4.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 5,
+          "source_file": "type_mapping_duplication_5.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 6,
+          "source_file": "type_mapping_duplication_6.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 7,
+          "source_file": "type_mapping_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 8,
+          "source_file": "type_mapping_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 9,
+          "source_file": "type_mapping_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 10,
+          "source_file": "type_mapping_duplication_10.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "monitoring",
+      "description": "Monitoring duplication occurs when identical request validation, rate limiting, and quota tracking patterns are duplicated across different API endpoints, controllers, and gateway handlers. This anti-pattern emerges when each endpoint implements its own security monitoring instead of using middleware or aspect-oriented patterns, leading to inconsistent rate limit metrics, duplicated validation code, and security policy drift across the API surface.",
+      "sample_count": 10,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_monitoring_duplication_1.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 2,
+          "source_file": "type_monitoring_duplication_2.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 3,
+          "source_file": "type_monitoring_duplication_3.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 4,
+          "source_file": "type_monitoring_duplication_4.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 5,
+          "source_file": "type_monitoring_duplication_5.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 6,
+          "source_file": "type_monitoring_duplication_6.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 7,
+          "source_file": "type_monitoring_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 8,
+          "source_file": "type_monitoring_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 9,
+          "source_file": "type_monitoring_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 10,
+          "source_file": "type_monitoring_duplication_10.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "permission",
+      "description": "Audit and compliance systems often duplicate authorization checks across different audit operations: viewing audit logs, exporting audit data, managing audit retention, and configuring audit alerts. When each audit operation's permission check copies the same validation pattern, changes to audit permissions require updates across all handlers.",
+      "sample_count": 10,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_permission_duplication_1.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 2,
+          "source_file": "type_permission_duplication_2.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 3,
+          "source_file": "type_permission_duplication_3.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 4,
+          "source_file": "type_permission_duplication_4.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 5,
+          "source_file": "type_permission_duplication_5.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 6,
+          "source_file": "type_permission_duplication_6.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 7,
+          "source_file": "type_permission_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 8,
+          "source_file": "type_permission_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 9,
+          "source_file": "type_permission_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 10,
+          "source_file": "type_permission_duplication_10.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "process",
+      "description": "Three year-end report generators (sales summary, employee headcount, partner commissions) all walk the same path: fetch raw rows, aggregate per fiscal period, render a PDF using a template, and archive the artifact in long-term storage with a manifest entry. The same four-step pipeline is encoded three times across the reporting commands.",
+      "sample_count": 10,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_process_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_process_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_process_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_process_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_process_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_process_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_process_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_process_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_process_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_process_duplication_10.md",
+          "source_dir": "samples"
+        }
+      ]
+    },
+    {
+      "name": "protocol",
+      "description": "Protocol Duplication duplication examples",
+      "sample_count": 50,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_protocol_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_protocol_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_protocol_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_protocol_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_protocol_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_protocol_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_protocol_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_protocol_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_protocol_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_protocol_duplication_10.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 11,
+          "source_file": "type_protocol_duplication_1.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 12,
+          "source_file": "type_protocol_duplication_2.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 13,
+          "source_file": "type_protocol_duplication_3.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 14,
+          "source_file": "type_protocol_duplication_4.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 15,
+          "source_file": "type_protocol_duplication_5.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 16,
+          "source_file": "type_protocol_duplication_6.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 17,
+          "source_file": "type_protocol_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 18,
+          "source_file": "type_protocol_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 19,
+          "source_file": "type_protocol_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 20,
+          "source_file": "type_protocol_duplication_10.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 21,
+          "source_file": "type_protocol_duplication_11.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 22,
+          "source_file": "type_protocol_duplication_12.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 23,
+          "source_file": "type_protocol_duplication_13.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 24,
+          "source_file": "type_protocol_duplication_14.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 25,
+          "source_file": "type_protocol_duplication_15.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 26,
+          "source_file": "type_protocol_duplication_16.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 27,
+          "source_file": "type_protocol_duplication_17.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 28,
+          "source_file": "type_protocol_duplication_18.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 29,
+          "source_file": "type_protocol_duplication_19.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 30,
+          "source_file": "type_protocol_duplication_20.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 31,
+          "source_file": "type_protocol_duplication_21.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 32,
+          "source_file": "type_protocol_duplication_22.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 33,
+          "source_file": "type_protocol_duplication_23.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 34,
+          "source_file": "type_protocol_duplication_24.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 35,
+          "source_file": "type_protocol_duplication_25.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 36,
+          "source_file": "type_protocol_duplication_26.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 37,
+          "source_file": "type_protocol_duplication_27.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 38,
+          "source_file": "type_protocol_duplication_28.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 39,
+          "source_file": "type_protocol_duplication_29.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 40,
+          "source_file": "type_protocol_duplication_30.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 41,
+          "source_file": "type_protocol_duplication_31.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 42,
+          "source_file": "type_protocol_duplication_32.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 43,
+          "source_file": "type_protocol_duplication_33.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 44,
+          "source_file": "type_protocol_duplication_34.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 45,
+          "source_file": "type_protocol_duplication_35.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 46,
+          "source_file": "type_protocol_duplication_36.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 47,
+          "source_file": "type_protocol_duplication_37.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 48,
+          "source_file": "type_protocol_duplication_38.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 49,
+          "source_file": "type_protocol_duplication_39.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 50,
+          "source_file": "type_protocol_duplication_40.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "query",
+      "description": "Query Duplication duplication examples",
+      "sample_count": 30,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_query_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_query_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_query_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_query_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_query_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_query_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_query_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_query_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_query_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_query_duplication_10.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 11,
+          "source_file": "type_query_duplication_1.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 12,
+          "source_file": "type_query_duplication_2.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 13,
+          "source_file": "type_query_duplication_3.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 14,
+          "source_file": "type_query_duplication_4.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 15,
+          "source_file": "type_query_duplication_5.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 16,
+          "source_file": "type_query_duplication_6.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 17,
+          "source_file": "type_query_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 18,
+          "source_file": "type_query_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 19,
+          "source_file": "type_query_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 20,
+          "source_file": "type_query_duplication_10.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 21,
+          "source_file": "type_query_duplication_21.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 22,
+          "source_file": "type_query_duplication_22.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 23,
+          "source_file": "type_query_duplication_23.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 24,
+          "source_file": "type_query_duplication_24.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 25,
+          "source_file": "type_query_duplication_25.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 26,
+          "source_file": "type_query_duplication_26.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 27,
+          "source_file": "type_query_duplication_27.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 28,
+          "source_file": "type_query_duplication_28.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 29,
+          "source_file": "type_query_duplication_29.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 30,
+          "source_file": "type_query_duplication_30.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "representation",
+      "description": "Representation duplication occurs when the same domain entity is modeled multiple times across different layers. A discount coupon might appear as a coupon entity for database storage, a coupon validation DTO, and a coupon application result for checkout.",
+      "sample_count": 20,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_representation_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_representation_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_representation_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_representation_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_representation_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_representation_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_representation_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_representation_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_representation_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_representation_duplication_10.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 11,
+          "source_file": "type_representation_duplication_21.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 12,
+          "source_file": "type_representation_duplication_22.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 13,
+          "source_file": "type_representation_duplication_23.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 14,
+          "source_file": "type_representation_duplication_24.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 15,
+          "source_file": "type_representation_duplication_25.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 16,
+          "source_file": "type_representation_duplication_26.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 17,
+          "source_file": "type_representation_duplication_27.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 18,
+          "source_file": "type_representation_duplication_28.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 19,
+          "source_file": "type_representation_duplication_29.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 20,
+          "source_file": "type_representation_duplication_30.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "schema",
+      "description": "Schema duplication occurs when subscription plan schemas are defined in multiple systems - billing services, database tables, payment gateway configurations, and API schemas. Each maintains its own interpretation of what constitutes a subscription, leading to billing inconsistencies and customer disputes.",
+      "sample_count": 10,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_schema_duplication_1.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 2,
+          "source_file": "type_schema_duplication_2.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 3,
+          "source_file": "type_schema_duplication_3.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 4,
+          "source_file": "type_schema_duplication_4.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 5,
+          "source_file": "type_schema_duplication_5.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 6,
+          "source_file": "type_schema_duplication_6.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 7,
+          "source_file": "type_schema_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 8,
+          "source_file": "type_schema_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 9,
+          "source_file": "type_schema_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 10,
+          "source_file": "type_schema_duplication_10.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "semantic",
+      "description": "Semantic duplication occurs when the same business rule or logic is expressed in different ways across the codebase. Three different implementations that all enforce the same underlying rule.",
+      "sample_count": 20,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_semantic_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_semantic_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_semantic_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_semantic_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_semantic_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_semantic_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_semantic_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_semantic_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_semantic_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_semantic_duplication_10.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 11,
+          "source_file": "type_semantic_duplication_41.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 12,
+          "source_file": "type_semantic_duplication_42.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 13,
+          "source_file": "type_semantic_duplication_43.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 14,
+          "source_file": "type_semantic_duplication_44.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 15,
+          "source_file": "type_semantic_duplication_45.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 16,
+          "source_file": "type_semantic_duplication_46.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 17,
+          "source_file": "type_semantic_duplication_47.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 18,
+          "source_file": "type_semantic_duplication_48.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 19,
+          "source_file": "type_semantic_duplication_49.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 20,
+          "source_file": "type_semantic_duplication_50.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "serialization",
+      "description": "Serialization duplication occurs when identical event sourcing patterns for converting domain events to JSON representation are duplicated across different event classes. This anti-pattern emerges when each event implements its own toArray() and fromArray() methods with similar structure for event metadata, payload serialization, and date formatting instead of using a centralized event serializer, leading to inconsistent event schemas, duplicated metadata handling, and difficulties when event schemas need to be versioned.",
+      "sample_count": 10,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_serialization_duplication_1.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 2,
+          "source_file": "type_serialization_duplication_2.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 3,
+          "source_file": "type_serialization_duplication_3.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 4,
+          "source_file": "type_serialization_duplication_4.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 5,
+          "source_file": "type_serialization_duplication_5.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 6,
+          "source_file": "type_serialization_duplication_6.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 7,
+          "source_file": "type_serialization_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 8,
+          "source_file": "type_serialization_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 9,
+          "source_file": "type_serialization_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 10,
+          "source_file": "type_serialization_duplication_10.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "state_session",
+      "description": "Session state is often stored in multiple places\u2014cache, database, and cookies\u2014creating synchronization challenges. Each storage location may have slightly different data, different expiry times, and different update patterns, leading to inconsistent user experiences when state diverges across these stores.",
+      "sample_count": 1,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_state_duplication_session_7.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "structural",
+      "description": "Structural duplication occurs when the same pipeline or workflow pattern is implemented for different entities. Each variant processes data through the same stages but handles entity-specific transformations and validations.",
+      "sample_count": 20,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_structural_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_structural_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_structural_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_structural_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_structural_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_structural_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_structural_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_structural_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_structural_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_structural_duplication_10.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 11,
+          "source_file": "type_structural_duplication_31.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 12,
+          "source_file": "type_structural_duplication_32.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 13,
+          "source_file": "type_structural_duplication_33.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 14,
+          "source_file": "type_structural_duplication_34.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 15,
+          "source_file": "type_structural_duplication_35.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 16,
+          "source_file": "type_structural_duplication_36.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 17,
+          "source_file": "type_structural_duplication_37.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 18,
+          "source_file": "type_structural_duplication_38.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 19,
+          "source_file": "type_structural_duplication_39.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 20,
+          "source_file": "type_structural_duplication_40.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "syntactic",
+      "description": "Three fluent builders across unrelated domains (email composition, HTTP request, PDF document) share the same chained-setter + `build()` AST shape: each setter mutates a property and returns `$this`, and a final `build()` constructs the resulting object. Tree shape \u2014 same number of setters, same `return $this`, same `build()` instantiating a final DTO \u2014 is structurally identical.",
+      "sample_count": 10,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_syntactic_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_syntactic_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_syntactic_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_syntactic_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_syntactic_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_syntactic_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_syntactic_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_syntactic_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_syntactic_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_syntactic_duplication_10.md",
+          "source_dir": "samples"
+        }
+      ]
+    },
+    {
+      "name": "temporal",
+      "description": "Temporal duplication occurs when independent implementations of the same temporal contract are scattered across a codebase. The fundamental pattern of \"acquire resource \u2192 perform operation \u2192 release resource\" appears repeatedly but each occurrence has its own implementation, making the codebases harder to maintain and evolve.",
+      "sample_count": 20,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_temporal_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_temporal_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_temporal_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_temporal_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_temporal_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_temporal_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_temporal_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_temporal_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_temporal_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_temporal_duplication_10.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 11,
+          "source_file": "type_temporal_duplication_1.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 12,
+          "source_file": "type_temporal_duplication_2.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 13,
+          "source_file": "type_temporal_duplication_3.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 14,
+          "source_file": "type_temporal_duplication_4.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 15,
+          "source_file": "type_temporal_duplication_5.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 16,
+          "source_file": "type_temporal_duplication_6.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 17,
+          "source_file": "type_temporal_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 18,
+          "source_file": "type_temporal_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 19,
+          "source_file": "type_temporal_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 20,
+          "source_file": "type_temporal_duplication_10.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "test",
+      "description": "Test Duplication duplication examples",
+      "sample_count": 20,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_test_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_test_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_test_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_test_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_test_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_test_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_test_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_test_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_test_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_test_duplication_10.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 11,
+          "source_file": "type_test_duplication_1.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 12,
+          "source_file": "type_test_duplication_2.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 13,
+          "source_file": "type_test_duplication_3.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 14,
+          "source_file": "type_test_duplication_4.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 15,
+          "source_file": "type_test_duplication_5.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 16,
+          "source_file": "type_test_duplication_6.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 17,
+          "source_file": "type_test_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 18,
+          "source_file": "type_test_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 19,
+          "source_file": "type_test_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 20,
+          "source_file": "type_test_duplication_10.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "textual",
+      "description": "Three custom exception throw sites each include an identical multi-line error-message string that explains a misconfiguration in plain English and lists remediation steps. The message \u2014 a five-line prose block \u2014 is byte-identical at the textual level even though the exception class and the surrounding code differ.",
+      "sample_count": 10,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_textual_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_textual_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_textual_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_textual_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_textual_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_textual_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_textual_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_textual_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_textual_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_textual_duplication_10.md",
+          "source_dir": "samples"
+        }
+      ]
+    },
+    {
+      "name": "type",
+      "description": "Type duplication occurs when identical data import parsing logic is implemented separately for different file formats. Each parser reimplements the same row iteration, field mapping, and validation patterns.",
+      "sample_count": 20,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_type_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_type_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_type_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_type_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_type_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_type_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_type_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_type_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_type_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_type_duplication_10.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 11,
+          "source_file": "type_type_duplication_11.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 12,
+          "source_file": "type_type_duplication_12.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 13,
+          "source_file": "type_type_duplication_13.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 14,
+          "source_file": "type_type_duplication_14.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 15,
+          "source_file": "type_type_duplication_15.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 16,
+          "source_file": "type_type_duplication_16.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 17,
+          "source_file": "type_type_duplication_17.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 18,
+          "source_file": "type_type_duplication_18.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 19,
+          "source_file": "type_type_duplication_19.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 20,
+          "source_file": "type_type_duplication_20.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "ui",
+      "description": "Repeated search bar rendering logic across different contexts. Each context renders search inputs with identical patterns for different entity types.",
+      "sample_count": 20,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_ui_duplication_1.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 2,
+          "source_file": "type_ui_duplication_2.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 3,
+          "source_file": "type_ui_duplication_3.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 4,
+          "source_file": "type_ui_duplication_4.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 5,
+          "source_file": "type_ui_duplication_5.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 6,
+          "source_file": "type_ui_duplication_6.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 7,
+          "source_file": "type_ui_duplication_7.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 8,
+          "source_file": "type_ui_duplication_8.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 9,
+          "source_file": "type_ui_duplication_9.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 10,
+          "source_file": "type_ui_duplication_10.md",
+          "source_dir": "samples"
+        },
+        {
+          "id": 11,
+          "source_file": "type_ui_duplication_41.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 12,
+          "source_file": "type_ui_duplication_42.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 13,
+          "source_file": "type_ui_duplication_43.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 14,
+          "source_file": "type_ui_duplication_44.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 15,
+          "source_file": "type_ui_duplication_45.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 16,
+          "source_file": "type_ui_duplication_46.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 17,
+          "source_file": "type_ui_duplication_47.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 18,
+          "source_file": "type_ui_duplication_48.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 19,
+          "source_file": "type_ui_duplication_49.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 20,
+          "source_file": "type_ui_duplication_50.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "validation_email",
+      "description": "Email validation logic is often duplicated across multiple entry points in an application\u2014user registration, contact forms, newsletter subscriptions, and customer profiles. When the validation rules change (e.g., adding domain blacklisting or changing the regex pattern), developers must update every copy, risking inconsistency and missed updates.",
+      "sample_count": 1,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_validation_duplication_email_1.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "validation_password",
+      "description": "Password strength validation is critical for security but is frequently duplicated across authentication entry points\u2014user signup, password reset flows, and profile update forms. Each location often implements slightly different rules, creating security vulnerabilities and maintenance nightmares when policies must change.",
+      "sample_count": 1,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_validation_duplication_password_2.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "validation_phone",
+      "description": "Phone number validation is inconsistently implemented across different business contexts\u2014e-commerce checkout requires billing phone, support systems need contact phone, and account settings store verification phone. Each implementation often uses different formatting rules, leading to data inconsistency and integration problems.",
+      "sample_count": 1,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_validation_duplication_phone_3.md",
+          "source_dir": "samples2"
+        }
+      ]
+    },
+    {
+      "name": "workflow",
+      "description": "Rate limiting and throttling workflows often duplicate the same sequence of operations across different API endpoints and services. When each rate limiting flow copies the same step-by-step logic, changes to the rate limiting process require coordinated updates across all endpoint handlers.",
+      "sample_count": 10,
+      "samples": [
+        {
+          "id": 1,
+          "source_file": "type_workflow_duplication_1.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 2,
+          "source_file": "type_workflow_duplication_2.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 3,
+          "source_file": "type_workflow_duplication_3.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 4,
+          "source_file": "type_workflow_duplication_4.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 5,
+          "source_file": "type_workflow_duplication_5.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 6,
+          "source_file": "type_workflow_duplication_6.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 7,
+          "source_file": "type_workflow_duplication_7.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 8,
+          "source_file": "type_workflow_duplication_8.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 9,
+          "source_file": "type_workflow_duplication_9.md",
+          "source_dir": "samples2"
+        },
+        {
+          "id": 10,
+          "source_file": "type_workflow_duplication_10.md",
+          "source_dir": "samples2"
+        }
+      ]
+    }
+  ],
+  "challenges": []
+}
