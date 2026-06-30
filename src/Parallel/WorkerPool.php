@@ -91,6 +91,11 @@ final class WorkerPool
      * @param list<TItem> $items
      * @param \Closure(list<TItem>): list<TResult> $task
      * @return list<TResult>  flattened results in input order across batches
+     *
+     * @note A `try/finally` block wraps the entire body to guarantee that all
+     *   temp files created for inter-process result transfer are deleted on
+     *   any exit path (success, fork failure, or thrown exception). This
+     *   prevents temp-file leakage when `pcntl_fork` fails mid-batch.
      */
     public function run(array $items, \Closure $task): array
     {
@@ -104,54 +109,59 @@ final class WorkerPool
         $tmpFiles = [];
         $pids = [];
 
-        foreach ($chunks as $idx => $chunk) {
-            $tmpFiles[$idx] = tempnam(sys_get_temp_dir(), 'phpdup-w');
-            $pid = pcntl_fork();
-            if ($pid === -1) {
-                throw new \RuntimeException('pcntl_fork failed');
+        try {
+            foreach ($chunks as $idx => $chunk) {
+                $tmpFiles[$idx] = tempnam(sys_get_temp_dir(), 'phpdup-w');
+                $pid = pcntl_fork();
+                if ($pid === -1) {
+                    self::unlinkAll($tmpFiles);
+                    throw new \RuntimeException('pcntl_fork failed');
+                }
+                if ($pid === 0) {
+                    // child
+                    try {
+                        $result = $task($chunk);
+                        file_put_contents($tmpFiles[$idx], serialize($result), LOCK_EX);
+                        exit(0);
+                    } catch (\Throwable $e) {
+                        file_put_contents($tmpFiles[$idx], serialize(['__error' => $e->getMessage() . "\n" . $e->getTraceAsString()]), LOCK_EX);
+                        exit(1);
+                    }
+                }
+                $pids[$idx] = $pid;
             }
-            if ($pid === 0) {
-                // child
-                try {
-                    $result = $task($chunk);
-                    file_put_contents($tmpFiles[$idx], serialize($result), LOCK_EX);
-                    exit(0);
-                } catch (\Throwable $e) {
-                    file_put_contents($tmpFiles[$idx], serialize(['__error' => $e->getMessage() . "\n" . $e->getTraceAsString()]), LOCK_EX);
-                    exit(1);
+
+            $exitCodes = [];
+            foreach ($pids as $idx => $pid) {
+                pcntl_waitpid($pid, $status);
+                $exitCodes[$idx] = pcntl_wexitstatus($status);
+            }
+
+            $results = [];
+            foreach ($tmpFiles as $idx => $file) {
+                $blob = @file_get_contents($file);
+                @unlink($file);
+                if ($blob === false || $blob === '') {
+                    if ($exitCodes[$idx] !== 0) {
+                        throw new \RuntimeException("Worker $idx exited {$exitCodes[$idx]} with no output");
+                    }
+                    continue;
+                }
+                $data = @unserialize($blob, ['allowed_classes' => false]);
+                if (is_array($data) && isset($data['__error'])) {
+                    throw new \RuntimeException("Worker $idx failed: " . $data['__error']);
+                }
+                if (!is_array($data)) {
+                    throw new \RuntimeException("Worker $idx returned non-array");
+                }
+                foreach ($data as $entry) {
+                    $results[] = $entry;
                 }
             }
-            $pids[$idx] = $pid;
+            return $results;
+        } finally {
+            self::unlinkAll($tmpFiles);
         }
-
-        $exitCodes = [];
-        foreach ($pids as $idx => $pid) {
-            pcntl_waitpid($pid, $status);
-            $exitCodes[$idx] = pcntl_wexitstatus($status);
-        }
-
-        $results = [];
-        foreach ($tmpFiles as $idx => $file) {
-            $blob = @file_get_contents($file);
-            @unlink($file);
-            if ($blob === false || $blob === '') {
-                if ($exitCodes[$idx] !== 0) {
-                    throw new \RuntimeException("Worker $idx exited {$exitCodes[$idx]} with no output");
-                }
-                continue;
-            }
-            $data = @unserialize($blob, ['allowed_classes' => false]);
-            if (is_array($data) && isset($data['__error'])) {
-                throw new \RuntimeException("Worker $idx failed: " . $data['__error']);
-            }
-            if (!is_array($data)) {
-                throw new \RuntimeException("Worker $idx returned non-array");
-            }
-            foreach ($data as $entry) {
-                $results[] = $entry;
-            }
-        }
-        return $results;
     }
 
     /**
@@ -328,5 +338,15 @@ final class WorkerPool
     {
         $size = (int)max(1, ceil(count($items) / $n));
         return array_chunk($items, $size);
+    }
+
+    /**
+     * @param list<string> $files
+     */
+    private static function unlinkAll(array $files): void
+    {
+        foreach ($files as $file) {
+            @unlink($file);
+        }
     }
 }
