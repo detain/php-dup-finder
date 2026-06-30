@@ -323,6 +323,9 @@ Ordering follows findings.md's roadmap: **correctness → security → broken ar
 | 3.5 | S5 | `fix/S5-allowed-classes-unserialize` | https://github.com/detain/php-dup-finder/pull/74 | 638✓ / ✓ / ✓ | ☑ (squash-merged 11b2f1c) | explicit allow-list on WorkerPool IPC (false) and TokenCache (parserClasses()); round-trip verified |
 | 3.6 | S6+S8 | `fix/S6-csv-formula-injection` | https://github.com/detain/php-dup-finder/pull/75 | 639✓ / ✓ / ✓ | ☑ (squash-merged 699b4d9) | S6: escape() prefixes =+-@\\t\\r with ' guard; S8: cluster-id slugged in diff/patch/test filenames |
 | 3.7 | S7 | `fix/S7-pager-argv` | https://github.com/detain/php-dup-finder/pull/76 | 639✓ / ✓ / ✓ | ☑ (squash-merged 2b7c67a) | pass argv array to proc_open() instead of shell string; no /bin/sh -c interpretation |
+| 4.1 | C4 | `fix/c4-single-pass-html-highlighter` | https://github.com/detain/php-dup-finder/pull/78 | 638✓ / ✓ / ✓ | ☐ (pending squash-merge) | single-pass preg_replace_callback; atomically matches comments/strings; no keyword re-wrapping; class="c" bug fixed |
+| 4.2 | D3 | `fix/d4-refactor-test-reporter-arity` | https://github.com/detain/php-dup-finder/pull/77 | 646✓ / ✓ / ✓ | ☐ (pending squash-merge) | generateParamList() from holes; method arity matches data provider rows; tests added |
+| 4.3 | D4 | `fix/d4-refactor-signature-php81` | https://github.com/detain/php-dup-finder/pull/new/fix/d4-refactor-signature-php81 | 636✓ / ✓ / ✓ | ☐ (pending squash-merge) | displayType() maps class-string→string, null→mixed; unions with null→?T or mixed |
 | … | | | | | | |
 
 (The driver keeps this table current and shows the operator a per-phase rollup.)
