@@ -61,6 +61,15 @@ final class PreprocessStage implements CooperativeStageInterface
         }
     }
 
+    /**
+     * Streaming preprocessing pipeline.
+     *
+     * Blocks are accumulated in a single $blocks array throughout the run.
+     * At cache-save time a per-file map is built from $blocks in one O(n) pass
+     * (no separate per-file accumulator), keeping peak block memory at ~1x.
+     *
+     * @return \Generator<Stage>
+     */
     public function iter(PipelineState $state, OutputInterface $output): \Generator
     {
         $config = $state->config;
@@ -149,7 +158,6 @@ final class PreprocessStage implements CooperativeStageInterface
                 $state->pushDebugMessage($msg);
             }
 
-            $perFileBlocks     = [];
             $processedFilesSet = [];
             $sinceYield        = 0;
 
@@ -165,7 +173,6 @@ final class PreprocessStage implements CooperativeStageInterface
                 } elseif ($row['type'] === 'block') {
                     /** @var Block $b */
                     $b = $row['block'];
-                    $perFileBlocks[$row['file']][] = $b;
                     $blocks[] = $b;
                 }
                 $state->processedFiles = count($processedFilesSet);
@@ -188,12 +195,16 @@ final class PreprocessStage implements CooperativeStageInterface
             unset($processedFilesSet);
 
             if ($store !== null) {
+                $byFile = [];
+                foreach ($blocks as $b) {
+                    $byFile[$b->file][] = $b;
+                }
                 if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                    $msg = sprintf('preprocess: saving %d files to cache... [%s]', count($perFileBlocks), MemoryDebug::getMemoryUsage());
+                    $msg = sprintf('preprocess: saving %d files to cache... [%s]', count($byFile), MemoryDebug::getMemoryUsage());
                     $output->writeln($msg);
                     $state->pushDebugMessage($msg);
                 }
-                foreach ($perFileBlocks as $file => $list) {
+                foreach ($byFile as $file => $list) {
                     $store->save($file, $list);
                 }
                 if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
@@ -202,8 +213,6 @@ final class PreprocessStage implements CooperativeStageInterface
                     $state->pushDebugMessage($msg);
                 }
             }
-            unset($perFileBlocks);
-
             $this->listener->onFilePreprocessed(
                 $state->processedFiles, $state->reusedFiles, $state->parseErrors,
             );
