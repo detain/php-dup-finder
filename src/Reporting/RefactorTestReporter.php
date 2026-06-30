@@ -41,6 +41,7 @@ final class RefactorTestReporter
     public function buildTest(Cluster $cluster): string
     {
         $className = "Cluster{$cluster->id}Test";
+        $paramList = $this->generateParamList($cluster->holes);
         $rows = $this->providerRows($cluster);
         $providerBody = '';
         foreach ($rows as $label => $args) {
@@ -67,7 +68,7 @@ final class {$className} extends TestCase
     /**
      * @dataProvider casesProvider
      */
-    public function testAbstractionMatchesEachMember(/* …hole params… */): void
+    public function testAbstractionMatchesEachMember({$paramList}): void
     {
         \$this->markTestIncomplete('phpdup: fill in expected output for the abstraction');
     }
@@ -81,6 +82,25 @@ final class {$className} extends TestCase
 }
 
 PHP;
+    }
+
+    /**
+     * Generate parameter list string from holes for the test method signature.
+     *
+     * @param list<Hole> $holes
+     */
+    private function generateParamList(array $holes): string
+    {
+        if ($holes === []) {
+            return '';
+        }
+        $params = [];
+        foreach ($holes as $h) {
+            $name = $h->suggestedName !== '' ? $h->suggestedName : $h->placeholder;
+            $type = $h->inferredType !== '' ? $h->inferredType : 'mixed';
+            $params[] = "{$type} \${$name}";
+        }
+        return implode(', ', $params);
     }
 
     /**

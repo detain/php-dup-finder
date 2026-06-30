@@ -117,6 +117,103 @@ final class HtmlReporterTest extends TestCase
         }
     }
 
+    /**
+     * @dataProvider provideHighlightPhpCases
+     */
+    public function testHighlightPhpKeywordIsolation(string $code, string $expectedFragment, string $forbiddenFragment): void
+    {
+        $refl = new \ReflectionMethod(HtmlReporter::class, 'highlightPhp');
+        $refl->setAccessible(true);
+
+        $output = $refl->invoke((new HtmlReporter()), $code);
+
+        $this->assertStringContainsString($expectedFragment, $output);
+        if ($forbiddenFragment !== '') {
+            $this->assertStringNotContainsString($forbiddenFragment, $output);
+        }
+    }
+
+    /** @return list<array{string, string, string}> */
+    public static function provideHighlightPhpCases(): array
+    {
+        return [
+            // The core bug: class="c" (HTML attribute) must not have the "class" word
+            // wrapped as a keyword. The attribute value "c" should remain intact.
+            'HTML attribute class value not corrupted' => [
+                'class="c"',
+                'class=<span class="s">&quot;c&quot;</span>',
+                '<span class="k">class</span>',
+            ],
+            // Normal code with keyword gets highlighted.
+            'normal keyword highlight' => [
+                'function class() {}',
+                '<span class="k">function</span>',
+                '',
+            ],
+            // Number highlight is preserved.
+            'number highlight' => [
+                'return 42;',
+                '<span class="n">42</span>',
+                '',
+            ],
+            // String double-quoted gets wrapped.
+            'double-quoted string' => [
+                '"hello"',
+                '<span class="s">&quot;hello&quot;</span>',
+                '',
+            ],
+            // Keywords inside a single-line comment must NOT be wrapped.
+            // The comment token is consumed atomically; subsequent keyword matches
+            // continue from after the comment, so only text AFTER the comment line
+            // could be highlighted (which is outside the comment visually).
+            'keywords inside comment are not wrapped' => [
+                '// new class returns string',
+                '// new class returns string',
+                '<span class="k">new</span>',
+            ],
+            // The word "class" inside a double-quoted string must NOT be wrapped.
+            // The string token is consumed atomically; "class" inside it is never
+            // presented to the keyword pattern.
+            'keywords inside string are not wrapped' => [
+                '$x = "class"',
+                '<span class="s">&quot;class&quot;</span>',
+                '<span class="k">class</span>',
+            ],
+        ];
+    }
+
+    public function testHighlightPhpOutputIsValidDom(): void
+    {
+        $refl = new \ReflectionMethod(HtmlReporter::class, 'highlightPhp');
+        $refl->setAccessible(true);
+
+        $cases = [
+            'class="c"',
+            'function class() {}',
+            'return 42;',
+            '"hello"',
+        ];
+
+        foreach ($cases as $code) {
+            $output = $refl->invoke((new HtmlReporter()), $code);
+            // Count opening and closing span tags — they must match.
+            $openCount = substr_count($output, '<span ');
+            $closeCount = substr_count($output, '</span>');
+            $this->assertEquals(
+                $openCount,
+                $closeCount,
+                "Mismatched span tags for input: $code\nOutput: $output",
+            );
+            // The class="c" attribute value should not have "class" wrapped as keyword.
+            // Corruption would look like: class="c"><span class="k">class</span>
+            $this->assertStringNotContainsString(
+                'class="c"><span',
+                $output,
+                "Attribute corruption detected in: $code\nOutput: $output",
+            );
+        }
+    }
+
     private function buildReport(): Report
     {
         $config = new Config(
