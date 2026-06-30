@@ -321,6 +321,7 @@ Ordering follows findings.md's roadmap: **correctness → security → broken ar
 | 3.3 | S4 | `fix/S4-ml-client-non-2xx` | https://github.com/detain/php-dup-finder/pull/72 | 622✓ / ✓ / ✓ | ☑ (squash-merged 093c798) | check CURLINFO_HTTP_CODE / \$http_response_header; return null for non-2xx |
 | 3.4 | S3 | `fix/S3-deep-ssrf-guard` | https://github.com/detain/php-dup-finder/pull/73 | 638✓ / ✓ / ✓ | ☑ (squash-merged c5a85e2) | resolve host; reject private/loopback/link-local/metadata IPs; filter_var flags; localhost/::1/169.254.x.x blocks |
 | 3.5 | S5 | `fix/S5-allowed-classes-unserialize` | https://github.com/detain/php-dup-finder/pull/74 | 638✓ / ✓ / ✓ | ☑ (squash-merged 11b2f1c) | explicit allow-list on WorkerPool IPC (false) and TokenCache (parserClasses()); round-trip verified |
+| 3.6 | S6+S8 | `fix/S6-csv-formula-injection` | https://github.com/detain/php-dup-finder/pull/75 | 639✓ / ✓ / ✓ | ☑ (squash-merged 699b4d9) | S6: escape() prefixes =+-@\\t\\r with ' guard; S8: cluster-id slugged in diff/patch/test filenames |
 | … | | | | | | |
 
 (The driver keeps this table current and shows the operator a per-phase rollup.)
