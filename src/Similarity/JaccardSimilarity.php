@@ -24,14 +24,19 @@ final class JaccardSimilarity
         if (!$a || !$b) {
             return 0.0;
         }
+        // Iterate $a fully, then only the $b-only keys — avoids a temporary
+        // merged-array allocation that array_keys($a + $b) would require.
         $inter = 0;
         $union = 0;
-        $keys = $a + $b;
-        foreach (array_keys($keys) as $k) {
-            $av = $a[$k] ?? 0;
+        foreach ($a as $k => $av) {
             $bv = $b[$k] ?? 0;
             $inter += min($av, $bv);
             $union += max($av, $bv);
+        }
+        foreach ($b as $k => $bv) {
+            if (!isset($a[$k])) {
+                $union += $bv;
+            }
         }
         return $union === 0 ? 0.0 : $inter / $union;
     }
