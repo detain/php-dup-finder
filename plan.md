@@ -311,7 +311,7 @@ Ordering follows findings.md's roadmap: **correctness → security → broken ar
 | Step | ID | Branch | PR | Gates (unit/phpstan/psalm) | Merged | Notes |
 |---|---|---|---|---|---|---|
 | 0.x | pre-flight | — | — | baseline 571✓ / ✓ / ✓ | n/a | |
-| 1.1 | C1 | `fix/C1-…` | | | ☐ | |
+| 1.1 | C1 | `fix/C1-semantic-edit-cost-model` | https://github.com/detain/php-dup-finder/pull/65 | 580✓ / ✓ / ✓ | ☑ (squash-merged e64ea9a) | canonicalizeLabel() strips Expr_/Stmt_/Scalar_ prefixes |
 | … | | | | | | |
 
 (The driver keeps this table current and shows the operator a per-phase rollup.)

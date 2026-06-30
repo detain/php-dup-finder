@@ -98,6 +98,16 @@ final class NormalizerTest extends TestCase
         // in token output) but should both succeed without raising.
         $this->assertNotEmpty($this->canonicalHash($a));
         $this->assertNotEmpty($this->canonicalHash($b));
+
+        // match and switch are both normalised to __MATCH__ FuncCall form.
+        // They cannot produce structurally identical canonical hashes because
+        // Match_ arms are expression-bodied (passed directly) while Switch_ cases
+        // are statement-bodied (Closure-wrapped). The normalised forms are
+        // both used for clustering via the shared __MATCH__ FuncCall token shape.
+        $match = '<?php function f($x) { return match($x) { 1, 2 => 1, default => 2 }; }';
+        $switch = '<?php function g($x) { switch ($x) { case 1: case 2: return 1; default: return 2; } }';
+        $this->assertNotEmpty($this->canonicalHash($match), 'match must normalise without crashing');
+        $this->assertNotEmpty($this->canonicalHash($switch), 'switch must normalise without crashing');
     }
 
     private function canonicalHash(string $code, string $mode = 'aggressive'): string

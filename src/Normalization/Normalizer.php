@@ -174,6 +174,24 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
     ) {
     }
 
+    public function leaveNode(Node $node): ?Node
+    {
+        // Transform Match_ and Switch_ into a shared __MATCH__ synthetic
+        // FuncCall so they serialize to identical token streams and can
+        // cluster together. Return the replacement node to the traverser.
+        if ($node instanceof Node\Expr\Match_) {
+            return $this->normalizeMatchAsSwitch($node);
+        }
+        if ($node instanceof Node\Stmt\Switch_) {
+            // Switch_ is a Stmt but normalizeSwitchAsMatch returns an Expr.
+            // Wrap it in Return so the traverser accepts the replacement AND
+            // the result has the same structure (Return_(expr=FuncCall))
+            // as the Match_ normalization which also produces Return_(FuncCall).
+            return new Node\Stmt\Return_($this->normalizeSwitchAsMatch($node));
+        }
+        return null;
+    }
+
     public function enterNode(Node $node)
     {
         $this->canonicalizeVariables($node);
@@ -181,7 +199,6 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
             return null;
         }
         $this->canonicalizeLiterals($node);
-        $this->canonicalizeMatchAsSwitch($node);
         $this->canonicalizeNamedArgs($node);
         if ($this->mode !== 'aggressive') {
             return null;
@@ -203,57 +220,74 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
      * Match_ ↔ Switch_ surface canonicalisation.
      *
      * `match (x) { 1 => foo(), 2 => bar(), default => baz() }` and the
-     * equivalent switch carry different node types but mean the same
-     * thing. Rewrite Match_ into a Switch_ at canonicalisation time so
-     * both produce the same n-grams. The rewrite preserves arm bodies
-     * verbatim — only the wrapper shape changes.
-     *
-     * Skipped in `strict` mode (caller already returned).
+     * equivalent `switch (x) { case 1: foo(); break; case 2: bar(); break;
+     * default: baz(); break; }` carry different node types but mean the
+     * same thing. Rewrite both to a synthetic `__MATCH__(subject,
+     * cond1, body1, cond2, body2, ...)` FuncCall so they produce identical
+     * serialized tokens and can cluster.
      */
-    private function canonicalizeMatchAsSwitch(Node $node): void
+    private function normalizeMatchAsSwitch(Node\Expr\Match_ $node): Node\Expr\FuncCall
     {
-        if (!$node instanceof Node\Expr\Match_) {
-            return;
-        }
-        $cases = [];
+        $args = [new Node\Arg($node->cond)]; // subject expression
+
         foreach ($node->arms as $arm) {
-            $body = [new Node\Stmt\Return_($arm->body)];
-            $body[] = new Node\Stmt\Break_();
             if ($arm->conds === null) {
-                $cases[] = new Node\Stmt\Case_(null, $body);
-                continue;
-            }
-            $count = count($arm->conds);
-            foreach ($arm->conds as $i => $cond) {
-                $cases[] = new Node\Stmt\Case_(
-                    $cond,
-                    // only the last case in a comma-separated arm gets the body;
-                    // earlier cases fall through (canonical switch semantics).
-                    $i === $count - 1 ? $body : [],
-                );
-            }
-        }
-        // Mutate $node in place into a SwitchPlaceholder we attach as an
-        // attribute — we can't change the node's class. Instead, replace
-        // the arms with a synthesised marker and stash the equivalent
-        // cases on the node so the AST serializer would emit them. Since
-        // we're after token-stream parity, the simplest thing is to
-        // replace each arm with a same-shape marker node.
-        //
-        // PhpParser doesn't let us mutate the class of a node in place,
-        // so we approximate: rewrite each MatchArm to a uniform shape
-        // (one cond + body) that mirrors a Switch Case_'s tokens.
-        foreach ($node->arms as $arm) {
-            // collapse multi-cond arms to a single cond by OR-chaining
-            // (only affects token output, not semantics).
-            if ($arm->conds !== null && count($arm->conds) > 1) {
-                $combined = $arm->conds[0];
-                for ($i = 1; $i < count($arm->conds); $i++) {
-                    $combined = new Node\Expr\BinaryOp\BooleanOr($combined, $arm->conds[$i]);
+                // default arm — use 'default' string as sentinel key
+                $args[] = new Node\Arg(new Node\Scalar\String_('default'));
+            } else {
+                // single or multi-cond arm — OR-chain multiple conditions
+                $count = count($arm->conds);
+                if ($count === 1) {
+                    $args[] = new Node\Arg($arm->conds[0]);
+                } else {
+                    $condArg = $arm->conds[0];
+                    for ($i = 1; $i < $count; $i++) {
+                        $condArg = new Node\Expr\BinaryOp\BooleanOr($condArg, $arm->conds[$i]);
+                    }
+                    $args[] = new Node\Arg($condArg);
                 }
-                $arm->conds = [$combined];
             }
+
+            $args[] = new Node\Arg($arm->body);
         }
+
+        return new Node\Expr\FuncCall(
+            new Node\Name('__MATCH__'),
+            $args,
+        );
+    }
+
+    /**
+     * Canonicalise Switch_ into the same __MATCH__ synthetic FuncCall
+     * shape that normalizeMatchAsSwitch produces for Match_.
+     */
+    private function normalizeSwitchAsMatch(Node\Stmt\Switch_ $node): Node\Expr\FuncCall
+    {
+        $args = [new Node\Arg($node->cond)]; // subject expression
+
+        foreach ($node->cases as $case) {
+            if ($case->cond === null) {
+                // default case — use 'default' string as sentinel key
+                $args[] = new Node\Arg(new Node\Scalar\String_('default'));
+            } else {
+                $args[] = new Node\Arg($case->cond);
+            }
+
+            // For case body: use the last statement if it's a Return,
+            // otherwise wrap all statements in a closure.
+            if (count($case->stmts) === 1 && $case->stmts[0] instanceof Node\Stmt\Return_) {
+                $body = $case->stmts[0]->expr;
+            } else {
+                $body = new Node\Expr\Closure(['stmts' => $case->stmts]);
+            }
+
+            $args[] = new Node\Arg($body);
+        }
+
+        return new Node\Expr\FuncCall(
+            new Node\Name('__MATCH__'),
+            $args,
+        );
     }
 
     /**
