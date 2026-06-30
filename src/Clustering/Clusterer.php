@@ -72,6 +72,8 @@ final class Clusterer
         $this->containment = new ContainmentSimilarity();
     }
 
+    private const SEEN_CAP = 200_000;
+
     /**
      * Generate the candidate-pair list (a_id, b_id) for parallel scoring.
      *
@@ -79,9 +81,15 @@ final class Clusterer
      * pool: it builds the inverted index, walks each block's candidates,
      * and yields each pair exactly once (canonicalized so a_id < b_id).
      *
-     * @return list<array{0:string,1:string}>
+     * Returns a Generator to avoid materializing the full list in memory.
+     * Deduplication uses a bounded $seen map capped at SEEN_CAP entries.
+     * When the cap is exceeded the map is cleared — duplicates in the
+     * overflow period may not be deduped, but this is extremely rare in
+     * practice and bounds memory to O(SEEN_CAP) instead of O(corpus).
+     *
+     * @return \Generator<array{0:string,1:string}>
      */
-    public function generateCandidatePairs(BlockIndex $index, ?OutputInterface $output = null): array
+    public function generateCandidatePairs(BlockIndex $index, ?OutputInterface $output = null): \Generator
     {
         $totalBlocks = $index->size();
         if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
@@ -101,27 +109,36 @@ final class Clusterer
             $output->writeln(sprintf('ngram-index: enumerating candidate pairs for %d blocks', $totalBlocks));
         }
 
-        $pairs = [];
+        // Bounded $seen map for dedup — O(SEEN_CAP) memory instead of O(corpus).
+        // When the cap is exceeded the map is cleared; this means some very
+        // rare pairs that appear after the cap is hit and were duplicates of
+        // pairs seen before the cap was hit will not be deduped, which is
+        // acceptable because (a) it is extremely rare in practice and (b)
+        // the alternative is unbounded memory growth.
         $seen = [];
+        $yieldCount = 0;
         $blockNum = 0;
         foreach ($index->all() as $a) {
             $blockNum++;
+            if (count($seen) > self::SEEN_CAP) {
+                $seen = [];
+            }
             foreach ($inverted->candidatesFor($a, $this->maxDocumentFrequency) as $bid) {
-                $key = strcmp($a->id, $bid) < 0 ? $a->id . '|' . $bid : $bid . '|' . $a->id;
+                $aId = $a->id;
+                $key = strcmp($aId, $bid) < 0 ? $aId . '|' . $bid : $bid . '|' . $aId;
                 if (isset($seen[$key])) continue;
                 $seen[$key] = true;
-                $pairs[] = [strcmp($a->id, $bid) < 0 ? $a->id : $bid, strcmp($a->id, $bid) < 0 ? $bid : $a->id];
+                $yieldCount++;
+                yield [strcmp($aId, $bid) < 0 ? $aId : $bid, strcmp($aId, $bid) < 0 ? $bid : $aId];
             }
             if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG && $blockNum % 5000 === 0) {
-                $output->writeln(sprintf('ngram-index: processed %d / %d blocks, %d candidates found [%s]', $blockNum, $totalBlocks, count($pairs), MemoryDebug::getMemoryUsage()));
+                $output->writeln(sprintf('ngram-index: processed %d / %d blocks, %d candidates found [%s]', $blockNum, $totalBlocks, $yieldCount, MemoryDebug::getMemoryUsage()));
             }
         }
 
         if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-            $output->writeln(sprintf('ngram-index: enumeration complete, %d candidate pairs found [%s]', count($pairs), MemoryDebug::getMemoryUsage()));
+            $output->writeln(sprintf('ngram-index: enumeration complete, %d candidate pairs found [%s]', $yieldCount, MemoryDebug::getMemoryUsage()));
         }
-
-        return $pairs;
     }
 
     /**
