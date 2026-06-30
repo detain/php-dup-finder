@@ -28,16 +28,21 @@ final class ContainmentSimilarity
         if (!$a || !$b) {
             return 0.0;
         }
+        // Iterate $a fully, then only the $b-only keys — avoids a temporary
+        // merged-array allocation that array_keys($a + $b) would require.
         $inter   = 0;
         $sumA    = 0;
         $sumB    = 0;
-        $keys    = $a + $b;
-        foreach (array_keys($keys) as $k) {
-            $av = $a[$k] ?? 0;
+        foreach ($a as $k => $av) {
             $bv = $b[$k] ?? 0;
             $inter += min($av, $bv);
             $sumA  += $av;
             $sumB  += $bv;
+        }
+        foreach ($b as $k => $bv) {
+            if (!isset($a[$k])) {
+                $sumB += $bv;
+            }
         }
         $smaller = min($sumA, $sumB);
         if ($smaller === 0) {
