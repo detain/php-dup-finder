@@ -14,21 +14,65 @@ final class MlClientTest extends TestCase
     public static function urlProvider(): array
     {
         return [
-            'http localhost'       => ['http://127.0.0.1:8000/score', true],
-            'https public'         => ['https://ml.example.com/score', true],
-            'reject file://'       => ['file:///etc/passwd', false],
-            'reject gopher://'     => ['gopher://example.com/', false],
-            'reject ftp://'        => ['ftp://example.com/foo', false],
-            'reject 0.0.0.0'       => ['http://0.0.0.0:8000/score', false],
-            'reject empty'         => ['', false],
-            'reject no host'       => ['http:///score', false],
+            // SSRF — loopback
+            'reject 127.0.0.1'    => ['http://127.0.0.1:8000/score', false],
+            'reject localhost'    => ['http://localhost/', false],
+            'reject localhost:8080' => ['http://localhost:8080/', false],
+            'reject ::1'          => ['http://[::1]/', false],
+            // SSRF — cloud metadata
+            'reject 169.254.169.254' => ['http://169.254.169.254/latest/meta-data', false],
+            'reject 169.254.0.1' => ['http://169.254.0.1/', false],
+            // SSRF — RFC 1918 private ranges
+            'reject 10.x'         => ['http://10.0.0.1/', false],
+            'reject 172.16.x'    => ['http://172.16.0.1/', false],
+            'reject 172.31.x'    => ['http://172.31.255.255/', false],
+            'reject 192.168.x'   => ['http://192.168.1.1/', false],
+            // Valid public URLs — rely on DNS resolution, marked network
+            'accept https public' => ['https://ml.example.com/score', true],
+            // Scheme rejections
+            'reject file://'      => ['file:///etc/passwd', false],
+            'reject gopher://'   => ['gopher://example.com/', false],
+            'reject ftp://'       => ['ftp://example.com/foo', false],
+            // Host rejections
+            'reject 0.0.0.0'     => ['http://0.0.0.0:8000/score', false],
+            'reject empty'        => ['', false],
+            'reject no host'      => ['http:///score', false],
         ];
     }
 
-    /** @dataProvider urlProvider */
+    /**
+     * @group network
+     * @dataProvider urlProvider
+     */
     public function testIsAllowedUrl(string $url, bool $expected): void
     {
         self::assertSame($expected, MlClient::isAllowedUrl($url));
+    }
+
+    /**
+     * Test isBlockedIp directly via reflection — no network required.
+     *
+     * @return array<string,array{0:string,1:bool}>
+     */
+    public static function blockedIpProvider(): array
+    {
+        return [
+            'accept ::1'              => ['::1', true],
+            'accept 169.254.0.0'      => ['169.254.0.0', true],
+            'accept 169.254.169.254' => ['169.254.169.254', true],
+            'accept 169.254.255.255' => ['169.254.255.255', true],
+            'reject 8.8.8.8'         => ['8.8.8.8', false],
+            'reject 192.168.1.1'     => ['192.168.1.1', false],
+            'reject not.an.ip'       => ['not.an.ip', false],
+        ];
+    }
+
+    /** @dataProvider blockedIpProvider */
+    public function testIsBlockedIp(string $input, bool $expected): void
+    {
+        $r = new \ReflectionMethod(MlClient::class, 'isBlockedIp');
+        $r->setAccessible(true);
+        self::assertSame($expected, $r->invoke(null, $input));
     }
 
     public function testEmptyBaseUrlReturnsNull(): void
