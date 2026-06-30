@@ -28,13 +28,16 @@ use Symfony\Component\Console\Output\OutputInterface;
  * Security notes
  * --------------
  * - Default bind is `127.0.0.1`; binding to a public address (`0.0.0.0`,
- *   `::`) requires the explicit `--bind-public` flag. The server has no
- *   authentication, so exposing it to a network is opt-in.
+ *   `::`) requires the explicit `--bind-public` flag AND a `--token`.
+ *   The server refuses to bind publicly without a bearer token.
  * - Inbound bodies are capped at {@see Application::MAX_BODY_BYTES} via
  *   the `Content-Length` header; oversize requests get a 413 response
  *   without ever entering the application.
  * - The method+path pair is matched against an allow-list before the
  *   body is read, so unknown routes do not consume request bytes.
+ * - When a token is set, all requests require `Authorization: Bearer <token>`.
+ * - Scanned paths are confined to `--serve-root` via realpath canonicalization;
+ *   absolute paths and `..` sequences are rejected with 400.
  */
 final class ServeCommand extends SymfonyCommand
 {
@@ -59,7 +62,20 @@ final class ServeCommand extends SymfonyCommand
                 'bind-public',
                 null,
                 InputOption::VALUE_NONE,
-                'Allow binding to a non-loopback address (otherwise refused for safety).'
+                'Allow binding to a non-loopback address (requires --token).'
+            )
+            ->addOption(
+                'serve-root',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'Root directory to which scanning is confined (default: CWD).',
+                getcwd() ?: '.'
+            )
+            ->addOption(
+                'token',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'Bearer token required for all requests when set. Required when --bind-public is used.'
             );
     }
 
@@ -71,11 +87,21 @@ final class ServeCommand extends SymfonyCommand
         $host = (string)$input->getOption('host');
         $port = (int)$input->getOption('port');
         $bindPublic = (bool)$input->getOption('bind-public');
+        $serveRoot = (string)$input->getOption('serve-root');
+        $token = $input->getOption('token');
+
+        if ($bindPublic && ($token === null || $token === '')) {
+            $output->writeln(
+                '<error>phpdup serve: --bind-public requires --token to be set '
+                . '(no authentication is enforced by default).</error>'
+            );
+            return 1;
+        }
 
         if (!$bindPublic && !$this->isLoopback($host)) {
             $output->writeln(
                 "<error>phpdup serve: refusing to bind to non-loopback host '{$host}' "
-                . 'without --bind-public (no authentication is enforced).</error>'
+                . 'without --bind-public.</error>'
             );
             return 1;
         }
@@ -91,7 +117,11 @@ final class ServeCommand extends SymfonyCommand
         }
         $output->writeln("<info>phpdup serve</info> listening on {$address}");
 
-        $app = new Application();
+        $app = new Application(
+            new \Phpdup\Server\JobQueue(),
+            $serveRoot !== '' ? $serveRoot : null,
+            $token ?: null
+        );
         // Accept until the underlying socket goes away (SIGINT, fd
         // close, …). Using `is_resource($server)` as the loop
         // condition keeps PhpStan happy — the condition really can
@@ -178,7 +208,11 @@ final class ServeCommand extends SymfonyCommand
             }
         }
 
-        $response = $app->handle($method, $path, $body);
+        // Extract request headers into a lowercase-keyed array for
+        // case-insensitive lookup (required for Authorization).
+        $headers = $this->extractHeaders($raw);
+
+        $response = $app->handle($method, $path, $body, $headers);
         $payload  = "HTTP/1.1 {$response['status']} OK\r\n";
         foreach ($response['headers'] as $h => $v) {
             $payload .= "{$h}: {$v}\r\n";
@@ -219,6 +253,26 @@ final class ServeCommand extends SymfonyCommand
             }
         }
         return false;
+    }
+
+    /**
+     * Extract HTTP headers from the raw request and return them as a
+     * lowercase-keyed array for case-insensitive lookup.
+     *
+     * @return array<string,string>
+     */
+    private function extractHeaders(string $raw): array
+    {
+        $headers = [];
+        $headerEnd = strpos($raw, "\r\n\r\n");
+        $headerBlock = $headerEnd !== false ? substr($raw, 0, $headerEnd) : $raw;
+        foreach (explode("\r\n", $headerBlock) as $line) {
+            if (str_contains($line, ':')) {
+                [$key, $value] = explode(':', $line, 2);
+                $headers[strtolower(trim($key))] = trim($value);
+            }
+        }
+        return $headers;
     }
 
     /**
