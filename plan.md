@@ -313,6 +313,7 @@ Ordering follows findings.md's roadmap: **correctness → security → broken ar
 | 0.x | pre-flight | — | — | baseline 571✓ / ✓ / ✓ | n/a | |
 | 1.1 | C1 | `fix/C1-semantic-edit-cost-model` | https://github.com/detain/php-dup-finder/pull/65 | 580✓ / ✓ / ✓ | ☑ (squash-merged e64ea9a) | canonicalizeLabel() strips Expr_/Stmt_/Scalar_ prefixes |
 | 1.2 | C3 | `fix/C3-match-switch-canonicalization` | https://github.com/detain/php-dup-finder/pull/66 | 580✓ / ✓ / ✓ | ☑ (squash-merged 984c8a5) | Match_/Switch_ normalize to __MATCH__ FuncCall; dead $cases deleted |
+| 1.3 | C5+C5b | `fix/C5-debug-log-sink` | https://github.com/detain/php-dup-finder/pull/67 | 580✓ / ✓ / ✓ | ☑ (squash-merged 673e9a4) | DebugLogger writes to file; withOverrides() passes debugLog |
 | … | | | | | | |
 
 (The driver keeps this table current and shows the operator a per-phase rollup.)
