@@ -61,8 +61,13 @@ final class Pager
             $output->write($payload);
             return;
         }
+        $argv = preg_split('/\s+/', $pager, -1, PREG_SPLIT_NO_EMPTY);
+        if ($argv === false || $argv === []) {
+            $output->write($payload);
+            return;
+        }
         $proc = @proc_open(
-            $pager,
+            $argv,
             [0 => ['pipe', 'r'], 1 => STDOUT, 2 => STDERR],
             $pipes,
         );
