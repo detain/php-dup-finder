@@ -124,7 +124,7 @@ final class WorkerPool
                 }
                 continue;
             }
-            $data = @unserialize($blob);
+            $data = @unserialize($blob, ['allowed_classes' => false]);
             if (is_array($data) && isset($data['__error'])) {
                 throw new \RuntimeException("Worker $idx failed: " . $data['__error']);
             }
@@ -243,7 +243,7 @@ final class WorkerPool
                         $payload = substr($buffers[$idx], self::FRAME_HEADER, $len);
                         $buffers[$idx] = substr($buffers[$idx], self::FRAME_HEADER + $len);
 
-                        $record = @unserialize($payload);
+                        $record = @unserialize($payload, ['allowed_classes' => false]);
                         if (is_array($record) && isset($record['__error'])) {
                             throw new \RuntimeException("Worker $idx failed: " . $record['__error']);
                         }
