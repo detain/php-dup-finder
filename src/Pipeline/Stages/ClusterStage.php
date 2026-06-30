@@ -344,21 +344,14 @@ final class ClusterStage implements CooperativeStageInterface
         $state->stageProgress = 0.97;
         yield Stage::Clustering;
 
-        // Strip __progress bookkeeping rows injected by the streaming score path.
-        /** @var list<array{0: string, 1: string, 2: float}> $pureEdges */
-        $pureEdges = [];
-        foreach ($edges ?? [] as $e) {
-            if (!isset($e['__progress'])) {
-                /** @var array{0: string, 1: string, 2: float} $e */
-                $pureEdges[] = $e;
-            }
-        }
         if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-            $msg = sprintf('clustering: forming clusters from %d edges [%s]', count($pureEdges), MemoryDebug::getMemoryUsage());
+            $msg = sprintf('clustering: forming clusters from %d edges [%s]', count($edges ?? []), MemoryDebug::getMemoryUsage());
             $output->writeln($msg);
             $state->pushDebugMessage($msg);
         }
-        $state->clusters = $clusterer->cluster($index, $pureEdges);
+        /** @var list<array{0: string, 1: string, 2: float}> $edges */
+        $edges = $edges ?? [];
+        $state->clusters = $clusterer->cluster($index, $edges);
         $state->timings['cluster'] = microtime(true) - $tCluster;
         $state->currentTask = sprintf('Built %d clusters', count($state->clusters));
 
