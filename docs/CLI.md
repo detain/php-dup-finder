@@ -79,6 +79,7 @@ for the full JSON-Schema-compatible spec.
 | `--no-cache`                               | off         | Don't read or write the AST cache for this run.                                                        |
 | `--no-incremental`                         | off         | Disable per-file index-snapshot reuse. Forces re-fingerprinting every file.                            |
 | `--no-lazy-ast`                            | off         | Keep all original ASTs in memory throughout the run. Higher RSS, slightly faster anti-unification.     |
+| `--low-memory`                             | off         | Use CompactNgramBag (32-bit fingerprint) + CanonicalNodePool interning for lower RSS on large corpora. |
 | `--stage NAME`                             | —           | Halt the pipeline after STAGE: `scanning` \| `preprocessing` \| `clustering` \| `refactoring` \| `reporting`. |
 | `--debug-log FILE`                        | —           | Append every debug (vvv) pipeline message to FILE. Messages are also emitted to stderr when `-vvv` is set; this flag ensures they are preserved to disk for post-run inspection. |
 

@@ -17,7 +17,8 @@ use Phpdup\Extraction\Block;
  */
 final class NgramInvertedIndex
 {
-    /** @var array<string,list<string>> ngram → block ids */
+    /** @var array<string|int,list<string>> ngram → block ids. Keys are string (xxh64 hex)
+     *                                          in normal mode; int (hi^lo) when --low-memory. */
     private array $postings = [];
     private int $blockCount = 0;
 

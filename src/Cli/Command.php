@@ -88,6 +88,7 @@ final class Command extends SymfonyCommand
             ->addOption('no-incremental', null, InputOption::VALUE_NONE, 'Disable per-file index reuse')
             ->addOption('no-lazy-ast', null, InputOption::VALUE_NONE, 'Keep all original ASTs in memory (higher RSS, faster anti-unification)')
             ->addOption('max-memory', null, InputOption::VALUE_REQUIRED, 'Soft memory ceiling in MB. When peak RSS exceeds this mid-pipeline, phpdup logs a warning and suggests --exact-only.')
+            ->addOption('low-memory', null, InputOption::VALUE_NONE, 'Reduce memory footprint: use CompactNgramBag (32-bit fingerprint) and CanonicalNodePool interning for lower RSS at the cost of some speed.')
             ->addOption('stage', null, InputOption::VALUE_REQUIRED, 'Run pipeline only up to STAGE (scanning|preprocessing|clustering|refactoring|reporting); useful for incremental debugging');
 
         // ── Interactive / UI ───────────────────────────────────────────────
@@ -128,9 +129,9 @@ Options grouped by category:
    --diff, --patch, --limit, --sort, --stats,
    --summary-only, --clusters
 
- <comment>Performance / runtime</comment>
-   --workers (-j), --no-cache, --no-incremental, --no-lazy-ast,
-   --max-memory, --stage
+  <comment>Performance / runtime</comment>
+    --workers (-j), --no-cache, --no-incremental, --no-lazy-ast,
+    --max-memory, --low-memory, --stage
 
  <comment>Interactive / UI</comment>
    --tui, --plain, --theme, --watch
@@ -212,6 +213,7 @@ HELP;
         }
         if ($input->getOption('no-incremental')) $overrides['incremental'] = false;
         if ($input->getOption('no-lazy-ast'))    $overrides['lazy_ast']   = false;
+        if ($input->getOption('low-memory'))    $overrides['low_memory'] = true;
         // Validate --sort eagerly so the user gets a friendly exit 2 instead
         // of an uncaught InvalidArgumentException out of Config::__construct.
         $sortOpt = $input->getOption('sort');

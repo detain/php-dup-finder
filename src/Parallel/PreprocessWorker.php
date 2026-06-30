@@ -16,6 +16,7 @@ use Phpdup\Normalization\PluginRegistry;
 use Phpdup\Parsing\AstCache;
 use Phpdup\Parsing\AstParser;
 use Phpdup\Util\MemoryDebug;
+use Phpdup\Util\CanonicalNodePool;
 use Symfony\Component\Console\Output\OutputInterface;
 
 /**
@@ -99,7 +100,9 @@ final class PreprocessWorker
         $pluginRegistry = $this->config->normalizationPlugins !== []
             ? PluginRegistry::fromClassNames($this->config->normalizationPlugins)
             : null;
-        $toolFor = static function (Config $cfg) use (&$tooling, $pluginRegistry): array {
+        $lowMemory = $this->config->lowMemory;
+        $nodePool  = $lowMemory ? new CanonicalNodePool() : null;
+        $toolFor = static function (Config $cfg) use (&$tooling, $pluginRegistry, $lowMemory, $nodePool): array {
             $key = sprintf(
                 '%d|%d|%s|%d|%s|%s|%d|%d|%s|%s|%s',
                 $cfg->minBlockSize, $cfg->maxBlockSize,
@@ -130,8 +133,10 @@ final class PreprocessWorker
                         dbAware: $cfg->dbAware,
                         dbOpRegistry: $dbRegistry,
                         trinityCollapse: $cfg->trinityCollapse,
+                        lowMemory: $lowMemory,
+                        nodePool: $nodePool,
                     ),
-                    'fp'         => new NgramFingerprint($cfg->ngramSize),
+                    'fp'         => new NgramFingerprint($cfg->ngramSize, $lowMemory),
                     // IR machinery is constructed lazily — only present
                     // when scorer=ir to keep the default path's startup
                     // cost unchanged.

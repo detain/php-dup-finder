@@ -25,7 +25,8 @@ final class Block
     public string $structuralHash = '';
     public int $size = 0;
 
-    /** @var array<string,int>|null token -> count */
+    /** @var array<string|int,int>|null token -> count. Keys are string (xxh64 hex)
+     *                               in normal mode; int (hi^lo) when --low-memory. */
     public ?array $ngramBag = null;
 
     /**

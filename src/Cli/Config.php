@@ -133,6 +133,13 @@ final class Config
         public readonly float $mlPairThreshold = 0.80,
         // Path to append debug (vvv) messages to. Null = disabled.
         public readonly ?string $debugLog = null,
+        // Low-memory mode: CompactNgramBag (32-bit fingerprint) + CanonicalNodePool
+        // interning for lower RSS at the cost of some speed. When true, the
+        // normalizer walks cloned canonical ASTs and interns leaf nodes so
+        // identical subtrees are deduplicated across blocks, and the n-gram
+        // fingerprinter switches from xxh64 (16-char hex strings) to a compact
+        // int-keyed bag via CompactNgramBag::compact().
+        public readonly bool $lowMemory = false,
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -279,6 +286,7 @@ final class Config
             mlPairUrl:                      isset($overrides['ml_pair_url']) ? (string)$overrides['ml_pair_url']  : $this->mlPairUrl,
             mlPairThreshold:                isset($overrides['ml_pair_threshold']) ? (float)$overrides['ml_pair_threshold'] : $this->mlPairThreshold,
             debugLog:                       $this->debugLog,
+            lowMemory:                      isset($overrides['low_memory']) ? (bool)$overrides['low_memory'] : $this->lowMemory,
         );
     }
 }

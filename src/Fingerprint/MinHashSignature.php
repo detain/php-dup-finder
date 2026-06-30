@@ -25,7 +25,7 @@ final class MinHashSignature
     public const BANDS         = self::SIZE / self::ROWS_PER_BAND; // 32
 
     /**
-     * @param array<string,int> $bag
+     * @param array<string|int,int> $bag
      * @return list<int>  list<SIZE> of 32-bit hash values
      */
     public static function compute(array $bag): array

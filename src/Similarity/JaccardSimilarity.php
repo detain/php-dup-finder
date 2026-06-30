@@ -16,8 +16,8 @@ namespace Phpdup\Similarity;
 final class JaccardSimilarity
 {
     /**
-     * @param array<string,int> $a
-     * @param array<string,int> $b
+     * @param array<string|int,int> $a
+     * @param array<string|int,int> $b
      */
     public function similarity(array $a, array $b): float
     {
