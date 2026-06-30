@@ -8,18 +8,24 @@ use Phpdup\Extraction\Block;
 /**
  * Bloom-filter-based candidate-pair index.
  *
- * Drop-in alternative to {@see NgramInvertedIndex} for very large
- * corpora where holding all (ngram, block_id) postings in RAM is
- * impractical: each block carries a fixed-width Bloom filter over
- * its n-gram bag, and candidate pairs are produced by O(n²)
- * filter-overlap comparison. Memory is O(n × m) where m is the
- * filter width (default 2048 bits = 256 bytes per block); compare
- * to the inverted index's O(corpus_unique_ngrams × posting_length).
+ * NOT a general-purpose replacement for {@see NgramInvertedIndex}.
  *
- * The filter overlap threshold is calibrated to mirror the rare-
- * gram pre-filter: pairs with overlap below {@see MIN_OVERLAP} are
- * unlikely to share enough rare ngrams to score above the Jaccard
- * threshold, so they're rejected here without further work.
+ * Each block carries a fixed-width Bloom filter over its n-gram bag,
+ * and candidate pairs are produced by exhaustive O(n²) filter-overlap
+ * comparison (see {@see candidatesFor()}).  Memory is O(n × m) where
+ * m is the filter width (default 2048 bits = 256 bytes per block).
+ *
+ * The quadratic pairwise scan makes this suitable only for small
+ * corpora (n < ~1000 blocks).  For production use on large corpora
+ * this would require LSH/banding to achieve sub-quadratic lookup.
+ *
+ * This class is currently **not wired** to any production code path
+ * (it is defined but never instantiated in the pipeline).
+ *
+ * The filter overlap threshold is calibrated to mirror the rare-gram
+ * pre-filter: pairs with overlap below {@see MIN_OVERLAP} are unlikely
+ * to share enough rare ngrams to score above the Jaccard threshold,
+ * so they're rejected here without further work.
  */
 final class BloomCandidateIndex
 {

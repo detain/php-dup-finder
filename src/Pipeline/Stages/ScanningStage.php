@@ -47,8 +47,7 @@ final class ScanningStage implements CooperativeStageInterface
         foreach ($config->paths as $root) {
             foreach ($scanner->scan($root) as $path) {
                 $files[] = $path;
-                $state->scannedFiles = ++$state->totalFiles;
-                $this->listener->onFileScanned($state->scannedFiles, $state->totalFiles);
+                $state->totalFiles++;
                 if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG && $state->totalFiles % 100 === 0) {
                     $msg = sprintf('scanning: discovered file %s [%s]', $path, MemoryDebug::getMemoryUsage());
                     $output->writeln($msg);
@@ -63,6 +62,10 @@ final class ScanningStage implements CooperativeStageInterface
                         $output->writeln($msg);
                         $state->pushDebugMessage($msg);
                     }
+                    // Update scannedFiles only at yield intervals so the TUI
+                    // sees real progress (not 100 % after every single file).
+                    $state->scannedFiles = $state->totalFiles;
+                    $this->listener->onFileScanned($state->scannedFiles, $state->totalFiles);
                     yield Stage::Scanning;
                 }
             }
@@ -72,6 +75,10 @@ final class ScanningStage implements CooperativeStageInterface
         $state->files = $files;
         $state->totalFiles = count($files);
         $state->scannedFiles = count($files);
+
+        // Cover any remaining files that didn't fill a full yield-interval
+        // batch (the listener was only called at yield boundaries above).
+        $this->listener->onFileScanned($state->scannedFiles, $state->totalFiles);
 
         $output->writeln(sprintf(
             "<info>phpdup</info> scanning %d path(s) → %d files",
