@@ -50,7 +50,55 @@ final class ShapeletSketchTest extends TestCase
     {
         $this->assertSame(0, ShapeletSketch::popcount(0));
         $this->assertSame(1, ShapeletSketch::popcount(1));
+        $this->assertSame(1, ShapeletSketch::popcount(2));
+        $this->assertSame(2, ShapeletSketch::popcount(3));
         $this->assertSame(8, ShapeletSketch::popcount(0xFF));
-        $this->assertSame(64, ShapeletSketch::popcount(-1)); // all bits set on 64-bit PHP
+        $this->assertSame(32, ShapeletSketch::popcount(0xFFFFFFFF));
+        $this->assertSame(64, ShapeletSketch::popcount(-1)); // all 64 bits set (0xFFFFFFFFFFFFFFFF as unsigned)
+    }
+
+    /**
+     * Verify that when GMP is available, the fallback and GMP produce identical results.
+     * This test is only meaningful when ext-gmp is loaded.
+     */
+    public function testFallbackMatchesGmpWhenAvailable(): void
+    {
+        if (!extension_loaded('gmp')) {
+            $this->markTestSkipped('GMP extension not available');
+        }
+
+        for ($i = 0; $i < 100; $i++) {
+            // Generate random values including edge cases
+            $value = mt_rand(0, PHP_INT_MAX);
+
+            $gmpResult = gmp_popcount(gmp_init(sprintf('%u', $value), 10));
+
+            // Access fallback directly via reflection for testing
+            $reflection = new \ReflectionMethod(ShapeletSketch::class, 'fallbackPopcount');
+            $reflection->setAccessible(true);
+            $fallbackResult = $reflection->invoke(null, $value);
+
+            $this->assertSame(
+                $gmpResult,
+                $fallbackResult,
+                sprintf('Fallback popcount(%d) = %d, GMP popcount = %d', $value, $fallbackResult, $gmpResult),
+            );
+        }
+
+        // Also test negative values (two's complement 64-bit representation)
+        $negativeValues = [-1, -2, -127, -128, PHP_INT_MIN];
+        foreach ($negativeValues as $value) {
+            $gmpResult = gmp_popcount(gmp_init(sprintf('%u', $value), 10));
+
+            $reflection = new \ReflectionMethod(ShapeletSketch::class, 'fallbackPopcount');
+            $reflection->setAccessible(true);
+            $fallbackResult = $reflection->invoke(null, $value);
+
+            $this->assertSame(
+                $gmpResult,
+                $fallbackResult,
+                sprintf('Fallback popcount(%d) = %d, GMP popcount = %d', $value, $fallbackResult, $gmpResult),
+            );
+        }
     }
 }

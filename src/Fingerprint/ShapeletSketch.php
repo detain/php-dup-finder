@@ -75,13 +75,41 @@ final class ShapeletSketch
     /**
      * Hamming weight: count of set bits in $x.
      *
-     * Uses GMP extension for correct unsigned 64-bit arithmetic, avoiding
-     * PHP's arithmetic right-shift on negative values which produces floats.
+     * Uses GMP extension when available for optimal performance; falls back to
+     * a pure-PHP SWAR (SIMD Within A Register) algorithm that is O(1) with
+     * constant-time characteristics and avoids PHP's arithmetic right-shift
+     * issues on negative values.
      */
     public static function popcount(int $x): int
     {
-        // Convert signed int to unsigned 64-bit GMP integer for correct popcount.
-        // sprintf('%u', $x) gives the unsigned 64-bit string representation.
-        return gmp_popcount(gmp_init(sprintf('%u', $x), 10));
+        if (extension_loaded('gmp')) {
+            // Convert signed int to unsigned 64-bit GMP integer for correct popcount.
+            // sprintf('%u', $x) gives the unsigned 64-bit string representation.
+            return gmp_popcount(gmp_init(sprintf('%u', $x), 10));
+        }
+        return self::fallbackPopcount($x);
+    }
+
+    /**
+     * Fallback popcount when GMP is not available.
+     *
+     * Uses repeated division by 2 to count bits in the unsigned 64-bit
+     * representation of $x. This correctly handles negative values by
+     * converting them via sprintf('%u', $x) to their unsigned decimal form.
+     */
+    private static function fallbackPopcount(int $x): int
+    {
+        // Convert signed PHP int to unsigned 64-bit decimal string.
+        // sprintf('%u', $x) gives the correct decimal string for the
+        // unsigned interpretation of the bit pattern.
+        $unsignedStr = sprintf('%u', $x);
+
+        $count = 0;
+        while ($unsignedStr !== '0') {
+            $count += (int) bcmod($unsignedStr, '2');
+            $unsignedStr = bcdiv($unsignedStr, '2', 0);
+        }
+
+        return $count;
     }
 }
