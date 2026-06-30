@@ -65,7 +65,7 @@ php -d phar.readonly=0 build-phar.php             # build phpdup.phar via box.js
 - **SugarCraft styling** — `Style::new()->foreground()` emits ANSI even with `Theme::plain()`; gate behind `$output->isDecorated()` (see `CliReporter::renderTags`).
 - **Per-directory overrides** — `.phpdup.json` files discovered via `ConfigLoader::discoverPerDirectoryOverrides()`; merged longest-prefix-wins.
 - **PSR-4** — `Phpdup\` → `src/`, `Phpdup\Tests\` → `tests/` (`composer.json` `autoload` / `autoload-dev`).
-- **Mutable Block fields** — `Block::$class/$file/$namespace/$name/$ast/$ngramBag/$id/$rangeHash` are intentionally public-mutable; tests overwrite them post-construction. Do NOT mark `readonly`.
+- **Mutable Block fields** — `Block::$class/$file/$namespace/$name/$ast/$ngramBag/$id` are intentionally public-mutable; tests overwrite them post-construction. Do NOT mark `readonly`.
 - **Schema bumps** — any change to `JsonReporter::build()`'s cluster shape requires bumping `Phpdup\Reporting\JsonSchemaSpec::SCHEMA_VERSION` and regenerating Golden via `UPDATE_SNAPSHOTS=1`. See `docs/JETBRAINS_PLUGIN.md` for consumer rules.
 
 ## Testing
@@ -121,26 +121,18 @@ grep -q "caliber" .git/hooks/pre-commit 2>/dev/null && echo "hook-active" || ech
 
 If `caliber` is not found, tell the user: "This project uses Caliber for agent config sync. Run /setup-caliber to get set up."
 
-<!-- caliber:managed:learnings -->
 ## Session Learnings
 
 Read `CALIBER_LEARNINGS.md` for patterns and anti-patterns learned from previous sessions.
 These are auto-extracted from real tool usage — treat them as project-specific rules.
-<!-- /caliber:managed:learnings -->
-
-<!-- caliber:managed:model-config -->
 ## Model Configuration
 
 Recommended default: `claude-sonnet-4-6` with high effort (stronger reasoning; higher cost and latency than smaller models).
 Smaller/faster models trade quality for speed and cost — pick what fits the task.
 Pin your choice (`/model` in Claude Code, or `CALIBER_MODEL` when using Caliber with an API provider) so upstream default changes do not silently change behavior.
 
-<!-- /caliber:managed:model-config -->
-
-<!-- caliber:managed:sync -->
 ## Context Sync
 
 This project uses [Caliber](https://github.com/caliber-ai-org/ai-setup) to keep AI agent configs in sync across Claude Code, Cursor, Copilot, and Codex.
 Configs update automatically before each commit via `caliber refresh`.
 If the pre-commit hook is not set up, run `/setup-caliber` to configure everything automatically.
-<!-- /caliber:managed:sync -->

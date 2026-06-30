@@ -43,17 +43,6 @@ final class Block
     /** @var array<string,mixed> bookkeeping for normalization holes */
     public array $holeMap = [];
 
-    /**
-     * Hash of the block's source range — sha1 of the raw bytes between
-     * file:start and file:end inclusive. Used by incremental block
-     * extraction to reuse a block's canonical/fingerprint data when
-     * its source bytes haven't moved across runs.
-     *
-     * Computed lazily by BlockExtractor; null when the source can't be
-     * read or the feature is disabled.
-     */
-    public ?string $rangeHash = null;
-
     public ?Node $ast;
 
     public function __construct(

@@ -134,24 +134,8 @@ final class BlockVisitor extends NodeVisitorAbstract
             ast: $node,
         );
         $block->size = $size;
-        $block->rangeHash = $this->computeRangeHash($start, $end);
         ($this->sink)($block);
         return null;
-    }
-
-    /**
-     * SHA-1 of the literal source bytes between $start and $end
-     * (inclusive). Used by incremental block extraction to reuse
-     * canonical/fingerprint state across runs when source bytes
-     * are unchanged.
-     */
-    private function computeRangeHash(int $start, int $end): ?string
-    {
-        if (!is_file($this->file)) return null;
-        $lines = @file($this->file, FILE_IGNORE_NEW_LINES);
-        if ($lines === false) return null;
-        $slice = array_slice($lines, max(0, $start - 1), max(1, $end - $start + 1));
-        return sha1(implode("\n", $slice));
     }
 
     public function leaveNode(Node $node)

@@ -28,7 +28,6 @@ final class BlockHeader
         public readonly ?string $namespace,
         public readonly ?string $class,
         public readonly ?string $name,
-        public readonly ?string $rangeHash = null,
     ) {
     }
 
@@ -42,7 +41,6 @@ final class BlockHeader
             namespace: $block->namespace,
             class:     $block->class,
             name:      $block->name,
-            rangeHash: $block->rangeHash,
         );
     }
 }
