@@ -318,6 +318,7 @@ Ordering follows findings.md's roadmap: **correctness → security → broken ar
 | 2.2 | P1 | `fix/P1-apted-early-abort` | https://github.com/detain/php-dup-finder/pull/69 | 585✓ / ✓ / ✓ | ☑ (squash-merged ad1efc6) | abort only at ted() level; no key-root reads of unwritten cells |
 | 3.1 | S2 | `fix/S2-serve-path-sandbox-auth` | https://github.com/detain/php-dup-finder/pull/70 | 601✓ / ✓ / ✓ | ☑ (squash-merged cc1311d) | realpath serve-root; reject absolute/..; bearer token required on --bind-public |
 | 3.2 | S1 | `feat/S1-release-signing` | https://github.com/detain/php-dup-finder/pull/71 | 601✓ / ✓ / ✓ | ☑ (squash-merged 4799fcf) | HMAC-SHA256 signing workflow; verify sig on self-update; --allow-unsigned; SSL on checksum fetch |
+| 3.3 | S4 | `fix/S4-ml-client-non-2xx` | https://github.com/detain/php-dup-finder/pull/72 | 622✓ / ✓ / ✓ | ☑ (squash-merged 093c798) | check CURLINFO_HTTP_CODE / \$http_response_header; return null for non-2xx |
 | … | | | | | | |
 
 (The driver keeps this table current and shows the operator a per-phase rollup.)
