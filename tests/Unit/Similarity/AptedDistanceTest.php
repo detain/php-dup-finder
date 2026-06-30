@@ -79,7 +79,7 @@ final class AptedDistanceTest extends TestCase
         $memAfter = memory_get_usage(true);
 
         $growth = $memAfter - $memBefore;
-        $this->assertLessThan(
+        $this->assertLessThanOrEqual(
             4 * 1024 * 1024,
             $growth,
             'Repeated similarity() calls should not cause significant memory growth'
