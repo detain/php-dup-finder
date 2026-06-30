@@ -107,6 +107,18 @@ final class MlClient
      *
      * Public so test code can validate URLs without having to
      * exercise the full HTTP path.
+     *
+     * SSRF policy
+     * -----------
+     * - http(s) scheme only (no `file://`, `gopher://`, `ftp://`, …)
+     * - well-formed URL with an explicit host
+     * - host not literally `0.0.0.0`
+     * - host not `localhost`, `::1`, or in the `169.254.0.0/16` link-local range
+     * - after DNS resolution: no private (RFC 1918: 10.x, 172.16-31.x, 192.168.x),
+     *   loopback (127.x), link-local (169.254.x), reserved, or broadcast IPs
+     *
+     * DNS resolution is performed so that rebinding-attack hostnames that resolve
+     * to private IPs are caught even when the literal host looks public.
      */
     public static function isAllowedUrl(string $url): bool
     {
@@ -119,10 +131,73 @@ final class MlClient
             return false;
         }
         $host = (string)($parts['host'] ?? '');
+        // Strip IPv6 brackets — parse_url keeps them (e.g. '[::1]').
+        if (str_starts_with($host, '[')) {
+            $host = trim($host, '[]');
+        }
         if ($host === '' || $host === '0.0.0.0') {
             return false;
         }
+
+        // Explicit deny-list for known SSRF targets (checked before DNS resolution).
+        $lcHost = strtolower($host);
+        if ($lcHost === 'localhost') {
+            return false;
+        }
+        if (self::isBlockedIp($host)) {
+            return false;
+        }
+
+        // Resolve the host and reject private/loopback/link-local/reserved IPs.
+        $resolvedIp = gethostbyname($host);
+        if ($resolvedIp === $host) {
+            // Hostname could not be resolved, or was already an IP literal.
+            // If the host is a valid IP, check if it's private/reserved and block.
+            // Non-IP hostnames that fail resolution are allowed — HTTP will fail naturally.
+            if (filter_var($host, FILTER_VALIDATE_IP) !== false) {
+                $flags = FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE;
+                if (filter_var($host, FILTER_VALIDATE_IP, $flags) === false) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // DNS resolved to a different IP — check the resolved address.
+        if (self::isBlockedIp($resolvedIp)) {
+            return false;
+        }
+        $flags = FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE;
+        if (filter_var($resolvedIp, FILTER_VALIDATE_IP, $flags) === false) {
+            return false;
+        }
+
         return true;
+    }
+
+    /**
+     * Returns true if $ipOrHost is a known SSRF target IP or hostname.
+     */
+    private static function isBlockedIp(string $ipOrHost): bool
+    {
+        // IPv6 loopback.
+        if ($ipOrHost === '::1') {
+            return true;
+        }
+        // IPv4 loopback 127.0.0.0/8 and AWS / cloud metadata link-local 169.254.0.0/16.
+        if (filter_var($ipOrHost, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
+            $parts = explode('.', $ipOrHost);
+            if (count($parts) === 4) {
+                $first = (int)$parts[0];
+                if ($first === 127) {
+                    return true; // IPv4 loopback
+                }
+                if ($first === 169 && (int)$parts[1] === 254) {
+                    return true; // AWS metadata / cloud link-local
+                }
+            }
+        }
+        return false;
     }
 
     /**
