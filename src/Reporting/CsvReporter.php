@@ -82,6 +82,12 @@ final class CsvReporter
 
     private function escape(string $cell): string
     {
+        // Formula injection guard: prefix cells starting with formula-
+        // trigger characters with a text-prefix (') so spreadsheets
+        // treat them as literal text, not formulas.
+        if ($cell !== '' && strpbrk($cell[0], "=+-@\t\r") !== false) {
+            $cell = "'" . $cell;
+        }
         if (preg_match('/[",\r\n]/', $cell) === 1) {
             return '"' . str_replace('"', '""', $cell) . '"';
         }

@@ -63,6 +63,32 @@ final class CsvReporterTest extends TestCase
         }
     }
 
+    public function testEscapeNeutralizesFormulaInjection(): void
+    {
+        $r = new \ReflectionMethod(CsvReporter::class, 'escape');
+        $r->setAccessible(true);
+        $reporter = new CsvReporter();
+
+        // Cells starting with =, +, -, @, \t get text prefix (no RFC 4180 quoting needed)
+        $this->assertSame("'=hello", $r->invoke($reporter, '=hello'));
+        $this->assertSame("'+hello", $r->invoke($reporter, '+hello'));
+        $this->assertSame("'-hello", $r->invoke($reporter, '-hello'));
+        $this->assertSame("'@hello", $r->invoke($reporter, '@hello'));
+        $this->assertSame("'\t hello", $r->invoke($reporter, "\t hello"));
+
+        // \r triggers RFC 4180 quoting because it is a special char
+        $this->assertSame("\"'\r hello\"", $r->invoke($reporter, "\r hello"));
+
+        // Normal cells unchanged
+        $this->assertSame('hello', $r->invoke($reporter, 'hello'));
+
+        // Cells with special chars get RFC 4180 quoting
+        $this->assertSame('"hello, world"', $r->invoke($reporter, 'hello, world'));
+
+        // Guard prefix + quoting combined: = triggers prefix, comma triggers quoting
+        $this->assertSame('"\'=hello, world"', $r->invoke($reporter, '=hello, world'));
+    }
+
     private function buildReport(): Report
     {
         $config = new Config(
