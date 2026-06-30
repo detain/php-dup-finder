@@ -113,7 +113,8 @@ final class Application
                 } catch (JsonException) {
                     $decoded = null;
                 }
-                $this->queue->markCompleted($id, is_array($decoded) ? $decoded : []);
+                $summary = $this->buildSummary($decoded);
+            $this->queue->markCompleted($id, $summary);
             } else {
                 $this->queue->markFailed($id, $result['body']);
             }
@@ -165,6 +166,28 @@ final class Application
         } catch (\Throwable $e) {
             return $this->json(500, ['error' => $e->getMessage()]);
         }
+    }
+
+    /**
+     * Extract summary fields from a decoded JsonReporter payload.
+     *
+     * Only `files`, `blocks`, `clusters`, and `config` are stored in the
+     * job result so the queue stays bounded even for large codebases.
+     *
+     * @param array<string,mixed>|null $decoded
+     * @return array{files:int, blocks:int, clusters:int, config?:mixed}
+     */
+    private function buildSummary(?array $decoded): array
+    {
+        if (!is_array($decoded)) {
+            return ['files' => 0, 'blocks' => 0, 'clusters' => 0];
+        }
+        return [
+            'files'    => is_int($decoded['files'] ?? null) ? $decoded['files'] : 0,
+            'blocks'   => is_int($decoded['blocks'] ?? null) ? $decoded['blocks'] : 0,
+            'clusters' => is_int($decoded['clusters'] ?? null) ? $decoded['clusters'] : 0,
+            'config'   => $decoded['config'] ?? null,
+        ];
     }
 
     /**

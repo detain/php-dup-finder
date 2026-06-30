@@ -88,6 +88,37 @@ path in `paths[]` is validated:
 This prevents phpdup from reading arbitrary filesystem paths through
 the HTTP API, even if a client bypasses the above checks.
 
+### Bounded job queue & memory management
+
+The in-memory job queue (`JobQueue`) is bounded to prevent unbounded
+memory growth during sustained use:
+
+- **Capacity cap** — a maximum of `MAX_JOBS` (100) entries are retained.
+  When a new job is enqueued at capacity, the oldest completed or failed
+  entry is evicted to make room. Pending and running jobs are **never**
+  auto-evicted — they count toward the capacity limit but are preserved
+  until they reach a terminal state.
+
+- **TTL eviction** — completed and failed jobs older than
+  `JOB_TTL_SECONDS` (default: 1 hour) are automatically purged on every
+  mutating operation (`enqueue`, `markRunning`, `markCompleted`,
+  `markFailed`). This reclaims memory even when the queue is well below
+  capacity.
+
+- **Administrative cleanup** — `POST /jobs/cleanup` (or calling
+  `JobQueue::cleanup()`) force-evicts all terminal-state jobs regardless
+  of TTL, useful for manual intervention.
+
+- **Result summaries only** — job results stored are `{files, blocks,
+  clusters, config}` summaries extracted from the full report. The raw
+  JsonReporter output is discarded immediately after the summary is
+  extracted, keeping per-job memory usage small and predictable.
+
+These guarantees apply to the built-in single-process server. If you
+swap `JobQueue` for a persistent backend (e.g. Redis) you retain the
+same interface but the capacity/TTL semantics depend on your storage
+choice.
+
 ### General advice
 
 For non-localhost deployments, put a reverse proxy (nginx / Caddy)
