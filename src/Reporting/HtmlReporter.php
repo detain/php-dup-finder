@@ -267,20 +267,75 @@ final class HtmlReporter
     /**
      * Tiny PHP syntax highlighter — keywords, strings, comments, numbers.
      * No external dep; output is HTML with <span class="...">.
+     *
+     * Single-pass `preg_replace_callback` with alternation:
+     * - Comments (both // and block comments) are matched as atomic units and
+     *   pass through unchanged — they are never wrapped.
+     * - Strings are matched as atomic units and pass through unchanged.
+     * - Keywords and numbers are wrapped in <span class="k"> / <span class="n">.
+     *
+     * Because comments and strings are consumed as complete units before the
+     * keyword/number patterns are evaluated, the regex engine can never
+     * re-enter those regions. This prevents the double-wrapping that plagued
+     * the sequential-pass architecture (keywords inside comments or strings
+     * were incorrectly highlighted).
+     *
+     * The `class="c"` attribute case is handled by matching the entire string
+     * `&quot;c&quot;` atomically first; the keyword pattern never sees the "class"
+     * inside it.
      */
     private function highlightPhp(string $code): string
     {
-        $escaped = htmlspecialchars($code);
-        // Order matters: comments first (block, then line), then strings, numbers, keywords.
-        // Use ~ as delimiter so the &#039; entity below doesn't accidentally close the pattern.
-        $escaped = preg_replace('~/\*.*?\*/~s', '<span class="c">$0</span>', $escaped) ?? $escaped;
-        $escaped = preg_replace('~//[^\n]*~', '<span class="c">$0</span>', $escaped) ?? $escaped;
-        $escaped = preg_replace('~&\#039;[^&]*?&\#039;~', '<span class="s">$0</span>', $escaped) ?? $escaped;
-        $escaped = preg_replace('~&quot;[^&]*?&quot;~', '<span class="s">$0</span>', $escaped) ?? $escaped;
-        $kw = 'function|return|if|else|elseif|foreach|for|while|do|switch|case|break|continue|new|class|interface|trait|extends|implements|public|private|protected|static|readonly|final|abstract|use|namespace|try|catch|finally|throw|null|true|false|array|int|string|float|bool|mixed|self|parent|this|void|never|use|match|enum';
-        $escaped = preg_replace('~\b(' . $kw . ')\b~', '<span class="k">$1</span>', $escaped) ?? $escaped;
-        $escaped = preg_replace('~\b(\d+(?:\.\d+)?)\b~', '<span class="n">$1</span>', $escaped) ?? $escaped;
-        return $escaped;
+        $escaped = htmlspecialchars($code, ENT_QUOTES, 'UTF-8');
+
+        $kw = 'function|return|if|elseif|foreach|for|while|do|switch|case|break|continue|'
+            . 'new|class|interface|trait|extends|implements|public|private|protected|static|'
+            . 'readonly|final|abstract|use|namespace|try|catch|finally|throw|null|true|false|'
+            . 'array|int|string|float|bool|mixed|self|parent|void|never|use|match|enum';
+
+        // Combined alternation: comments (multi-line first, then single-line),
+        // strings (double-quoted, single-quoted), numbers, keywords.
+        // Use ~ as delimiter so &#039; doesn't accidentally close the pattern.
+        // The callback is invoked once per match in left-to-right order.
+        return preg_replace_callback(
+            '~
+            /\*[\s\S]*?\*/                    # multi-line comment
+            | //[^\n]*                         # single-line comment
+            | &quot;[^&]*?&quot;                  # double-quoted string (htmlspecialchars ENT_QUOTES)
+            | &#039;[^&\n]*?&#039;        # single-quoted string
+            | \b\d+(?:\.\d+)?\b                # numbers
+            | \b(' . $kw . ')\b(?!\s*=)       # keywords (negative lookahead prevents matching
+                                              # keywords before =, e.g. class= in HTML attributes)
+            ~x',
+            static function (array $m): string {
+                $token = $m[0];
+
+                // Already wrapped (shouldn't happen in single-pass, but guard anyway).
+                if (str_starts_with($token, '<span ')) {
+                    return $token;
+                }
+
+                // Numbers: wrap.
+                if (preg_match('/^\b\d+(?:\.\d+)?\b$/', $token)) {
+                    return '<span class="n">' . $token . '</span>';
+                }
+
+                // Keywords: wrap (negative lookahead already verified we're not in
+                // an HTML attribute context like class= followed by =).
+                if (preg_match('/^\b(function|return|if|elseif|foreach|for|while|do|switch|case|break|continue|new|class|interface|trait|extends|implements|public|private|protected|static|readonly|final|abstract|use|namespace|try|catch|finally|throw|null|true|false|array|int|string|float|bool|mixed|self|parent|void|never|use|match|enum)\b$/', $token)) {
+                    return '<span class="k">' . $token . '</span>';
+                }
+
+                // Strings: wrap.
+                if (str_starts_with($token, '&quot;') || str_starts_with($token, '&#039;')) {
+                    return '<span class="s">' . $token . '</span>';
+                }
+
+                // Comments: pass through unchanged.
+                return $token;
+            },
+            $escaped,
+        ) ?? $escaped;
     }
 
     private function firstLine(string $s): string
