@@ -40,9 +40,6 @@ final class Block
      */
     public ?array $irBag = null;
 
-    /** @var array<string,mixed> bookkeeping for normalization holes */
-    public array $holeMap = [];
-
     public ?Node $ast;
 
     public function __construct(
