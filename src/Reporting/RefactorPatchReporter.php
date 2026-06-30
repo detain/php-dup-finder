@@ -37,8 +37,9 @@ final class RefactorPatchReporter
             if (count($cluster->members) < 2) {
                 continue;
             }
-            $file = $dir . DIRECTORY_SEPARATOR . $cluster->id . '.patch';
-            file_put_contents($file, $this->buildPatch($cluster));
+            $safeId = preg_replace('/[^a-zA-Z0-9_-]/', '_', $cluster->id);
+            $file = $dir . DIRECTORY_SEPARATOR . $safeId . '.patch';
+            file_put_contents($file, $this->buildPatch($cluster, $safeId));
         }
     }
 
@@ -49,8 +50,9 @@ final class RefactorPatchReporter
      * abstraction skeleton plus per-member hint comments so a human
      * reviewer can wire up the call sites themselves.
      */
-    public function buildPatch(Cluster $cluster): string
+    public function buildPatch(Cluster $cluster, ?string $safeId = null): string
     {
+        $safeId ??= preg_replace('/[^a-zA-Z0-9_-]/', '_', $cluster->id);
         $unsafe = $this->detectUnsafe($cluster);
         $header = "# phpdup refactor patch — cluster {$cluster->id}\n"
                 . "# members: " . count($cluster->members)
@@ -66,7 +68,7 @@ final class RefactorPatchReporter
             return $header . "# No signature synthesised — skip.\n";
         }
 
-        $abstractionFile = "Refactored/{$cluster->id}.php";
+        $abstractionFile = "Refactored/{$safeId}.php";
         $patch = $header
                . "diff --git a/{$abstractionFile} b/{$abstractionFile}\n"
                . "new file mode 100644\n"
