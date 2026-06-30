@@ -319,6 +319,7 @@ Ordering follows findings.md's roadmap: **correctness → security → broken ar
 | 3.1 | S2 | `fix/S2-serve-path-sandbox-auth` | https://github.com/detain/php-dup-finder/pull/70 | 601✓ / ✓ / ✓ | ☑ (squash-merged cc1311d) | realpath serve-root; reject absolute/..; bearer token required on --bind-public |
 | 3.2 | S1 | `feat/S1-release-signing` | https://github.com/detain/php-dup-finder/pull/71 | 601✓ / ✓ / ✓ | ☑ (squash-merged 4799fcf) | HMAC-SHA256 signing workflow; verify sig on self-update; --allow-unsigned; SSL on checksum fetch |
 | 3.3 | S4 | `fix/S4-ml-client-non-2xx` | https://github.com/detain/php-dup-finder/pull/72 | 622✓ / ✓ / ✓ | ☑ (squash-merged 093c798) | check CURLINFO_HTTP_CODE / \$http_response_header; return null for non-2xx |
+| 3.4 | S3 | `fix/S3-deep-ssrf-guard` | https://github.com/detain/php-dup-finder/pull/73 | 638✓ / ✓ / ✓ | ☑ (squash-merged c5a85e2) | resolve host; reject private/loopback/link-local/metadata IPs; filter_var flags; localhost/::1/169.254.x.x blocks |
 | … | | | | | | |
 
 (The driver keeps this table current and shows the operator a per-phase rollup.)
