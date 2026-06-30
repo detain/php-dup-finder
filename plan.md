@@ -339,6 +339,7 @@ Ordering follows findings.md's roadmap: **correctness → security → broken ar
 | 6.3 | M3 | `fix/M3-drop-per-file-blocks-copy` | https://github.com/detain/php-dup-finder/pull/90 | 698✓ / ✓ / ✓ | ☑ (squash-merged e7be4c0) | remove $perFileBlocks accumulation; build $byFile from $blocks at cache-save time; ~1x peak memory |
 | 6.4 | M4 | `fix/M4-drop-pure-edges-rebuild` | https://github.com/detain/php-dup-finder/pull/91 | 698✓ / ✓ / ✓ | ☑ (squash-merged 65a6508) | remove $pureEdges rebuilding loop; __progress already filtered at stream level; use $edges directly |
 | 6.5 | M1 | `fix/M1-temp-file-cleanup` | https://github.com/detain/php-dup-finder/pull/92 | 698✓ / ✓ / ✓ | ☑ (squash-merged 4110a93) | try/finally cleanup in WorkerPool::run(); unlinkAll() helper; temp files cleaned on any exit path |
+| 7.1a | D1 | `fix/D1-delete-holemap` | https://github.com/detain/php-dup-finder/pull/93 | 698✓ / ✓ / ✓ | ☑ (squash-merged) | delete HoleMap.php + Block::$holeMap (dead code) |
 | … | | | | | | |
 
 (The driver keeps this table current and shows the operator a per-phase rollup.)
