@@ -81,6 +81,100 @@ final class SignatureBuilderTest extends TestCase
         $this->assertStringContainsString(': mixed', $sig);
     }
 
+    public function testClassStringTypeRendersAsString(): void
+    {
+        $cluster = new Cluster('TEST', [], 1.0, false);
+        $cluster->holes = [
+            $this->hole('name', '$model', 'class-string'),
+        ];
+
+        (new SignatureBuilder())->buildSignature($cluster);
+
+        $sig = (string)$cluster->signature;
+        $this->assertStringContainsString('string $model,', $sig);
+        $this->assertStringNotContainsString('class-string', $sig);
+    }
+
+    public function testNullOnlyTypeRendersAsMixed(): void
+    {
+        $cluster = new Cluster('TEST', [], 1.0, false);
+        $cluster->holes = [
+            $this->hole('literal', '$value', 'null'),
+        ];
+
+        (new SignatureBuilder())->buildSignature($cluster);
+
+        $sig = (string)$cluster->signature;
+        $this->assertStringContainsString('mixed $value,', $sig);
+        $this->assertStringNotContainsString('null $value', $sig);
+    }
+
+    public function testNullableSingleTypeRendersAsNullableShorthand(): void
+    {
+        $cluster = new Cluster('TEST', [], 1.0, false);
+        $cluster->holes = [
+            $this->hole('literal', '$value', 'int|null'),
+        ];
+
+        (new SignatureBuilder())->buildSignature($cluster);
+
+        $sig = (string)$cluster->signature;
+        $this->assertStringContainsString('?int $value,', $sig);
+        $this->assertStringNotContainsString('|null', $sig);
+    }
+
+    public function testNullableClassStringRendersAsNullableString(): void
+    {
+        $cluster = new Cluster('TEST', [], 1.0, false);
+        $cluster->holes = [
+            $this->hole('name', '$model', 'class-string|null'),
+        ];
+
+        (new SignatureBuilder())->buildSignature($cluster);
+
+        $sig = (string)$cluster->signature;
+        $this->assertStringContainsString('?string $model,', $sig);
+        $this->assertStringNotContainsString('class-string', $sig);
+    }
+
+    public function testMultiTypeUnionWithNullRendersAsMixed(): void
+    {
+        $cluster = new Cluster('TEST', [], 1.0, false);
+        $cluster->holes = [
+            $this->hole('literal', '$value', 'int|string|null'),
+        ];
+
+        (new SignatureBuilder())->buildSignature($cluster);
+
+        $sig = (string)$cluster->signature;
+        $this->assertStringContainsString('mixed $value,', $sig);
+        $this->assertStringNotContainsString('|null', $sig);
+    }
+
+    public function testSynthesizedSignaturePassesPhpLint(): void
+    {
+        $cluster = new Cluster('TEST', [], 1.0, false);
+        $cluster->holes = [
+            $this->hole('name', '$model', 'class-string'),
+            $this->hole('literal', '$value', 'null'),
+            $this->hole('literal', '$threshold', 'int|null'),
+            $this->hole('optional_block', '$includeFlag', 'bool'),
+        ];
+
+        (new SignatureBuilder())->buildSignature($cluster);
+
+        $sig = (string)$cluster->signature;
+        $php = "<?php\ndeclare(strict_types=1);\n\n" . $sig . "{}\n";
+
+        $tmpFile = sys_get_temp_dir() . '/phpdup_sig_test_' . uniqid() . '.php';
+        file_put_contents($tmpFile, $php);
+
+        $output = shell_exec('php -l ' . escapeshellarg($tmpFile) . ' 2>&1');
+        unlink($tmpFile);
+
+        $this->assertStringContainsString('No syntax errors', $output, 'Synthesized signature must be valid PHP');
+    }
+
     private function hole(string $kind, string $name, string $type): Hole
     {
         $h = new Hole('__P', $kind, ['x']);
