@@ -52,6 +52,55 @@ final class AptedDistanceTest extends TestCase
         $this->assertGreaterThan(0.95, $sim, "expected high similarity for parameterizable variants, got $sim");
     }
 
+    public function testSimilarityIsDeterministicAcrossMultipleCalls(): void
+    {
+        $a = $this->canonical('<?php function f($x) { if ($x > 10) { return "a"; } return "b"; }');
+        $b = $this->canonical('<?php function g($y) { if ($y > 20) { return "x"; } return "y"; }');
+
+        $sim1 = (new AptedDistance())->similarity($a, $b);
+        $sim2 = (new AptedDistance())->similarity($a, $b);
+        $sim3 = (new AptedDistance())->similarity($a, $b);
+
+        $this->assertEquals($sim1, $sim2, 'similarity must be deterministic across calls');
+        $this->assertEquals($sim2, $sim3, 'similarity must be deterministic across calls');
+    }
+
+    public function testNoMemoryLeakFromRepeatedSimilarityCalls(): void
+    {
+        $a = $this->canonical('<?php function f($x) { if ($x > 10) { return "a"; } return "b"; }');
+        $b = $this->canonical('<?php function g($y) { if ($y > 20) { return "x"; } return "y"; }');
+
+        $apted = new AptedDistance();
+
+        $memBefore = memory_get_usage(true);
+        for ($i = 0; $i < 1000; $i++) {
+            $apted->similarity($a, $b);
+        }
+        $memAfter = memory_get_usage(true);
+
+        $growth = $memAfter - $memBefore;
+        $this->assertLessThan(
+            4 * 1024 * 1024,
+            $growth,
+            'Repeated similarity() calls should not cause significant memory growth'
+        );
+    }
+
+    public function testDifferentParserInstancesProduceSameSimilarity(): void
+    {
+        $code = '<?php function f($x) { return $x * 2; }';
+
+        $a1 = $this->canonical($code);
+        $a2 = $this->canonical($code);
+
+        $b1 = $this->canonical('<?php function g($y) { return $y * 3; }');
+        $b2 = $this->canonical('<?php function h($z) { return $z * 3; }');
+
+        $sim1 = (new AptedDistance())->similarity($a1, $b1);
+        $sim2 = (new AptedDistance())->similarity($a2, $b2);
+        $this->assertEquals($sim1, $sim2, 'same tree structure must give same similarity');
+    }
+
     private function canonical(string $code, string $mode = 'aggressive'): \PhpParser\Node
     {
         $parser = new AstParser();

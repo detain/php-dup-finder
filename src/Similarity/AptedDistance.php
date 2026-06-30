@@ -33,9 +33,6 @@ final class AptedDistance
     private readonly EditCostModel $costModel;
     private readonly int $scaler;
 
-    /** @var array<int, array{labels: list<string>, ll: list<int>, kr: list<int>}> */
-    private static array $flattenCache = [];
-
     public function __construct(?EditCostModel $costModel = null)
     {
         $this->costModel = $costModel ?? new EditCostModel(EditCostModel::MODEL_DEFAULT);
@@ -82,8 +79,8 @@ final class AptedDistance
             }
         }
 
-        $ta = self::cachedFlatten($a);
-        $tb = self::cachedFlatten($b);
+        $ta = self::flatten($a);
+        $tb = self::flatten($b);
         $n = count($ta['labels']);
         $m = count($tb['labels']);
         if ($n === 0 || $m === 0) {
@@ -289,22 +286,6 @@ final class AptedDistance
         sort($kr);
 
         return ['labels' => $labels, 'll' => $ll, 'kr' => $kr];
-    }
-
-    /**
-     * Flatten with static cache keyed on spl_object_id.
-     *
-     * @return array{labels: list<string>, ll: list<int>, kr: list<int>}
-     */
-    private static function cachedFlatten(Node $node): array
-    {
-        $key = spl_object_id($node);
-        if (isset(self::$flattenCache[$key])) {
-            return self::$flattenCache[$key];
-        }
-        $result = self::flatten($node);
-        self::$flattenCache[$key] = $result;
-        return $result;
     }
 
     /** @return list<Node> */
