@@ -47,15 +47,31 @@ final class WorkerPool
 
     public static function detectCpuCount(): int
     {
+        static $cache = null;
+
+        // PHPDUP_WORKERS always short-circuits: env wins over any cached value.
+        $env = (int)getenv('PHPDUP_WORKERS');
+        if ($env > 0) {
+            $cache = $env;
+            return $env;
+        }
+
+        if ($cache !== null) {
+            return $cache;
+        }
+
         $candidates = [
-            (int)getenv('PHPDUP_WORKERS'),
             self::nprocFromCmdline(),
             (int)shell_exec('nproc 2>/dev/null'),
             4,
         ];
         foreach ($candidates as $n) {
-            if ($n > 0) return $n;
+            if ($n > 0) {
+                $cache = $n;
+                return $n;
+            }
         }
+        $cache = 1;
         return 1;
     }
 

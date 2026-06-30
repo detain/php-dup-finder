@@ -40,6 +40,50 @@ final class WorkerPoolTest extends TestCase
         $this->assertGreaterThanOrEqual(1, $n);
     }
 
+    public function testDetectCpuCountMemoizes(): void
+    {
+        // Force a known env value to avoid static-cache pollution from previous tests.
+        $original = getenv('PHPDUP_WORKERS');
+        putenv('PHPDUP_WORKERS=7');
+
+        try {
+            $first  = WorkerPool::detectCpuCount();
+            $second = WorkerPool::detectCpuCount();
+
+            $this->assertSame($first, $second);
+            $this->assertSame(7, $first);
+        } finally {
+            // Restore original env state so subsequent tests are unaffected.
+            if ($original === false) {
+                putenv('PHPDUP_WORKERS');
+            } else {
+                putenv("PHPDUP_WORKERS=$original");
+            }
+        }
+    }
+
+    public function testDetectCpuCountNeverCallsNprocWhenEnvSet(): void
+    {
+        // When PHPDUP_WORKERS is set to a value > 0, nproc must never be invoked.
+        // Use a value (99) that cannot match any real machine CPU count.
+        $original = getenv('PHPDUP_WORKERS');
+        putenv('PHPDUP_WORKERS=99');
+
+        try {
+            $result = WorkerPool::detectCpuCount();
+
+            // The result must be the env value (99), proving nproc was bypassed.
+            // If nproc were called, the result would be the actual CPU count (≥1, most likely ≠99).
+            $this->assertSame(99, $result);
+        } finally {
+            if ($original === false) {
+                putenv('PHPDUP_WORKERS');
+            } else {
+                putenv("PHPDUP_WORKERS=$original");
+            }
+        }
+    }
+
     public function testRunStreamingSerialFallbackForSmallInputs(): void
     {
         $pool = new WorkerPool(workers: 4);
