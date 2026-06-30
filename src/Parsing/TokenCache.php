@@ -5,6 +5,7 @@ namespace Phpdup\Parsing;
 
 use PhpParser\Lexer;
 use PhpParser\ParserFactory;
+use Phpdup\Persistence\SerializedClassAllowList;
 
 /**
  * Disk-backed token-stream cache keyed by file content hash.
@@ -52,7 +53,7 @@ final class TokenCache
         if (!is_file($file)) return null;
         $blob = @file_get_contents($file);
         if ($blob === false) return null;
-        $data = @unserialize($blob, ['allowed_classes' => true]);
+        $data = @unserialize($blob, ['allowed_classes' => SerializedClassAllowList::parserClasses()]);
         return is_array($data) ? $data : null;
     }
 
