@@ -101,6 +101,59 @@ final class AptedDistanceTest extends TestCase
         $this->assertEquals($sim1, $sim2, 'same tree structure must give same similarity');
     }
 
+    public function testTreeEditDistanceWithBudgetExceededNeverUnderestimates(): void
+    {
+        $a = $this->canonical('<?php
+        class A {
+            public function f($x) { return $x + 1; }
+            public function g($x) { return $x + 2; }
+            public function h($x) { return $x + 3; }
+        }');
+        $b = $this->canonical('<?php
+        class B {
+            public function p($y) { return $y * 1; }
+            public function q($y) { return $y * 2; }
+            public function r($y) { return $y * 3; }
+        }');
+
+        $sim = (new AptedDistance())->similarity($a, $b, 0.99);
+
+        $this->assertLessThan(
+            0.95,
+            $sim,
+            "Very different trees must not get falsely inflated similarity near 1.0"
+        );
+    }
+
+    public function testForestDpCompletesAllCellsBeforeBudgetCheck(): void
+    {
+        $codeA = '<?php
+        function foo($a, $b, $c, $d, $e) {
+            if ($a) { return 1; }
+            if ($b) { return 2; }
+            if ($c) { return 3; }
+            if ($d) { return 4; }
+            return 5;
+        }';
+        $codeB = '<?php
+        function bar($w, $x, $y, $z) {
+            if ($w) { return 10; }
+            if ($x) { return 20; }
+            if ($y) { return 30; }
+            return 40;
+        }';
+
+        $a = $this->canonical($codeA);
+        $b = $this->canonical($codeB);
+
+        $sim = (new AptedDistance())->similarity($a, $b);
+        $this->assertLessThan(
+            0.95,
+            $sim,
+            "Structurally different functions must not get falsely inflated similarity near 1.0"
+        );
+    }
+
     private function canonical(string $code, string $mode = 'aggressive'): \PhpParser\Node
     {
         $parser = new AstParser();

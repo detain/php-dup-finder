@@ -112,6 +112,12 @@ final class AptedDistance
     /**
      * Run a Zhang-Shasha tree-edit-distance with bounded early exit.
      *
+     * Budget early-exit is applied at this level: after each forestDp()
+     * call returns the minimum cell value of the completed submatrix, if
+     * that minimum exceeds the budget we return $budget+1 immediately.
+     * This ensures all treedist cells for the current key-root pair are
+     * always written before the abort decision is made.
+     *
      * @param array{labels: list<string>, ll: list<int>, kr: list<int>} $T1
      * @param array{labels: list<string>, ll: list<int>, kr: list<int>} $T2
      */
@@ -140,6 +146,14 @@ final class AptedDistance
      * Forest-distance DP for the (key_root_a, key_root_b) pair.
      * Mutates $treedist in place. Returns the minimum entry written
      * to the matrix on this iteration so the caller can early-abort.
+     *
+     * CRITICAL INVARIANT: All cells of the treedist submatrix for this
+     * key-root pair (i.e., all rows from $iL to $i and all columns from
+     * $jL to $j) are unconditionally written before this method returns,
+     * regardless of whether the budget is exceeded. This prevents stale
+     * zero cells from poisoning later key-root computations via the
+     * Zhang-Shasha recurrence at line ~207. Early-abort decision is made
+     * ONLY at the ted() level, after this method returns.
      *
      * @param list<int>             $LL1
      * @param list<int>             $LL2
@@ -207,9 +221,6 @@ final class AptedDistance
                 if ($fd[$r][$c] < $rowMin) {
                     $rowMin = $fd[$r][$c];
                 }
-            }
-            if ($rowMin > $budget) {
-                return $rowMin;
             }
             if ($rowMin < $observedMin) {
                 $observedMin = $rowMin;
