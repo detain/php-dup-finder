@@ -43,10 +43,38 @@ final class SignatureBuilder
 
     private function displayType(string $t): string
     {
-        return match ($t) {
-            'class-string' => 'class-string',
-            default => $t,
-        };
+        if ($t === 'class-string') {
+            return 'string';
+        }
+
+        if ($t === 'null') {
+            return 'mixed';
+        }
+
+        $parts = explode('|', $t);
+
+        $hasNull = in_array('null', $parts, true);
+        $nonNullParts = array_values(array_diff($parts, ['null']));
+
+        foreach ($nonNullParts as $i => $part) {
+            if ($part === 'class-string') {
+                $nonNullParts[$i] = 'string';
+            }
+        }
+
+        if ($hasNull && count($nonNullParts) === 1) {
+            return '?' . $nonNullParts[0];
+        }
+
+        if ($hasNull) {
+            return 'mixed';
+        }
+
+        if ($nonNullParts !== $parts) {
+            return implode('|', $nonNullParts);
+        }
+
+        return $t;
     }
 
     private function suggestFunctionName(Cluster $cluster): string
