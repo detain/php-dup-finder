@@ -334,6 +334,11 @@ Ordering follows findings.md's roadmap: **correctness → security → broken ar
 | 4.1 | C4 | `fix/c4-single-pass-html-highlighter` | https://github.com/detain/php-dup-finder/pull/78 | 638✓ / ✓ / ✓ | ☐ (pending squash-merge) | single-pass preg_replace_callback; atomically matches comments/strings; no keyword re-wrapping; class="c" bug fixed |
 | 4.2 | D3 | `fix/d4-refactor-test-reporter-arity` | https://github.com/detain/php-dup-finder/pull/77 | 646✓ / ✓ / ✓ | ☐ (pending squash-merge) | generateParamList() from holes; method arity matches data provider rows; tests added |
 | 4.3 | D4 | `fix/d4-refactor-signature-php81` | https://github.com/detain/php-dup-finder/pull/new/fix/d4-refactor-signature-php81 | 636✓ / ✓ / ✓ | ☐ (pending squash-merge) | displayType() maps class-string→string, null→mixed; unions with null→?T or mixed |
+| 6.1 | M5 | `fix/M5-bounded-job-queue` | https://github.com/detain/php-dup-finder/pull/88 | 692✓ / ✓ / ✓ | ☑ (squash-merged d3e1e38) | MAX_JOBS=100 cap; JOB_TTL_SECONDS=3600; buildSummary() stores only {files,blocks,clusters,config} |
+| 6.2 | M2 | `fix/M2-worker-cancel-reap` | https://github.com/detain/php-dup-finder/pull/89 | 692✓ / ✓ / ✓ | ☑ (squash-merged b01aec0) | posix_kill(SIGTERM) before pcntl_waitpid; WNOHANG check; $status initialized |
+| 6.3 | M3 | `fix/M3-drop-per-file-blocks-copy` | https://github.com/detain/php-dup-finder/pull/90 | 698✓ / ✓ / ✓ | ☑ (squash-merged e7be4c0) | remove $perFileBlocks accumulation; build $byFile from $blocks at cache-save time; ~1x peak memory |
+| 6.4 | M4 | `fix/M4-drop-pure-edges-rebuild` | https://github.com/detain/php-dup-finder/pull/91 | 698✓ / ✓ / ✓ | ☑ (squash-merged 65a6508) | remove $pureEdges rebuilding loop; __progress already filtered at stream level; use $edges directly |
+| 6.5 | M1 | `fix/M1-temp-file-cleanup` | https://github.com/detain/php-dup-finder/pull/92 | 698✓ / ✓ / ✓ | ☑ (squash-merged 4110a93) | try/finally cleanup in WorkerPool::run(); unlinkAll() helper; temp files cleaned on any exit path |
 | … | | | | | | |
 
 (The driver keeps this table current and shows the operator a per-phase rollup.)
