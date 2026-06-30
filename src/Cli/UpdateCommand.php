@@ -28,8 +28,26 @@ final class UpdateCommand extends SymfonyCommand
 {
     private const GITHUB_RELEASES_API = 'https://api.github.com/repos/detain/php-dup-finder/releases/latest';
 
+    /** HMAC-SHA256 signature file attached to each release. */
+    private const SIGNATURE_ASSET_NAME = 'phpdup.phar.sig';
+
     private const CHECKSUM_ASSET_NAME = 'phpdup.phar.sha256';
     private const PHAR_ASSET_NAME     = 'phpdup.phar';
+
+    /**
+     * Base64-encoded HMAC-SHA256 public verification key.
+     *
+     * Set via HMAC_SECRET_KEY in GitHub Actions secrets; the public key
+     * is embedded here so phpdup can verify signatures without any
+     * external key-server dependency.
+     *
+     * Replace the placeholder with the actual base64-encoded key before
+     * the first signed release. Key rotation: update this constant and
+     * tag a new release.
+     *
+     * @see docs/RELEASE.md
+     */
+    private const VERIFICATION_KEY = 'REPLACE_WITH_REAL_PUBLIC_KEY';
 
     protected function configure(): void
     {
@@ -45,10 +63,12 @@ running phar with it.
 
 Steps performed:
   1. Fetch the GitHub Releases JSON API for the latest tag.
-  2. Download <fg=yellow>phpdup.phar.sha256</> and verify the phar checksum.
-  3. Download <fg=yellow>phpdup.phar</> and compare its checksum.
-  4. Replace the running phar atomically (temp rename).
-  5. On any error after the old phar is removed, print recovery steps.
+  2. Download <fg=yellow>phpdup.phar.sig</> (HMAC-SHA256 signature).
+  3. Download <fg=yellow>phpdup.phar</> and verify its HMAC-SHA256 signature
+     against the pinned public key before installation.
+  4. Fall back to SHA-256 checksum verification if signature unavailable.
+  5. Replace the running phar atomically (temp rename).
+  6. On any error after the old phar is removed, print recovery steps.
 
 Requires: <fg=yellow>ext-curl</>, <fg=yellow>ext-hash</>, and network access.
 Does NOT require composer or vendor/ — works with the standalone phar.
@@ -75,6 +95,12 @@ HELP
                 'o',
                 InputOption::VALUE_REQUIRED,
                 'Write the downloaded phar to this path instead of replacing the running one',
+            )
+            ->addOption(
+                'allow-unsigned',
+                null,
+                InputOption::VALUE_NONE,
+                'Allow installation even when signature verification fails (not recommended)',
             );
     }
 
@@ -177,6 +203,7 @@ HELP
         // -----------------------------------------------------------------
         $pharUrl       = null;
         $checksumUrl   = null;
+        $signatureUrl  = null;
         foreach (($release['assets'] ?? []) as $asset) {
             if (($asset['name'] ?? '') === self::PHAR_ASSET_NAME) {
                 $pharUrl = $asset['browser_download_url'] ?? null;
@@ -184,26 +211,17 @@ HELP
             if (($asset['name'] ?? '') === self::CHECKSUM_ASSET_NAME) {
                 $checksumUrl = $asset['browser_download_url'] ?? null;
             }
+            if (($asset['name'] ?? '') === self::SIGNATURE_ASSET_NAME) {
+                $signatureUrl = $asset['browser_download_url'] ?? null;
+            }
         }
 
         if ($pharUrl === null) {
             return $this->failed(
                 $io,
-                "Asset <fg=yellow>{$pharUrl}</> not found in release. " .
+                "Asset <fg=yellow>" . self::PHAR_ASSET_NAME . "</> not found in release. " .
                 'Ensure the release was created with `phpdup release` (build-phar.php --release).',
             );
-        }
-        if ($checksumUrl === null) {
-            $io->warning([
-                'No SHA-256 checksum asset found.',
-                '  Falling back to SHA-256 of the downloaded file (less secure).',
-            ]);
-            $expectedSha256 = null;
-        } else {
-            $expectedSha256 = trim((string)@file_get_contents($checksumUrl)) ?: null;
-            if ($expectedSha256 !== null && preg_match('/^[a-f0-9]{64}\s/', $expectedSha256)) {
-                $expectedSha256 = preg_replace('/\s+.*/', '', $expectedSha256);
-            }
         }
 
         // -----------------------------------------------------------------
@@ -219,31 +237,90 @@ HELP
         }
 
         // -----------------------------------------------------------------
-        // 4. Verify checksum
+        // 4. Verify HMAC-SHA256 signature (if available)
         // -----------------------------------------------------------------
-        $io->section('Verifying checksum…');
-        $actualSha256 = hash_file('sha256', $tmpFile);
-        if ($expectedSha256 !== null) {
-            if (!hash_equals($expectedSha256, $actualSha256)) {
-                @unlink($tmpFile);
-                return $this->failed($io, sprintf(
-                    "SHA-256 mismatch.\n  Expected: %s\n  Actual:   %s",
-                    $expectedSha256,
-                    $actualSha256,
-                ));
+        $allowUnsigned = (bool)$input->getOption('allow-unsigned');
+        $signatureVerified = false;
+        if ($signatureUrl !== null) {
+            $io->section('Verifying signature…');
+            $tmpSig = $tmpFile . '.sig';
+            $sigOk = $this->downloadFile($signatureUrl, $tmpSig, $io);
+            if (!$sigOk) {
+                @unlink($tmpSig);
+                if ($allowUnsigned) {
+                    $io->warning('Signature download failed — proceeding without verification (--allow-unsigned).');
+                } else {
+                    @unlink($tmpFile);
+                    return $this->failed($io, 'Download of signature file failed. Use --allow-unsigned to install anyway (not recommended).');
+                }
+            } else {
+                $expectedSig = trim((string)@file_get_contents($tmpSig)) ?: '';
+                @unlink($tmpSig);
+                if ($expectedSig === '') {
+                    if ($allowUnsigned) {
+                        $io->warning('Signature file is empty — proceeding without verification (--allow-unsigned).');
+                    } else {
+                        @unlink($tmpFile);
+                        return $this->failed($io, 'Signature file is empty. Use --allow-unsigned to install anyway (not recommended).');
+                    }
+                } else {
+                    $actualSig = hash_hmac_file('sha256', $tmpFile, self::VERIFICATION_KEY);
+                    if (!hash_equals($expectedSig, $actualSig)) {
+                        @unlink($tmpFile);
+                        if ($allowUnsigned) {
+                            $io->warning('Signature mismatch — proceeding without verification (--allow-unsigned).');
+                        } else {
+                            return $this->failed($io, "HMAC-SHA256 signature mismatch.\n  Expected: {$expectedSig}\n  Actual:   {$actualSig}\nUse --allow-unsigned to install anyway (not recommended).");
+                        }
+                    } else {
+                        $io->text("  HMAC-SHA256: <fg=green>verified</>  ✓");
+                        $signatureVerified = true;
+                    }
+                }
             }
-            $io->text("  SHA-256: <fg=green>{$actualSha256}</>  ✓");
+        } elseif (!$allowUnsigned) {
+            @unlink($tmpFile);
+            return $this->failed($io, 'No signature file found in release. Use --allow-unsigned to install anyway (not recommended).');
         } else {
-            $io->text("  SHA-256: {$actualSha256}  (no reference to verify against)");
+            $io->warning('No signature file found — proceeding without verification (--allow-unsigned).');
         }
 
         // -----------------------------------------------------------------
-        // 5. Replace running phar
+        // 5. Verify SHA-256 checksum (fallback when no signature)
+        // -----------------------------------------------------------------
+        if (!$signatureVerified) {
+            $io->section('Verifying checksum…');
+            $expectedSha256 = null;
+            if ($checksumUrl !== null) {
+                $sslContext = stream_context_create(['ssl' => ['verify_peer' => true, 'verify_depth' => 5]]);
+                $checksumBody = @file_get_contents($checksumUrl, false, $sslContext);
+                $expectedSha256 = $checksumBody !== false ? trim((string)$checksumBody) : null;
+                if ($expectedSha256 !== null && preg_match('/^[a-f0-9]{64}\s/', $expectedSha256)) {
+                    $expectedSha256 = preg_replace('/\s+.*/', '', $expectedSha256);
+                }
+            }
+            $actualSha256 = hash_file('sha256', $tmpFile);
+            if ($expectedSha256 !== null) {
+                if (!hash_equals($expectedSha256, $actualSha256)) {
+                    @unlink($tmpFile);
+                    return $this->failed($io, sprintf(
+                        "SHA-256 mismatch.\n  Expected: %s\n  Actual:   %s",
+                        $expectedSha256,
+                        $actualSha256,
+                    ));
+                }
+                $io->text("  SHA-256: <fg=green>{$actualSha256}</>  ✓");
+            } else {
+                $io->text("  SHA-256: {$actualSha256}  (no reference to verify against)");
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // 6. Replace running phar
         // -----------------------------------------------------------------
         $io->section('Installing…');
 
         if ($outPath !== null) {
-            // Just write to the requested output path
             if (!rename($tmpFile, $outPath)) {
                 return $this->failed($io, "Could not move downloaded phar to: {$outPath}");
             }
@@ -253,8 +330,6 @@ HELP
             return 0;
         }
 
-        // Backup old phar (in case we're updating from a symlink or the
-        // temp dir is on the same filesystem as the phar).
         $backupPath = $pharPath . '.backup.' . bin2hex(random_bytes(4));
         if (!rename($pharPath, $backupPath)) {
             @unlink($tmpFile);
@@ -262,7 +337,6 @@ HELP
         }
 
         if (!rename($tmpFile, $pharPath)) {
-            // Rollback: restore old phar
             $restored = rename($backupPath, $pharPath);
             @unlink($tmpFile);
             $io->error([

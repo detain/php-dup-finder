@@ -80,6 +80,7 @@ php -d phar.readonly=0 build-phar.php             # build phpdup.phar via box.js
 ## CI / profiles
 
 - `.github/workflows/ci.yml` — primary CI. `.github/actions/phpdup/action.yml` is the reusable composite action (see `docs/CI.md`).
+- `.github/workflows/release.yml` — signed-release + PHAR publish workflow; `phpdup self-update` (`src/Cli/UpdateCommand.php`) verifies the published artifact before swapping. See `docs/RELEASE.md`.
 - `.gitlab/phpdup-ci.yml` — GitLab include emitting GitLab SAST v15 to `gl-sast-report.json`.
 - `profiles/{generic,laravel,symfony,wordpress,drupal}.json` — framework auto-applied by `src/Cli/ProjectProfileDetector.php`.
 - `profiles/db-aware-{laravel,doctrine,cake,thinkorm,medoo,propel,redbean,cycle,phpactiverecord,illuminate,aura,atlas,easydb,dibi,pixie,phalcon,idiorm,yii,laminas,codeigniter,myadmin,myadmin-orm,mongodb,redis,elasticsearch,neo4j,influxdb,couchdb,couchbase}.json` — DB symbol packs for `--db-aware` (option 4 of the ORM-dedup plan); composer-package detection lives in `ProjectProfileDetector::detectIn()`.
@@ -119,18 +120,27 @@ grep -q "caliber" .git/hooks/pre-commit 2>/dev/null && echo "hook-active" || ech
 **`caliber config`** takes no flags — it runs an interactive provider setup. Do not pass `--provider`, `--api-key`, or `--endpoint`.
 
 If `caliber` is not found, tell the user: "This project uses Caliber for agent config sync. Run /setup-caliber to get set up."
+
+<!-- caliber:managed:learnings -->
 ## Session Learnings
 
 Read `CALIBER_LEARNINGS.md` for patterns and anti-patterns learned from previous sessions.
 These are auto-extracted from real tool usage — treat them as project-specific rules.
+<!-- /caliber:managed:learnings -->
+
+<!-- caliber:managed:model-config -->
 ## Model Configuration
 
 Recommended default: `claude-sonnet-4-6` with high effort (stronger reasoning; higher cost and latency than smaller models).
 Smaller/faster models trade quality for speed and cost — pick what fits the task.
 Pin your choice (`/model` in Claude Code, or `CALIBER_MODEL` when using Caliber with an API provider) so upstream default changes do not silently change behavior.
 
+<!-- /caliber:managed:model-config -->
+
+<!-- caliber:managed:sync -->
 ## Context Sync
 
 This project uses [Caliber](https://github.com/caliber-ai-org/ai-setup) to keep AI agent configs in sync across Claude Code, Cursor, Copilot, and Codex.
 Configs update automatically before each commit via `caliber refresh`.
 If the pre-commit hook is not set up, run `/setup-caliber` to configure everything automatically.
+<!-- /caliber:managed:sync -->

@@ -314,6 +314,9 @@ Ordering follows findings.md's roadmap: **correctness → security → broken ar
 | 1.1 | C1 | `fix/C1-semantic-edit-cost-model` | https://github.com/detain/php-dup-finder/pull/65 | 580✓ / ✓ / ✓ | ☑ (squash-merged e64ea9a) | canonicalizeLabel() strips Expr_/Stmt_/Scalar_ prefixes |
 | 1.2 | C3 | `fix/C3-match-switch-canonicalization` | https://github.com/detain/php-dup-finder/pull/66 | 580✓ / ✓ / ✓ | ☑ (squash-merged 984c8a5) | Match_/Switch_ normalize to __MATCH__ FuncCall; dead $cases deleted |
 | 1.3 | C5+C5b | `fix/C5-debug-log-sink` | https://github.com/detain/php-dup-finder/pull/67 | 580✓ / ✓ / ✓ | ☑ (squash-merged 673e9a4) | DebugLogger writes to file; withOverrides() passes debugLog |
+| 2.1 | C2 | `fix/C2-apted-cache-alias` | https://github.com/detain/php-dup-finder/pull/68 | 580✓ / ✓ / ✓ | ☑ (squash-merged 582fdb3) | remove spl_object_id from AptedDistance::flatten cache |
+| 2.2 | P1 | `fix/P1-apted-early-abort` | https://github.com/detain/php-dup-finder/pull/69 | 585✓ / ✓ / ✓ | ☑ (squash-merged ad1efc6) | abort only at ted() level; no key-root reads of unwritten cells |
+| 3.1 | S2 | `fix/S2-serve-path-sandbox-auth` | https://github.com/detain/php-dup-finder/pull/70 | 601✓ / ✓ / ✓ | ☑ (squash-merged cc1311d) | realpath serve-root; reject absolute/..; bearer token required on --bind-public |
 | … | | | | | | |
 
 (The driver keeps this table current and shows the operator a per-phase rollup.)
