@@ -77,14 +77,22 @@ final class PipelineState
         'refactor'   => 0.0,
     ];
 
+    private ?DebugLogger $debugLogger = null;
+
     public function __construct(public readonly Config $config) {}
 
+    public function setDebugLogger(DebugLogger $logger): void
+    {
+        $this->debugLogger = $logger;
+    }
+
     /**
-     * Push a debug message to the ring buffer.
+     * Push a debug message to the ring buffer and optionally to the debug log file.
      */
     public function pushDebugMessage(string $message): void
     {
         $this->debugMessages[$this->debugIndex % self::DEBUG_BUFFER_SIZE] = $message;
         $this->debugIndex++;
+        $this->debugLogger?->append($message);
     }
 }
