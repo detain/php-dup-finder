@@ -125,6 +125,26 @@ final class Clusterer
     }
 
     /**
+     * Cluster blocks via hash-buckets (exact) then similarity edges (near-duplicate).
+     *
+     * Phase 2 cluster similarity is computed in O(edges) time via a running
+     * per-component minimum maintained during union-find traversal — NOT by
+     * re-scanning all member pairs (which would be O(Σk²) for component size k).
+     *
+     * The running minimum is stored in the $componentMinSim array keyed by
+     * union-find root. For a new inter-component edge (aId, bId, sim):
+     *   - roots $rx and $ry are captured BEFORE union so the pre-union
+     *     condition is meaningful.
+     *   - newRoot = union($aId, $bId).
+     *   - componentMinSim[newRoot] = min(componentMinSim[$rx] ?? 1.0,
+     *                                   componentMinSim[$ry] ?? 1.0, sim).
+     *
+     * For intra-component edges (already same root), the running min is
+     * updated in-place: componentMinSim[root] = min(componentMinSim[root], sim).
+     *
+     * At cluster emission time, similarity = componentMinSim[root] (O(1) lookup)
+     * instead of the O(k²) pair-scan that was here before.
+     *
      * @param list<array{0:string,1:string,2:float}>|null $edges  pre-computed
      *        edges from a parallel scoring run; null means score serially.
      * @return list<Cluster>
@@ -162,10 +182,47 @@ final class Clusterer
         if ($edges === null) {
             $edges = $this->scorePairsSerially($index);
         }
+        // Accumulate per-component running minimum similarity during union — O(edges).
+        // This replaces the O(Σk²) brute-force pair scan that was here before.
+        //
+        // $componentMinSim[$root] holds the minimum edge similarity seen so far
+        // for every edge whose endpoints belong to the component whose current
+        // union-find root is $root.  The array is updated in two patterns:
+        //
+        //   (a) Inter-component edge: roots $rx/$ry are captured BEFORE union()
+        //       so we can read the sub-components' existing running minima.
+        //       After union() we initialise the new root's entry from the three
+        //       candidates: min(componentMinSim[$rx], componentMinSim[$ry], sim).
+        //
+        //   (b) Intra-component edge: the two nodes are already in the same
+        //       component.  union() is still called (its rank logic may change the
+        //       stored root) and we update the running min in-place with the
+        //       possibly-lower similarity of this new edge.
+        //
+        // At cluster-emission time similarity is a simple O(1) lookup instead
+        // of scanning all O(k²) member pairs in a component of size k.
+        $componentMinSim = [];
         foreach ($edges as [$aId, $bId, $sim]) {
             $key = $aId . '|' . $bId;
             $edgeMap[$key] = $sim;
-            $uf->union($aId, $bId);
+            // Capture roots BEFORE union so the pre-union condition is meaningful.
+            $rx = $uf->find($aId);
+            $ry = $uf->find($bId);
+            if ($rx !== $ry) {
+                // Different components: merge and initialise the running min from
+                // both sub-components plus the new edge.
+                $minRx = $componentMinSim[$rx] ?? 1.0;
+                $minRy = $componentMinSim[$ry] ?? 1.0;
+                $uf->union($aId, $bId);
+                $newRoot = $uf->find($aId);
+                $componentMinSim[$newRoot] = min($minRx, $minRy, $sim);
+            } else {
+                // Same component already: the earlier union recorded the correct
+                // running min, but this edge may have a lower similarity — update it.
+                $uf->union($aId, $bId);
+                $root = $uf->find($aId);
+                $componentMinSim[$root] = min($componentMinSim[$root] ?? 1.0, $sim);
+            }
         }
 
         // Components → clusters
@@ -187,18 +244,9 @@ final class Clusterer
                     break;
                 }
             }
-            $minSim = 1.0;
-            if (!$allIdenticalHash) {
-                for ($i = 0; $i < count($members); $i++) {
-                    for ($j = $i + 1; $j < count($members); $j++) {
-                        $a = $members[$i]->id; $b = $members[$j]->id;
-                        $key = strcmp($a, $b) < 0 ? "$a|$b" : "$b|$a";
-                        if (isset($edgeMap[$key]) && $edgeMap[$key] < $minSim) {
-                            $minSim = $edgeMap[$key];
-                        }
-                    }
-                }
-            }
+            // Use the pre-computed running min accumulated during union instead of
+            // re-scanning all member pairs — O(1) instead of O(k²).
+            $minSim = $componentMinSim[$root] ?? 1.0;
             $merged[] = new Cluster(
                 id: 'C' . substr(md5((string)$root), 0, 8),
                 members: $members,
