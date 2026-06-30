@@ -178,4 +178,58 @@ final class ApplicationTest extends TestCase
         $resp = $app->handle('POST', '/analyze', (string)$payload);
         $this->assertSame(200, $resp['status']);
     }
+
+    public function testBuildSummaryExtractsOnlySummaryFields(): void
+    {
+        $app = new Application();
+
+        $fullReport = [
+            'files'    => 42,
+            'blocks'   => 17,
+            'clusters' => 5,
+            'config'   => ['minBlockSize' => 3, 'minClusterImpact' => 0.1],
+            'extra_field'      => 'should be ignored',
+            'another_field'    => 12345,
+            'nested'           => ['a' => 1, 'b' => 2],
+        ];
+
+        $reflection = new \ReflectionClass(Application::class);
+        $method = $reflection->getMethod('buildSummary');
+        $method->setAccessible(true);
+
+        $summary = $method->invoke($app, $fullReport);
+
+        $this->assertSame(['files', 'blocks', 'clusters', 'config'], array_keys($summary));
+        $this->assertSame(42, $summary['files']);
+        $this->assertSame(17, $summary['blocks']);
+        $this->assertSame(5, $summary['clusters']);
+        $this->assertSame(['minBlockSize' => 3, 'minClusterImpact' => 0.1], $summary['config']);
+    }
+
+    public function testBuildSummaryHandlesNullInput(): void
+    {
+        $app = new Application();
+
+        $reflection = new \ReflectionClass(Application::class);
+        $method = $reflection->getMethod('buildSummary');
+        $method->setAccessible(true);
+
+        $summary = $method->invoke($app, null);
+        $this->assertSame(['files' => 0, 'blocks' => 0, 'clusters' => 0], $summary);
+    }
+
+    public function testBuildSummaryHandlesPartialInput(): void
+    {
+        $app = new Application();
+
+        $reflection = new \ReflectionClass(Application::class);
+        $method = $reflection->getMethod('buildSummary');
+        $method->setAccessible(true);
+
+        $summary = $method->invoke($app, ['files' => 10, 'blocks' => 5]);
+        $this->assertSame(['files' => 10, 'blocks' => 5, 'clusters' => 0, 'config' => null], $summary);
+
+        $summary = $method->invoke($app, ['clusters' => 3]);
+        $this->assertSame(['files' => 0, 'blocks' => 0, 'clusters' => 3, 'config' => null], $summary);
+    }
 }
