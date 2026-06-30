@@ -38,7 +38,7 @@ php -d phar.readonly=0 build-phar.php             # build phpdup.phar via box.js
 
 **Entry**: `bin/phpdup` → `src/Cli/Command.php` → `src/Cli/ConfigLoader.php` → `Pipeline::iter()` → stages. Sibling commands: `src/Cli/ServeCommand.php` (`phpdup serve`, see `docs/SERVER.md`), `src/Cli/CompletionCommand.php`, `src/Cli/UpdateCommand.php`.
 
-**Stages** (`src/Pipeline/Stages/`): `ScanningStage.php` → `PreprocessStage.php` → `ClusterStage.php` → `RefactorStage.php` → `ReportStage.php`. Implement `src/Pipeline/StageInterface.php`; live ones implement `src/Pipeline/CooperativeStageInterface.php`. Shared mutable state: `src/Pipeline/PipelineState.php`. Stage enum: `src/Pipeline/Stage.php`. Progress: `src/Pipeline/ProgressListener.php` + `NullProgressListener.php`.
+**Stages** (`src/Pipeline/Stages/`): `ScanningStage.php` → `PreprocessStage.php` → `ClusterStage.php` → `RefactorStage.php` → `ReportStage.php`. Implement `src/Pipeline/StageInterface.php`; live ones implement `src/Pipeline/CooperativeStageInterface.php`. Shared mutable state: `src/Pipeline/PipelineState.php`. Stage enum: `src/Pipeline/Stage.php`. Progress: `src/Pipeline/ProgressListener.php` + `NullProgressListener.php`. Debug sink: `src/Pipeline/DebugLogger.php` (wired via `PipelineState::setDebugLogger()`, gated by `--debug-log`).
 
 **Scan**: `src/Scanning/FileScanner.php` honors `Config::$exclude` globs; defaults in `src/Scanning/DefaultExcludes.php`.
 
@@ -99,7 +99,6 @@ php -d phar.readonly=0 build-phar.php             # build phpdup.phar via box.js
 
 Read `CALIBER_LEARNINGS.md` for patterns and anti-patterns extracted from prior sessions — treat as project-specific rules.
 
-<!-- caliber:managed:pre-commit -->
 ## Before Committing
 
 **IMPORTANT:** Before every git commit, you MUST ensure Caliber syncs agent configs with the latest code changes.
@@ -120,28 +119,18 @@ grep -q "caliber" .git/hooks/pre-commit 2>/dev/null && echo "hook-active" || ech
 **`caliber config`** takes no flags — it runs an interactive provider setup. Do not pass `--provider`, `--api-key`, or `--endpoint`.
 
 If `caliber` is not found, tell the user: "This project uses Caliber for agent config sync. Run /setup-caliber to get set up."
-<!-- /caliber:managed:pre-commit -->
-
-<!-- caliber:managed:learnings -->
 ## Session Learnings
 
 Read `CALIBER_LEARNINGS.md` for patterns and anti-patterns learned from previous sessions.
 These are auto-extracted from real tool usage — treat them as project-specific rules.
-<!-- /caliber:managed:learnings -->
-
-<!-- caliber:managed:model-config -->
 ## Model Configuration
 
 Recommended default: `claude-sonnet-4-6` with high effort (stronger reasoning; higher cost and latency than smaller models).
 Smaller/faster models trade quality for speed and cost — pick what fits the task.
 Pin your choice (`/model` in Claude Code, or `CALIBER_MODEL` when using Caliber with an API provider) so upstream default changes do not silently change behavior.
 
-<!-- /caliber:managed:model-config -->
-
-<!-- caliber:managed:sync -->
 ## Context Sync
 
 This project uses [Caliber](https://github.com/caliber-ai-org/ai-setup) to keep AI agent configs in sync across Claude Code, Cursor, Copilot, and Codex.
 Configs update automatically before each commit via `caliber refresh`.
 If the pre-commit hook is not set up, run `/setup-caliber` to configure everything automatically.
-<!-- /caliber:managed:sync -->

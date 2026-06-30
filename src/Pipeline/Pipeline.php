@@ -27,6 +27,9 @@ final class Pipeline
 
     public function run(PipelineState $state, OutputInterface $output): PipelineState
     {
+        $debugLogger = new DebugLogger($state->config->debugLog);
+        $state->setDebugLogger($debugLogger);
+
         // Drain the cooperative iterator without yielding to anyone.
         foreach ($this->iter($state, $output) as $_) {
             // intentionally empty — synchronous mode discards the cooperative ticks.
