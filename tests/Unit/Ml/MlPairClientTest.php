@@ -77,4 +77,43 @@ final class MlPairClientTest extends TestCase
         (new \Phpdup\Normalization\Normalizer(mode: 'aggressive'))->normalize($block);
         return $block;
     }
+
+    /**
+     * @dataProvider httpCodeProvider
+     * @param list<string> $headers
+     */
+    public function testParseStatusCode(array $headers, int $expectedCode): void
+    {
+        $client = new MlPairClient('http://example.com');
+        $r = new \ReflectionMethod($client, 'parseStatusCode');
+        $r->setAccessible(true);
+        self::assertSame($expectedCode, $r->invoke($client, $headers));
+    }
+
+    /** @return array<string,array{0:list<string>,1:int}> */
+    public static function httpCodeProvider(): array
+    {
+        return [
+            '200 OK'           => [['HTTP/1.1 200 OK', 'Content-Type: application/json'], 200],
+            '201 Created'      => [['HTTP/1.1 201 Created', 'Content-Type: application/json'], 201],
+            '299 OK'           => [['HTTP/1.1 299 OK'], 299],
+            '400 Bad Request'  => [['HTTP/1.1 400 Bad Request'], 400],
+            '500 Internal Err' => [['HTTP/1.1 500 Internal Server Error'], 500],
+            '502 Bad Gateway'  => [['HTTP/1.1 502 Bad Gateway'], 502],
+            'no headers'       => [[], 0],
+            'no HTTP prefix'   => [['Content-Type: application/json'], 0],
+            'HTTP/2 200'       => [['HTTP/2 200 OK'], 200],
+        ];
+    }
+
+    /**
+     * @group network
+     */
+    public function testNon2xxResponseReturnsNull(): void
+    {
+        $client = new MlPairClient('https://httpbin.org/status/500', timeoutSec: 10);
+        $a = $this->makeBlock();
+        $b = $this->makeBlock();
+        self::assertNull($client->score($a, $b));
+    }
 }

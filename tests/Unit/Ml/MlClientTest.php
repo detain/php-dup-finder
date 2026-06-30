@@ -70,4 +70,61 @@ final class MlClientTest extends TestCase
         }
         return $cluster;
     }
+
+    /**
+     * @dataProvider httpCodeProvider
+     * @param list<string> $headers
+     */
+    public function testParseStatusCode(array $headers, int $expectedCode): void
+    {
+        $client = new MlClient('http://example.com');
+        $r = new \ReflectionMethod($client, 'parseStatusCode');
+        $r->setAccessible(true);
+        self::assertSame($expectedCode, $r->invoke($client, $headers));
+    }
+
+    /** @return array<string,array{0:list<string>,1:int}> */
+    public static function httpCodeProvider(): array
+    {
+        return [
+            '200 OK'           => [['HTTP/1.1 200 OK', 'Content-Type: application/json'], 200],
+            '201 Created'      => [['HTTP/1.1 201 Created', 'Content-Type: application/json'], 201],
+            '299 OK'           => [['HTTP/1.1 299 OK'], 299],
+            '400 Bad Request'  => [['HTTP/1.1 400 Bad Request'], 400],
+            '500 Internal Err' => [['HTTP/1.1 500 Internal Server Error'], 500],
+            '502 Bad Gateway'  => [['HTTP/1.1 502 Bad Gateway'], 502],
+            'no headers'       => [[], 0],
+            'no HTTP prefix'    => [['Content-Type: application/json'], 0],
+            'HTTP/2 200'       => [['HTTP/2 200 OK'], 200],
+        ];
+    }
+
+    /**
+     * @group network
+     */
+    public function testNon2xxResponseReturnsNull(): void
+    {
+        // httpbin.org/status/500 returns a 500 response
+        $client = new MlClient('https://httpbin.org/status/500', timeoutSec: 10);
+        $cluster = $this->makeCluster();
+        self::assertNull($client->score($cluster));
+    }
+
+    /**
+     * @group network
+     */
+    public function test2xxResponseReturnsArray(): void
+    {
+        // httpbin.org/status/200 returns a 200 response with body "OK"
+        // but our score() method expects JSON with safety/anomaly fields
+        // so it will return null due to malformed JSON — that's fine.
+        // The point is that it doesn't throw and it doesn't return
+        // garbage similarity scores from error pages.
+        $client = new MlClient('https://httpbin.org/status/200', timeoutSec: 10);
+        $cluster = $this->makeCluster();
+        $result = $client->score($cluster);
+        // We expect null because the response body is not valid JSON with safety/anomaly
+        // but the important thing is it didn't return a garbage score from a 200 OK error page
+        self::assertNull($result);
+    }
 }

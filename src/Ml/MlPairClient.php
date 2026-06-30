@@ -177,7 +177,7 @@ final class MlPairClient implements PairScorer
     }
 
     /**
-     * @return string|null Raw response body, or null on transport error.
+     * @return string|null Raw response body, or null on transport error or non-2xx response.
      */
     private function postJson(string $url, string $body): ?string
     {
@@ -199,6 +199,10 @@ final class MlPairClient implements PairScorer
                     CURLOPT_PROTOCOLS      => CURLPROTO_HTTP | CURLPROTO_HTTPS,
                 ]);
                 $resp = curl_exec($ch);
+                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                if ($httpCode < 200 || $httpCode >= 300) {
+                    return null;
+                }
                 if (!is_string($resp)) {
                     return null;
                 }
@@ -219,6 +223,27 @@ final class MlPairClient implements PairScorer
             ],
         ]);
         $resp = @file_get_contents($url, false, $ctx);
+        if ($resp !== false) {
+            $httpCode = $this->parseStatusCode($http_response_header);
+            if ($httpCode < 200 || $httpCode >= 300) {
+                return null;
+            }
+        }
         return $resp === false ? null : $resp;
+    }
+
+    /**
+     * Extract HTTP status code from a $http_response_header array.
+     *
+     * @param array<string> $headers
+     */
+    private function parseStatusCode(array $headers): int
+    {
+        foreach ($headers as $h) {
+            if (preg_match('/^HTTP\/[\d.]+\s+(\d{3})/', $h, $m)) {
+                return (int)$m[1];
+            }
+        }
+        return 0;
     }
 }
