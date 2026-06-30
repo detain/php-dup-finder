@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-sign:
+    name: Build & Sign PHAR
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: phar
+
+      - name: Install dependencies
+        run: composer install --no-interaction --no-dev
+
+      - name: Build PHAR
+        run: php -d phar.readonly=0 build-phar.php
+        env:
+          BOX_PHAR: 1
+
+      - name: Compute SHA-256 checksum
+        run: php -r "echo hash_file('sha256', 'phpdup.phar');" > phpdup.phar.sha256
+
+      - name: Compute HMAC-SHA256 signature
+        run: php -r "echo hash_hmac_file('sha256', 'phpdup.phar', base64_decode(\$_SERVER['HMAC_SECRET_KEY']));" > phpdup.phar.sig
+
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            phpdup.phar
+            phpdup.phar.sha256
+            phpdup.phar.sig
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HMAC_SECRET_KEY: ${{ secrets.HMAC_SECRET_KEY }}
