@@ -137,4 +137,38 @@ final class WorkerPoolTest extends TestCase
         sort($expected);
         $this->assertSame($expected, $out);
     }
+
+    public function testRunStreamingWithEmptyInputCleansUpGracefully(): void
+    {
+        $pool = new WorkerPool(workers: 4);
+        $taskCalled = false;
+        $gen = $pool->runStreaming([], static function (array $batch) use (&$taskCalled) {
+            $taskCalled = true;
+            return $batch;
+        });
+        $result = iterator_to_array($gen, false);
+        $this->assertFalse($taskCalled);
+        $this->assertSame([], $result);
+    }
+
+    public function testRunStreamingWithSmallInputFallsBackToSerial(): void
+    {
+        $pool = new WorkerPool(workers: 4);
+        $gen = $pool->runStreaming([1, 2, 3, 4, 5, 6, 7], static fn(array $batch) => array_map(static fn($x) => $x * 3, $batch));
+        $out = iterator_to_array($gen, false);
+        sort($out);
+        $this->assertSame([3, 6, 9, 12, 15, 18, 21], $out);
+    }
+
+    public function testRunWithNormalInputStillWorks(): void
+    {
+        if (!WorkerPool::isAvailable()) {
+            $this->markTestSkipped('pcntl unavailable');
+        }
+        $pool = new WorkerPool(workers: 3);
+        $result = $pool->run(range(1, 24), static fn(array $batch) => array_map(static fn($x) => $x + 100, $batch));
+        sort($result);
+        $expected = array_map(static fn($x) => $x + 100, range(1, 24));
+        $this->assertSame($expected, $result);
+    }
 }

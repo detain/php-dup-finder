@@ -169,6 +169,11 @@ final class WorkerPool
      * @param list<TItem> $items
      * @param \Closure(list<TItem>): iterable<TResult> $task
      * @return \Generator<int, TResult>
+     *
+     * @note When the generator is abandoned (e.g., on TUI/pipeline cancel with ^C),
+     * the `finally` block is triggered via PHP Generator GC: children are sent
+     * SIGTERM via posix_kill() before being reaped with pcntl_waitpid(), ensuring
+     * no orphaned workers linger on stream_select().
      */
     public function runStreaming(array $items, \Closure $task): \Generator
     {
@@ -284,8 +289,13 @@ final class WorkerPool
             }
         } finally {
             foreach ($pipes as $sock) @fclose($sock);
+            $status = 0;
             foreach ($pids as $pid) {
-                @pcntl_waitpid($pid, $status);
+                $waitResult = @pcntl_waitpid($pid, $status, WNOHANG);
+                if ($waitResult === 0) {
+                    @posix_kill($pid, SIGTERM);
+                    @pcntl_waitpid($pid, $status);
+                }
             }
         }
     }
