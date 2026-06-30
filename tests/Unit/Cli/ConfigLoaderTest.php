@@ -265,6 +265,18 @@ final class ConfigLoaderTest extends TestCase
         (new ConfigLoader())->validate(['trinity_collapse' => 1]);
     }
 
+    public function testValidateAcceptsLowMemory(): void
+    {
+        (new ConfigLoader())->validate(['low_memory' => true]);
+        $this->expectNotToPerformAssertions();
+    }
+
+    public function testRejectsLowMemoryNotBool(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        (new ConfigLoader())->validate(['low_memory' => 'yes']);
+    }
+
     public function testScorerDefaultsToDefault(): void
     {
         $config = (new ConfigLoader())->load(paths: ['src'], configFile: null);

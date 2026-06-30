@@ -224,6 +224,11 @@
                     "description": "Function-name → canonical-op map. Matches against FuncCall names. Lower-cased keys."
                 }
             }
+        },
+        "low_memory": {
+            "type": "boolean",
+            "default": false,
+            "description": "Reduce memory footprint: use CompactNgramBag (32-bit fingerprint) and CanonicalNodePool interning. CLI: --low-memory."
         }
     }
 }

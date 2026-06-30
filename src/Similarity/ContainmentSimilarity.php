@@ -20,8 +20,8 @@ namespace Phpdup\Similarity;
 final class ContainmentSimilarity
 {
     /**
-     * @param array<string,int> $a
-     * @param array<string,int> $b
+     * @param array<string|int,int> $a
+     * @param array<string|int,int> $b
      */
     public function similarity(array $a, array $b): float
     {
@@ -57,8 +57,8 @@ final class ContainmentSimilarity
      * with the similarity score to filter out trivial overlaps where one bag is a
      * sliver of the other.
      *
-     * @param array<string,int> $a
-     * @param array<string,int> $b
+     * @param array<string|int,int> $a
+     * @param array<string|int,int> $b
      */
     public function sizeRatio(array $a, array $b): float
     {

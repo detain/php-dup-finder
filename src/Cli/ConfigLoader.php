@@ -94,6 +94,7 @@ final class ConfigLoader
             mlPairUrl: (string)($overrides['ml_pair_url'] ?? $data['ml_pair_url'] ?? $base->mlPairUrl),
             mlPairThreshold: (float)($overrides['ml_pair_threshold'] ?? $data['ml_pair_threshold'] ?? $base->mlPairThreshold),
             debugLog: isset($overrides['debug_log']) ? (string)$overrides['debug_log'] : ($data['debug_log'] ?? $base->debugLog),
+            lowMemory: (bool)($overrides['low_memory'] ?? $data['low_memory'] ?? $base->lowMemory),
         );
     }
 
@@ -242,6 +243,9 @@ final class ConfigLoader
         if (array_key_exists('debug_log', $data)) {
             $out['debug_log'] = $data['debug_log'];
         }
+        if (array_key_exists('low_memory', $data)) {
+            $out['low_memory'] = $data['low_memory'];
+        }
         return $out;
     }
 
@@ -280,6 +284,7 @@ final class ConfigLoader
             'ml_pair_url',
             'ml_pair_threshold',
             'debug_log',
+            'low_memory',
         ];
         foreach (array_keys($data) as $k) {
             if (!in_array($k, $known, true)) {
@@ -438,6 +443,9 @@ final class ConfigLoader
         }
         if (array_key_exists('trinity_collapse', $data) && !is_bool($data['trinity_collapse'])) {
             throw new \RuntimeException("trinity_collapse must be a boolean$where");
+        }
+        if (array_key_exists('low_memory', $data) && !is_bool($data['low_memory'])) {
+            throw new \RuntimeException("low_memory must be a boolean$where");
         }
         if (array_key_exists('scorer', $data)) {
             $assertEnum($data['scorer'], 'scorer', ['default', 'ir']);

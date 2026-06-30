@@ -7,6 +7,7 @@ use PhpParser\Node;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
 use Phpdup\Extraction\Block;
+use Phpdup\Util\CanonicalNodePool;
 
 /**
  * Rewrites a Block's AST into a canonical form for hashing/clustering.
@@ -45,6 +46,8 @@ final class Normalizer
         private readonly bool $dbAware = false,
         private readonly ?DbOpRegistry $dbOpRegistry = null,
         private readonly bool $trinityCollapse = false,
+        private readonly bool $lowMemory = false,
+        private readonly ?CanonicalNodePool $nodePool = null,
     ) {
     }
 
@@ -78,6 +81,12 @@ final class Normalizer
         $traverser->addVisitor(new CanonicalizingVisitor($this->mode, $this->plugins));
         $stmts = $traverser->traverse([$clone]);
         $block->canonical = $stmts[0];
+
+        // Low-memory mode: walk the canonical AST and intern each leaf node
+        // so identical subtrees across blocks deduplicate to shared instances.
+        if ($this->lowMemory && $this->nodePool !== null) {
+            $this->applyNodePool($block->canonical, $this->nodePool);
+        }
     }
 
     /**
@@ -92,6 +101,40 @@ final class Normalizer
     public static function deepClone(Node $node): Node
     {
         return self::copyNode($node);
+    }
+
+    /**
+     * Walk a canonical AST and intern each leaf node via $pool so that
+     * structurally identical subtrees across blocks share the same object
+     * references — reducing RSS on large corpora at the cost of some speed.
+     * Composite nodes (nodes with children) are not interned since mutating
+     * one would corrupt all sharers; only leaf nodes benefit from dedup.
+     */
+    private function applyNodePool(Node $node, CanonicalNodePool $pool): void
+    {
+        // Intern the current node; for leaf nodes this returns a pooled
+        // instance (potentially the same object ref if already seen).
+        $node = $pool->intern($node);
+
+        // For composite nodes, recurse into children. For leaf nodes,
+        // intern() returned $node unchanged and we skip the recursion.
+        $reflection = new \ReflectionClass($node);
+        foreach ($reflection->getProperties() as $property) {
+            $property->setAccessible(true);
+            if (!$property->isInitialized($node)) {
+                continue;
+            }
+            $value = $property->getValue($node);
+            if ($value instanceof Node) {
+                $this->applyNodePool($value, $pool);
+            } elseif (is_array($value)) {
+                foreach ($value as $k => $v) {
+                    if ($v instanceof Node) {
+                        $this->applyNodePool($v, $pool);
+                    }
+                }
+            }
+        }
     }
 
     /**

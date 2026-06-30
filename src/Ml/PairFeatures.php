@@ -129,8 +129,8 @@ final class PairFeatures
     }
 
     /**
-     * @param array<string,int> $a
-     * @param array<string,int> $b
+     * @param array<string|int,int> $a
+     * @param array<string|int,int> $b
      */
     private static function jaccardMultiset(array $a, array $b): float
     {
