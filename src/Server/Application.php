@@ -41,6 +41,12 @@ use Symfony\Component\Console\Output\NullOutput;
  * - {@see Application::MAX_BODY_BYTES} caps decoded JSON to a sane
  *   ceiling so a misbehaving client cannot eat unbounded memory.
  *   ServeCommand applies the matching limit at the HTTP layer.
+ * - When a token is configured, all requests must present a matching
+ *   `Authorization: Bearer <token>` header. Missing or mismatched
+ *   tokens result in a 401 response.
+ * - Scanned paths are confined to within {@see $serveRoot} via
+ *   realpath canonicalization. Absolute paths and paths containing
+ *   `..` are rejected with a 400 response.
  */
 final class Application
 {
@@ -48,24 +54,37 @@ final class Application
     public const MAX_BODY_BYTES = 16 * 1024 * 1024;
 
     /**
-     * @param JobQueue $queue Job queue used by the /jobs routes.
+     * @param JobQueue          $queue     Job queue used by the /jobs routes.
+     * @param string|null       $serveRoot Absolute path to which scanning is confined.
+     * @param string|null       $token     Bearer token required for all requests when set.
      */
     public function __construct(
         private readonly JobQueue $queue = new JobQueue(),
+        private readonly ?string $serveRoot = null,
+        private readonly ?string $token = null,
     ) {
     }
 
     /**
      * Dispatch a single HTTP request to the appropriate route handler.
      *
-     * @param string                $method  HTTP method (GET/POST/…).
-     * @param string                $path    Request path (no query string).
-     * @param string                $body    Raw request body.
-     * @param array<string,string>  $headers Request headers (currently unused; reserved for auth).
+     * @param string               $method  HTTP method (GET/POST/…).
+     * @param string               $path    Request path (no query string).
+     * @param string               $body    Raw request body.
+     * @param array<string,string> $headers Request headers (lowercase keys).
      * @return array{status:int, headers: array<string,string>, body: string}
      */
     public function handle(string $method, string $path, string $body, array $headers = []): array
     {
+        // Bearer token authentication: when a token is configured, every
+        // request must present a matching Authorization header.
+        if ($this->token !== null) {
+            $authHeader = $this->findAuthorizationHeader($headers);
+            if (!$this->isValidBearerToken($authHeader)) {
+                return $this->plain(401, 'Unauthorized');
+            }
+        }
+
         if ($method === 'GET' && $path === '/healthz') {
             return $this->plain(200, 'ok');
         }
@@ -122,6 +141,10 @@ final class Application
         $paths = $payload['paths'] ?? null;
         if (!is_array($paths) || $paths === []) {
             return $this->json(400, ['error' => 'paths must be a non-empty array']);
+        }
+        // Validate paths are within serveRoot before scanning.
+        if (($violation = $this->validatePaths($paths)) !== null) {
+            return $violation;
         }
         try {
             $config = Config::defaults($paths);
@@ -200,5 +223,75 @@ final class Application
             'headers' => ['Content-Type' => 'text/plain'],
             'body'    => $body,
         ];
+    }
+
+    /**
+     * Find the Authorization header value from a lowercase-keyed array.
+     *
+     * @param array<string,string> $headers
+     */
+    private function findAuthorizationHeader(array $headers): ?string
+    {
+        foreach ($headers as $key => $value) {
+            if ($key === 'authorization') {
+                return $value;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Check if the given Authorization header value matches the configured bearer token.
+     */
+    private function isValidBearerToken(?string $authHeader): bool
+    {
+        if ($authHeader === null) {
+            return false;
+        }
+        if (!str_starts_with(strtolower($authHeader), 'bearer ')) {
+            return false;
+        }
+        $token = substr($authHeader, 7);
+        return hash_equals($this->token, $token);
+    }
+
+    /**
+     * Validate that all paths in the request are inside serveRoot.
+     *
+     * @param list<string> $paths
+     * @return array{status:int, headers: array<string,string>, body: string}|null
+     */
+    private function validatePaths(array $paths): ?array
+    {
+        if ($this->serveRoot === null) {
+            return null;
+        }
+        $serveRootResolved = realpath($this->serveRoot);
+        if ($serveRootResolved === false) {
+            return $this->json(500, ['error' => 'serve-root does not exist']);
+        }
+        // Ensure serveRoot ends with DIRECTORY_SEPARATOR for prefix matching.
+        $serveRootResolved .= DIRECTORY_SEPARATOR;
+
+        foreach ($paths as $path) {
+            // Reject absolute paths.
+            if (str_starts_with($path, '/')) {
+                return $this->json(400, ['error' => 'absolute paths are not allowed: ' . $path]);
+            }
+            // Reject paths containing traversal sequences.
+            if (str_contains($path, '..')) {
+                return $this->json(400, ['error' => 'path traversal is not allowed: ' . $path]);
+            }
+            $resolved = realpath($path);
+            if ($resolved === false) {
+                // File does not exist; still check containment to avoid bypassing
+                // via symlinks outside serveRoot.
+                return $this->json(400, ['error' => 'path not found: ' . $path]);
+            }
+            if (!str_starts_with($resolved . DIRECTORY_SEPARATOR, $serveRootResolved)) {
+                return $this->json(400, ['error' => 'path is outside serve-root: ' . $path]);
+            }
+        }
+        return null;
     }
 }

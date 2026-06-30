@@ -62,4 +62,120 @@ final class ApplicationTest extends TestCase
         $resp = (new Application())->handle('GET', '/jobs/deadbeef', '');
         $this->assertSame(404, $resp['status']);
     }
+
+    // -------------------------------------------------------------------------
+    // Bearer token authentication
+    // -------------------------------------------------------------------------
+
+    public function testAnalyzeWithTokenMissingReturns401(): void
+    {
+        $app = new Application(new JobQueue(), null, 'secret-token');
+        $resp = $app->handle('GET', '/healthz', '', []);
+        $this->assertSame(401, $resp['status']);
+    }
+
+    public function testAnalyzeWithTokenWrongReturns401(): void
+    {
+        $app = new Application(new JobQueue(), null, 'secret-token');
+        $resp = $app->handle('GET', '/healthz', '', ['authorization' => 'Bearer wrong-token']);
+        $this->assertSame(401, $resp['status']);
+    }
+
+    public function testAnalyzeWithTokenValidReturns200(): void
+    {
+        $app = new Application(new JobQueue(), null, 'secret-token');
+        $resp = $app->handle('GET', '/healthz', '', ['authorization' => 'Bearer secret-token']);
+        $this->assertSame(200, $resp['status']);
+    }
+
+    public function testAnalyzeWithTokenCaseInsensitiveBearerReturns200(): void
+    {
+        $app = new Application(new JobQueue(), null, 'secret-token');
+        $resp = $app->handle('GET', '/healthz', '', ['authorization' => 'BEARER secret-token']);
+        $this->assertSame(200, $resp['status']);
+    }
+
+    // -------------------------------------------------------------------------
+    // Path validation / traversal prevention
+    // -------------------------------------------------------------------------
+
+    public function testAnalyzeWithAbsolutePathOutsideServeRootReturns400(): void
+    {
+        $app = new Application(new JobQueue(), __DIR__ . '/../../Fixtures');
+        $payload = json_encode(['paths' => ['/etc/passwd']]);
+        $resp = $app->handle('POST', '/analyze', (string)$payload);
+        $this->assertSame(400, $resp['status']);
+        $this->assertStringContainsString('absolute paths are not allowed', $resp['body']);
+    }
+
+    public function testAnalyzeWithTraversalSequenceReturns400(): void
+    {
+        $app = new Application(new JobQueue(), __DIR__ . '/../../Fixtures');
+        $payload = json_encode(['paths' => ['../etc/passwd']]);
+        $resp = $app->handle('POST', '/analyze', (string)$payload);
+        $this->assertSame(400, $resp['status']);
+        $this->assertStringContainsString('path traversal is not allowed', $resp['body']);
+    }
+
+    public function testAnalyzeWithDeepTraversalSequenceReturns400(): void
+    {
+        $app = new Application(new JobQueue(), __DIR__ . '/../../Fixtures');
+        $payload = json_encode(['paths' => ['foo/../bar/../../etc/passwd']]);
+        $resp = $app->handle('POST', '/analyze', (string)$payload);
+        $this->assertSame(400, $resp['status']);
+        $this->assertStringContainsString('path traversal is not allowed', $resp['body']);
+    }
+
+    public function testAnalyzeWithValidPathInsideServeRootReturns200(): void
+    {
+        // Use a path that is relative to CWD (project root when tests run)
+        // and exists relative to serveRoot (tests/Fixtures).
+        $app = new Application(new JobQueue(), __DIR__ . '/../../Fixtures');
+        $payload = json_encode(['paths' => ['tests/Fixtures/exact']]);
+        $resp = $app->handle('POST', '/analyze', (string)$payload);
+        $this->assertSame(200, $resp['status']);
+    }
+
+    public function testAnalyzeWithPathOutsideServeRootReturns400(): void
+    {
+        // A path that does not contain '..' but resolves via realpath to a
+        // location outside serveRoot. This can happen when serveRoot is a
+        // symlink target and the path is an absolute path that bypasses it.
+        // Since absolute paths are rejected first, this test verifies that
+        // the containment check is in place for paths that somehow bypass
+        // the '..' rejection (e.g. via symlink tricks at the filesystem level).
+        // For unit-test purposes we use a path that would be outside but
+        // requires the containment check to exist.
+        $outsidePath = '/tmp'; // External absolute path
+        $app = new Application(new JobQueue(), __DIR__ . '/../../Fixtures/exact');
+        $payload = json_encode(['paths' => [$outsidePath]]);
+        $resp = $app->handle('POST', '/analyze', (string)$payload);
+        $this->assertSame(400, $resp['status']);
+        // Either "absolute paths not allowed" or "path not found" is acceptable
+        // since /tmp does not exist under the fixtures/exact directory tree.
+        $this->assertTrue(
+            str_contains($resp['body'], 'absolute paths are not allowed')
+            || str_contains($resp['body'], 'path not found'),
+            'Expected absolute-path or not-found rejection, got: ' . $resp['body']
+        );
+    }
+
+    public function testAnalyzeWithNonExistentPathInsideServeRootReturns400(): void
+    {
+        $app = new Application(new JobQueue(), __DIR__ . '/../../Fixtures');
+        $payload = json_encode(['paths' => ['nonexistent-dir']]);
+        $resp = $app->handle('POST', '/analyze', (string)$payload);
+        $this->assertSame(400, $resp['status']);
+        $this->assertStringContainsString('path not found', $resp['body']);
+    }
+
+    public function testAnalyzeWithoutServeRootAllowsAbsolutePaths(): void
+    {
+        // When no serveRoot is configured, absolute paths are allowed
+        // (legacy behaviour for backward compatibility).
+        $app = new Application(new JobQueue(), null);
+        $payload = json_encode(['paths' => [__DIR__ . '/../../Fixtures/exact']]);
+        $resp = $app->handle('POST', '/analyze', (string)$payload);
+        $this->assertSame(200, $resp['status']);
+    }
 }

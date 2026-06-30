@@ -49,9 +49,50 @@ $ curl -s -X POST http://localhost:8080/analyze \
 
 ## Security
 
-The server has **no authentication**. Bind it to `127.0.0.1` and put
-a reverse proxy (nginx / Caddy) in front for any non-localhost
-deployment.
+### Default bind
+
+The server binds to `127.0.0.1` by default. Exposing it beyond
+localhost requires both `--bind-public` **and** `--token`.
+
+```bash
+# Loopback only (default) — no token required
+phpdup serve
+
+# Public bind — token is mandatory
+phpdup serve --bind-public --token YOUR_SECRET_TOKEN
+```
+
+### Bearer token authentication
+
+When `--token` is set, every request must include:
+
+```
+Authorization: Bearer YOUR_SECRET_TOKEN
+```
+
+Requests without a valid bearer token receive a `401 Unauthorized`
+response before any other processing occurs.
+
+### Path confinement
+
+When `--serve-root` is set (default: the working directory), every
+path in `paths[]` is validated:
+
+1. **No absolute paths** — paths starting with `/` are rejected with
+   `400 Bad Request`.
+2. **No `..` traversal** — paths containing `..` are rejected.
+3. **realpath containment** — each path is resolved via `realpath()`
+   and must fall within `realpath(--serve-root)`. Symlinks that point
+   outside the root are also rejected.
+
+This prevents phpdup from reading arbitrary filesystem paths through
+the HTTP API, even if a client bypasses the above checks.
+
+### General advice
+
+For non-localhost deployments, put a reverse proxy (nginx / Caddy)
+in front and apply the usual hardening: TLS termination, rate
+limiting, and allow-list of source IPs where possible.
 
 ## Playground
 
