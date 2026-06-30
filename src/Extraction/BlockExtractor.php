@@ -7,7 +7,9 @@ use PhpParser\Node;
 use PhpParser\Node\Stmt;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
+use Phpdup\Util\AstSerializer;
 use Phpdup\Util\LineRange;
+use SplObjectStorage;
 
 /**
  * Walks a file's AST and produces Block instances for the comparable
@@ -72,6 +74,8 @@ final class BlockVisitor extends NodeVisitorAbstract
     private array $classStack = [];
     /** @var \Closure(Block):void */
     private \Closure $sink;
+    /** @var SplObjectStorage<Node, int> */
+    private SplObjectStorage $nodeCounts;
 
     /**
      * @param list<string> $allowedKinds
@@ -84,6 +88,7 @@ final class BlockVisitor extends NodeVisitorAbstract
         \Closure $sink,
     ) {
         $this->sink = $sink;
+        $this->nodeCounts = new SplObjectStorage();
     }
 
     public function enterNode(Node $node)
@@ -163,15 +168,22 @@ final class BlockVisitor extends NodeVisitorAbstract
         return null;
     }
 
+    /**
+     * Returns the number of descendant nodes in $node.
+     *
+     * SSOT: delegates to AstSerializer::nodeCount() — the single canonical
+     * implementation.  Results are cached in an SplObjectStorage keyed by
+     * node identity, so repeated calls on the same node object return
+     * instantly.  The cache lives on the BlockVisitor instance, which is
+     * created fresh for each extract() call, so it is also per-extraction.
+     */
     private function nodeCount(Node $node): int
     {
-        $count = 0;
-        $traverser = new NodeTraverser();
-        $traverser->addVisitor(new class($count) extends NodeVisitorAbstract {
-            public function __construct(private int &$count) {}
-            public function enterNode(Node $n) { $this->count++; return null; }
-        });
-        $traverser->traverse([$node]);
+        if ($this->nodeCounts->contains($node)) {
+            return $this->nodeCounts[$node];
+        }
+        $count = AstSerializer::nodeCount($node);
+        $this->nodeCounts[$node] = $count;
         return $count;
     }
 }
