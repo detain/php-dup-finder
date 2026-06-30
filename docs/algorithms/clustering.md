@@ -11,7 +11,10 @@ How phpdup turns N candidate-pair edges into M coherent clusters.
 ## Output
 
 A list of `Cluster` objects, each containing the participating
-Blocks and the minimum pairwise similarity across the group.
+Blocks and the minimum edge similarity for the component (the
+"running per-component minimum").  This value is accumulated in
+O(edges) during the union-find traversal — not by rescanning all
+member pairs, which would be O(Σk²) for a component of size k.
 
 ## Algorithm
 
@@ -51,9 +54,15 @@ The pipeline (top to bottom):
    `ContainmentSimilarity` reconsiders them when
    `optionalBlocksEnabled` is true.
 
-5. **Union-find merge**. Edges that survive scoring feed a union-
-   find structure; blocks in the same connected component become a
-   `Cluster`.
+5. **Union-find merge with running minimum**. Edges that survive
+   scoring feed a union-find structure; blocks in the same connected
+   component become a `Cluster`.  While consuming the edge list,
+   a `$componentMinSim[$root]` array tracks the running minimum edge
+   similarity per union-find root.  For an inter-component edge the
+   new root's minimum is `min(subMinA, subMinB, thisEdgeSim)`; for an
+   already-merged edge it is updated in-place.  This makes cluster
+   similarity an O(1) lookup at emission time rather than an O(k²)
+   post-hoc pair scan.
 
 ## Two-tier TED pre-filters
 
