@@ -6,18 +6,13 @@ namespace Phpdup\Parallel;
 /**
  * pcntl_fork-based worker pool for embarrassingly parallel batch work.
  *
- * Two modes:
+ * Single mode:
  *
- *   - {@see run()} — collect-and-return. Each child writes its full result
- *     to a temp file when finished; the parent reads them all once every
- *     child has exited.
  *   - {@see runStreaming()} — yield-as-results-arrive. Each child streams
  *     records through a per-process socketpair as soon as they're
  *     produced; the parent {@see stream_select()}s across all children and
  *     the returned {@see \Generator} yields each record live. Used by the
  *     cooperative pipeline so the TUI can repaint mid-stage.
- *
- * Both modes share the same chunking / serialization / fallback rules.
  *
  * If `pcntl_fork` is unavailable (Windows, restricted PHP build) or
  * `workers` ≤ 1, the pool runs the work serially in the parent.
@@ -84,95 +79,14 @@ final class WorkerPool
     }
 
     /**
-     * Run $task on each chunk of $items split into roughly equal batches.
-     *
-     * @template TItem
-     * @template TResult
-     * @param list<TItem> $items
-     * @param \Closure(list<TItem>): list<TResult> $task
-     * @return list<TResult>  flattened results in input order across batches
-     *
-     * @note A `try/finally` block wraps the entire body to guarantee that all
-     *   temp files created for inter-process result transfer are deleted on
-     *   any exit path (success, fork failure, or thrown exception). This
-     *   prevents temp-file leakage when `pcntl_fork` fails mid-batch.
-     */
-    public function run(array $items, \Closure $task): array
-    {
-        if (!$items) return [];
-        $workers = max(1, $this->workers > 0 ? $this->workers : self::detectCpuCount());
-        if ($workers === 1 || !self::isAvailable() || count($items) < 8) {
-            return $task($items);
-        }
-
-        $chunks = self::chunkInto($items, $workers);
-        $tmpFiles = [];
-        $pids = [];
-
-        try {
-            foreach ($chunks as $idx => $chunk) {
-                $tmpFiles[$idx] = tempnam(sys_get_temp_dir(), 'phpdup-w');
-                $pid = pcntl_fork();
-                if ($pid === -1) {
-                    self::unlinkAll($tmpFiles);
-                    throw new \RuntimeException('pcntl_fork failed');
-                }
-                if ($pid === 0) {
-                    // child
-                    try {
-                        $result = $task($chunk);
-                        file_put_contents($tmpFiles[$idx], serialize($result), LOCK_EX);
-                        exit(0);
-                    } catch (\Throwable $e) {
-                        file_put_contents($tmpFiles[$idx], serialize(['__error' => $e->getMessage() . "\n" . $e->getTraceAsString()]), LOCK_EX);
-                        exit(1);
-                    }
-                }
-                $pids[$idx] = $pid;
-            }
-
-            $exitCodes = [];
-            foreach ($pids as $idx => $pid) {
-                pcntl_waitpid($pid, $status);
-                $exitCodes[$idx] = pcntl_wexitstatus($status);
-            }
-
-            $results = [];
-            foreach ($tmpFiles as $idx => $file) {
-                $blob = @file_get_contents($file);
-                @unlink($file);
-                if ($blob === false || $blob === '') {
-                    if ($exitCodes[$idx] !== 0) {
-                        throw new \RuntimeException("Worker $idx exited {$exitCodes[$idx]} with no output");
-                    }
-                    continue;
-                }
-                $data = @unserialize($blob, ['allowed_classes' => false]);
-                if (is_array($data) && isset($data['__error'])) {
-                    throw new \RuntimeException("Worker $idx failed: " . $data['__error']);
-                }
-                if (!is_array($data)) {
-                    throw new \RuntimeException("Worker $idx returned non-array");
-                }
-                foreach ($data as $entry) {
-                    $results[] = $entry;
-                }
-            }
-            return $results;
-        } finally {
-            self::unlinkAll($tmpFiles);
-        }
-    }
-
-    /**
-     * Streaming variant of {@see run()}. The task closure may return either an
+     * Streaming variant. The task closure may return either an
      * array or a {@see \Generator} of records; this method yields each record
      * to the caller as soon as it arrives from a child process, instead of
      * waiting for the whole pool to finish.
      *
      * Falls back to serial in-process iteration when {@see isAvailable()}
      * returns false, when workers ≤ 1, or for trivially small inputs (<8
-     * items) — same fallback rules as {@see run()}.
+     * items).
      *
      * @template TItem
      * @template TResult
@@ -338,15 +252,5 @@ final class WorkerPool
     {
         $size = (int)max(1, ceil(count($items) / $n));
         return array_chunk($items, $size);
-    }
-
-    /**
-     * @param list<string> $files
-     */
-    private static function unlinkAll(array $files): void
-    {
-        foreach ($files as $file) {
-            @unlink($file);
-        }
     }
 }
