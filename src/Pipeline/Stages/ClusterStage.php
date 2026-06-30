@@ -155,7 +155,7 @@ final class ClusterStage implements CooperativeStageInterface
                 $output->writeln($msg);
                 $state->pushDebugMessage($msg);
             }
-            $candidatePairs = $clusterer->generateCandidatePairs($index, $output);
+            $candidatePairs = iterator_to_array($clusterer->generateCandidatePairs($index, $output));
             if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
                 $msg = sprintf('clustering: generated %d candidate pairs [%s]', count($candidatePairs), MemoryDebug::getMemoryUsage());
                 $output->writeln($msg);
