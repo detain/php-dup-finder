@@ -21,10 +21,26 @@ final class EditCostModelTest extends TestCase
     public function testSemanticModelWeightsCallsHeavier(): void
     {
         $m = new EditCostModel(EditCostModel::MODEL_SEMANTIC);
+        // Bare names (kept for backward compatibility)
         $this->assertSame(2.0, $m->cost('MethodCall'));
         $this->assertSame(1.5, $m->cost('If_'));
         $this->assertSame(0.5, $m->cost('String_'));
         $this->assertSame(1.0, $m->cost('SomeOtherNode'));
+    }
+
+    public function testSemanticModelWithPrefixedLabels(): void
+    {
+        // Labels from AstSerializer::shortType() arrive prefixed.
+        $m = new EditCostModel(EditCostModel::MODEL_SEMANTIC);
+        $this->assertSame(2.0, $m->cost('Expr_MethodCall'));
+        $this->assertSame(2.0, $m->cost('Expr_NullsafeMethodCall'));
+        $this->assertSame(2.0, $m->cost('Expr_StaticCall'));
+        $this->assertSame(2.0, $m->cost('Expr_FuncCall'));
+        $this->assertSame(2.0, $m->cost('Expr_New_'));
+        $this->assertSame(2.0, $m->cost('Expr_Name'));
+        $this->assertSame(1.5, $m->cost('Stmt_If_'));
+        $this->assertSame(0.5, $m->cost('Scalar_Int_'));
+        $this->assertSame(0.5, $m->cost('Scalar_String_'));
     }
 
     public function testRejectsUnknownModel(): void
@@ -47,8 +63,16 @@ final class EditCostModelTest extends TestCase
         $callSim = $semantic->similarity($callA, $callB);
         $litSim  = $semantic->similarity($litA, $litB);
 
-        $this->assertLessThanOrEqual($litSim, $callSim,
-            'semantic weights should make a call-rename at most as similar as a literal change');
+        // Semantic weights MUST produce a strictly different score from default.
+        // If the prefix-stripping bug is present, both models return identical costs.
+        $default = new AptedDistance(new EditCostModel(EditCostModel::MODEL_DEFAULT));
+        $defaultCallSim = $default->similarity($callA, $callB);
+        $defaultLitSim  = $default->similarity($litA, $litB);
+
+        $this->assertNotEquals($defaultCallSim, $callSim,
+            'semantic model must differ from default for call-rename');
+        $this->assertNotEquals($defaultLitSim, $litSim,
+            'semantic model must differ from default for literal-change');
     }
 
     private function stmts(string $code): \PhpParser\Node

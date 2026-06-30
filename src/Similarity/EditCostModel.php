@@ -18,6 +18,14 @@ namespace Phpdup\Similarity;
  *   - literals                     → cost 0.5
  *   - everything else              → cost 1.0
  *
+ * **Label format contract:** `cost()` receives labels in the prefixed
+ * form that {@see \Phpdup\Util\AstSerializer::shortType()} emits
+ * (e.g. "Expr_MethodCall", "Stmt_If_", "Scalar_Int_").  The semantic
+ * weight table above lists bare names ("MethodCall", "If_", "Int_").
+ * `cost()` canonicalizes every incoming label via `canonicalizeLabel()`
+ * before lookup, so callers pass prefixed labels unchanged and the
+ * matching is always against bare names.
+ *
  * Distances are returned as floats; AptedDistance::similarity()
  * scales appropriately.
  *
@@ -44,8 +52,12 @@ final class EditCostModel
      * Cost of inserting/deleting a node with the given label, or
      * substituting a node with a different-labelled one.
      *
-     * Labels come from {@see \Phpdup\Util\AstSerializer::shortType()}
-     * (e.g. "MethodCall", "If_", "Variable", "Int").
+     * The incoming $label is always in the prefixed form that
+     * {@see \Phpdup\Util\AstSerializer::shortType()} returns
+     * ("Expr_MethodCall", "Stmt_If_", "Scalar_Int_", etc.).
+     * `canonicalizeLabel()` strips the "Expr_"/"Stmt_"/"Scalar_" prefix
+     * before the semantic weight table lookup, so the bare-name table
+     * entries ("MethodCall", "If_", "Int_") always match.
      */
     public function cost(string $label): float
     {
@@ -54,10 +66,31 @@ final class EditCostModel
         }
         // Semantic weighting.
         $bare = explode('|', $label)[0];   // strip scalar suffix if any
+        $bare = self::canonicalizeLabel($bare);
         if (self::isCallLabel($bare))      return 2.0;
         if (self::isControlFlow($bare))    return 1.5;
         if (self::isLiteral($bare))        return 0.5;
         return 1.0;
+    }
+
+    /**
+     * Strip namespace prefixes that shortType() emits.
+     *
+     * shortType() returns "Expr_MethodCall", "Stmt_If_", "Scalar_Int_", etc.
+     * but the cost-table uses bare names like "MethodCall", "If_", "Int_".
+     */
+    private static function canonicalizeLabel(string $label): string
+    {
+        if (str_starts_with($label, 'Expr_')) {
+            return substr($label, 5);
+        }
+        if (str_starts_with($label, 'Stmt_')) {
+            return substr($label, 5);
+        }
+        if (str_starts_with($label, 'Scalar_')) {
+            return substr($label, 7);
+        }
+        return $label;
     }
 
     private static function isCallLabel(string $label): bool
