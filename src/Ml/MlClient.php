@@ -130,7 +130,7 @@ final class MlClient
      *
      * Uses ext-curl when available (richer error reporting and easier
      * to harden) and falls back to streams when not. Returns null on
-     * any transport-level failure.
+     * any transport-level failure or non-2xx HTTP response.
      */
     private function postJson(string $url, string $body): ?string
     {
@@ -154,6 +154,10 @@ final class MlClient
                     CURLOPT_PROTOCOLS      => CURLPROTO_HTTP | CURLPROTO_HTTPS,
                 ]);
                 $resp = curl_exec($ch);
+                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                if ($httpCode < 200 || $httpCode >= 300) {
+                    return null;
+                }
                 if (!is_string($resp)) {
                     return null;
                 }
@@ -174,6 +178,27 @@ final class MlClient
             ],
         ]);
         $resp = @file_get_contents($url, false, $ctx);
+        if ($resp !== false) {
+            $httpCode = $this->parseStatusCode($http_response_header);
+            if ($httpCode < 200 || $httpCode >= 300) {
+                return null;
+            }
+        }
         return $resp === false ? null : $resp;
+    }
+
+    /**
+     * Extract HTTP status code from a $http_response_header array.
+     *
+     * @param array<string> $headers
+     */
+    private function parseStatusCode(array $headers): int
+    {
+        foreach ($headers as $h) {
+            if (preg_match('/^HTTP\/[\d.]+\s+(\d{3})/', $h, $m)) {
+                return (int)$m[1];
+            }
+        }
+        return 0;
     }
 }
