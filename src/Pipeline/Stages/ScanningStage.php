@@ -55,13 +55,8 @@ final class ScanningStage implements CooperativeStageInterface
                 }
                 if (++$sinceYield >= self::YIELD_INTERVAL) {
                     $sinceYield = 0;
-                    $state->rssBytes = memory_get_usage(false);
-                    $state->peakBytes = memory_get_peak_usage(true);
-                    if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                        $msg = sprintf('scanning: %d files scanned so far [%s]', $state->totalFiles, MemoryDebug::getMemoryUsage());
-                        $output->writeln($msg);
-                        $state->pushDebugMessage($msg);
-                    }
+                    $state->sampleMemory();
+                    $state->debug($output, sprintf('scanning: %d files scanned so far [%s]', $state->totalFiles, MemoryDebug::getMemoryUsage()));
                     // Update scannedFiles only at yield intervals so the TUI
                     // sees real progress (not 100 % after every single file).
                     $state->scannedFiles = $state->totalFiles;
