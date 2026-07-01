@@ -23,6 +23,13 @@ use Phpdup\Similarity\TreeEditDistance;
  */
 final class PairScoreWorker
 {
+    public const TIER_EXACT_HASH = 'exact-hash';
+    public const TIER_JACCARD = 'jaccard';
+    public const TIER_TED = 'ted';
+    public const TIER_CONTAINMENT = 'containment';
+    public const TIER_IR = 'ir';
+    public const TIER_ML = 'ml';
+
     private ?MlPairClient $mlPairClient = null;
 
     public function __construct(
@@ -48,7 +55,7 @@ final class PairScoreWorker
 
     /**
      * @param list<array{0: string, 1: string}> $pairs
-     * @return list<array{0: string, 1: string, 2: float}>
+     * @return list<array{0: string, 1: string, 2: float, 3: string}>
      */
     public function score(array $pairs): array
     {
@@ -72,7 +79,7 @@ final class PairScoreWorker
 
             // identical canonical hash: skip refinement, emit the trivial edge
             if ($a->structuralHash === $b->structuralHash) {
-                $edges[] = [$aId, $bId, 1.0];
+                $edges[] = [$aId, $bId, 1.0, self::TIER_EXACT_HASH];
                 continue;
             }
             $bagA = $a->ngramBag ?? [];
@@ -81,7 +88,7 @@ final class PairScoreWorker
             if ($jac >= $this->similarityThreshold) {
                 $tedSim = $ted->similarity($a->canonical, $b->canonical, $this->treeThreshold);
                 if ($tedSim < $this->treeThreshold) continue;
-                $edges[] = [$aId, $bId, min($jac, $tedSim)];
+                $edges[] = [$aId, $bId, min($jac, $tedSim), self::TIER_JACCARD];
                 continue;
             }
             // Jaccard rejected — try the type-3 / containment path.
@@ -89,7 +96,7 @@ final class PairScoreWorker
                 $cont  = $containment->similarity($bagA, $bagB);
                 $ratio = $containment->sizeRatio($bagA, $bagB);
                 if ($cont >= $this->containmentThreshold && $ratio >= $this->optionalBlocksMinOverlap) {
-                    $edges[] = [$aId, $bId, $cont];
+                    $edges[] = [$aId, $bId, $cont, self::TIER_CONTAINMENT];
                     continue;
                 }
             }
@@ -100,7 +107,7 @@ final class PairScoreWorker
             if ($this->irScoring && $a->irBag !== null && $b->irBag !== null) {
                 $irSim = $jaccard->similarity($a->irBag, $b->irBag);
                 if ($irSim >= $this->irThreshold) {
-                    $edges[] = [$aId, $bId, $irSim];
+                    $edges[] = [$aId, $bId, $irSim, self::TIER_IR];
                     continue;
                 }
             }
@@ -123,7 +130,7 @@ final class PairScoreWorker
                 foreach ($mlCandidates as $idx => [$a, $b, $aId, $bId]) {
                     $mlScore = $batchResults[$idx] ?? null;
                     if ($mlScore !== null && $mlScore['similarity'] >= $this->mlPairThreshold) {
-                        $edges[] = [$aId, $bId, $mlScore['similarity']];
+                        $edges[] = [$aId, $bId, $mlScore['similarity'], self::TIER_ML];
                     }
                 }
             } else {
@@ -131,7 +138,7 @@ final class PairScoreWorker
                 foreach ($mlCandidates as [$a, $b, $aId, $bId]) {
                     $mlScore = $client->score($a, $b);
                     if ($mlScore !== null && $mlScore['similarity'] >= $this->mlPairThreshold) {
-                        $edges[] = [$aId, $bId, $mlScore['similarity']];
+                        $edges[] = [$aId, $bId, $mlScore['similarity'], self::TIER_ML];
                     }
                 }
             }

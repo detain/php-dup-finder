@@ -22,7 +22,7 @@ namespace Phpdup\Reporting;
  */
 final class JsonSchemaSpec
 {
-    public const SCHEMA_VERSION = '1.0';
+    public const SCHEMA_VERSION = '1.1';
 
     /**
      * Top-level shape of {@see JsonReporter::build()} output. This is
@@ -44,6 +44,19 @@ final class JsonSchemaSpec
     /**
      * @return array<string, string>
      */
+    public static function pairShape(): array
+    {
+        return [
+            'blockA'     => 'string',
+            'blockB'     => 'string',
+            'matchTier'  => 'string',
+            'matchScore' => 'float',
+        ];
+    }
+
+    /**
+     * @return array<string, string>
+     */
     public static function clusterShape(): array
     {
         return [
@@ -59,6 +72,7 @@ final class JsonSchemaSpec
             'architectural_findings' => 'list<object>',
             'signature'              => 'string|null',
             'members'                => 'list<object>',
+            'pairs'                  => 'list<object>',
             'holes'                  => 'list<object>',
         ];
     }

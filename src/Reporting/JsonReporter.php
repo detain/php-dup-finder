@@ -75,6 +75,12 @@ final class JsonReporter
                 'name'      => $m->name,
                 'size'      => $m->size,
             ], $c->members),
+            'pairs' => array_map(static fn(array $p) => [
+                'blockA'     => $p['blockA'],
+                'blockB'     => $p['blockB'],
+                'matchTier'  => $p['matchTier'],
+                'matchScore' => round($p['matchScore'], 4),
+            ], $c->pairs),
             'holes' => array_map(static function (Hole $h) {
                 $base = [
                     'placeholder'    => $h->placeholder,

@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Phpdup\Clustering;
 
+use Phpdup\Clustering\MatchTier;
 use Phpdup\Extraction\Block;
 use Phpdup\Index\BlockIndex;
 use Phpdup\Index\NgramInvertedIndex;
@@ -162,7 +163,7 @@ final class Clusterer
      * At cluster emission time, similarity = componentMinSim[root] (O(1) lookup)
      * instead of the O(k²) pair-scan that was here before.
      *
-     * @param list<array{0:string,1:string,2:float}>|null $edges  pre-computed
+     * @param list<array{0:string,1:string,2:float,3:string}>|null $edges  pre-computed
      *        edges from a parallel scoring run; null means score serially.
      * @return list<Cluster>
      */
@@ -174,12 +175,14 @@ final class Clusterer
         // Phase 1: hash buckets — always done serially, dirt cheap.
         foreach ($index->hashBuckets() as $hash => $blocks) {
             if (count($blocks) < 2) continue;
-            $clusters[] = new Cluster(
+            $cluster = new Cluster(
                 id: 'X' . substr($hash, 0, 8),
                 members: $blocks,
                 similarity: 1.0,
                 exact: true,
             );
+            $cluster->pairs = $this->buildExactPairs($blocks);
+            $clusters[] = $cluster;
             foreach ($blocks as $b) {
                 $exactlyClustered[$b->id] = true;
             }
@@ -219,9 +222,9 @@ final class Clusterer
         // At cluster-emission time similarity is a simple O(1) lookup instead
         // of scanning all O(k²) member pairs in a component of size k.
         $componentMinSim = [];
-        foreach ($edges as [$aId, $bId, $sim]) {
+        foreach ($edges as [$aId, $bId, $sim, $tier]) {
             $key = $aId . '|' . $bId;
-            $edgeMap[$key] = $sim;
+            $edgeMap[$key] = ['sim' => $sim, 'tier' => $tier];
             // Capture roots BEFORE union so the pre-union condition is meaningful.
             $rx = $uf->find($aId);
             $ry = $uf->find($bId);
@@ -264,12 +267,14 @@ final class Clusterer
             // Use the pre-computed running min accumulated during union instead of
             // re-scanning all member pairs — O(1) instead of O(k²).
             $minSim = $componentMinSim[$root] ?? 1.0;
-            $merged[] = new Cluster(
+            $cluster = new Cluster(
                 id: 'C' . substr(md5((string)$root), 0, 8),
                 members: $members,
                 similarity: $allIdenticalHash ? 1.0 : $minSim,
                 exact: $allIdenticalHash,
             );
+            $cluster->pairs = $this->buildPairsFromEdges($members, $edgeMap);
+            $merged[] = $cluster;
             foreach ($members as $m) {
                 $emittedBlocks[$m->id] = true;
             }
@@ -292,7 +297,7 @@ final class Clusterer
     }
 
     /**
-     * @return list<array{0:string,1:string,2:float}>
+     * @return list<array{0:string,1:string,2:float,3:string}>
      */
     private function scorePairsSerially(BlockIndex $index): array
     {
@@ -303,7 +308,9 @@ final class Clusterer
             $b = $index->get($bId);
             if ($a === null || $b === null) continue;
             if ($a->structuralHash === $b->structuralHash) {
-                $edges[] = [$aId, $bId, 1.0];
+                // Exact hash pairs — structurally identical; tier is ExactHash.
+                // These don't go through similarity scoring.
+                $edges[] = [$aId, $bId, 1.0, MatchTier::ExactHash->value];
                 continue;
             }
             $bagA = $a->ngramBag ?? [];
@@ -312,7 +319,7 @@ final class Clusterer
             if ($jac >= $this->similarityThreshold) {
                 $tedSim = $this->tree->similarity($a->canonical, $b->canonical, $this->treeThreshold);
                 if ($tedSim < $this->treeThreshold) continue;
-                $edges[] = [$aId, $bId, min($jac, $tedSim)];
+                $edges[] = [$aId, $bId, min($jac, $tedSim), MatchTier::Jaccard->value];
                 continue;
             }
             // Jaccard rejected: try the type-3 / "near-subset" path. If the smaller
@@ -326,7 +333,7 @@ final class Clusterer
                 $cont  = $this->containment->similarity($bagA, $bagB);
                 $ratio = $this->containment->sizeRatio($bagA, $bagB);
                 if ($cont >= $this->containmentThreshold && $ratio >= $this->optionalBlocksMinOverlap) {
-                    $edges[] = [$aId, $bId, $cont];
+                    $edges[] = [$aId, $bId, $cont, MatchTier::Containment->value];
                     continue;
                 }
             }
@@ -337,7 +344,7 @@ final class Clusterer
             if ($this->irScoring && $a->irBag !== null && $b->irBag !== null) {
                 $irSim = $this->similarity->similarity($a->irBag, $b->irBag);
                 if ($irSim >= $this->irThreshold) {
-                    $edges[] = [$aId, $bId, $irSim];
+                    $edges[] = [$aId, $bId, $irSim, MatchTier::Ir->value];
                     continue;
                 }
             }
@@ -347,11 +354,60 @@ final class Clusterer
             if ($this->mlPairClient !== null) {
                 $mlScore = $this->mlPairClient->score($a, $b);
                 if ($mlScore !== null && $mlScore['similarity'] >= $this->mlPairThreshold) {
-                    $edges[] = [$aId, $bId, $mlScore['similarity']];
+                    $edges[] = [$aId, $bId, $mlScore['similarity'], MatchTier::Ml->value];
                 }
             }
         }
         return $edges;
+    }
+
+    /**
+     * Build pairs list for exact-hash clusters (Phase 1 hash buckets).
+     *
+     * Exact-hash clusters don't go through similarity scoring, so pairs
+     * are tracked as empty. The "first wins" tier for exact clones is
+     * ExactHash but since no scoring phase runs for these, we simply
+     * return an empty array.
+     *
+     * @param list<Block> $blocks
+     * @return list<array{blockA: string, blockB: string, matchTier: string, matchScore: float}>
+     */
+    private function buildExactPairs(array $blocks): array
+    {
+        return [];
+    }
+
+    /**
+     * Build pairs list from edge data for a cluster's members.
+     *
+     * Iterates over all unordered member pairs and looks up the edge
+     * (if any) that connected them during scoring. Only pairs with a
+     * recorded edge are included — intra-component edges that failed
+     * scoring thresholds are not present in $edgeMap.
+     *
+     * @param list<Block> $members
+     * @param array<string, array{sim: float, tier: string}> $edgeMap
+     * @return list<array{blockA: string, blockB: string, matchTier: string, matchScore: float}>
+     */
+    private function buildPairsFromEdges(array $members, array $edgeMap): array
+    {
+        $pairs = [];
+        $count = count($members);
+        for ($i = 0; $i < $count; $i++) {
+            for ($j = $i + 1; $j < $count; $j++) {
+                $aId = $members[$i]->id;
+                $bId = $members[$j]->id;
+                $key = strcmp($aId, $bId) < 0 ? $aId . '|' . $bId : $bId . '|' . $aId;
+                if (!isset($edgeMap[$key])) continue;
+                $pairs[] = [
+                    'blockA'     => $aId,
+                    'blockB'     => $bId,
+                    'matchTier'  => $edgeMap[$key]['tier'],
+                    'matchScore' => $edgeMap[$key]['sim'],
+                ];
+            }
+        }
+        return $pairs;
     }
 }
 

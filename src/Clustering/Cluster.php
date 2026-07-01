@@ -46,6 +46,17 @@ final class Cluster
 
     public int $impact = 0;
     public float $confidence = 0.0;
+
+    /**
+     * Intra-cluster pairs with their match tier and score.
+     *
+     * Populated by {@see Clusterer} during cluster formation.
+     * Exact-hash clusters have empty arrays since those pairs were
+     * handled in Phase 1 hash buckets and did not go through scoring.
+     *
+     * @var list<array{blockA: string, blockB: string, matchTier: string, matchScore: float}>
+     */
+    public array $pairs = [];
     /**
      * Refactoring-safety score in [0, 1]. Populated by
      * {@see \Phpdup\Reporting\SafetyScorer} after Ranker scoring.
