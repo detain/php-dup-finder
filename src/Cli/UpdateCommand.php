@@ -295,7 +295,7 @@ HELP
                 $sslContext = stream_context_create(['ssl' => ['verify_peer' => true, 'verify_depth' => 5]]);
                 $checksumBody = @file_get_contents($checksumUrl, false, $sslContext);
                 $expectedSha256 = $checksumBody !== false ? trim((string)$checksumBody) : null;
-                if ($expectedSha256 !== null && preg_match('/^[a-f0-9]{64}\s/', $expectedSha256)) {
+                if ($expectedSha256 !== null && preg_match('/^[a-f0-9]{64}/', $expectedSha256)) {
                     $expectedSha256 = preg_replace('/\s+.*/', '', $expectedSha256);
                 }
             }

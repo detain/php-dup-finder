@@ -14,6 +14,10 @@ use PhpParser\NodeFinder;
  * shape vectors are likely behaviourally similar even if their
  * AST shape differs (e.g. switch vs match, recursion vs iteration).
  *
+ * Uses NodeFinder to traverse all descendant nodes including nested
+ * closures, so nested functions contribute their control-flow
+ * constructs to the parent block's summary.
+ *
  * Used by {@see \Phpdup\Similarity\BehaviouralSimilarity} as a
  * cheap proxy for true graph-edit-distance — the full CFG-edit
  * computation is research-grade and out of scope here.

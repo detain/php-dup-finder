@@ -10,6 +10,7 @@ use Phpdup\Extraction\Block;
 use Phpdup\Extraction\BlockAstLoader;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Util\AstSerializer;
+use Phpdup\Util\Delimiters;
 
 /**
  * Computes the most-specific generalization of a cluster's members.
@@ -364,7 +365,7 @@ final class AntiUnifier
 
     private function stmtHash(Node $stmt): string
     {
-        return sha1(implode("\0", AstSerializer::tokens($stmt)));
+        return sha1(implode(Delimiters::HASH_JOIN, AstSerializer::tokens($stmt)));
     }
 
     /**

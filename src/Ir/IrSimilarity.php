@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace Phpdup\Ir;
 
+use Phpdup\Util\Delimiters;
+
 /**
  * IR-to-IR similarity scorer (option 5 of
  * `docs/plans/orm-db-semantic-dedup.md`).
@@ -52,7 +54,7 @@ final class IrSimilarity
      */
     public function hash(IrNode $ir): string
     {
-        return sha1(implode("\x1E", $this->printer->tokens($ir)));
+        return sha1(implode(Delimiters::NGRAM_SEP, $this->printer->tokens($ir)));
     }
 
     /**

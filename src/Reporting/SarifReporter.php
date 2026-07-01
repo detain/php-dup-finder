@@ -127,7 +127,7 @@ final class SarifReporter
                 // can flag these clusters distinctly from "exact + variables".
                 'optionalSegmentCount' => $this->countOptionalSegments($cluster),
                 'hasOptionalSegments'  => in_array('optional-segments', $cluster->patternTags, true),
-            ], static fn($v) => $v !== null && $v !== false && $v !== 0),
+            ], static fn($v) => $v !== null),
         ];
     }
 }

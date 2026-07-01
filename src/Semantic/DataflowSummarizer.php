@@ -16,13 +16,14 @@ use PhpParser\NodeFinder;
  *   - calls      multiset of called method/function names
  *   - sideEffects   bool: contains echo/print/header/exit/log/...
  *
+ * Uses NodeFinder to traverse all descendant nodes including nested
+ * closures, so nested functions contribute their variables, calls,
+ * returns, and side-effects to the parent block's summary.
+ *
  * Used by {@see BehaviouralSimilarity} (and III.A's
  * SemanticHoleClassifier) to compare blocks by I/O shape rather
  * than syntactic structure — the foundation for type-4 clone
  * detection.
- *
- * Stops at function boundaries within the block — nested closures
- * are summarised separately.
  */
 final class DataflowSummarizer
 {

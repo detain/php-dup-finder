@@ -5,6 +5,7 @@ namespace Phpdup\Fingerprint;
 
 use PhpParser\Node;
 use Phpdup\Util\AstSerializer;
+use Phpdup\Util\Delimiters;
 
 /**
  * Produces a multiset of canonical-token n-grams for a block.
@@ -44,7 +45,7 @@ final class NgramFingerprint
         // because PHP can vectorise the joiner. The hash itself
         // dominates anyway; we pay one fewer concat per ngram.
         $bag   = [];
-        $sep   = "\x1E";
+        $sep   = Delimiters::NGRAM_SEP;
         $upper = $count - $this->n;
         for ($i = 0; $i <= $upper; $i++) {
             $key = hash(
