@@ -366,6 +366,11 @@ Ordering follows findings.md's roadmap: **correctness → security → broken ar
 > **Phase 11 rollup** (5 steps, all merged): 781 tests throughout; phpstan: 1 pre-existing if.alwaysFalse false positive at RefactorStage:178 (carried from Q6, documented not suppressed); psalm clean; baseline unchanged. New files: `src/Watch/FileWatcher.php`, `src/Watch/FileChangeType.php`, `src/Server/AnalysisWorker.php`, `bin/phpdup-worker`, `src/Cli/InitCommand.php`, `src/Clustering/MatchTier.php`. Behavioral invariants maintained: Golden snapshots byte-identical (schema version 1.1).
 
 | 7.1i | D8 | — (prior) | — | 701✓ / ✓ / ✓ | ☑ (already in master) | reset $namespace on leaveNode in BlockExtractor |
+| 12.1 | DOC-1 | `phase12-docs-hygiene` | https://github.com/detain/php-dup-finder/pull/117 | 781✓ / ⚠1 / ✓ | ☑ (squash-merged 47cd3c4) | README: 2,650→146 lines (≤300 AC met); orientation doc with quick-start, key flags table, docs/ links |
+| 12.2 | DOC-2 | (same PR) | (same) | 781✓ / ⚠1 / ✓ | ☑ (same commit) | DocblockTruth sweep: EditCostModel (2-step preprocessing), Normalizer (__MATCH__ not ↔), IrLifter (AssignOp/IncDec), PatternRecognizer ($m->ast===null guard) |
+| 12.3 | DOC-3 | (same PR) | (same) | 781✓ / ⚠1 / ✓ | ☑ (same commit) | .logs/ confirmed in .gitignore; subtask2.log not tracked; 5 new lessons in CALIBER_LEARNINGS.md (APTED cache aliasing, C1 assertion weakness, Caliber hook timeout, gh token scope, anti-unification pattern) |
+
+> **Phase 12 rollup** (3 steps, all merged in one PR): 781 tests; phpstan: 1 pre-existing if.alwaysFalse false positive at RefactorStage:178 (carried since Q6, documented not suppressed); psalm clean; baseline unchanged. README reduced from 2,650 to 146 lines. 4 docblocks corrected. 5 new session learnings recorded.
 
 (The driver keeps this table current and shows the operator a per-phase rollup.)
 
