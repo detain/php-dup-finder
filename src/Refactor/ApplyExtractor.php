@@ -99,7 +99,9 @@ final class ApplyExtractor
     }
 
     /**
-     * Set $node->...->$path[-1] = $replacement by traversing $path.
+     * Set the node at $path to $replacement by traversing from $root.
+     * Stops at the parent of the target node so we can assign the replacement
+     * to the parent's property/array-slot.
      *
      * @param Node|null $root
      * @param list<int|string> $path
@@ -110,24 +112,60 @@ final class ApplyExtractor
             return;
         }
 
+        // Navigate to the PARENT of the target node (stop at path[:-1])
         $current = $root;
-        for ($i = 0; $i < count($path) - 1; $i++) {
+        $i = 0;
+        // Loop until we've processed all but the last key, or until we return early
+        // because we detected we're at the target's parent
+        while ($i < count($path) - 1) {
             $key = $path[$i];
             if (is_int($key)) {
+                // Navigate into an array property: find the array and return item at $key
                 $next = $this->getArrayChild($current, $key);
                 if ($next === null) {
                     return;
                 }
                 $current = $next;
+                $i++;
             } else {
+                // Navigate into a Node property
                 $prop = $current->$key ?? null;
-                if (!$prop instanceof Node) {
+                if (is_array($prop)) {
+                    // Array property: next key must be an integer index into this array
+                    if ($i + 1 >= count($path)) {
+                        return;
+                    }
+                    $nextKey = $path[$i + 1];
+                    if (!is_int($nextKey)) {
+                        return;
+                    }
+                    if (!isset($prop[$nextKey]) || !$prop[$nextKey] instanceof Node) {
+                        return;
+                    }
+                    $current = $prop[$nextKey];
+                    $i += 2; // consumed both the array key and the index key
+                    // After consuming array+index, check if we're at the target and should set directly
+                    if ($i === count($path) - 1 && !is_int($path[$i] ?? null)) {
+                        $current->{$path[$i]} = $replacement;
+                        return;
+                    }
+                } elseif ($prop === null) {
                     return;
+                } else {
+                    // Navigate to the node first
+                    $current = $prop;
+                    // After navigating, check if next key is the final property to set
+                    $nextIdx = $i + 1;
+                    if ($nextIdx === count($path) - 1 && !is_int($path[$nextIdx] ?? null)) {
+                        $current->{$path[$nextIdx]} = $replacement;
+                        return;
+                    }
+                    $i++;
                 }
-                $current = $prop;
             }
         }
 
+        // Now $current is the parent, and we set path[-1] on it
         $lastKey = $path[count($path) - 1];
         if (is_int($lastKey)) {
             $this->setArrayChild($current, $lastKey, $replacement);
@@ -138,6 +176,9 @@ final class ApplyExtractor
 
     /**
      * Get the child node at $index in an array property of $node.
+     * Iterates over all subnode names; the first array-valued property that
+     * has at least $index+1 items wins (handles Function_, If_, etc. which
+     * each have exactly one primary array subnode).
      */
     private function getArrayChild(Node $node, int $index): ?Node
     {

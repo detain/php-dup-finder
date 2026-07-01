@@ -184,4 +184,27 @@ final class AntiUnifierTest extends TestCase
         }
         return new Cluster('TEST', $blocks, 1.0, false);
     }
+
+    public function testGetLastHolePathsReturnsHoleIdToPathMap(): void
+    {
+        $cluster = $this->clusterFor([
+            'function notifyHigh($u, $s) { if ($s > 10) { send("admin", $u); } }',
+            'function notifyMid($u, $s) { if ($s > 20) { send("moderator", $u); } }',
+        ]);
+
+        $antiUnifier = new AntiUnifier();
+        $antiUnifier->unify($cluster);
+
+        $paths = $antiUnifier->getLastHolePaths();
+        $this->assertNotEmpty($paths, 'hole paths should not be empty after unify');
+
+        foreach ($paths as $holeId => $path) {
+            $this->assertIsString($holeId);
+            $this->assertIsArray($path);
+            $this->assertNotEmpty($path);
+        }
+
+        $this->assertNotEmpty($cluster->holePaths, 'cluster.holePaths should be populated');
+        $this->assertSame($paths, $cluster->holePaths);
+    }
 }
