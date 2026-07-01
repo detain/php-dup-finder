@@ -140,6 +140,12 @@ final class Config
         // fingerprinter switches from xxh64 (16-char hex strings) to a compact
         // int-keyed bag via CompactNgramBag::compact().
         public readonly bool $lowMemory = false,
+        // CI gate: exit code 3 when total cluster impact exceeds this value.
+        // 0 = disabled. CLI: --fail-on-impact.
+        public readonly int $failOnImpact = 0,
+        // CI gate: exit code 3 when cluster count exceeds this value.
+        // 0 = disabled. CLI: --max-clusters.
+        public readonly int $maxClusters = 0,
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -181,6 +187,12 @@ final class Config
         }
         if ($mlPairUrl !== '' && !\Phpdup\Ml\MlClient::isAllowedUrl(rtrim($mlPairUrl, '/') . '/score-pair')) {
             throw new \InvalidArgumentException("ml_pair_url failed validation: $mlPairUrl");
+        }
+        if ($failOnImpact < 0) {
+            throw new \InvalidArgumentException("fail_on_impact must be >= 0");
+        }
+        if ($maxClusters < 0) {
+            throw new \InvalidArgumentException("max_clusters must be >= 0");
         }
     }
 
@@ -287,6 +299,8 @@ final class Config
             mlPairThreshold:                isset($overrides['ml_pair_threshold']) ? (float)$overrides['ml_pair_threshold'] : $this->mlPairThreshold,
             debugLog:                       isset($overrides['debug_log']) ? (string)$overrides['debug_log'] : $this->debugLog,
             lowMemory:                      isset($overrides['low_memory']) ? (bool)$overrides['low_memory'] : $this->lowMemory,
+            failOnImpact:                   isset($overrides['fail_on_impact']) ? (int)$overrides['fail_on_impact'] : $this->failOnImpact,
+            maxClusters:                    isset($overrides['max_clusters']) ? (int)$overrides['max_clusters'] : $this->maxClusters,
         );
     }
 }

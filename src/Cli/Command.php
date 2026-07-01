@@ -78,7 +78,9 @@ final class Command extends SymfonyCommand
             ->addOption('scorer', null, InputOption::VALUE_REQUIRED, 'Scoring tier set: default | ir. "ir" enables option-5 IR-tier fallback — when AST Jaccard / TED / containment all reject a pair, lift both blocks to the canonical IR (Phpdup\\Ir\\IrLifter) and Jaccard their token bags. Pairs at or above --ir-threshold form edges weighted by the IR similarity. Off by default.', 'default')
             ->addOption('ir-threshold', null, InputOption::VALUE_REQUIRED, 'IR-tier multiset-Jaccard threshold (0..1). Pairs at or above this score form edges. Default 0.85.')
             ->addOption('ml-pair-url', null, InputOption::VALUE_REQUIRED, 'External pair-similarity ML sidecar URL (option 6 of docs/plans/orm-db-semantic-dedup.md). Empty = disabled. When set, the very last clustering tier — runs after structural-hash, AST Jaccard + TED, containment, and IR all reject a pair. Posts a PairFeatures vector to <URL>/score-pair and accepts pairs at or above --ml-pair-threshold. Returns null on transport failure so unavailability never breaks the run. http(s) only.')
-            ->addOption('ml-pair-threshold', null, InputOption::VALUE_REQUIRED, 'Similarity threshold (0..1) for the option-6 ML pair tier. Pairs whose model-returned similarity meets this value emit edges. Default 0.80.');
+            ->addOption('ml-pair-threshold', null, InputOption::VALUE_REQUIRED, 'Similarity threshold (0..1) for the option-6 ML pair tier. Pairs whose model-returned similarity meets this value emit edges. Default 0.80.')
+            ->addOption('fail-on-impact', null, InputOption::VALUE_REQUIRED, 'Exit code 3 when total cluster impact exceeds N. 0 = disabled. CI gate for duplicate debt thresholds.')
+            ->addOption('max-clusters', null, InputOption::VALUE_REQUIRED, 'Exit code 3 when cluster count exceeds N. 0 = disabled. CI gate for max cluster count.');
 
         // ── Output / reports ───────────────────────────────────────────────
         $this
@@ -135,14 +137,15 @@ Options grouped by category:
  <comment>Configuration</comment>
    --config, --validate-config
 
- <comment>Detection tuning</comment>
-   --min-block-size, --mode, --similarity, --max-df,
-   --optional-blocks, --optional-blocks-containment,
-   --min-impact, --min-safety, --exact-only, --kinds, --auto-tune,
-   --ted-weights, --db-aware, --trinity-collapse,
-   --scorer, --ir-threshold,
-   --ml-pair-url, --ml-pair-threshold,
-   --profile
+  <comment>Detection tuning</comment>
+    --min-block-size, --mode, --similarity, --max-df,
+    --optional-blocks, --optional-blocks-containment,
+    --min-impact, --min-safety, --fail-on-impact, --max-clusters,
+    --exact-only, --kinds, --auto-tune,
+    --ted-weights, --db-aware, --trinity-collapse,
+    --scorer, --ir-threshold,
+    --ml-pair-url, --ml-pair-threshold,
+    --profile
 
  <comment>Output / reports</comment>
    --html, --json, --sarif, --gitlab-sast, --checkstyle,
@@ -222,6 +225,8 @@ HELP;
             'normalization_mode'          => $input->getOption('mode'),
             'similarity_threshold'        => $input->getOption('similarity'),
             'min_cluster_impact'          => $input->getOption('min-impact'),
+            'fail_on_impact'              => $input->getOption('fail-on-impact'),
+            'max_clusters'                => $input->getOption('max-clusters'),
             'html'                        => $input->getOption('html'),
             'json'                        => $input->getOption('json'),
             'workers'                     => $input->getOption('workers'),
@@ -575,6 +580,21 @@ HELP;
             $output->writeln('<comment>phpdup: cancelled by user — partial report rendered</comment>');
             return 130; // canonical SIGINT exit code
         }
+
+        // CI gate: exit code 3 when thresholds are exceeded
+        if ($config->failOnImpact > 0) {
+            $totalImpact = 0;
+            foreach ($state->clusters as $cluster) {
+                $totalImpact += $cluster->impact;
+            }
+            if ($totalImpact > $config->failOnImpact) {
+                return 3;
+            }
+        }
+        if ($config->maxClusters > 0 && count($state->clusters) > $config->maxClusters) {
+            return 3;
+        }
+
         return 0;
     }
 
