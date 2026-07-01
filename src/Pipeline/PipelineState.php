@@ -8,6 +8,7 @@ use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
 use Phpdup\Index\BlockIndex;
 use Phpdup\Reporting\Report;
+use Symfony\Component\Console\Output\OutputInterface;
 
 /**
  * Mutable pipeline state shared across stages.
@@ -94,5 +95,28 @@ final class PipelineState
         $this->debugMessages[$this->debugIndex % self::DEBUG_BUFFER_SIZE] = $message;
         $this->debugIndex++;
         $this->debugLogger?->append($message);
+    }
+
+    /**
+     * Sample current and peak memory usage into the state fields.
+     */
+    public function sampleMemory(): void
+    {
+        $this->rssBytes = memory_get_usage(false);
+        $this->peakBytes = memory_get_peak_usage(true);
+    }
+
+    /**
+     * Emit a debug message to output and the ring buffer when verbosity is DEBUG.
+     *
+     * @param OutputInterface $output
+     * @param string          $message
+     */
+    public function debug(OutputInterface $output, string $message): void
+    {
+        if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+            $output->writeln($message);
+            $this->pushDebugMessage($message);
+        }
     }
 }
