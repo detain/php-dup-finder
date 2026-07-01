@@ -121,6 +121,9 @@ final class PreprocessStage implements CooperativeStageInterface
                 }
                 if (++$sinceYield >= self::YIELD_EVERY) {
                     $sinceYield = 0;
+                if ($state->cancelled) {
+                    break;
+                }
                     $state->sampleMemory();
                     $state->debug($output, sprintf('preprocess: cache check progress %d/%d files [%s]', $state->processedFiles, count($files), MemoryDebug::getMemoryUsage()));
                     yield Stage::Preprocessing;
@@ -162,6 +165,9 @@ final class PreprocessStage implements CooperativeStageInterface
 
                 if (++$sinceYield >= self::YIELD_EVERY) {
                     $sinceYield = 0;
+                if ($state->cancelled) {
+                    break;
+                }
                     $state->sampleMemory();
                     $state->debug($output, sprintf('preprocess: processed %d files, %d blocks so far [%s]', $state->processedFiles, count($blocks), MemoryDebug::getMemoryUsage()));
                     $this->listener->onFilePreprocessed(

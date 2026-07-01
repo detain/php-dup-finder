@@ -64,6 +64,9 @@ final class RefactorStage implements CooperativeStageInterface
         $total = count($state->clusters);
         $state->refactoredClusters = 0;
         $state->currentTask = sprintf('Anti-unifying %d clusters', $total);
+        if ($state->cancelled) {
+            return;
+        }
         yield Stage::Refactoring;
 
         $workers     = $config->workers > 0 ? $config->workers : WorkerPool::detectCpuCount();
@@ -106,6 +109,9 @@ final class RefactorStage implements CooperativeStageInterface
 
             if (++$sinceYield >= self::YIELD_EVERY) {
                 $sinceYield = 0;
+                if ($state->cancelled) {
+                    break;
+                }
                 $state->stageProgress = $total > 0
                     ? min(0.99, $state->refactoredClusters / $total)
                     : 0.0;
@@ -124,6 +130,9 @@ final class RefactorStage implements CooperativeStageInterface
         $state->currentTask = sprintf(
             'Refactoring %d clusters across %d workers', $total, $workers,
         );
+        if ($state->cancelled) {
+            return;
+        }
         yield Stage::Refactoring;
 
         // Build an id -> cluster map up front so worker enrichments can be
@@ -165,6 +174,9 @@ final class RefactorStage implements CooperativeStageInterface
 
             if (++$sinceYield >= self::YIELD_EVERY) {
                 $sinceYield = 0;
+                if ($state->cancelled) {
+                    break;
+                }
                 $state->stageProgress = $total > 0
                     ? min(0.99, $state->refactoredClusters / $total)
                     : 0.0;
