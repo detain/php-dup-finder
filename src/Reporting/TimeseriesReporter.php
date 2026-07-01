@@ -20,6 +20,8 @@ use Phpdup\Clustering\Cluster;
  */
 final class TimeseriesReporter
 {
+    use WritesReportFile;
+
     public function __construct(
         private readonly ?string $commitSha = null,
         private readonly ?int $timestamp = null,
@@ -28,10 +30,7 @@ final class TimeseriesReporter
 
     public function writeTo(Report $report, string $file): void
     {
-        $dir = dirname($file);
-        if ($dir !== '' && !is_dir($dir)) {
-            @mkdir($dir, 0o775, true);
-        }
+        $this->ensureDir($file);
         file_put_contents($file, $this->buildLine($report) . "\n", FILE_APPEND | LOCK_EX);
     }
 

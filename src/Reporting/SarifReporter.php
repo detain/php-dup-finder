@@ -17,19 +17,14 @@ use Phpdup\Extraction\Block;
  */
 final class SarifReporter
 {
+    use WritesReportFile;
+
     public const SCHEMA  = 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/Schemata/sarif-schema-2.1.0.json';
     public const VERSION = '2.1.0';
 
     public function writeTo(Report $report, string $file): void
     {
-        $dir = dirname($file);
-        if ($dir !== '' && !is_dir($dir)) {
-            @mkdir($dir, 0o775, true);
-        }
-        file_put_contents(
-            $file,
-            json_encode($this->build($report), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
-        );
+        $this->writeFile($file, json_encode($this->build($report), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
     }
 
     /** @return array<string, mixed> */
