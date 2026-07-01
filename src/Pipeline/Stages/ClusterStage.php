@@ -106,6 +106,13 @@ final class ClusterStage implements CooperativeStageInterface
         // Build block index with progress reporting
         $state->currentTask = 'Building block index';
         yield Stage::Clustering;
+
+        // Expand the file set to the clone cohort: all files that share
+        // n-gram fingerprints with the --diff-base changed files.
+        if ($state->diffBaseFiles !== null && $state->diffBaseFiles !== []) {
+            $this->expandToCloneCohort($state, $output);
+        }
+
         $index = $this->buildIndex($state, $output);
 
         // Release ASTs if lazy loading is enabled
@@ -387,5 +394,90 @@ final class ClusterStage implements CooperativeStageInterface
                 ));
             }
         }
+    }
+
+    /**
+     * Expand $state->files to include all files that share n-gram
+     * fingerprints with the --diff-base changed files (the "clone cohort").
+     *
+     * This runs before the BlockIndex is built, so we also filter
+     * $state->blocks to only include blocks from the expanded file set.
+     */
+    private function expandToCloneCohort(PipelineState $state, OutputInterface $output): void
+    {
+        $diffBaseFiles = $state->diffBaseFiles;
+        if ($diffBaseFiles === null || $diffBaseFiles === []) {
+            return;
+        }
+
+        $diffBaseFileSet = array_flip($diffBaseFiles);
+
+        // Collect fingerprints from all blocks in diffBaseFiles.
+        // We need the inverted index built from ALL blocks to find
+        // files that share fingerprints with these.
+        $allBlocks = $state->blocks;
+        if ($allBlocks === []) {
+            return;
+        }
+
+        // Build a temporary inverted index from all blocks.
+        // We use a simple approach: for each block from diffBaseFiles,
+        // collect its n-grams and find other blocks sharing those n-grams.
+        $inverted = new \Phpdup\Index\NgramInvertedIndex();
+        // Build the inverted index from a dummy BlockIndex containing all blocks.
+        $tmpIndex = new \Phpdup\Index\BlockIndex();
+        foreach ($allBlocks as $b) {
+            $tmpIndex->add($b);
+        }
+        $inverted->build($tmpIndex);
+
+        // Find all block IDs that share n-grams with diffBaseFiles blocks.
+        $cohortBlockIds = [];
+        foreach ($allBlocks as $b) {
+            if (!isset($diffBaseFileSet[$b->file])) {
+                continue;
+            }
+            $candidates = $inverted->candidatesFor($b, $state->config->maxDocumentFrequency);
+            foreach ($candidates as $candidateId) {
+                $cohortBlockIds[$candidateId] = true;
+            }
+        }
+
+        // Collect all file paths from the candidate blocks.
+        $cohortFiles = $diffBaseFiles; // Start with the changed files.
+        foreach (array_keys($cohortBlockIds) as $blockId) {
+            $block = $tmpIndex->get($blockId);
+            if ($block !== null && !isset($diffBaseFileSet[$block->file])) {
+                $cohortFiles[] = $block->file;
+            }
+        }
+
+        // Deduplicate and update $state->files.
+        $cohortFiles = array_values(array_unique($cohortFiles));
+        $state->files = $cohortFiles;
+
+        // Filter $state->blocks to only include blocks from cohort files.
+        $cohortFileSet = array_flip($cohortFiles);
+        $filteredBlocks = [];
+        foreach ($allBlocks as $b) {
+            if (isset($cohortFileSet[$b->file])) {
+                $filteredBlocks[] = $b;
+            }
+        }
+        $state->blocks = $filteredBlocks;
+
+        $addedCount = count($cohortFiles) - count($diffBaseFiles);
+        $state->debug($output, sprintf(
+            'clustering: clone cohort expanded from %d changed files to %d total files (+%d sharing fingerprints)',
+            count($diffBaseFiles),
+            count($cohortFiles),
+            $addedCount,
+        ));
+        $output->writeln(sprintf(
+            "<info>phpdup</info> clone cohort: %d changed + %d related = %d files total",
+            count($diffBaseFiles),
+            $addedCount,
+            count($cohortFiles),
+        ));
     }
 }

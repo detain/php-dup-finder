@@ -154,6 +154,12 @@ final class Config
         // Write current clusters as a baseline snapshot to FILE.
         // Overwrites if FILE exists.
         public readonly ?string $baselineOutFile = null,
+        // Git ref for diff-scoped analysis (--diff-base=REF). When set,
+        // ScanningStage filters the scanned file set to only the changed
+        // files from `git diff --name-only <ref>..HEAD`, and ClusterStage
+        // expands this to the "clone cohort" — all files sharing n-gram
+        // fingerprints with the changed files. Null = full corpus scan.
+        public readonly ?string $diffBase = null,
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -311,6 +317,7 @@ final class Config
             maxClusters:                    isset($overrides['max_clusters']) ? (int)$overrides['max_clusters'] : $this->maxClusters,
             baselineFile:                    isset($overrides['baseline']) ? (string)$overrides['baseline'] : $this->baselineFile,
             baselineOutFile:                 isset($overrides['baseline_out']) ? (string)$overrides['baseline_out'] : $this->baselineOutFile,
+            diffBase:                        isset($overrides['diff_base']) ? (string)$overrides['diff_base'] : $this->diffBase,
         );
     }
 }

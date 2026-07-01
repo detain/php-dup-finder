@@ -71,6 +71,43 @@ final class ScanningStage implements CooperativeStageInterface
         $state->totalFiles = count($files);
         $state->scannedFiles = count($files);
 
+        // When --diff-base is set, capture the changed-file list so
+        // ClusterStage can expand the processing scope to the clone cohort
+        // (all files sharing n-gram fingerprints with the changed files).
+        if ($config->diffBase !== null) {
+            $diffBase = escapeshellarg($config->diffBase);
+            $outputLine = [];
+            $exitCode = 0;
+            exec("git diff --name-only {$diffBase}..HEAD 2>&1", $outputLine, $exitCode);
+            if ($exitCode !== 0) {
+                $state->scanError = 'phpdup: --diff-base git diff failed: ' . implode("\n", $outputLine);
+                return;
+            }
+            // git diff --name-only returns relative paths (e.g. "src/Cli/Command.php")
+            // but Block::$file stores absolute paths, so resolve them to absolute.
+            $changedFiles = [];
+            foreach ($outputLine as $line) {
+                $line = trim($line);
+                if ($line === '') {
+                    continue;
+                }
+                foreach ($config->paths as $root) {
+                    $candidate = $root . '/' . $line;
+                    if (file_exists($candidate)) {
+                        $changedFiles[] = (string)realpath($candidate);
+                        break;
+                    }
+                }
+            }
+            $state->diffBaseFiles = $changedFiles;
+            $output->writeln(sprintf(
+                "<info>phpdup</info> diff-base %s: %d changed file(s) from git diff --name-only %s..HEAD",
+                $config->diffBase,
+                count($changedFiles),
+                $config->diffBase,
+            ));
+        }
+
         // Cover any remaining files that didn't fill a full yield-interval
         // batch (the listener was only called at yield boundaries above).
         $this->listener->onFileScanned($state->scannedFiles, $state->totalFiles);
