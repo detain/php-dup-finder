@@ -24,9 +24,10 @@ use Phpdup\Normalization\SqlTableExtractor;
  * Lifts a PhpParser AST node into the phpdup IR.
  *
  * Recognises a small but useful subset of PHP semantics — DB
- * operations (via {@see DbOpRegistry}), assignments, branches,
- * loops, returns, and generic calls — and lifts the rest into a
- * coarse `CallIr` / `LiteralIr` / `VarIr` form.
+ * operations (via {@see DbOpRegistry}), simple assignments,
+ * compound assignments (+=, -=, .=, ??=, etc.), pre/post inc/dec,
+ * branches, loops, returns, and generic calls — and lifts the rest
+ * into a coarse `CallIr` / `LiteralIr` / `VarIr` form.
  *
  * **Failure mode**
  *

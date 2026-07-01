@@ -22,9 +22,13 @@ namespace Phpdup\Similarity;
  * form that {@see \Phpdup\Util\AstSerializer::shortType()} emits
  * (e.g. "Expr_MethodCall", "Stmt_If_", "Scalar_Int_").  The semantic
  * weight table above lists bare names ("MethodCall", "If_", "Int_").
- * `cost()` canonicalizes every incoming label via `canonicalizeLabel()`
- * before lookup, so callers pass prefixed labels unchanged and the
- * matching is always against bare names.
+ *
+ * Before lookup, `cost()` performs two preprocessing steps:
+ *   1. Strip any trailing `|…` scalar-type suffix via `explode('|', $label)[0]`
+ *   2. Strip the leading `Expr_`/`Stmt_`/`Scalar_` prefix via `canonicalizeLabel()`
+ *
+ * so callers pass prefixed labels unchanged and the matching is always
+ * against bare names.
  *
  * Distances are returned as floats; AptedDistance::similarity()
  * scales appropriately.

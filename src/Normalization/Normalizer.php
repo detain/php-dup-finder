@@ -260,12 +260,12 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Match_ ↔ Switch_ surface canonicalisation.
+     * Match_ and Switch_ surface canonicalisation.
      *
      * `match (x) { 1 => foo(), 2 => bar(), default => baz() }` and the
      * equivalent `switch (x) { case 1: foo(); break; case 2: bar(); break;
      * default: baz(); break; }` carry different node types but mean the
-     * same thing. Rewrite both to a synthetic `__MATCH__(subject,
+     * same thing. Both are rewritten to a synthetic `__MATCH__(subject,
      * cond1, body1, cond2, body2, ...)` FuncCall so they produce identical
      * serialized tokens and can cluster.
      */
