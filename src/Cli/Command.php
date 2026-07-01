@@ -15,6 +15,7 @@ use Phpdup\Pipeline\Stages\PreprocessStage;
 use Phpdup\Pipeline\Stages\RefactorStage;
 use Phpdup\Pipeline\Stages\ReportStage;
 use Phpdup\Pipeline\Stages\ScanningStage;
+use Phpdup\Reporting\BaselineStore;
 use Symfony\Component\Console\Command\Command as SymfonyCommand;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
@@ -98,6 +99,8 @@ final class Command extends SymfonyCommand
             ->addOption('refactor-tests', null, InputOption::VALUE_REQUIRED, 'Emit a PHPUnit test skeleton per cluster into DIR (data-provider rows mirror hole observations).')
             ->addOption('diff', null, InputOption::VALUE_REQUIRED, 'Write per-cluster unified diffs into DIR')
             ->addOption('patch', null, InputOption::VALUE_REQUIRED, 'Write a single cumulative patch file containing every cluster diff')
+            ->addOption('baseline', null, InputOption::VALUE_REQUIRED, 'CI baseline file. If file exists: compare and exit 4 if new clusters found. If file does not exist: write baseline and exit 0 (first-run auto-baseline).')
+            ->addOption('baseline-out', null, InputOption::VALUE_REQUIRED, 'Write current clusters as a baseline snapshot to FILE (overwrites existing).')
             ->addOption('limit', null, InputOption::VALUE_REQUIRED, 'Show at most N clusters in CLI output', 50)
             ->addOption('summary-only', null, InputOption::VALUE_NONE, 'Render only the top banner + final summary line (skip per-cluster details)')
             ->addOption('clusters', null, InputOption::VALUE_NONE, 'Render a one-line-per-cluster table instead of the full per-cluster breakdown')
@@ -147,13 +150,16 @@ Options grouped by category:
     --ml-pair-url, --ml-pair-threshold,
     --profile
 
- <comment>Output / reports</comment>
-   --html, --json, --sarif, --gitlab-sast, --checkstyle,
-   --csv, --prometheus, --timeseries,
-   --graphviz, --plantuml,
-   --refactor-patch, --refactor-tests,
-   --diff, --patch, --limit, --sort, --stats,
-   --summary-only, --clusters
+  <comment>Output / reports</comment>
+    --html, --json, --sarif, --gitlab-sast, --checkstyle,
+    --csv, --prometheus, --timeseries,
+    --graphviz, --plantuml,
+    --refactor-patch, --refactor-tests,
+    --diff, --patch, --limit, --sort, --stats,
+    --summary-only, --clusters
+
+  <comment>CI / Baseline</comment>
+    --baseline, --baseline-out
 
   <comment>Performance / runtime</comment>
     --workers (-j), --no-cache, --no-incremental, --no-lazy-ast,
@@ -235,6 +241,8 @@ HELP;
             'sort'                        => $input->getOption('sort'),
             'ted_weights'                 => $input->getOption('ted-weights'),
             'debug_log'                   => $input->getOption('debug-log'),
+            'baseline'                    => $input->getOption('baseline'),
+            'baseline_out'                => $input->getOption('baseline-out'),
         ], fn($v) => $v !== null);
 
         if ($input->getOption('db-aware')) {
@@ -593,6 +601,53 @@ HELP;
         }
         if ($config->maxClusters > 0 && count($state->clusters) > $config->maxClusters) {
             return 3;
+        }
+
+        // Baseline gating: --baseline-out (write) and --baseline (compare / first-run)
+        if ($config->baselineOutFile !== null || $config->baselineFile !== null) {
+            $baselineStore = new BaselineStore();
+
+            // Build current entries in baseline format
+            $currentEntries = [];
+            foreach ($state->clusters as $cluster) {
+                $memberHashes = [];
+                foreach ($cluster->members as $block) {
+                    $memberHashes[] = $baselineStore->computeBlockHash($block);
+                }
+                sort($memberHashes);
+                $currentEntries[] = [
+                    'id' => $cluster->id,
+                    'impact' => $cluster->impact,
+                    'member_hashes' => $memberHashes,
+                ];
+            }
+
+            // --baseline-out wins: always write baseline and exit 0
+            if ($config->baselineOutFile !== null) {
+                $baselineStore->writeBaseline($state->clusters, $config->baselineOutFile);
+                $output->writeln("<info>phpdup</info> baseline written to {$config->baselineOutFile}");
+                return 0;
+            }
+
+            // --baseline: compare mode
+            if ($config->baselineFile !== null) {
+                if (!is_file($config->baselineFile)) {
+                    // First run: write baseline and exit 0
+                    $baselineStore->writeBaseline($state->clusters, $config->baselineFile);
+                    $output->writeln("<info>phpdup</info> baseline created at {$config->baselineFile}");
+                    return 0;
+                }
+
+                // Compare against existing baseline
+                $baselineEntries = $baselineStore->readBaseline($config->baselineFile);
+                $newClusters = $baselineStore->compareBaselines($currentEntries, $baselineEntries);
+
+                if ($newClusters !== []) {
+                    $count = count($newClusters);
+                    $output->writeln("<error>phpdup</error> {$count} new duplicate cluster(s) found since baseline — exit 4");
+                    return 4;
+                }
+            }
         }
 
         return 0;

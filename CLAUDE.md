@@ -48,7 +48,7 @@ php -d phar.readonly=0 build-phar.php             # build phpdup.phar via box.js
 
 **Refactor** (`src/Refactor/`): `AntiUnifier.php` does LCS over per-stmt structural hashes → typed `Hole.php`s; `ParameterSynthesizer.php` infers types/names; `SignatureBuilder.php` emits `function name(...): mixed`; `PatternRecognizer.php` tags (`config-driven`, `sql-builder`, `crud-handler`, `validation-chain`, `strategy`, `state-machine`, `optional-segments`, `controller-action`, `migration`, …). Lazy AST reload via `src/Extraction/BlockAstLoader.php`.
 
-**Report** (`src/Reporting/`): one reporter per format — `CliReporter.php`, `JsonReporter.php` (+ `JsonSchemaSpec.php`), `HtmlReporter.php`, `SarifReporter.php`, `GitLabSastReporter.php`, `CheckstyleReporter.php`, `CsvReporter.php`, `PrometheusReporter.php`, `TimeseriesReporter.php`, `DiffReporter.php`, `GraphvizReporter.php`, `PlantumlReporter.php`, `RefactorPatchReporter.php`, `RefactorTestReporter.php`. Ordering via `Ranker.php` + `SafetyScorer.php` + `ClusterSort.php`; coherence outlier marking via `CoherenceAnalyzer.php`; payload type `Report.php`. Architectural post-analysis: `src/Architecture/Analyzers/{SolidAnalyzer,DesignPatternAnalyzer,AntiPatternAnalyzer}.php` + `src/Architecture/Finding.php`.
+**Report** (`src/Reporting/`): one reporter per format — `CliReporter.php`, `JsonReporter.php` (+ `JsonSchemaSpec.php`), `HtmlReporter.php`, `SarifReporter.php`, `GitLabSastReporter.php`, `CheckstyleReporter.php`, `CsvReporter.php`, `PrometheusReporter.php`, `TimeseriesReporter.php`, `DiffReporter.php`, `GraphvizReporter.php`, `PlantumlReporter.php`, `RefactorPatchReporter.php`, `RefactorTestReporter.php`. Ordering via `Ranker.php` + `SafetyScorer.php` + `ClusterSort.php`; coherence outlier marking via `CoherenceAnalyzer.php`; payload type `Report.php`. Baseline duplication snapshot/compare via `BaselineStore.php` (F2 CI gate). Architectural post-analysis: `src/Architecture/Analyzers/{SolidAnalyzer,DesignPatternAnalyzer,AntiPatternAnalyzer}.php` + `src/Architecture/Finding.php`.
 
 **Parallelism** (`src/Parallel/`): `WorkerPool.php` uses `pcntl_fork` + `stream_select`-multiplexed socketpairs; `runStreaming()` yields per-record. Workers: `PreprocessWorker.php`, `PairScoreWorker.php`, `RefactorWorker.php`. Falls back to serial when `pcntl_*` unavailable or items < 8.
 
@@ -76,14 +76,6 @@ php -d phar.readonly=0 build-phar.php             # build phpdup.phar via box.js
 - Use `Symfony\Component\Console\Output\NullOutput` when invoking stages.
 - For reporter tests, build a synthetic `Report` with `Cluster` + `Block` instances; do NOT run the pipeline.
 - Fuzz suite under `tests/Fuzz/DetectionRateTest.php` is corpus-driven (`bench/corpora/synthetic-fuzz/`).
-
-## CI / profiles
-
-- `.github/workflows/ci.yml` — primary CI. `.github/actions/phpdup/action.yml` is the reusable composite action (see `docs/CI.md`).
-- `.github/workflows/release.yml` — signed-release + PHAR publish workflow; `phpdup self-update` (`src/Cli/UpdateCommand.php`) verifies the published artifact before swapping. See `docs/RELEASE.md`.
-- `.gitlab/phpdup-ci.yml` — GitLab include emitting GitLab SAST v15 to `gl-sast-report.json`.
-- `profiles/{generic,laravel,symfony,wordpress,drupal}.json` — framework auto-applied by `src/Cli/ProjectProfileDetector.php`.
-- `profiles/db-aware-{laravel,doctrine,cake,thinkorm,medoo,propel,redbean,cycle,phpactiverecord,illuminate,aura,atlas,easydb,dibi,pixie,phalcon,idiorm,yii,laminas,codeigniter,myadmin,myadmin-orm,mongodb,redis,elasticsearch,neo4j,influxdb,couchdb,couchbase}.json` — DB symbol packs for `--db-aware` (option 4 of the ORM-dedup plan); composer-package detection lives in `ProjectProfileDetector::detectIn()`.
 
 ## Adding things
 

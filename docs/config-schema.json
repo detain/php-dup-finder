@@ -241,6 +241,16 @@
             "minimum": 0,
             "default": 0,
             "description": "CI gate: exit code 3 when cluster count exceeds this value. 0 = disabled. CLI: --max-clusters."
+        },
+        "baseline": {
+            "type": "string",
+            "default": null,
+            "description": "CI baseline file for incremental duplication gating. If file exists: load baseline and exit 4 if new clusters are found (clusters whose member content hashes are not all present in some baseline cluster). If file does not exist: write baseline snapshot and exit 0 (first-run auto-baseline). CLI: --baseline."
+        },
+        "baseline_out": {
+            "type": "string",
+            "default": null,
+            "description": "Write current clusters as a baseline snapshot to FILE (overwrites existing). Useful for explicitly creating or updating baselines. CLI: --baseline-out."
         }
     }
 }

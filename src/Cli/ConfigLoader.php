@@ -37,6 +37,7 @@ final class ConfigLoader
             'sort', 'ted_weights', 'scorer',
             'ir_threshold', 'ml_pair_threshold', 'debug_log',
             'low_memory', 'fail_on_impact', 'max_clusters',
+            'baseline', 'baseline_out',
         ];
         $resolver = new OverrideResolver($flatKeys);
         $flat = $resolver->resolve($overrides, $data, [
@@ -62,6 +63,8 @@ final class ConfigLoader
             'low_memory' => $base->lowMemory,
             'fail_on_impact' => $base->failOnImpact,
             'max_clusters' => $base->maxClusters,
+            'baseline' => $base->baselineFile,
+            'baseline_out' => $base->baselineOutFile,
         ]);
 
         $report = is_array($data['report'] ?? null) ? $data['report'] : [];
@@ -125,6 +128,8 @@ final class ConfigLoader
             lowMemory:                     $flat['low_memory'],
             failOnImpact:                  $flat['fail_on_impact'],
             maxClusters:                   $flat['max_clusters'],
+            baselineFile:                  $flat['baseline'],
+            baselineOutFile:               $flat['baseline_out'],
         );
     }
 
@@ -246,7 +251,7 @@ final class ConfigLoader
         foreach (['min_block_size', 'max_block_size', 'normalization_mode',
                   'similarity_threshold', 'tree_threshold', 'min_cluster_impact',
                   'max_df', 'ngram_size', 'sort',
-                  'fail_on_impact', 'max_clusters'] as $k) {
+                  'fail_on_impact', 'max_clusters', 'baseline', 'baseline_out'] as $k) {
             if (array_key_exists($k, $data)) {
                 $out[$k] = $data[$k];
             }
@@ -318,6 +323,8 @@ final class ConfigLoader
             'low_memory',
             'fail_on_impact',
             'max_clusters',
+            'baseline',
+            'baseline_out',
         ];
         foreach (array_keys($data) as $k) {
             if (!in_array($k, $known, true)) {
@@ -508,6 +515,16 @@ final class ConfigLoader
         }
         if (array_key_exists('max_clusters', $data)) {
             $assertInt($data['max_clusters'], 'max_clusters', 0);
+        }
+        if (array_key_exists('baseline', $data)) {
+            if (!is_string($data['baseline']) || $data['baseline'] === '') {
+                throw new \RuntimeException("baseline must be a non-empty string$where");
+            }
+        }
+        if (array_key_exists('baseline_out', $data)) {
+            if (!is_string($data['baseline_out']) || $data['baseline_out'] === '') {
+                throw new \RuntimeException("baseline_out must be a non-empty string$where");
+            }
         }
         if (array_key_exists('db_symbols', $data)) {
             if (!is_array($data['db_symbols'])) {
