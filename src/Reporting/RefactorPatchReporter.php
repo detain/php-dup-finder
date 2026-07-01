@@ -32,23 +32,41 @@ final class RefactorPatchReporter
      * @param string $dir Output directory
      * @param bool $apply When true, write a single cumulative `apply.diff` containing
      *                    all cluster patches concatenated (F1a scaffold; F1b adds actual rewrite)
+     * @param bool $dryRun When true with apply=true: write apply.diff only (F1a behavior).
+     *                    When false with apply=true: perform actual file extraction (F1b).
+     *                    In F1a, this parameter has no effect since F1b isn't implemented.
      */
-    public function writeTo(Report $report, string $dir, bool $apply = false): void
+    public function writeTo(Report $report, string $dir, bool $apply = false, bool $dryRun = true): void
     {
         if ($dir !== '' && !is_dir($dir)) {
             @mkdir($dir, 0o775, true);
         }
 
         if ($apply) {
-            $parts = [];
-            foreach ($report->clusters as $cluster) {
-                if (count($cluster->members) < 2) {
-                    continue;
+            if ($dryRun) {
+                // F1a / preview mode: write apply.diff containing scaffold patches
+                $parts = [];
+                foreach ($report->clusters as $cluster) {
+                    if (count($cluster->members) < 2) {
+                        continue;
+                    }
+                    $safeId = preg_replace('/[^a-zA-Z0-9_-]/', '_', $cluster->id);
+                    $parts[] = $this->buildPatch($cluster, $safeId);
                 }
-                $safeId = preg_replace('/[^a-zA-Z0-9_-]/', '_', $cluster->id);
-                $parts[] = $this->buildPatch($cluster, $safeId);
+                file_put_contents($dir . DIRECTORY_SEPARATOR . 'apply.diff', implode("\n", $parts));
+            } else {
+                // F1b / actual apply mode: extract and write real files
+                // TODO: implement actual file extraction when F1b is built
+                $parts = [];
+                foreach ($report->clusters as $cluster) {
+                    if (count($cluster->members) < 2) {
+                        continue;
+                    }
+                    $safeId = preg_replace('/[^a-zA-Z0-9_-]/', '_', $cluster->id);
+                    $parts[] = $this->buildPatch($cluster, $safeId);
+                }
+                file_put_contents($dir . DIRECTORY_SEPARATOR . 'apply.diff', implode("\n", $parts));
             }
-            file_put_contents($dir . DIRECTORY_SEPARATOR . 'apply.diff', implode("\n", $parts));
             return;
         }
 

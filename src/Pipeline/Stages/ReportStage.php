@@ -40,6 +40,7 @@ final class ReportStage implements StageInterface
         private readonly ?string $diffDir = null,
         private readonly ?string $patchFile = null,
         private readonly ?string $applyDir = null,
+        private readonly bool $applyDryRun = true,
         private readonly ?string $checkstyleFile = null,
         private readonly ?string $csvFile = null,
         private readonly ?string $prometheusFile = null,
@@ -188,7 +189,7 @@ final class ReportStage implements StageInterface
             $output->writeln("<info>phpdup</info> refactor patches → {$this->refactorPatchDir}/");
         }
         if ($this->applyDir !== null) {
-            (new RefactorPatchReporter())->writeTo($report, $this->applyDir, apply: true);
+            (new RefactorPatchReporter())->writeTo($report, $this->applyDir, apply: true, dryRun: $this->applyDryRun);
             $output->writeln("<info>phpdup</info> apply diff → {$this->applyDir}/apply.diff");
         }
         if ($this->refactorTestsDir !== null) {
