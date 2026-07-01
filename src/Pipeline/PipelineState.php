@@ -28,6 +28,14 @@ final class PipelineState
     public int $totalFiles = 0;
     public int $scannedFiles = 0;
 
+    /**
+     * Files changed in the git diff range (set by ScanningStage when
+     * --diff-base is provided). Used by ClusterStage to compute the
+     * "clone cohort" — files sharing n-gram fingerprints with these.
+     * @var list<string>|null
+     */
+    public ?array $diffBaseFiles = null;
+
     /** @var list<Block> Extracted blocks after PreprocessStage. */
     public array $blocks = [];
     public ?BlockIndex $index = null;
@@ -72,6 +80,12 @@ final class PipelineState
 
     /** Per-stage elapsed time tracking for TUI display. */
     public float $stageStartTime = 0.0;
+
+    /**
+     * Error message set by ScanningStage when git diff --diff-base fails.
+     * When non-null, dispatch() in Command.php returns exit code 2.
+     */
+    public ?string $scanError = null;
 
     /** @var array<string,float> stage-name → seconds */
     public array $timings = [

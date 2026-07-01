@@ -441,4 +441,40 @@ final class ConfigLoaderTest extends TestCase
         );
         $this->assertSame(10, $config->maxClusters);
     }
+
+    public function testValidateAcceptsDiffBase(): void
+    {
+        (new ConfigLoader())->validate(['diff_base' => 'origin/main']);
+        $this->expectNotToPerformAssertions();
+    }
+
+    public function testValidateRejectsDiffBaseEmptyString(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('diff_base must be a non-empty string');
+        (new ConfigLoader())->validate(['diff_base' => '']);
+    }
+
+    public function testValidateRejectsDiffBaseNotString(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('diff_base must be a non-empty string');
+        (new ConfigLoader())->validate(['diff_base' => 123]);
+    }
+
+    public function testDiffBaseDefaultsToNull(): void
+    {
+        $config = (new ConfigLoader())->load(paths: ['src'], configFile: null);
+        $this->assertNull($config->diffBase);
+    }
+
+    public function testDiffBaseOverrideTakesPrecedence(): void
+    {
+        $config = (new ConfigLoader())->load(
+            paths: ['src'],
+            configFile: null,
+            overrides: ['diff_base' => 'HEAD~1'],
+        );
+        $this->assertSame('HEAD~1', $config->diffBase);
+    }
 }

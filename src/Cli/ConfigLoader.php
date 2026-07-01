@@ -37,7 +37,7 @@ final class ConfigLoader
             'sort', 'ted_weights', 'scorer',
             'ir_threshold', 'ml_pair_threshold', 'debug_log',
             'low_memory', 'fail_on_impact', 'max_clusters',
-            'baseline', 'baseline_out',
+            'baseline', 'baseline_out', 'diff_base',
         ];
         $resolver = new OverrideResolver($flatKeys);
         $flat = $resolver->resolve($overrides, $data, [
@@ -65,6 +65,7 @@ final class ConfigLoader
             'max_clusters' => $base->maxClusters,
             'baseline' => $base->baselineFile,
             'baseline_out' => $base->baselineOutFile,
+            'diff_base' => $base->diffBase,
         ]);
 
         $report = is_array($data['report'] ?? null) ? $data['report'] : [];
@@ -130,6 +131,7 @@ final class ConfigLoader
             maxClusters:                   $flat['max_clusters'],
             baselineFile:                  $flat['baseline'],
             baselineOutFile:               $flat['baseline_out'],
+            diffBase:                      $flat['diff_base'],
         );
     }
 
@@ -251,7 +253,8 @@ final class ConfigLoader
         foreach (['min_block_size', 'max_block_size', 'normalization_mode',
                   'similarity_threshold', 'tree_threshold', 'min_cluster_impact',
                   'max_df', 'ngram_size', 'sort',
-                  'fail_on_impact', 'max_clusters', 'baseline', 'baseline_out'] as $k) {
+                  'fail_on_impact', 'max_clusters', 'baseline', 'baseline_out',
+                  'diff_base'] as $k) {
             if (array_key_exists($k, $data)) {
                 $out[$k] = $data[$k];
             }
@@ -325,6 +328,7 @@ final class ConfigLoader
             'max_clusters',
             'baseline',
             'baseline_out',
+            'diff_base',
         ];
         foreach (array_keys($data) as $k) {
             if (!in_array($k, $known, true)) {
@@ -588,6 +592,11 @@ final class ConfigLoader
         if (array_key_exists('debug_log', $data)) {
             if (!is_string($data['debug_log']) || $data['debug_log'] === '') {
                 throw new \RuntimeException("debug_log must be a non-empty string$where");
+            }
+        }
+        if (array_key_exists('diff_base', $data)) {
+            if (!is_string($data['diff_base']) || $data['diff_base'] === '') {
+                throw new \RuntimeException("diff_base must be a non-empty string$where");
             }
         }
     }

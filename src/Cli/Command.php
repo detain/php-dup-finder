@@ -117,7 +117,8 @@ final class Command extends SymfonyCommand
             ->addOption('no-lazy-ast', null, InputOption::VALUE_NONE, 'Keep all original ASTs in memory (higher RSS, faster anti-unification)')
             ->addOption('max-memory', null, InputOption::VALUE_REQUIRED, 'Soft memory ceiling in MB. When peak RSS exceeds this mid-pipeline, phpdup logs a warning and suggests --exact-only.')
             ->addOption('low-memory', null, InputOption::VALUE_NONE, 'Reduce memory footprint: use CompactNgramBag (32-bit fingerprint) and CanonicalNodePool interning for lower RSS at the cost of some speed.')
-            ->addOption('stage', null, InputOption::VALUE_REQUIRED, 'Run pipeline only up to STAGE (scanning|preprocessing|clustering|refactoring|reporting); useful for incremental debugging');
+            ->addOption('stage', null, InputOption::VALUE_REQUIRED, 'Run pipeline only up to STAGE (scanning|preprocessing|clustering|refactoring|reporting); useful for incremental debugging')
+            ->addOption('diff-base', null, InputOption::VALUE_REQUIRED, 'Git ref for diff-scoped analysis. When set, phpdup scans only files changed in `git diff --name-only <ref>..HEAD` plus their clone cohort (files sharing n-gram fingerprints with the changed files).');
 
         // ── Interactive / UI ───────────────────────────────────────────────
         $this
@@ -163,7 +164,7 @@ Options grouped by category:
 
   <comment>Performance / runtime</comment>
     --workers (-j), --no-cache, --no-incremental, --no-lazy-ast,
-    --max-memory, --low-memory, --stage
+    --max-memory, --low-memory, --stage, --diff-base
 
  <comment>Interactive / UI</comment>
    --tui, --plain, --theme, --watch
@@ -243,6 +244,7 @@ HELP;
             'debug_log'                   => $input->getOption('debug-log'),
             'baseline'                    => $input->getOption('baseline'),
             'baseline_out'                => $input->getOption('baseline-out'),
+            'diff_base'                   => $input->getOption('diff-base'),
         ], fn($v) => $v !== null);
 
         if ($input->getOption('db-aware')) {
@@ -582,6 +584,11 @@ HELP;
             $pipeline->run($state, $output);
         } finally {
             SignalHandler::uninstall();
+        }
+
+        if ($state->scanError !== null) {
+            $output->writeln('<error>' . $state->scanError . '</error>');
+            return 2;
         }
 
         if ($state->cancelled) {

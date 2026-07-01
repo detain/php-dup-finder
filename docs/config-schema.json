@@ -251,6 +251,11 @@
             "type": "string",
             "default": null,
             "description": "Write current clusters as a baseline snapshot to FILE (overwrites existing). Useful for explicitly creating or updating baselines. CLI: --baseline-out."
+        },
+        "diff_base": {
+            "type": "string",
+            "default": null,
+            "description": "Git ref for diff-scoped analysis. When set, phpdup scans only files changed in `git diff --name-only <ref>..HEAD` plus their clone cohort (files sharing n-gram fingerprints with the changed files). Useful for per-PR analysis in CI. CLI: --diff-base."
         }
     }
 }
