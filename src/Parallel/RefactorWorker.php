@@ -28,6 +28,7 @@ use Phpdup\Refactor\SignatureBuilder;
  *   id: string,
  *   generalizedAst: ?\PhpParser\Node,
  *   holes: list<\Phpdup\Refactor\Hole>,
+ *   holePaths: array<string, list<int|string>>,
  *   signature: ?string,
  *   patternTags: list<string>,
  * }
@@ -44,7 +45,7 @@ final class RefactorWorker
 
     /**
      * @param list<Cluster> $clusters
-     * @return list<array{id: string, generalizedAst: ?\PhpParser\Node, holes: list<\Phpdup\Refactor\Hole>, signature: ?string, patternTags: list<string>}>
+     * @return list<array{id: string, generalizedAst: ?\PhpParser\Node, holes: list<\Phpdup\Refactor\Hole>, holePaths: array<string, list<int|string>>, signature: ?string, patternTags: list<string>}>
      */
     public function process(array $clusters): array
     {
@@ -68,6 +69,7 @@ final class RefactorWorker
                 'id'             => $cluster->id,
                 'generalizedAst' => $cluster->generalizedAst,
                 'holes'          => $cluster->holes,
+                'holePaths'      => $cluster->holePaths,
                 'signature'      => $cluster->signature,
                 'patternTags'    => $cluster->patternTags,
             ];

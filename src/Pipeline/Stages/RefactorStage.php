@@ -165,6 +165,7 @@ final class RefactorStage implements CooperativeStageInterface
                 $cluster = $byId[$cid];
                 $cluster->generalizedAst = $enrichment['generalizedAst'];
                 $cluster->holes          = $enrichment['holes'];
+                $cluster->holePaths      = $enrichment['holePaths'];
                 $cluster->signature      = $enrichment['signature'];
                 $cluster->patternTags    = $enrichment['patternTags'];
             }
