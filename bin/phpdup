@@ -22,12 +22,15 @@ if (!$loaded) {
 use Symfony\Component\Console\Application;
 use Phpdup\Cli\Command;
 use Phpdup\Cli\CompletionCommand;
+use Phpdup\Cli\InitCommand;
 use Phpdup\Cli\ServeCommand;
 use Phpdup\Cli\UpdateCommand;
 
 $app = new Application('phpdup', '0.1.0');
 $cmd = new Command();
 $app->add($cmd);
+// `phpdup init` — bootstrap a phpdup.json in the current directory.
+$app->add(new InitCommand());
 // self:update / upgrade / self-update — registered as aliases in UpdateCommand.
 $app->add(new UpdateCommand());
 // Override Symfony Console's default `completion` command with our own that
