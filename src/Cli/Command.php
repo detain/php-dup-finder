@@ -7,6 +7,7 @@ use Phpdup\Pipeline\Pipeline;
 use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Tui\PhpdupModel;
 use Phpdup\Tui\TuiRunner;
+use Phpdup\Watch\FileWatcher;
 use Phpdup\Watch\WatchRunner;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\Stage;
@@ -20,6 +21,7 @@ use Symfony\Component\Console\Command\Command as SymfonyCommand;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
+use Symfony\Component\Console\Logger\ConsoleLogger;
 use Symfony\Component\Console\Output\OutputInterface;
 
 /**
@@ -127,7 +129,7 @@ final class Command extends SymfonyCommand
             ->addOption('tui', null, InputOption::VALUE_NONE, 'Show interactive SugarCraft dashboard after analysis completes')
             ->addOption('plain', null, InputOption::VALUE_NONE, 'Force plain CLI output (no TUI, no ANSI colours)')
             ->addOption('theme', null, InputOption::VALUE_REQUIRED, 'TUI theme: ansi|plain|charm|dracula|nord|catppuccin', 'ansi')
-            ->addOption('watch', null, InputOption::VALUE_NONE, 'Stay running and re-analyze on file changes (poll-based; Ctrl+C to exit)');
+            ->addOption('watch', null, InputOption::VALUE_NONE, 'Stay running and re-analyze on file changes (Ctrl+C to exit)');
     }
 
     /**
@@ -583,7 +585,9 @@ HELP;
         if ($opts['watchMode']) {
             $pipeline = $buildPipeline(null);
             $rebuild  = static fn(): PipelineState => new PipelineState($config);
-            return (new WatchRunner($pipeline, $rebuild, $output))->run();
+            $scanRoot = $config->paths[0] ?? getcwd();
+            $logger = new \Psr\Log\NullLogger();
+            return (new WatchRunner($pipeline, $rebuild, $output, $logger, $scanRoot))->run();
         }
 
         $state    = new PipelineState($config);
@@ -686,77 +690,34 @@ HELP;
         $loop    = \React\EventLoop\Loop::get();
         $program = $tuiRunner->makeProgram($model, useAltScreen: true, loop: $loop);
 
-        // Watch by polling source mtimes once the first analysis pass has emitted $state->files.
-        // We rebuild the snapshot whenever the model fires a fresh analysis run.
-        $snapshot = [];
-        $reload   = 0;
-        $loop->addPeriodicTimer(1.5, function () use ($model, &$snapshot, &$reload, $program): void {
-            $files = $model->state->files;
-            if ($files === [] || !$model->viewState->analysisComplete) {
+        // Build a FileWatcher for the scan root. We need only the first path
+        // for now (multi-root support would need one watcher per path).
+        $scanRoot = $config->paths[0] ?? getcwd();
+        $logger = new ConsoleLogger($output);
+        $fileWatcher = new FileWatcher($logger, $scanRoot, 1.5);
+
+        // Rebase the watcher snapshot whenever the model completes a run.
+        $reload = 0;
+        $watcher = $fileWatcher;
+        $fileWatcher->watch(function (string $path, \Phpdup\Watch\FileChangeType $type) use ($model, $program, &$reload, $watcher): void {
+            if (!$model->viewState->analysisComplete) {
                 // Still working on the current run — don't double-trigger.
                 return;
             }
-            if ($snapshot === []) {
-                $snapshot = $this->snapshotMtimes($files);
-                return;
-            }
-            $changed = $this->pollChanges($snapshot, $files);
-            if ($changed === []) return;
             $reload++;
             $program->send(new \Phpdup\Tui\Msg\RestartPipelineMsg($reload));
-            $snapshot = []; // re-snapshot after the new run completes.
+
+            // Rebase the snapshot on the new file list after the run completes.
+            $files = $model->state->files;
+            $fileInfos = [];
+            foreach ($files as $f) {
+                $fileInfos[] = new \SplFileInfo($f);
+            }
+            $watcher->syncFromFileList($fileInfos);
         });
 
         $program->run();
         return 0;
-    }
-
-    /**
-     * @param list<string> $files
-     * @return array<string,int>
-     */
-    private function snapshotMtimes(array $files): array
-    {
-        $out = [];
-        foreach ($files as $f) {
-            clearstatcache(true, $f);
-            $m = @filemtime($f);
-            if ($m !== false) {
-                $out[$f] = $m;
-            }
-        }
-        return $out;
-    }
-
-    /**
-     * @param array<string,int> $previous
-     * @param list<string> $current
-     * @return list<string>
-     */
-    private function pollChanges(array &$previous, array $current): array
-    {
-        $changed = [];
-        $known = $previous;
-        foreach ($current as $f) {
-            clearstatcache(true, $f);
-            $m = @filemtime($f);
-            if ($m === false) continue;
-            if (!isset($known[$f])) {
-                $changed[] = $f;       // new file
-                $previous[$f] = $m;
-            } elseif ($known[$f] !== $m) {
-                $changed[] = $f;       // mtime changed
-                $previous[$f] = $m;
-            }
-        }
-        // detect deletions
-        foreach (array_keys($previous) as $f) {
-            if (!in_array($f, $current, true)) {
-                $changed[] = $f;
-                unset($previous[$f]);
-            }
-        }
-        return $changed;
     }
 
     private function shouldRunTui(InputInterface $input, OutputInterface $_output): bool
