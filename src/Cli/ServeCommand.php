@@ -49,6 +49,19 @@ final class ServeCommand extends SymfonyCommand
         'GET /jobs/[0-9a-f]+',
     ];
 
+    /** HTTP/1.1 reason phrases by status code. */
+    private const HTTP_REASON = [
+        200 => 'OK',
+        201 => 'Created',
+        202 => 'Accepted',
+        400 => 'Bad Request',
+        401 => 'Unauthorized',
+        404 => 'Not Found',
+        413 => 'Payload Too Large',
+        431 => 'Request Header Fields Too Large',
+        500 => 'Internal Server Error',
+    ];
+
     /**
      * Configure the `serve` command and its CLI options.
      */
@@ -213,7 +226,8 @@ final class ServeCommand extends SymfonyCommand
         $headers = $this->extractHeaders($raw);
 
         $response = $app->handle($method, $path, $body, $headers);
-        $payload  = "HTTP/1.1 {$response['status']} OK\r\n";
+        $reason = self::HTTP_REASON[$response['status']] ?? 'Unknown';
+        $payload  = "HTTP/1.1 {$response['status']} {$reason}\r\n";
         foreach ($response['headers'] as $h => $v) {
             $payload .= "{$h}: {$v}\r\n";
         }

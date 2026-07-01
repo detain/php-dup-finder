@@ -123,7 +123,7 @@ final class CliReporter
                 (string)$c->size(),
                 sprintf('%.2f', $c->similarity),
                 (string)$c->impact,
-                $c->members[0]->kind ?? '',
+                isset($c->members[0]->kind) ? $c->members[0]->kind : '',
                 $loc,
             );
         }

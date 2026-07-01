@@ -14,6 +14,6 @@ final class Hash
 
     public static function ofMany(string ...$parts): string
     {
-        return hash(self::ALGO, implode("\0", $parts));
+        return hash(self::ALGO, implode(Delimiters::HASH_JOIN, $parts));
     }
 }

@@ -8,11 +8,11 @@ namespace Phpdup\Similarity;
  *
  *     C(A, B) = |A ∩ B|min / min(sum(A), sum(B))
  *
- * Returns 1.0 whenever every n-gram of the smaller side is present (with at least the
- * same multiplicity) in the larger side, regardless of size disparity. Useful for
- * detecting "near-subset" relationships — e.g. block A has 5 statements and block B
- * has 3 of those 5, so block B is a near-subset of block A even though Jaccard is
- * only ~0.6.
+ * Returns the containment score (smaller n-gram bag / union bag) capped at 1.0 when
+ * the smaller multiset is a true subset of the larger (every n-gram of the smaller
+ * side is present with at least the same multiplicity). Useful for detecting
+ * "near-subset" relationships — e.g. block A has 5 statements and block B has 3 of
+ * those 5, so block B is a near-subset of block A even though Jaccard is only ~0.6.
  *
  * The cooperating cluster phase pairs this with a size-ratio guard so the metric
  * doesn't inflate trivially-small overlaps.

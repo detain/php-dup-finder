@@ -63,17 +63,23 @@ final class MinHashSignature
     }
 
     /**
-     * @return list<int> SIZE distinct 32-bit hashes derived via
-     *                   double-hashing — h_i(x) = (h1(x) + i * h2(x)) mod 2^32.
+     * @return list<int> SIZE distinct 32-bit hashes, one independent
+     *                   seed pair per row via double-hashing:
+     *                   h_i(x) = (h1_i(x) + i * h2_i(x)) mod 2^32.
+     *
+     *                   Each row's (h1, h2) pair is derived independently
+     *                   from the element via crc32, avoiding correlation
+     *                   between rows that share a single base pair.
      */
     private static function hashesFor(string $element): array
     {
-        $bin = hash('xxh3', $element, true);
-        $h1 = unpack('N', substr($bin, 0, 4))[1];
-        $h2 = unpack('N', substr($bin, 4, 4))[1];
-        if ($h2 === 0) $h2 = 0x9E3779B1; // golden ratio prime; avoid k*0
         $out = [];
         for ($i = 0; $i < self::SIZE; $i++) {
+            // Derive independent seeds for this row from the element.
+            // crc32 is fast and gives a 32-bit value directly.
+            $h1 = crc32($element . "\x00" . $i);
+            $h2 = crc32($element . "\x01" . $i);
+            if ($h2 === 0) $h2 = 0x9E3779B1; // golden ratio prime; avoid k*0
             $out[] = ($h1 + $i * $h2) & 0xFFFFFFFF;
         }
         return $out;

@@ -42,7 +42,7 @@ final class AstSerializer
 
         $scalar = self::scalarPart($node);
         if ($scalar !== null) {
-            $out[] = $type . '|' . $scalar;
+            $out[] = $type . Delimiters::TYPE_SCALAR . $scalar;
             return;
         }
 
@@ -62,7 +62,7 @@ final class AstSerializer
                 }
             } elseif (is_scalar($val)) {
                 // structurally significant — append to type tag
-                $type .= '#' . self::stringifyScalar($val);
+                $type .= Delimiters::TYPE_APPEND . self::stringifyScalar($val);
             }
         }
 

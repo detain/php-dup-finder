@@ -5,6 +5,7 @@ namespace Phpdup\Fingerprint;
 
 use PhpParser\Node;
 use Phpdup\Util\AstSerializer;
+use Phpdup\Util\Delimiters;
 use Phpdup\Util\Hash;
 
 /**
@@ -20,6 +21,6 @@ final class SubtreeHasher
     public function hash(Node $node): string
     {
         $tokens = AstSerializer::tokens($node);
-        return Hash::of(implode("\x1F", $tokens));
+        return Hash::of(implode(Delimiters::TOKEN_JOIN, $tokens));
     }
 }
