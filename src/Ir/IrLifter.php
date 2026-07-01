@@ -181,6 +181,31 @@ final class IrLifter
             return new AssignIr($target, $this->liftExpr($expr->expr));
         }
 
+        // AssignOp: +=, -=, .=, ??=, etc.
+        if ($expr instanceof Node\Expr\AssignOp) {
+            $target = match (true) {
+                $expr->var instanceof Node\Expr\Variable          => 'var',
+                $expr->var instanceof Node\Expr\PropertyFetch     => 'prop',
+                $expr->var instanceof Node\Expr\StaticPropertyFetch => 'static-prop',
+                $expr->var instanceof Node\Expr\ArrayDimFetch     => 'index',
+                default                                            => 'other',
+            };
+            // Concat needs to reconstruct the binary op so that `$x .= $y`
+            // lifts to the same IR as `$x = $x . $y`.
+            if ($expr instanceof Node\Expr\AssignOp\Concat) {
+                $reconstructed = new Node\Expr\BinaryOp\Concat($expr->var, $expr->expr);
+                return new AssignIr($target, $this->liftExpr($reconstructed));
+            }
+            // Other AssignOp (+=, -=, ??=, etc.) are treated as mutations.
+            return new AssignIr($target, new LiteralIr('int'));
+        }
+
+        // Pre/Post Inc/Dec — treated as var assignments (+= 1 or -= 1).
+        if ($expr instanceof Node\Expr\PreInc || $expr instanceof Node\Expr\PostInc
+            || $expr instanceof Node\Expr\PreDec || $expr instanceof Node\Expr\PostDec) {
+            return new AssignIr('var', new LiteralIr('int'));
+        }
+
         // DB-recognised calls.
         $dbIr = $this->tryLiftDbCall($expr);
         if ($dbIr !== null) {

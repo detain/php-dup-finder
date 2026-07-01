@@ -181,6 +181,62 @@ final class IrLifterTest extends TestCase
         $this->assertStringContainsString('var:__V', $pretty);
     }
 
+    public function testAssignOpConcatLiftsToSameIrAsBinaryConcat(): void
+    {
+        // $x .= $y and $x = $x . $y should produce identical IR
+        $dotAssign = $this->liftFunction('<?php function f($x, $y) { $x .= $y; }');
+        $dotBinary = $this->liftFunction('<?php function f($x, $y) { $x = $x . $y; }');
+        $printer = new IrPrinter();
+        $this->assertSame(
+            $printer->tokens($dotAssign),
+            $printer->tokens($dotBinary),
+            '$x .= $y must lift to identical IR as $x = $x . $y',
+        );
+    }
+
+    public function testPostIncLiftsToSameIrAsPlusEquals(): void
+    {
+        // $i++ and $i += 1 should produce identical IR
+        $postInc = $this->liftFunction('<?php function f($i) { $i++; }');
+        $plusEq = $this->liftFunction('<?php function f($i) { $i += 1; }');
+        $printer = new IrPrinter();
+        $this->assertSame(
+            $printer->tokens($postInc),
+            $printer->tokens($plusEq),
+            '$i++ must lift to identical IR as $i += 1',
+        );
+    }
+
+    public function testPreDecLiftsToSameIrAsMinusEquals(): void
+    {
+        $preDec = $this->liftFunction('<?php function f($i) { --$i; }');
+        $minusEq = $this->liftFunction('<?php function f($i) { $i -= 1; }');
+        $printer = new IrPrinter();
+        $this->assertSame(
+            $printer->tokens($preDec),
+            $printer->tokens($minusEq),
+            '--$i must lift to identical IR as $i -= 1',
+        );
+    }
+
+    public function testAssignOpPlusLiftsToAssignIr(): void
+    {
+        $ir = $this->liftFunction('<?php function f($x, $y) { $x += $y; }');
+        $this->assertInstanceOf(BlockIr::class, $ir);
+        $stmt = $ir->stmts[0];
+        $this->assertInstanceOf(AssignIr::class, $stmt);
+        $this->assertSame('var', $stmt->target);
+    }
+
+    public function testAssignOpPropertyLiftsToPropAssignIr(): void
+    {
+        $ir = $this->liftFunction('<?php function f($obj) { $obj->count += 1; }');
+        $this->assertInstanceOf(BlockIr::class, $ir);
+        $stmt = $ir->stmts[0];
+        $this->assertInstanceOf(AssignIr::class, $stmt);
+        $this->assertSame('prop', $stmt->target);
+    }
+
     private function liftFunction(string $code): BlockIr
     {
         $node = $this->parseFunction($code);
