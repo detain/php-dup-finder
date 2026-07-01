@@ -175,6 +175,7 @@ final class RefactorStage implements CooperativeStageInterface
 
             if (++$sinceYield >= self::YIELD_EVERY) {
                 $sinceYield = 0;
+                // @phpstan-ignore-next-line if.alwaysFalse — SignalHandler sets $state->cancelled on ^C, outside PHPStan's control-flow model
                 if ($state->cancelled) {
                     break;
                 }
