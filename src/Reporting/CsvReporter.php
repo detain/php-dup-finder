@@ -18,6 +18,8 @@ use Phpdup\Extraction\Block;
  */
 final class CsvReporter
 {
+    use WritesReportFile;
+
     /** @var list<string> */
     private const HEADER = [
         'cluster_id', 'members', 'similarity', 'confidence', 'impact',
@@ -27,11 +29,7 @@ final class CsvReporter
 
     public function writeTo(Report $report, string $file): void
     {
-        $dir = dirname($file);
-        if ($dir !== '' && !is_dir($dir)) {
-            @mkdir($dir, 0o775, true);
-        }
-        file_put_contents($file, $this->build($report));
+        $this->writeFile($file, $this->build($report));
     }
 
     public function build(Report $report): string

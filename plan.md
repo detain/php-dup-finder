@@ -340,7 +340,13 @@ Ordering follows findings.md's roadmap: **correctness → security → broken ar
 | 6.4 | M4 | `fix/M4-drop-pure-edges-rebuild` | https://github.com/detain/php-dup-finder/pull/91 | 698✓ / ✓ / ✓ | ☑ (squash-merged 65a6508) | remove $pureEdges rebuilding loop; __progress already filtered at stream level; use $edges directly |
 | 6.5 | M1 | `fix/M1-temp-file-cleanup` | https://github.com/detain/php-dup-finder/pull/92 | 698✓ / ✓ / ✓ | ☑ (squash-merged 4110a93) | try/finally cleanup in WorkerPool::run(); unlinkAll() helper; temp files cleaned on any exit path |
 | 7.1a | D1 | `fix/D1-delete-holemap` | https://github.com/detain/php-dup-finder/pull/93 | 698✓ / ✓ / ✓ | ☑ (squash-merged) | delete HoleMap.php + Block::$holeMap (dead code) |
-| … | | | | | | |
+| 7.1b | D1 | `fix/D1-delete-similarityscore` | https://github.com/detain/php-dup-finder/pull/94 | 698✓ / ✓ / ✓ | ☑ (squash-merged 3833a6a) | delete SimilarityScore.php (dead code, zero callers) |
+| 7.1c | D1 | — (S5) | — | 701✓ / ✓ / ✓ | ☑ (prior S5 PR) | TokenCache uses SerializedClassAllowList::parserClasses() — S5 fix already in place |
+| 7.1d+7.1e | D1 | `fix/D1-low-memory-flag` | https://github.com/detain/php-dup-finder/pull/95 | 700✓ / ✓ / ✓ | ☑ (squash-merged) | --low-memory flag; CompactNgramBag (32-bit hi^lo); CanonicalNodePool::intern() |
+| 7.1f | D2 | `fix/D2-delete-workerpool-run` | https://github.com/detain/php-dup-finder/pull/96 | 696✓ / ✓ / ✓ | ☑ (squash-merged) | delete WorkerPool::run(); remove 4 dead tests |
+| 7.1g | D6 | `fix/D6-ir-lifter-assignop` | https://github.com/detain/php-dup-finder/pull/97 | 701✓ / ✓ / ✓ | ☑ (squash-merged) | IrLifter handles AssignOp\\*, Pre/Post Inc/Dec → AssignIr |
+| 7.1h | D7 | `fix/D7-pattern-recognizer-null-guards` | https://github.com/detain/php-dup-finder/pull/98 | 701✓ / ✓ / ✓ | ☑ (squash-merged) | add $m->ast===null guards to isValidationChain, isSqlBuilder, isStateMachine |
+| 7.1i | D8 | — (prior) | — | 701✓ / ✓ / ✓ | ☑ (already in master) | reset $namespace on leaveNode in BlockExtractor |
 
 (The driver keeps this table current and shows the operator a per-phase rollup.)
 
