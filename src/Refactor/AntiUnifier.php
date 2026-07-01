@@ -43,6 +43,8 @@ use Phpdup\Util\Delimiters;
 final class AntiUnifier
 {
     private Standard $printer;
+    /** @var array<string, list<int|string>> holeId => path — populated after each unify() call */
+    private array $lastHolePaths = [];
 
     public function __construct(
         private readonly ?BlockAstLoader $astLoader = null,
@@ -51,6 +53,16 @@ final class AntiUnifier
         private readonly int $optionalBlocksMinSegmentLength = 1,
     ) {
         $this->printer = new Standard();
+    }
+
+    /**
+     * Returns the hole→path map from the most recent unify() call.
+     *
+     * @return array<string, list<int|string>>
+     */
+    public function getLastHolePaths(): array
+    {
+        return $this->lastHolePaths;
     }
 
     public function unify(Cluster $cluster): void
@@ -114,6 +126,10 @@ final class AntiUnifier
                 }
             }
         }
+
+        // 4. Persist hole paths for ApplyExtractor (before seedIdx remap above mutates ctx)
+        $cluster->holePaths = $ctx->holePaths;
+        $this->lastHolePaths = $ctx->holePaths;
     }
 
     /** @param list<Block> $members */
@@ -428,6 +444,7 @@ final class AntiUnifier
         $hole->appendObserved('<absent>');
         $ctx->holes[$holeId]      = $hole;
         $ctx->holesByPath[$key]   = $hole;
+        $ctx->holePaths[$holeId]  = $path;
     }
 
     /**
@@ -449,6 +466,7 @@ final class AntiUnifier
         $hole->appendObserved($this->repr($mNode));
         $ctx->holes[$holeId]      = $hole;
         $ctx->holesByPath[$key]   = $hole;
+        $ctx->holePaths[$holeId] = $path;
     }
 
     private function kindForLeaf(Node $template): string
@@ -518,6 +536,8 @@ final class UnifyContext
     public array $holes = [];
     /** @var array<string,Hole> by pathKey */
     public array $holesByPath = [];
+    /** @var array<string, list<int|string>> holeId => path */
+    public array $holePaths = [];
 
     public function __construct(
         public readonly bool $optionalBlocksEnabled = true,

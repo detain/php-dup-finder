@@ -31,6 +31,14 @@ final class Cluster
     /** @var list<Hole> */
     public array $holes = [];
 
+    /**
+     * holeId => path list, populated by AntiUnifier after unify().
+     * Used by ApplyExtractor to locate hole positions in generalizedAst.
+     *
+     * @var array<string, list<int|string>>
+     */
+    public array $holePaths = [];
+
     public ?string $signature = null;
 
     /** @var list<string> */

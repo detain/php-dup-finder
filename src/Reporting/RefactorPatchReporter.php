@@ -5,6 +5,7 @@ namespace Phpdup\Reporting;
 
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
+use Phpdup\Refactor\ApplyExtractor;
 
 /**
  * Emits one .patch file per cluster — a heuristic, **manual-review-required**
@@ -56,16 +57,42 @@ final class RefactorPatchReporter
                 file_put_contents($dir . DIRECTORY_SEPARATOR . 'apply.diff', implode("\n", $parts));
             } else {
                 // F1b / actual apply mode: extract and write real files
-                // TODO: implement actual file extraction when F1b is built
-                $parts = [];
+                $extractor = new ApplyExtractor();
+                $skipped = [];
+                $applied = [];
                 foreach ($report->clusters as $cluster) {
                     if (count($cluster->members) < 2) {
                         continue;
                     }
                     $safeId = preg_replace('/[^a-zA-Z0-9_-]/', '_', $cluster->id);
-                    $parts[] = $this->buildPatch($cluster, $safeId);
+                    $unsafe = $this->detectUnsafe($cluster);
+                    if ($unsafe !== null) {
+                        // Unsafe cluster: fall back to preview patch.
+                        $skipped[] = "# cluster {$cluster->id}: {$unsafe}";
+                        $skipped[] = $this->buildPatch($cluster, $safeId);
+                        continue;
+                    }
+                    if ($cluster->generalizedAst === null || $cluster->signature === null) {
+                        $skipped[] = "# cluster {$cluster->id}: no signature";
+                        continue;
+                    }
+                    try {
+                        $extractor->apply($cluster, $dir);
+                        $applied[] = "{$safeId}.php";
+                    } catch (\Throwable $e) {
+                        $skipped[] = "# cluster {$cluster->id}: error - " . $e->getMessage();
+                    }
                 }
-                file_put_contents($dir . DIRECTORY_SEPARATOR . 'apply.diff', implode("\n", $parts));
+                // Write summary diff.
+                $summary = "# phpdup apply summary\n"
+                    . "# Applied: " . count($applied) . " clusters\n";
+                if ($applied !== []) {
+                    $summary .= "# Files: " . implode(', ', $applied) . "\n";
+                }
+                if ($skipped !== []) {
+                    $summary .= "# Skipped:\n" . implode("\n", $skipped) . "\n";
+                }
+                file_put_contents($dir . DIRECTORY_SEPARATOR . 'apply.diff', $summary);
             }
             return;
         }
