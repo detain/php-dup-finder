@@ -93,6 +93,27 @@ final class ServeCommand extends SymfonyCommand
     }
 
     /**
+     * Validate server configuration before starting the socket.
+     *
+     * Returns null if valid; returns an error message string if invalid.
+     * This is the testable portion of execute() — the socket/accept loop
+     * lives in execute() itself so tests that only need to verify the
+     * validation logic can call this method directly.
+     */
+    public function validateConfig(bool $bindPublic, ?string $token, string $host): ?string
+    {
+        if ($bindPublic && ($token === null || $token === '')) {
+            return '--bind-public requires --token to be set (no authentication is enforced by default).';
+        }
+
+        if (!$bindPublic && !$this->isLoopback($host)) {
+            return "refusing to bind to non-loopback host '{$host}' without --bind-public.";
+        }
+
+        return null;
+    }
+
+    /**
      * Run the accept loop until the server socket is closed.
      */
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -103,19 +124,9 @@ final class ServeCommand extends SymfonyCommand
         $serveRoot = (string)$input->getOption('serve-root');
         $token = $input->getOption('token');
 
-        if ($bindPublic && ($token === null || $token === '')) {
-            $output->writeln(
-                '<error>phpdup serve: --bind-public requires --token to be set '
-                . '(no authentication is enforced by default).</error>'
-            );
-            return 1;
-        }
-
-        if (!$bindPublic && !$this->isLoopback($host)) {
-            $output->writeln(
-                "<error>phpdup serve: refusing to bind to non-loopback host '{$host}' "
-                . 'without --bind-public.</error>'
-            );
+        $error = $this->validateConfig($bindPublic, $token, $host);
+        if ($error !== null) {
+            $output->writeln("<error>phpdup serve: {$error}</error>");
             return 1;
         }
 
