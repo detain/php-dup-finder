@@ -47,7 +47,17 @@ final class ServeCommand extends SymfonyCommand
         'POST /analyze',
         'POST /jobs',
         'GET /jobs/[0-9a-f]+',
+        'GET /api/jobs',
+        'GET /api/jobs/[0-9a-f]+',
+        'GET /api/jobs/[0-9a-f]+/result',
     ];
+
+    /** Process resource for the background worker. */
+    /** @var resource|null */
+    private $workerProcess = null;
+
+    /** Path to the worker Unix socket. */
+    private string $workerSocket = '';
 
     /** HTTP/1.1 reason phrases by status code. */
     private const HTTP_REASON = [
@@ -130,6 +140,31 @@ final class ServeCommand extends SymfonyCommand
             return 1;
         }
 
+        // Spawn background worker for async job processing
+        $workerPid = $this->spawnWorker($output);
+        if ($workerPid === null) {
+            $output->writeln('<info>phpdup serve</info> running in sync mode (no worker)');
+            $app = new Application(
+                new \Phpdup\Server\JobQueue(),
+                $serveRoot !== '' ? $serveRoot : null,
+                $token ?: null
+            );
+        } else {
+            $output->writeln("<info>phpdup serve</info> worker spawned (pid {$workerPid})");
+            $app = new Application(
+                new \Phpdup\Server\JobQueue(),
+                $serveRoot !== '' ? $serveRoot : null,
+                $token ?: null,
+                $this->workerSocket,
+                $this->getResultDir()
+            );
+        }
+
+        // Register shutdown handler to clean up worker process
+        register_shutdown_function(function (): void {
+            $this->cleanupWorker();
+        });
+
         $address = "tcp://{$host}:{$port}";
 
         $errno = 0;
@@ -141,11 +176,6 @@ final class ServeCommand extends SymfonyCommand
         }
         $output->writeln("<info>phpdup serve</info> listening on {$address}");
 
-        $app = new Application(
-            new \Phpdup\Server\JobQueue(),
-            $serveRoot !== '' ? $serveRoot : null,
-            $token ?: null
-        );
         // Accept until the underlying socket goes away (SIGINT, fd
         // close, …). Using `is_resource($server)` as the loop
         // condition keeps PhpStan happy — the condition really can
@@ -308,5 +338,92 @@ final class ServeCommand extends SymfonyCommand
     private function writeStatus($client, int $code, string $reason): void
     {
         @fwrite($client, "HTTP/1.1 {$code} {$reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    }
+
+    /**
+     * Spawn the background worker process.
+     *
+     * Returns the worker PID on success, null on failure (worker
+     * not available or failed to start). The worker socket path is
+     * stored in {@see $this->workerSocket}.
+     */
+    private function spawnWorker(OutputInterface $output): ?int
+    {
+        $workerBin = __DIR__ . '/../../bin/phpdup-worker';
+        if (!is_file($workerBin) || !is_executable($workerBin)) {
+            $output->writeln('<comment>worker binary not found, running in sync mode</comment>');
+            return null;
+        }
+
+        $resultDir = $this->getResultDir();
+        if (!is_dir($resultDir) && !@mkdir($resultDir, 0755, true)) {
+            $output->writeln('<comment>result dir not writable, running in sync mode</comment>');
+            return null;
+        }
+
+        $this->workerSocket = sys_get_temp_dir() . '/phpdup-worker-' . getmypid() . '.sock';
+        $command = "{$workerBin} {$this->workerSocket} {$resultDir}";
+
+        $descriptors = [
+            0 => ['pipe', 'r'],  // stdin
+            1 => ['pipe', 'w'],  // stdout
+            2 => ['pipe', 'w'],  // stderr
+        ];
+
+        $this->workerProcess = proc_open($command, $descriptors, $pipes);
+        if (!is_resource($this->workerProcess)) {
+            $output->writeln('<comment>failed to spawn worker, running in sync mode</comment>');
+            $this->workerSocket = '';
+            return null;
+        }
+
+        // Close unused pipes
+        foreach ($pipes as $pipe) {
+            @fclose($pipe);
+        }
+
+        // Wait for socket to become available (poll with 5s timeout)
+        $timeout = 5;
+        $start = microtime(true);
+        while (microtime(true) - $start < $timeout) {
+            if (file_exists($this->workerSocket)) {
+                return proc_get_status($this->workerProcess)['pid'];
+            }
+            usleep(50000); // 50ms
+        }
+
+        // Socket didn't appear, kill the worker
+        $this->cleanupWorker();
+        $output->writeln('<comment>worker socket timeout, running in sync mode</comment>');
+        return null;
+    }
+
+    /**
+     * Clean up the worker process and socket.
+     */
+    private function cleanupWorker(): void
+    {
+        if (is_resource($this->workerProcess)) {
+            @proc_terminate($this->workerProcess, 2);
+            @proc_close($this->workerProcess);
+            $this->workerProcess = null;
+        }
+
+        if ($this->workerSocket !== '' && file_exists($this->workerSocket)) {
+            @unlink($this->workerSocket);
+            $this->workerSocket = '';
+        }
+    }
+
+    /**
+     * Get the result directory path for worker output.
+     */
+    private function getResultDir(): string
+    {
+        $dir = sys_get_temp_dir() . '/phpdup-results-' . getmypid();
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
+        return $dir;
     }
 }

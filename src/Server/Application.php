@@ -22,15 +22,18 @@ use Symfony\Component\Console\Output\NullOutput;
  * any networking stack.
  *
  * Routes:
- *   GET  /healthz          → 200, plain "ok"
- *   POST /analyze          → run phpdup synchronously on a posted
- *                            paths[] payload, return JSON report
- *   POST /jobs             → enqueue an analysis, return job id
- *   GET  /jobs/{id}        → fetch job status / result
+ *   GET  /healthz               → 200, plain "ok"
+ *   POST /analyze               → run phpdup synchronously on a posted
+ *                                 paths[] payload, return JSON report
+ *   POST /jobs                  → enqueue an analysis, return job id
+ *   GET  /jobs/{id}             → fetch job status / result
+ *   GET  /api/jobs              → list all jobs
+ *   GET  /api/jobs/{id}         → fetch job status (status-only)
+ *   GET  /api/jobs/{id}/result  → fetch job result file
  *
- * For demo purposes the queue runs synchronously inside POST /jobs
- * so a client can fetch status afterwards. A real deployment would
- * dispatch work to an external runner.
+ * When a worker socket is configured (async mode), POST /jobs dispatches
+ * to the background worker and returns 202 immediately. Without a worker
+ * socket, analysis runs synchronously (sync mode for dev/demo).
  *
  * Security notes
  * --------------
@@ -54,14 +57,18 @@ final class Application
     public const MAX_BODY_BYTES = 16 * 1024 * 1024;
 
     /**
-     * @param JobQueue          $queue     Job queue used by the /jobs routes.
-     * @param string|null       $serveRoot Absolute path to which scanning is confined.
-     * @param string|null       $token     Bearer token required for all requests when set.
+     * @param JobQueue       $queue        Job queue used by the /jobs routes.
+     * @param string|null    $serveRoot    Absolute path to which scanning is confined.
+     * @param string|null    $token        Bearer token required for all requests when set.
+     * @param string|null    $workerSocket Path to the Unix socket for async job dispatch.
+     * @param string|null    $resultDir    Directory where result files are written by the worker.
      */
     public function __construct(
         private readonly JobQueue $queue = new JobQueue(),
         private readonly ?string $serveRoot = null,
         private readonly ?string $token = null,
+        private readonly ?string $workerSocket = null,
+        private readonly ?string $resultDir = null,
     ) {
     }
 
@@ -102,23 +109,7 @@ final class Application
             } catch (JsonException $e) {
                 return $this->json(400, ['error' => 'invalid JSON: ' . $e->getMessage()]);
             }
-            $id = $this->queue->enqueue($payload);
-            // Synchronous execution for demo simplicity; a production
-            // server would push the work to a worker pool here.
-            $this->queue->markRunning($id);
-            $result = $this->runAnalyze($payload);
-            if ($result['status'] === 200) {
-                try {
-                    $decoded = json_decode($result['body'], true, 512, JSON_THROW_ON_ERROR);
-                } catch (JsonException) {
-                    $decoded = null;
-                }
-                $summary = $this->buildSummary($decoded);
-            $this->queue->markCompleted($id, $summary);
-            } else {
-                $this->queue->markFailed($id, $result['body']);
-            }
-            return $this->json(202, ['job_id' => $id]);
+            return $this->enqueueJob($payload);
         }
         if ($method === 'GET' && preg_match('#^/jobs/([0-9a-f]+)$#', $path, $m) === 1) {
             $job = $this->queue->get($m[1]);
@@ -126,6 +117,20 @@ final class Application
                 return $this->json(404, ['error' => 'job not found']);
             }
             return $this->json(200, $job);
+        }
+        // Async API routes
+        if ($method === 'GET' && $path === '/api/jobs') {
+            return $this->json(200, $this->queue->list());
+        }
+        if ($method === 'GET' && preg_match('#^/api/jobs/([0-9a-f]+)$#', $path, $m) === 1) {
+            $status = $this->queue->status($m[1]);
+            if ($status === null) {
+                return $this->json(404, ['error' => 'job not found']);
+            }
+            return $this->json(200, $status);
+        }
+        if ($method === 'GET' && preg_match('#^/api/jobs/([0-9a-f]+)/result$#', $path, $m) === 1) {
+            return $this->getJobResult($m[1]);
         }
         return $this->json(404, ['error' => 'unknown route']);
     }
@@ -187,6 +192,115 @@ final class Application
             'blocks'   => is_int($decoded['blocks'] ?? null) ? $decoded['blocks'] : 0,
             'clusters' => is_int($decoded['clusters'] ?? null) ? $decoded['clusters'] : 0,
             'config'   => $decoded['config'] ?? null,
+        ];
+    }
+
+    /**
+     * Enqueue a new analysis job and dispatch to worker if available.
+     *
+     * When a worker socket is configured, the job is dispatched to the
+     * background worker and this returns immediately (202 Accepted).
+     * When no worker is configured, runs synchronously (sync/demo mode).
+     *
+     * @param array<string,mixed> $payload
+     * @return array{status:int, headers:array<string,string>, body:string}
+     */
+    private function enqueueJob(array $payload): array
+    {
+        $id = $this->queue->enqueue($payload);
+
+        if ($this->workerSocket !== null && $this->resultDir !== null) {
+            // Async mode: dispatch to background worker
+            $dispatched = $this->dispatchToWorker($id, $payload);
+            if (!$dispatched) {
+                $this->queue->markFailed($id, 'failed to dispatch to worker');
+                return $this->json(500, ['error' => 'failed to dispatch job to worker']);
+            }
+            return $this->json(202, ['job_id' => $id]);
+        }
+
+        // Sync mode (no worker): run analysis inline
+        $this->queue->markRunning($id);
+        $result = $this->runAnalyze($payload);
+        if ($result['status'] === 200) {
+            try {
+                $decoded = json_decode($result['body'], true, 512, JSON_THROW_ON_ERROR);
+            } catch (JsonException) {
+                $decoded = null;
+            }
+            $summary = $this->buildSummary($decoded);
+            $this->queue->ack($id, $summary);
+        } else {
+            $this->queue->markFailed($id, $result['body']);
+        }
+        return $this->json(202, ['job_id' => $id]);
+    }
+
+    /**
+     * Dispatch a job to the background worker via Unix socket.
+     *
+     * Wire protocol: RUN <jobId> <configJson>\n
+     *
+     * @param string               $jobId
+     * @param array<string,mixed>  $payload
+     * @return bool True if successfully dispatched.
+     */
+    private function dispatchToWorker(string $jobId, array $payload): bool
+    {
+        if ($this->workerSocket === null) {
+            return false;
+        }
+
+        $socket = @stream_socket_client('unix://' . $this->workerSocket, $errno, $errstr, 1);
+        if ($socket === false) {
+            return false;
+        }
+
+        try {
+            $configJson = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            $message = "RUN {$jobId} {$configJson}\n";
+            $written = @fwrite($socket, $message);
+            if ($written === false || $written !== strlen($message)) {
+                return false;
+            }
+            // Read response (non-blocking with 5s timeout)
+            stream_set_timeout($socket, 5);
+            $response = @fgets($socket);
+            if ($response === false || $response === '') {
+                return false;
+            }
+            return str_starts_with(trim($response), 'OK ' . $jobId);
+        } finally {
+            @fclose($socket);
+        }
+    }
+
+    /**
+     * Read the result file for a completed job.
+     *
+     * @param string $jobId
+     * @return array{status:int, headers:array<string,string>, body:string}
+     */
+    private function getJobResult(string $jobId): array
+    {
+        if ($this->resultDir === null) {
+            return $this->json(404, ['error' => 'result not available']);
+        }
+
+        $resultFile = $this->resultDir . '/' . $jobId . '.json';
+        if (!is_file($resultFile)) {
+            return $this->json(404, ['error' => 'result file not found']);
+        }
+
+        $content = @file_get_contents($resultFile);
+        if ($content === false) {
+            return $this->json(500, ['error' => 'failed to read result file']);
+        }
+
+        return [
+            'status'  => 200,
+            'headers' => ['Content-Type' => 'application/json'],
+            'body'    => $content,
         ];
     }
 

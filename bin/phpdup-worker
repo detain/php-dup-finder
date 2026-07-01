@@ -1,0 +1,73 @@
+#!/usr/bin/env php
+<?php
+declare(strict_types=1);
+/**
+ * Entry point for the background analysis worker.
+ *
+ * This script is spawned by ServeCommand and runs as a subprocess.
+ * It listens on a Unix domain socket for job dispatch messages and
+ * processes analysis requests asynchronously.
+ *
+ * Usage:
+ *   php bin/phpdup-worker <socket-path> <result-dir>
+ *
+ * Wire protocol:
+ *   Receives: RUN <jobId> <configJson>
+ *   Responds:  OK <jobId>  or  FAIL <jobId> <error>
+ */
+
+$autoloads = [
+    __DIR__ . '/../vendor/autoload.php',
+    __DIR__ . '/../../../autoload.php',
+];
+$loaded = false;
+foreach ($autoloads as $file) {
+    if (is_file($file)) {
+        require $file;
+        $loaded = true;
+        break;
+    }
+}
+if (!$loaded) {
+    fwrite(STDERR, "phpdup-worker: composer autoload not found. Run `composer install` in the project root.\n");
+    exit(1);
+}
+
+array_shift($argv);
+$scriptName = array_shift($argv);
+
+if ($scriptName === null || $scriptName === '--help' || $scriptName === '-h') {
+    echo "Usage: phpdup-worker <socket-path> <result-dir>\n";
+    echo "\n";
+    echo "Background worker that processes phpdup analysis jobs.\n";
+    echo "\n";
+    echo "Arguments:\n";
+    echo "  socket-path  Path to the Unix domain socket for receiving jobs\n";
+    echo "  result-dir   Directory where result files are stored\n";
+    exit($scriptName === null ? 0 : 1);
+}
+
+$socketPath = $scriptName;
+$resultDir = array_shift($argv);
+
+if ($socketPath === null || $socketPath === '') {
+    fwrite(STDERR, "phpdup-worker: socket-path is required\n");
+    exit(1);
+}
+
+if ($resultDir === null || $resultDir === '') {
+    $resultDir = sys_get_temp_dir();
+}
+
+if (!is_dir($resultDir) || !is_writable($resultDir)) {
+    fwrite(STDERR, "phpdup-worker: result-dir is not writable: {$resultDir}\n");
+    exit(1);
+}
+
+try {
+    $worker = new \Phpdup\Server\AnalysisWorker($socketPath, $resultDir);
+    $worker->run();
+} catch (\Throwable $e) {
+    fwrite(STDERR, "phpdup-worker: fatal error: {$e->getMessage()}\n");
+    exit(1);
+}
