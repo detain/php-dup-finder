@@ -24,7 +24,7 @@ use Phar;
  *   - `upgrade`      → UpdateCommand (alias)
  *   - `self-update`  → UpdateCommand (alias)
  */
-final class UpdateCommand extends SymfonyCommand
+class UpdateCommand extends SymfonyCommand
 {
     private const GITHUB_RELEASES_API = 'https://api.github.com/repos/detain/php-dup-finder/releases/latest';
 
@@ -264,13 +264,12 @@ HELP
                         return $this->failed($io, 'Signature file is empty. Use --allow-unsigned to install anyway (not recommended).');
                     }
                 } else {
-                    $actualSig = hash_hmac_file('sha256', $tmpFile, self::VERIFICATION_KEY);
-                    if (!hash_equals($expectedSig, $actualSig)) {
-                        @unlink($tmpFile);
+                    if (!$this->verifySignature($tmpFile, $expectedSig)) {
                         if ($allowUnsigned) {
                             $io->warning('Signature mismatch — proceeding without verification (--allow-unsigned).');
                         } else {
-                            return $this->failed($io, "HMAC-SHA256 signature mismatch.\n  Expected: {$expectedSig}\n  Actual:   {$actualSig}\nUse --allow-unsigned to install anyway (not recommended).");
+                            @unlink($tmpFile);
+                            return $this->failed($io, "HMAC-SHA256 signature mismatch.\nUse --allow-unsigned to install anyway (not recommended).");
                         }
                     } else {
                         $io->text("  HMAC-SHA256: <fg=green>verified</>  ✓");
@@ -376,7 +375,7 @@ HELP
      * @param array<string, string> $headers
      * @return array<string, mixed>|null
      */
-    private function fetchJson(string $url, array $headers): ?array
+    protected function fetchJson(string $url, array $headers): ?array
     {
         $context = stream_context_create([
             'http' => [
@@ -399,7 +398,7 @@ HELP
     }
 
     /** Download a file with progress reporting. Returns true on success. */
-    private function downloadFile(string $url, string $dest, SymfonyStyle $io): bool
+    protected function downloadFile(string $url, string $dest, SymfonyStyle $io): bool
     {
         $context = stream_context_create([
             'http' => [
@@ -464,7 +463,7 @@ HELP
         return true;
     }
 
-    private function runningVersion(): string
+    protected function runningVersion(): string
     {
         $app = $this->getApplication();
         if ($app !== null) {
@@ -474,9 +473,20 @@ HELP
     }
 
     /** Read GITHUB_TOKEN from env, ignoring the logged-in gh CLI token. */
-    private function githubToken(): string
+    protected function githubToken(): string
     {
         return (string)($_ENV['GITHUB_TOKEN'] ?? getenv('GITHUB_TOKEN') ?: '');
+    }
+
+    /**
+     * Verify HMAC-SHA256 signature of a phar file.
+     *
+     * Override in tests to control verification outcome.
+     */
+    protected function verifySignature(string $pharFile, string $expectedSig): bool
+    {
+        $actualSig = hash_hmac_file('sha256', $pharFile, self::VERIFICATION_KEY);
+        return hash_equals($expectedSig, $actualSig);
     }
 
     private function failed(SymfonyStyle $io, string $message): int
