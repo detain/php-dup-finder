@@ -89,11 +89,11 @@ final class GraphvizReporter
 
     private function colourForImpact(int $impact): string
     {
-        return match (true) {
-            $impact >= 200 => '#fda4af', // rose
-            $impact >= 100 => '#fde68a', // amber
-            $impact >= 40  => '#bef264', // lime
-            default        => '#bae6fd', // sky
+        return match (Severity::forImpact($impact)) {
+            'High'   => '#fda4af', // rose
+            'Medium' => '#fde68a', // amber
+            'Low'    => '#bef264', // lime
+            default  => '#bae6fd', // sky
         };
     }
 }

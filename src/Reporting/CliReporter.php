@@ -203,10 +203,11 @@ final class CliReporter
 
         $confLine = sprintf('confidence %.2f · safety %.2f', $c->confidence, $c->safety);
         $worst = min($c->confidence, $c->safety);
-        $out->writeln('  ' . match (true) {
-            $worst >= 0.85 => StatusLine::success($confLine, $theme),
-            $worst >= 0.65 => StatusLine::warn($confLine, $theme),
-            default        => StatusLine::error($confLine, $theme),
+        $severity = Severity::forScore($worst);
+        $out->writeln('  ' . match ($severity) {
+            'High'   => StatusLine::success($confLine, $theme),
+            'Medium' => StatusLine::warn($confLine, $theme),
+            default  => StatusLine::error($confLine, $theme),
         });
     }
 
