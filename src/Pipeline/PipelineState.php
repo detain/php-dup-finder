@@ -42,6 +42,8 @@ final class PipelineState
     public int $candidatePairs = 0;
     /** Pairs scored so far (Clustering stage). */
     public int $scoredPairs = 0;
+    /** @var list<array{0: string, 1: string, 2: float}> Scored edge pairs from clustering. */
+    public array $edges = [];
     /** Clusters processed by anti-unification (Refactoring stage). */
     public int $refactoredClusters = 0;
 

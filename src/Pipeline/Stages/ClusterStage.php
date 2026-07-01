@@ -103,9 +103,54 @@ final class ClusterStage implements CooperativeStageInterface
             }
         }
 
+        // Build block index with progress reporting
         $state->currentTask = 'Building block index';
         yield Stage::Clustering;
+        $index = $this->buildIndex($state, $output);
 
+        // Release ASTs if lazy loading is enabled
+        $state->currentTask = 'Releasing source ASTs to free memory';
+        if ($config->lazyAst) {
+            yield Stage::Clustering;
+            $this->unloadAsts($state);
+        }
+
+        $tCluster = microtime(true);
+        $clusterer = $this->buildClusterer($config);
+
+        if (!$this->exactOnly) {
+            // Generate candidate pairs with progress reporting
+            $state->currentTask = 'Generating candidate pairs (n-gram inverted index)';
+            yield Stage::Clustering;
+            $candidatePairs = $this->generateCandidatePairs($clusterer, $index, $state, $output);
+
+            if ($state->candidatePairs > 0) {
+                $state->currentTask = $this->chooseScoringTask($config, $state, $output);
+                yield Stage::Clustering;
+
+                // scorePairs is a Generator that yields Stage::Clustering for cooperative
+                // scheduling. We iterate over it to drive its execution; the generator
+                // handles cancellation checks at each yield point internally.
+                // Scored edges are stored in $state->edges.
+                foreach ($this->scorePairs($candidatePairs, $index, $config, $state, $output) as $_) {
+                    // Each yield from scorePairs is Stage::Clustering for TUI repaint.
+                    // We consume it here (no additional yield) to avoid doubling.
+                    if ($state->cancelled) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Form clusters with progress reporting
+        $state->currentTask = 'Forming clusters from edges';
+        $state->stageProgress = 0.97;
+        yield Stage::Clustering;
+        $this->formClusters($state->edges, $clusterer, $index, $state, $output, $tCluster, $clusterCache);
+    }
+
+    private function buildIndex(PipelineState $state, OutputInterface $output): BlockIndex
+    {
         $index = new BlockIndex();
         foreach ($state->blocks as $b) {
             $index->add($b);
@@ -113,17 +158,19 @@ final class ClusterStage implements CooperativeStageInterface
         $state->index = $index;
         $state->debug($output, sprintf('clustering: built block index with %d blocks [%s]', count($state->blocks), MemoryDebug::getMemoryUsage()));
 
-        // Optional: drop original ASTs to free memory; reload lazily during refactor.
-        if ($config->lazyAst) {
-            $state->currentTask = 'Releasing source ASTs to free memory';
-            yield Stage::Clustering;
-            foreach ($state->blocks as $b) {
-                $b->unloadAst();
-            }
-        }
+        return $index;
+    }
 
-        $tCluster = microtime(true);
-        $clusterer = new Clusterer(
+    private function unloadAsts(PipelineState $state): void
+    {
+        foreach ($state->blocks as $b) {
+            $b->unloadAst();
+        }
+    }
+
+    private function buildClusterer(\Phpdup\Cli\Config $config): Clusterer
+    {
+        return new Clusterer(
             similarity: new JaccardSimilarity(),
             tree: new TreeEditDistance(new EditCostModel($config->tedWeights)),
             similarityThreshold: $config->similarityThreshold,
@@ -140,182 +187,189 @@ final class ClusterStage implements CooperativeStageInterface
                 : null,
             mlPairThreshold:          $config->mlPairThreshold,
         );
+    }
 
-        $edges = null;
-        if (!$this->exactOnly) {
-            $state->currentTask = 'Generating candidate pairs (n-gram inverted index)';
-            yield Stage::Clustering;
+    /**
+     * @return list<array{0: string, 1: string}>
+     */
+    private function generateCandidatePairs(Clusterer $clusterer, BlockIndex $index, PipelineState $state, OutputInterface $output): array
+    {
+        $state->currentTask = 'Generating candidate pairs (n-gram inverted index)';
 
-            $state->debug($output, sprintf('clustering: building n-gram inverted index for %d blocks [%s]', count($state->blocks), MemoryDebug::getMemoryUsage()));
-            $candidatePairs = iterator_to_array($clusterer->generateCandidatePairs($index, $output));
-            $state->debug($output, sprintf('clustering: generated %d candidate pairs [%s]', count($candidatePairs), MemoryDebug::getMemoryUsage()));
-            $state->candidatePairs = count($candidatePairs);
-            $state->scoredPairs    = 0;
-            $this->listener->onPairScored(0, $state->candidatePairs);
+        $state->debug($output, sprintf('clustering: building n-gram inverted index for %d blocks [%s]', count($state->blocks), MemoryDebug::getMemoryUsage()));
+        $candidatePairs = iterator_to_array($clusterer->generateCandidatePairs($index, $output));
+        $state->debug($output, sprintf('clustering: generated %d candidate pairs [%s]', count($candidatePairs), MemoryDebug::getMemoryUsage()));
+        $state->candidatePairs = count($candidatePairs);
+        $state->scoredPairs    = 0;
+        $this->listener->onPairScored(0, $state->candidatePairs);
 
-            if ($state->candidatePairs > 0) {
-                $workers = $config->workers > 0 ? $config->workers : WorkerPool::detectCpuCount();
-                $useParallel = $state->candidatePairs >= 64 && $workers > 1;
-                if ($useParallel && WorkerPool::isAvailable()) {
-                    $pairsPerWorker = (int)ceil($state->candidatePairs / $workers);
-                    $msg = sprintf(
-                        'clustering: starting parallel scoring: %d pairs across %d workers (~%d pairs/worker) [%s]',
-                        $state->candidatePairs,
-                        $workers,
-                        $pairsPerWorker,
-                        MemoryDebug::getMemoryUsage(),
-                    );
-                } else {
-                    $fallbackReason = $workers <= 1
-                        ? 'workers <= 1'
-                        : (!WorkerPool::isAvailable() ? 'pcntl not available' : 'candidate pairs < 64');
-                    $msg = sprintf(
-                        'clustering: starting serial scoring (%s): %d pairs [%s]',
-                        $fallbackReason,
-                        $state->candidatePairs,
-                        MemoryDebug::getMemoryUsage(),
-                    );
-                }
-                $state->debug($output, $msg);
-                $state->currentTask = $useParallel && WorkerPool::isAvailable()
-                    ? sprintf('Scoring %d candidate pairs across %d workers', $state->candidatePairs, $workers)
-                    : sprintf('Scoring %d candidate pairs', $state->candidatePairs);
-                yield Stage::Clustering;
+        return $candidatePairs;
+    }
 
-                $scoreWorker = new PairScoreWorker(
-                    index: $index,
-                    similarityThreshold: $config->similarityThreshold,
-                    treeThreshold: $config->treeThreshold,
-                    optionalBlocksEnabled: $config->optionalBlocksEnabled,
-                    containmentThreshold: $config->optionalBlocksContainment,
-                    optionalBlocksMinOverlap: $config->optionalBlocksMinOverlap,
-                    irScoring: $config->scorer === 'ir',
-                    irThreshold: $config->irThreshold,
-                    mlPairUrl: $config->mlPairUrl,
-                    mlPairThreshold: $config->mlPairThreshold,
-                );
+    private function chooseScoringTask(\Phpdup\Cli\Config $config, PipelineState $state, OutputInterface $output): string
+    {
+        $workers = $config->workers > 0 ? $config->workers : WorkerPool::detectCpuCount();
+        $useParallel = $state->candidatePairs >= 64 && $workers > 1 && WorkerPool::isAvailable();
+        if ($useParallel) {
+            $pairsPerWorker = (int)ceil($state->candidatePairs / $workers);
+            $msg = sprintf(
+                'clustering: starting parallel scoring: %d pairs across %d workers (~%d pairs/worker) [%s]',
+                $state->candidatePairs,
+                $workers,
+                $pairsPerWorker,
+                MemoryDebug::getMemoryUsage(),
+            );
+        } else {
+            $fallbackReason = $workers <= 1
+                ? 'workers <= 1'
+                : (!WorkerPool::isAvailable() ? 'pcntl not available' : 'candidate pairs < 64');
+            $msg = sprintf(
+                'clustering: starting serial scoring (%s): %d pairs [%s]',
+                $fallbackReason,
+                $state->candidatePairs,
+                MemoryDebug::getMemoryUsage(),
+            );
+        }
+        $state->debug($output, $msg);
 
-                $edges = [];
-                if ($useParallel && WorkerPool::isAvailable()) {
-                    $pool = new WorkerPool(workers: $workers);
-                    $task = static function (array $pairs) use ($scoreWorker): \Generator {
-                        // Sub-batch so the parent receives multiple frames per child,
-                        // letting the TUI repaint while pairs are still being scored.
-                        foreach (array_chunk($pairs, 256) as $chunk) {
-                            $scored = $scoreWorker->score($chunk);
-                            yield ['__progress' => count($chunk)];
-                            foreach ($scored as $edge) {
-                                yield $edge;
-                            }
-                        }
-                    };
-                    $sinceYield = 0;
-                    $lastDebugOutput = microtime(true);
-                    $state->debug($output, sprintf(
-                        'clustering: scoring began at %s [%s]',
-                        date('H:i:s'),
-                        MemoryDebug::getMemoryUsage(),
-                    ));
-                    foreach ($pool->runStreaming($candidatePairs, $task) as $row) {
-                        if (is_array($row) && isset($row['__progress'])) {
-                            $state->scoredPairs += (int)$row['__progress'];
-                        } else {
-                            $edges[] = $row;
-                        }
-                        if (++$sinceYield >= self::YIELD_EVERY) {
-                            $sinceYield = 0;
-                            $denom = max(1, $state->candidatePairs);
-                            $state->stageProgress = min(0.95, $state->scoredPairs / $denom);
-                            $state->sampleMemory();
-                            $this->listener->onPairScored($state->scoredPairs, $state->candidatePairs);
-                            $state->currentTask = sprintf(
-                                'Scoring candidate pairs (%d / %d)',
-                                $state->scoredPairs, $state->candidatePairs,
-                            );
-                            yield Stage::Clustering;
-                        }
-                        // Heartbeat: debug output every 5 seconds so user sees progress
-                        if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                            $now = microtime(true);
-                            if ($now - $lastDebugOutput >= 5.0) {
-                                $lastDebugOutput = $now;
-                                $elapsed = round($now - $tCluster, 1);
-                                $denom = max(1, $state->candidatePairs);
-                                $pct = $state->scoredPairs > 0
-                                    ? sprintf(' (%.1f%%)', 100 * $state->scoredPairs / $denom)
-                                    : '';
-                                $state->debug($output, sprintf(
-                                    'clustering: scoring heartbeat%s | %d / %d pairs | %s elapsed [%s]',
-                                    $pct,
-                                    $state->scoredPairs,
-                                    $state->candidatePairs,
-                                    $elapsed . 's',
-                                    MemoryDebug::getMemoryUsage(),
-                                ));
-                            }
-                        }
-                    }
-                } else {
-                    // Serial path with periodic yields so the TUI stays responsive.
-                    $sinceYield = 0;
-                    $lastDebugOutput = microtime(true);
-                    $batchSize  = 256;
-                    $state->debug($output, sprintf(
-                        'clustering: serial scoring began at %s [%s]',
-                        date('H:i:s'),
-                        MemoryDebug::getMemoryUsage(),
-                    ));
-                    foreach (array_chunk($candidatePairs, $batchSize) as $chunk) {
-                        foreach ($scoreWorker->score($chunk) as $edge) {
-                            $edges[] = $edge;
-                        }
-                        $state->scoredPairs += count($chunk);
-                        $sinceYield += count($chunk);
-                        if ($sinceYield >= self::YIELD_EVERY) {
-                            $sinceYield = 0;
-                            $denom = max(1, $state->candidatePairs);
-                            $state->stageProgress = min(0.95, $state->scoredPairs / $denom);
-                            $state->sampleMemory();
-                            $this->listener->onPairScored($state->scoredPairs, $state->candidatePairs);
-                            $state->currentTask = sprintf(
-                                'Scoring candidate pairs (%d / %d)',
-                                $state->scoredPairs, $state->candidatePairs,
-                            );
-                            yield Stage::Clustering;
-                        }
-                        // Heartbeat: debug output every 5 seconds so user sees progress
-                        if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                            $now = microtime(true);
-                            if ($now - $lastDebugOutput >= 5.0) {
-                                $lastDebugOutput = $now;
-                                $elapsed = round($now - $tCluster, 1);
-                                $denom = max(1, $state->candidatePairs);
-                                $pct = $state->scoredPairs > 0
-                                    ? sprintf(' (%.1f%%)', 100 * $state->scoredPairs / $denom)
-                                    : '';
-                                $state->debug($output, sprintf(
-                                    'clustering: scoring heartbeat%s | %d / %d pairs | %s elapsed [%s]',
-                                    $pct,
-                                    $state->scoredPairs,
-                                    $state->candidatePairs,
-                                    $elapsed . 's',
-                                    MemoryDebug::getMemoryUsage(),
-                                ));
-                            }
-                        }
+        return $useParallel
+            ? sprintf('Scoring %d candidate pairs across %d workers', $state->candidatePairs, $workers)
+            : sprintf('Scoring %d candidate pairs', $state->candidatePairs);
+    }
+
+    /**
+     * Unified scoring driver handling both serial and parallel paths.
+     * Yields Stage::Clustering for cooperative scheduling.
+     * Results are stored in $state->edges.
+     *
+     * @param list<array{0: string, 1: string}> $candidatePairs
+     */
+    private function scorePairs(array $candidatePairs, BlockIndex $index, \Phpdup\Cli\Config $config, PipelineState $state, OutputInterface $output): \Generator
+    {
+        $workers = $config->workers > 0 ? $config->workers : WorkerPool::detectCpuCount();
+        $useParallel = count($candidatePairs) >= 64 && $workers > 1 && WorkerPool::isAvailable();
+
+        $scoreWorker = new PairScoreWorker(
+            index: $index,
+            similarityThreshold: $config->similarityThreshold,
+            treeThreshold: $config->treeThreshold,
+            optionalBlocksEnabled: $config->optionalBlocksEnabled,
+            containmentThreshold: $config->optionalBlocksContainment,
+            optionalBlocksMinOverlap: $config->optionalBlocksMinOverlap,
+            irScoring: $config->scorer === 'ir',
+            irThreshold: $config->irThreshold,
+            mlPairUrl: $config->mlPairUrl,
+            mlPairThreshold: $config->mlPairThreshold,
+        );
+
+        $state->edges = [];
+        $sinceYield = 0;
+        $lastDebugOutput = microtime(true);
+        $tCluster = microtime(true);
+
+        $state->debug($output, sprintf(
+            'clustering: scoring began at %s [%s]',
+            date('H:i:s'),
+            MemoryDebug::getMemoryUsage(),
+        ));
+
+        if ($useParallel) {
+            $pool = new WorkerPool(workers: $workers);
+            $task = static function (array $pairs) use ($scoreWorker): \Generator {
+                foreach (array_chunk($pairs, 256) as $chunk) {
+                    $scored = $scoreWorker->score($chunk);
+                    yield ['__progress' => count($chunk)];
+                    foreach ($scored as $edge) {
+                        yield $edge;
                     }
                 }
-                $this->listener->onPairScored($state->candidatePairs, $state->candidatePairs);
+            };
+            foreach ($pool->runStreaming($candidatePairs, $task) as $row) {
+                if (is_array($row) && isset($row['__progress'])) {
+                    $state->scoredPairs += (int)$row['__progress'];
+                } else {
+                    /** @var array{0: string, 1: string, 2: float} $row */
+                    $state->edges[] = $row;
+                }
+                if (++$sinceYield >= self::YIELD_EVERY) {
+                    $sinceYield = 0;
+                    if ($state->cancelled) {
+                        break;
+                    }
+                    $this->updateScoringProgress($state, $output);
+                    yield Stage::Clustering;
+                }
+                $this->emitHeartbeat($state, $output, $tCluster, $lastDebugOutput);
+            }
+        } else {
+            $batchSize = 256;
+            foreach (array_chunk($candidatePairs, $batchSize) as $chunk) {
+                foreach ($scoreWorker->score($chunk) as $edge) {
+                    $state->edges[] = $edge;
+                }
+                $state->scoredPairs += count($chunk);
+                $sinceYield += count($chunk);
+                if ($sinceYield >= self::YIELD_EVERY) {
+                    $sinceYield = 0;
+                    if ($state->cancelled) {
+                        break;
+                    }
+                    $this->updateScoringProgress($state, $output);
+                    yield Stage::Clustering;
+                }
+                $this->emitHeartbeat($state, $output, $tCluster, $lastDebugOutput);
             }
         }
 
-        $state->currentTask = 'Forming clusters from edges';
-        $state->stageProgress = 0.97;
-        yield Stage::Clustering;
+        $this->listener->onPairScored($state->candidatePairs, $state->candidatePairs);
+    }
 
-        $state->debug($output, sprintf('clustering: forming clusters from %d edges [%s]', count($edges ?? []), MemoryDebug::getMemoryUsage()));
+    private function updateScoringProgress(PipelineState $state, OutputInterface $output): void
+    {
+        $denom = max(1, $state->candidatePairs);
+        $state->stageProgress = min(0.95, $state->scoredPairs / $denom);
+        $state->sampleMemory();
+        $this->listener->onPairScored($state->scoredPairs, $state->candidatePairs);
+        $state->currentTask = sprintf(
+            'Scoring candidate pairs (%d / %d)',
+            $state->scoredPairs, $state->candidatePairs,
+        );
+    }
+
+    private function emitHeartbeat(PipelineState $state, OutputInterface $output, float $tCluster, float &$lastDebugOutput): void
+    {
+        if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+            $now = microtime(true);
+            if ($now - $lastDebugOutput >= 5.0) {
+                $lastDebugOutput = $now;
+                $elapsed = round($now - $tCluster, 1);
+                $denom = max(1, $state->candidatePairs);
+                $pct = $state->scoredPairs > 0
+                    ? sprintf(' (%.1f%%)', 100 * $state->scoredPairs / $denom)
+                    : '';
+                $state->debug($output, sprintf(
+                    'clustering: scoring heartbeat%s | %d / %d pairs | %s elapsed [%s]',
+                    $pct,
+                    $state->scoredPairs,
+                    $state->candidatePairs,
+                    $elapsed . 's',
+                    MemoryDebug::getMemoryUsage(),
+                ));
+            }
+        }
+    }
+
+    /**
+     * @param list<array{0: string, 1: string, 2: float}> $edges
+     */
+    private function formClusters(array $edges, Clusterer $clusterer, BlockIndex $index, PipelineState $state, OutputInterface $output, float $tCluster, ?ClusterCache $clusterCache): void
+    {
+        if ($state->cancelled) {
+            return;
+        }
+
+        $state->debug($output, sprintf('clustering: forming clusters from %d edges [%s]', count($edges), MemoryDebug::getMemoryUsage()));
         /** @var list<array{0: string, 1: string, 2: float}> $edges */
-        $edges = $edges ?? [];
         $state->clusters = $clusterer->cluster($index, $edges);
         $state->timings['cluster'] = microtime(true) - $tCluster;
         $state->currentTask = sprintf('Built %d clusters', count($state->clusters));
