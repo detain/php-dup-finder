@@ -154,6 +154,114 @@ final class JobQueue
     }
 
     /**
+     * Atomically dequeue the oldest pending job and mark it as running.
+     *
+     * Returns null if no pending jobs exist. This is the companion of
+     * ack()/nack() — workers call dequeue() to claim a job, then
+     * call ack() on success or nack() on failure.
+     *
+     * @return array{id:string, payload:array<string,mixed>}|null
+     */
+    public function dequeue(): ?array
+    {
+        $this->evictStale();
+
+        $oldestId  = null;
+        $oldestAge = PHP_FLOAT_MAX;
+
+        foreach ($this->jobs as $id => $job) {
+            if ($job['status'] === self::STATUS_PENDING) {
+                if ($job['created_at'] < $oldestAge) {
+                    $oldestAge = $job['created_at'];
+                    $oldestId  = $id;
+                }
+            }
+        }
+
+        if ($oldestId === null) {
+            return null;
+        }
+
+        $this->jobs[$oldestId]['status'] = self::STATUS_RUNNING;
+        return [
+            'id'      => $oldestId,
+            'payload' => $this->jobs[$oldestId]['payload'],
+        ];
+    }
+
+    /**
+     * Acknowledge successful completion of a job.
+     *
+     * Stores the result summary and transitions the job to completed.
+     *
+     * @param array<string,mixed> $summary Reduced result with keys: files, blocks, clusters, config.
+     */
+    public function ack(string $id, array $summary): void
+    {
+        $this->evictStale();
+
+        if (isset($this->jobs[$id])) {
+            $this->jobs[$id]['status']       = self::STATUS_COMPLETED;
+            $this->jobs[$id]['result']       = $summary;
+            $this->jobs[$id]['completed_at'] = $this->now();
+        }
+    }
+
+    /**
+     * Negative-acknowledge a job, marking it as failed.
+     *
+     * @param string $id Job id.
+     */
+    public function nack(string $id): void
+    {
+        $this->evictStale();
+
+        if (isset($this->jobs[$id])) {
+            $this->jobs[$id]['status']       = self::STATUS_FAILED;
+            $this->jobs[$id]['error']        = 'worker processing failed';
+            $this->jobs[$id]['completed_at'] = $this->now();
+        }
+    }
+
+    /**
+     * Get the status of a job including result/error if available.
+     *
+     * @return array{status:string, result:?array<string,mixed>, error:?string}|null
+     */
+    public function status(string $id): ?array
+    {
+        $job = $this->jobs[$id] ?? null;
+        if ($job === null) {
+            return null;
+        }
+        return [
+            'status' => $job['status'],
+            'result' => $job['result'],
+            'error'  => $job['error'],
+        ];
+    }
+
+    /**
+     * Return a list of all jobs ordered by creation time (oldest first).
+     *
+     * @return array<string, array{status:string, created_at:float, completed_at:?float}>
+     */
+    public function list(): array
+    {
+        $this->evictStale();
+
+        $result = [];
+        foreach ($this->jobs as $id => $job) {
+            $result[$id] = [
+                'status'       => $job['status'],
+                'created_at'   => $job['created_at'],
+                'completed_at' => $job['completed_at'],
+            ];
+        }
+        return $result;
+    }
+
+    /**
      * Evict all completed/failed jobs that have exceeded the TTL.
      *
      * Called automatically before every mutating operation; can also be
