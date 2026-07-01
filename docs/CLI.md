@@ -259,6 +259,35 @@ bin/phpdup completion bash > ~/.local/share/bash-completion/completions/phpdup
 exec bash    # or open a new shell
 ```
 
+## Configuration precedence
+
+Every flat scalar config key follows the same three-tier precedence:
+
+```
+CLI flag  (highest)
+    ↓
+phpdup.json  (medium)
+    ↓
+Config::defaults()  (lowest)
+```
+
+`src/Cli/OverrideResolver` applies this rule for the 19 flat keys that
+share the same precedence: `min_block_size`, `max_block_size`,
+`normalization_mode`, `similarity_threshold`, `tree_threshold`,
+`min_cluster_impact`, `max_df`, `ngram_size`, `cache_dir`, `parallelism`,
+`workers`, `incremental`, `lazy_ast`, `sort`, `ted_weights`, `scorer`,
+`ir_threshold`, `ml_pair_threshold`, `debug_log`, and `low_memory`.
+
+A few keys use different fallback paths:
+
+| Key | Precedence chain |
+|-----|-----------------|
+| `allowed_kinds` | CLI → config `kinds` → `BlockExtractor::ALL_KINDS` |
+| `optional_blocks.*` | CLI → config `optional_blocks` → `Config` defaults |
+| `db_aware`, `trinity_collapse` | CLI → config → `Config` defaults |
+| `exclude` | config `exclude` → profile exclude globs → `Config` defaults |
+| `paths` | config `paths` → `Config` defaults (CLI argument is separate) |
+
 ## Configuration file
 
 `phpdup.json` accepts the same settings as the CLI flags, plus a few
