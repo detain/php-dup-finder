@@ -15,6 +15,12 @@ use Phpdup\Refactor\Hole;
  * label in the report so a human can recognize "ah, this is a strategy
  * pattern" without staring at the AST.
  *
+ * When a cluster member's AST has not been loaded (`$m->ast === null`)
+ * — which is the common case for large corpora — pattern detection
+ * falls back to name-based heuristics: class name, method name, file
+ * path, and namespace.  Framework-aware tags in particular rely
+ * exclusively on these name signals so they work without AST material.
+ *
  * Implemented patterns (best-effort heuristics):
  *
  *   sql-builder         — body contains string concatenation feeding a
