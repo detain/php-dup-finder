@@ -295,7 +295,7 @@ final class ClusterStage implements CooperativeStageInterface
                 if (is_array($row) && isset($row['__progress'])) {
                     $state->scoredPairs += (int)$row['__progress'];
                 } else {
-                    /** @var array{0: string, 1: string, 2: float} $row */
+                    /** @var array{0: string, 1: string, 2: float, 3: string} $row */
                     $state->edges[] = $row;
                 }
                 if (++$sinceYield >= self::YIELD_EVERY) {
@@ -367,7 +367,7 @@ final class ClusterStage implements CooperativeStageInterface
     }
 
     /**
-     * @param list<array{0: string, 1: string, 2: float}> $edges
+     * @param list<array{0: string, 1: string, 2: float, 3: string}> $edges
      */
     private function formClusters(array $edges, Clusterer $clusterer, BlockIndex $index, PipelineState $state, OutputInterface $output, float $tCluster, ?ClusterCache $clusterCache): void
     {
@@ -376,7 +376,7 @@ final class ClusterStage implements CooperativeStageInterface
         }
 
         $state->debug($output, sprintf('clustering: forming clusters from %d edges [%s]', count($edges), MemoryDebug::getMemoryUsage()));
-        /** @var list<array{0: string, 1: string, 2: float}> $edges */
+        /** @var list<array{0: string, 1: string, 2: float, 3: string}> $edges */
         $state->clusters = $clusterer->cluster($index, $edges);
         $state->timings['cluster'] = microtime(true) - $tCluster;
         $state->currentTask = sprintf('Built %d clusters', count($state->clusters));
