@@ -160,6 +160,10 @@ final class Config
         // expands this to the "clone cohort" — all files sharing n-gram
         // fingerprints with the changed files. Null = full corpus scan.
         public readonly ?string $diffBase = null,
+        // When true, write a cumulative apply.diff to the refactored/ directory
+        // containing all cluster refactor patches concatenated. F1a produces
+        // the same output as --patch; F1b will add actual file rewrite.
+        public readonly bool $apply = false,
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -318,6 +322,7 @@ final class Config
             baselineFile:                    isset($overrides['baseline']) ? (string)$overrides['baseline'] : $this->baselineFile,
             baselineOutFile:                 isset($overrides['baseline_out']) ? (string)$overrides['baseline_out'] : $this->baselineOutFile,
             diffBase:                        isset($overrides['diff_base']) ? (string)$overrides['diff_base'] : $this->diffBase,
+            apply:                           isset($overrides['apply']) ? (bool)$overrides['apply'] : $this->apply,
         );
     }
 }

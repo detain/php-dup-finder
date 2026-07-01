@@ -37,7 +37,7 @@ final class ConfigLoader
             'sort', 'ted_weights', 'scorer',
             'ir_threshold', 'ml_pair_threshold', 'debug_log',
             'low_memory', 'fail_on_impact', 'max_clusters',
-            'baseline', 'baseline_out', 'diff_base',
+            'baseline', 'baseline_out', 'diff_base', 'apply',
         ];
         $resolver = new OverrideResolver($flatKeys);
         $flat = $resolver->resolve($overrides, $data, [
@@ -66,6 +66,7 @@ final class ConfigLoader
             'baseline' => $base->baselineFile,
             'baseline_out' => $base->baselineOutFile,
             'diff_base' => $base->diffBase,
+            'apply' => $base->apply,
         ]);
 
         $report = is_array($data['report'] ?? null) ? $data['report'] : [];
@@ -132,6 +133,7 @@ final class ConfigLoader
             baselineFile:                  $flat['baseline'],
             baselineOutFile:               $flat['baseline_out'],
             diffBase:                      $flat['diff_base'],
+            apply:                         $flat['apply'],
         );
     }
 
@@ -328,7 +330,7 @@ final class ConfigLoader
             'max_clusters',
             'baseline',
             'baseline_out',
-            'diff_base',
+            'diff_base', 'apply',
         ];
         foreach (array_keys($data) as $k) {
             if (!in_array($k, $known, true)) {
