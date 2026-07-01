@@ -103,6 +103,7 @@ final class PatternRecognizer
     {
         $finder = new NodeFinder();
         foreach ($cluster->members as $m) {
+            if ($m->ast === null) continue;
             $ifs = $finder->findInstanceOf([$m->ast], Node\Stmt\If_::class);
             if (count($ifs) < 2) continue;
             $allShortCircuit = true;
@@ -127,6 +128,7 @@ final class PatternRecognizer
     {
         $finder = new NodeFinder();
         foreach ($cluster->members as $m) {
+            if ($m->ast === null) continue;
             $concats = $finder->findInstanceOf([$m->ast], Node\Expr\BinaryOp\Concat::class);
             $calls = $finder->find([$m->ast], static function (Node $n) {
                 if ($n instanceof Node\Expr\MethodCall && $n->name instanceof Node\Identifier) {
@@ -155,6 +157,7 @@ final class PatternRecognizer
     {
         $finder = new NodeFinder();
         foreach ($cluster->members as $m) {
+            if ($m->ast === null) continue;
             $switches = $finder->findInstanceOf([$m->ast], Node\Stmt\Switch_::class);
             if ($switches) return true;
             $matches = $finder->findInstanceOf([$m->ast], Node\Expr\Match_::class);

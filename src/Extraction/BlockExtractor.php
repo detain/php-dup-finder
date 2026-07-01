@@ -148,6 +148,9 @@ final class BlockVisitor extends NodeVisitorAbstract
         if ($node instanceof Stmt\Class_ || $node instanceof Stmt\Interface_ || $node instanceof Stmt\Trait_ || $node instanceof Stmt\Enum_) {
             array_pop($this->classStack);
         }
+        if ($node instanceof Stmt\Namespace_) {
+            $this->namespace = null;
+        }
         return null;
     }
 
