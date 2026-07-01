@@ -14,3 +14,4 @@ paths:
 - After writing, emit `<info>phpdup</info> <name> report → <file>` to the `OutputInterface`.
 - Tests under `tests/Unit/Reporting/<Format>ReporterTest.php` build a `Report` with synthetic `Cluster`/`Block` instances; do not run the pipeline.
 - For ANSI-emitting CLI output, gate `Style::new()->foreground(...)` calls behind `$output->isDecorated()` — `Theme::plain()` does NOT neutralize raw `Style` calls.
+- Severity labels are centralized in `src/Reporting/Severity.php` — call `Severity::forImpact(int)` (impact → `High`/`Medium`/`Low`/`Info`, SARIF/GitLab-aligned) or `Severity::forScore(float)` (0.0–1.0 confidence → `High`/`Medium`/`Low`, clamped) instead of inlining threshold `match (true)` blocks. Consumers: `GitLabSastReporter`, `GraphvizReporter`, `CliReporter`.

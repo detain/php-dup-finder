@@ -82,8 +82,8 @@ final class GitLabSastReporter
                 count($cluster->members),
                 (string)$cluster->signature,
             )),
-            'severity'   => $this->severityFor($cluster->impact),
-            'confidence' => $cluster->exact ? 'High' : ($cluster->confidence >= 0.85 ? 'Medium' : 'Low'),
+            'severity'   => Severity::forImpact($cluster->impact),
+            'confidence' => $cluster->exact ? 'High' : Severity::forScore($cluster->confidence),
             'scanner' => [
                 'id'   => 'phpdup',
                 'name' => 'phpdup',
@@ -109,13 +109,4 @@ final class GitLabSastReporter
         ];
     }
 
-    private function severityFor(int $impact): string
-    {
-        return match (true) {
-            $impact > 100         => 'High',
-            $impact >= 50         => 'Medium',
-            $impact >= 20         => 'Low',
-            default               => 'Info',
-        };
-    }
 }
