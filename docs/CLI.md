@@ -42,6 +42,8 @@ for the full JSON-Schema-compatible spec.
 | `--similarity N`                           | `0.80`         | Jaccard similarity threshold for near-duplicate pairs (`0..1`).                                   |
 | `--max-df N`                               | `0.01`         | Maximum document-frequency for n-grams to be candidate-pair seeds (`0..1`). Bump to ~0.5 for tiny corpora; lower for very large codebases. |
 | `--min-impact N`                           | `20`           | Minimum cluster impact (≈ duplicated-line count) to include in output. Quiets reports without changing clustering. |
+| `--fail-on-impact N`                       | `0` (off)      | CI gate: exit code 3 when total cluster impact exceeds N. 0 = disabled. |
+| `--max-clusters N`                         | `0` (off)      | CI gate: exit code 3 when cluster count exceeds N. 0 = disabled. |
 | `--exact-only`                             | off            | Skip the near-duplicate phase. Emits only canonical-hash-equal clusters (~6× faster on large corpora). |
 | `--kinds K1,K2,...`                        | all            | Comma-separated block kinds to extract. Allowed: `function`, `method`, `closure`, `arrow`, `if`, `for`, `foreach`, `while`, `do`, `try`, `switch`, `match`. |
 | `--max-memory MB`                          | `0` (off)      | Soft RSS ceiling. When peak RSS exceeds this mid-pipeline, phpdup logs a warning and suggests `--exact-only`. |
@@ -143,9 +145,10 @@ first line of the zsh dump.
 
 | Code | Meaning                                                                            |
 |------|------------------------------------------------------------------------------------|
-| `0`  | Successful run. **Note:** `analyze` does NOT exit non-zero when clusters are found. Gate CI on the JSON report — an empty `clusters` array means clean. |
+| `0`  | Successful run. **Note:** `analyze` does NOT exit non-zero when clusters are found (unless CI-gate thresholds are set). Gate CI on the JSON report — an empty `clusters` array means clean. |
 | `1`  | Internal error (uncaught exception, reporter failure, etc.).                       |
 | `2`  | Invalid input: missing required argument, unknown shell for `completion`, schema-validation failure for `--validate-config`, invalid `--theme`, etc. |
+| `3`  | CI gate triggered: `--fail-on-impact N` exceeded (total cluster impact > N) or `--max-clusters N` exceeded (cluster count > N). |
 
 ## Environment variables
 

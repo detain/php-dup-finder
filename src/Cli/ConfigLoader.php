@@ -36,7 +36,7 @@ final class ConfigLoader
             'workers', 'incremental', 'lazy_ast',
             'sort', 'ted_weights', 'scorer',
             'ir_threshold', 'ml_pair_threshold', 'debug_log',
-            'low_memory',
+            'low_memory', 'fail_on_impact', 'max_clusters',
         ];
         $resolver = new OverrideResolver($flatKeys);
         $flat = $resolver->resolve($overrides, $data, [
@@ -60,6 +60,8 @@ final class ConfigLoader
             'ml_pair_threshold' => $base->mlPairThreshold,
             'debug_log' => $base->debugLog,
             'low_memory' => $base->lowMemory,
+            'fail_on_impact' => $base->failOnImpact,
+            'max_clusters' => $base->maxClusters,
         ]);
 
         $report = is_array($data['report'] ?? null) ? $data['report'] : [];
@@ -121,6 +123,8 @@ final class ConfigLoader
             mlPairThreshold:               $flat['ml_pair_threshold'],
             debugLog:                      $flat['debug_log'],
             lowMemory:                     $flat['low_memory'],
+            failOnImpact:                  $flat['fail_on_impact'],
+            maxClusters:                   $flat['max_clusters'],
         );
     }
 
@@ -241,7 +245,8 @@ final class ConfigLoader
         $out = [];
         foreach (['min_block_size', 'max_block_size', 'normalization_mode',
                   'similarity_threshold', 'tree_threshold', 'min_cluster_impact',
-                  'max_df', 'ngram_size', 'sort'] as $k) {
+                  'max_df', 'ngram_size', 'sort',
+                  'fail_on_impact', 'max_clusters'] as $k) {
             if (array_key_exists($k, $data)) {
                 $out[$k] = $data[$k];
             }
@@ -311,6 +316,8 @@ final class ConfigLoader
             'ml_pair_threshold',
             'debug_log',
             'low_memory',
+            'fail_on_impact',
+            'max_clusters',
         ];
         foreach (array_keys($data) as $k) {
             if (!in_array($k, $known, true)) {
@@ -495,6 +502,12 @@ final class ConfigLoader
         }
         if (array_key_exists('ml_pair_threshold', $data)) {
             $assertFloat01($data['ml_pair_threshold'], 'ml_pair_threshold');
+        }
+        if (array_key_exists('fail_on_impact', $data)) {
+            $assertInt($data['fail_on_impact'], 'fail_on_impact', 0);
+        }
+        if (array_key_exists('max_clusters', $data)) {
+            $assertInt($data['max_clusters'], 'max_clusters', 0);
         }
         if (array_key_exists('db_symbols', $data)) {
             if (!is_array($data['db_symbols'])) {

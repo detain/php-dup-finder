@@ -371,4 +371,74 @@ final class ConfigLoaderTest extends TestCase
         $this->assertSame(['myfind' => 'db.read'], $config->dbSymbolsMethods);
         $this->assertSame(['myfunc' => 'db.query'], $config->dbSymbolsFunctions);
     }
+
+    public function testValidateAcceptsFailOnImpactZero(): void
+    {
+        (new ConfigLoader())->validate(['fail_on_impact' => 0]);
+        $this->expectNotToPerformAssertions();
+    }
+
+    public function testValidateAcceptsFailOnImpactPositive(): void
+    {
+        (new ConfigLoader())->validate(['fail_on_impact' => 100]);
+        $this->expectNotToPerformAssertions();
+    }
+
+    public function testValidateRejectsFailOnImpactBelowZero(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('fail_on_impact must be >= 0');
+        (new ConfigLoader())->validate(['fail_on_impact' => -1]);
+    }
+
+    public function testValidateAcceptsMaxClustersZero(): void
+    {
+        (new ConfigLoader())->validate(['max_clusters' => 0]);
+        $this->expectNotToPerformAssertions();
+    }
+
+    public function testValidateAcceptsMaxClustersPositive(): void
+    {
+        (new ConfigLoader())->validate(['max_clusters' => 50]);
+        $this->expectNotToPerformAssertions();
+    }
+
+    public function testValidateRejectsMaxClustersBelowZero(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('max_clusters must be >= 0');
+        (new ConfigLoader())->validate(['max_clusters' => -1]);
+    }
+
+    public function testFailOnImpactDefaultsToZero(): void
+    {
+        $config = (new ConfigLoader())->load(paths: ['src'], configFile: null);
+        $this->assertSame(0, $config->failOnImpact);
+    }
+
+    public function testMaxClustersDefaultsToZero(): void
+    {
+        $config = (new ConfigLoader())->load(paths: ['src'], configFile: null);
+        $this->assertSame(0, $config->maxClusters);
+    }
+
+    public function testFailOnImpactOverrideTakesPrecedence(): void
+    {
+        $config = (new ConfigLoader())->load(
+            paths: ['src'],
+            configFile: null,
+            overrides: ['fail_on_impact' => 200],
+        );
+        $this->assertSame(200, $config->failOnImpact);
+    }
+
+    public function testMaxClustersOverrideTakesPrecedence(): void
+    {
+        $config = (new ConfigLoader())->load(
+            paths: ['src'],
+            configFile: null,
+            overrides: ['max_clusters' => 10],
+        );
+        $this->assertSame(10, $config->maxClusters);
+    }
 }
