@@ -11,6 +11,7 @@ use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Parsing\AstParser;
+use Phpdup\Util\AstSerializer;
 
 /**
  * Extracts a refactored function from a cluster and rewrites member call sites.
@@ -69,19 +70,16 @@ final class ApplyExtractor
 
     /**
      * Replace nodes at hole paths with Variable nodes referencing the parameter name.
-     *
-     * @return Node
      */
     private function replaceHolesWithParams(Cluster $cluster): Node
     {
-        // Deep clone so we don't mutate the original generalizedAst.
         $root = Normalizer::deepClone($cluster->generalizedAst);
 
-        if ($cluster->holePaths === []) {
+        if ($cluster->holePaths === [] || $cluster->holes === []) {
             return $root;
         }
 
-        // Build a map of pathKey => Hole for quick lookup.
+        // Build pathKey => Hole map.
         /** @var array<string, Hole> $pathKeyToHole */
         $pathKeyToHole = [];
         foreach ($cluster->holes as $hole) {
@@ -91,75 +89,91 @@ final class ApplyExtractor
             }
         }
 
-        $generalizedAst = $cluster->generalizedAst;
-        $traverser = new NodeTraverser();
-        $traverser->addVisitor(new class($pathKeyToHole, $generalizedAst) extends NodeVisitorAbstract {
-            /** @var array<string, Hole> */
-            private array $pathKeyToHole;
-            private Node $generalizedAst;
+        // For each hole path, navigate to that position in the cloned AST and replace.
+        foreach ($pathKeyToHole as $pathKey => $hole) {
+            $path = $cluster->holePaths[$hole->placeholder];
+            $this->setNodeAtPath($root, $path, new Node\Expr\Variable($hole->suggestedName));
+        }
 
-            /** @param array<string, Hole> $pathKeyToHole */
-            public function __construct(array $pathKeyToHole, Node $generalizedAst)
-            {
-                $this->pathKeyToHole = $pathKeyToHole;
-                $this->generalizedAst = $generalizedAst;
-            }
+        return $root;
+    }
 
-            public function enterNode(Node $node): ?Node
-            {
-                $path = $this->findPathForNode($node);
-                if ($path === null) {
-                    return null;
-                }
-                $pathKey = $this->pathKey($path);
-                if (isset($this->pathKeyToHole[$pathKey])) {
-                    $hole = $this->pathKeyToHole[$pathKey];
-                    return new Node\Expr\Variable($hole->suggestedName);
-                }
-                return null;
-            }
+    /**
+     * Set $node->...->$path[-1] = $replacement by traversing $path.
+     *
+     * @param Node|null $root
+     * @param list<int|string> $path
+     */
+    private function setNodeAtPath(?Node $root, array $path, Node $replacement): void
+    {
+        if ($root === null || $path === []) {
+            return;
+        }
 
-            /** @return list<int|string>|null */
-            private function findPathForNode(Node $targetNode): ?array
-            {
-                $targetId = spl_object_id($targetNode);
-                $foundPath = null;
-                $this->walkWithPath($this->generalizedAst, [], $targetId, $foundPath);
-                return $foundPath;
-            }
-
-            /**
-             * @param Node|null $node
-             * @param list<int|string> $path
-             * @param int $targetId
-             * @param list<int|string>|null $foundPath
-             */
-            private function walkWithPath(?Node $node, array $path, int $targetId, ?array &$foundPath): void
-            {
-                if ($node === null || $foundPath !== null) {
+        $current = $root;
+        for ($i = 0; $i < count($path) - 1; $i++) {
+            $key = $path[$i];
+            if (is_int($key)) {
+                $next = $this->getArrayChild($current, $key);
+                if ($next === null) {
                     return;
                 }
-                if (spl_object_id($node) === $targetId) {
-                    $foundPath = $path;
+                $current = $next;
+            } else {
+                $prop = $current->$key ?? null;
+                if (!$prop instanceof Node) {
                     return;
                 }
-                foreach ($node->getSubNodeNames() as $sub) {
-                    $val = $node->$sub ?? null;
-                    if ($val instanceof Node) {
-                        $this->walkWithPath($val, [...$path, $sub], $targetId, $foundPath);
+                $current = $prop;
+            }
+        }
+
+        $lastKey = $path[count($path) - 1];
+        if (is_int($lastKey)) {
+            $this->setArrayChild($current, $lastKey, $replacement);
+        } else {
+            $current->$lastKey = $replacement;
+        }
+    }
+
+    /**
+     * Get the child node at $index in an array property of $node.
+     */
+    private function getArrayChild(Node $node, int $index): ?Node
+    {
+        foreach ($node->getSubNodeNames() as $prop) {
+            $val = $node->$prop ?? null;
+            if (is_array($val)) {
+                $idx = 0;
+                foreach ($val as $item) {
+                    if ($idx === $index && $item instanceof Node) {
+                        return $item;
                     }
+                    $idx++;
                 }
             }
+        }
+        return null;
+    }
 
-            /** @param list<int|string> $path */
-            private function pathKey(array $path): string
-            {
-                return implode('/', array_map('strval', $path));
+    /**
+     * Set the child node at $index in an array property of $node to $replacement.
+     */
+    private function setArrayChild(Node $node, int $index, Node $replacement): void
+    {
+        foreach ($node->getSubNodeNames() as $prop) {
+            $val = $node->$prop ?? null;
+            if (is_array($val)) {
+                $idx = 0;
+                foreach ($val as $itemKey => $item) {
+                    if ($idx === $index && $item instanceof Node) {
+                        $node->$prop[$itemKey] = $replacement;
+                        return;
+                    }
+                    $idx++;
+                }
             }
-        });
-
-        $result = $traverser->traverse([$root]);
-        return $result[0];
+        }
     }
 
     /** @param list<int|string> $path */
@@ -179,8 +193,11 @@ final class ApplyExtractor
 
     private function buildFunctionFile(string $funcName, Node $modifiedAst, Cluster $cluster): string
     {
-        // Extract parameter list from signature.
         $params = $this->extractParameters($cluster->signature ?? '');
+        $memberCount = count($cluster->members);
+
+        // Extract the statements from the modified AST to use as function body
+        $bodyLines = $this->extractBodyLines($modifiedAst);
 
         $lines = [
             '<?php',
@@ -189,19 +206,58 @@ final class ApplyExtractor
             'namespace Refactored;',
             '',
             '/**',
-            ' * Auto-generated abstraction for phpdup cluster ' . $cluster->id . '.',
-            ' * Extracted via anti-unification — REVIEW BEFORE MERGE.',
+            " * Auto-generated abstraction for phpdup cluster {$cluster->id}.",
+            " * Extracted from {$memberCount} members via anti-unification — REVIEW BEFORE MERGE.",
+            ' *',
+            ' * Original signature: ' . str_replace(["\n", "\r"], ' ', (string)($cluster->signature ?? '')),
             ' */',
             "function {$funcName}({$params}): mixed",
             '{',
-            '    // Extracted from ' . count($cluster->members) . ' members.',
-            '    // TODO: implement the function body.',
-            '    //',
-            '    // Original signature: ' . str_replace(["\n", "\r"], ' ', (string)($cluster->signature ?? '')),
+            ...$bodyLines,
             '}',
         ];
 
         return implode("\n", $lines) . "\n";
+    }
+
+    /**
+     * Extract body lines from a modified AST node (with holes replaced by variables).
+     *
+     * @return list<string> indented PHP code lines
+     */
+    private function extractBodyLines(Node $node): array
+    {
+        try {
+            // If it's a function or method, use its statements
+            if ($node instanceof Node\Stmt\Function_) {
+                $stmts = $node->stmts;
+            } elseif ($node instanceof Node\Stmt\ClassMethod) {
+                $stmts = $node->stmts;
+            } elseif ($node instanceof Node\Stmt) {
+                // It's a statement (if, for, foreach, while, do, try, switch, match, etc.)
+                // Wrap it as the sole statement in the function body
+                $stmts = [$node];
+            } elseif ($node instanceof Node\Expr) {
+                // It's an expression - wrap in return statement
+                $exprCode = trim($this->printer->prettyPrintExpr($node));
+                return ['    return ' . $exprCode . ';'];
+            } else {
+                return ['    // (unsupported node type: ' . AstSerializer::shortType($node) . ')'];
+            }
+
+            if ($stmts === []) {
+                return ['    // (empty body)'];
+            }
+
+            $body = trim($this->printer->prettyPrint($stmts));
+            if ($body === '') {
+                return ['    // (empty body)'];
+            }
+
+            return explode("\n", $body);
+        } catch (\Throwable) {
+            return ['    // (body extraction failed)'];
+        }
     }
 
     private function extractParameters(string $signature): string
