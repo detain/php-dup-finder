@@ -99,6 +99,7 @@ final class Command extends SymfonyCommand
             ->addOption('refactor-tests', null, InputOption::VALUE_REQUIRED, 'Emit a PHPUnit test skeleton per cluster into DIR (data-provider rows mirror hole observations).')
             ->addOption('diff', null, InputOption::VALUE_REQUIRED, 'Write per-cluster unified diffs into DIR')
             ->addOption('patch', null, InputOption::VALUE_REQUIRED, 'Write a single cumulative patch file containing every cluster diff')
+            ->addOption('apply', null, InputOption::VALUE_NONE, 'Write a cumulative apply.diff containing all cluster refactor patches (use with --dry-run to preview)')
             ->addOption('baseline', null, InputOption::VALUE_REQUIRED, 'CI baseline file. If file exists: compare and exit 4 if new clusters found. If file does not exist: write baseline and exit 0 (first-run auto-baseline).')
             ->addOption('baseline-out', null, InputOption::VALUE_REQUIRED, 'Write current clusters as a baseline snapshot to FILE (overwrites existing).')
             ->addOption('limit', null, InputOption::VALUE_REQUIRED, 'Show at most N clusters in CLI output', 50)
@@ -156,7 +157,7 @@ Options grouped by category:
     --csv, --prometheus, --timeseries,
     --graphviz, --plantuml,
     --refactor-patch, --refactor-tests,
-    --diff, --patch, --limit, --sort, --stats,
+    --diff, --patch, --apply, --limit, --sort, --stats,
     --summary-only, --clusters
 
   <comment>CI / Baseline</comment>
@@ -252,6 +253,9 @@ HELP;
         }
         if ($input->getOption('trinity-collapse')) {
             $overrides['trinity_collapse'] = true;
+        }
+        if ($input->getOption('apply')) {
+            $overrides['apply'] = true;
         }
 
         $scorerOpt = $input->getOption('scorer');
@@ -466,6 +470,7 @@ HELP;
             'gitlabSastFile' => $input->getOption('gitlab-sast'),
             'diffDir'        => $input->getOption('diff'),
             'patchFile'      => $input->getOption('patch'),
+            'applyDir'       => $input->getOption('apply') ? 'refactored' : null,
             'checkstyleFile' => $input->getOption('checkstyle'),
             'csvFile'        => $input->getOption('csv'),
             'prometheusFile' => $input->getOption('prometheus'),
@@ -523,6 +528,7 @@ HELP;
                         gitlabSastFile: $opts['reportArgs']['gitlabSastFile'],
                         diffDir:        $opts['reportArgs']['diffDir'],
                         patchFile:      $opts['reportArgs']['patchFile'],
+                        applyDir:       $opts['reportArgs']['applyDir'],
                         checkstyleFile: $opts['reportArgs']['checkstyleFile'],
                         csvFile:        $opts['reportArgs']['csvFile'],
                         prometheusFile: $opts['reportArgs']['prometheusFile'],

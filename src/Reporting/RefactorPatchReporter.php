@@ -27,12 +27,31 @@ final class RefactorPatchReporter
 {
     /**
      * Write one `.patch` file per cluster under `$dir`.
+     *
+     * @param Report $report
+     * @param string $dir Output directory
+     * @param bool $apply When true, write a single cumulative `apply.diff` containing
+     *                    all cluster patches concatenated (F1a scaffold; F1b adds actual rewrite)
      */
-    public function writeTo(Report $report, string $dir): void
+    public function writeTo(Report $report, string $dir, bool $apply = false): void
     {
         if ($dir !== '' && !is_dir($dir)) {
             @mkdir($dir, 0o775, true);
         }
+
+        if ($apply) {
+            $parts = [];
+            foreach ($report->clusters as $cluster) {
+                if (count($cluster->members) < 2) {
+                    continue;
+                }
+                $safeId = preg_replace('/[^a-zA-Z0-9_-]/', '_', $cluster->id);
+                $parts[] = $this->buildPatch($cluster, $safeId);
+            }
+            file_put_contents($dir . DIRECTORY_SEPARATOR . 'apply.diff', implode("\n", $parts));
+            return;
+        }
+
         foreach ($report->clusters as $cluster) {
             if (count($cluster->members) < 2) {
                 continue;
