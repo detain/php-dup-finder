@@ -346,6 +346,16 @@ Ordering follows findings.md's roadmap: **correctness → security → broken ar
 | 7.1f | D2 | `fix/D2-delete-workerpool-run` | https://github.com/detain/php-dup-finder/pull/96 | 696✓ / ✓ / ✓ | ☑ (squash-merged) | delete WorkerPool::run(); remove 4 dead tests |
 | 7.1g | D6 | `fix/D6-ir-lifter-assignop` | https://github.com/detain/php-dup-finder/pull/97 | 701✓ / ✓ / ✓ | ☑ (squash-merged) | IrLifter handles AssignOp\\*, Pre/Post Inc/Dec → AssignIr |
 | 7.1h | D7 | `fix/D7-pattern-recognizer-null-guards` | https://github.com/detain/php-dup-finder/pull/98 | 701✓ / ✓ / ✓ | ☑ (squash-merged) | add $m->ast===null guards to isValidationChain, isSqlBuilder, isStateMachine |
+| 8.1 | Q2 | `refactor/Q2-writes-report-file-trait` | https://github.com/detain/php-dup-finder/pull/99 | 701✓ / ✓ / ✓ | ☑ (squash-merged 6693fbd) | WritesReportFile trait deduplicates file-write across 9 reporters |
+| 8.2 | Q3 | `refactor/Q3-centralized-severity` | https://github.com/detain/php-dup-finder/pull/100 | 701✓ / ✓ / ✓ | ☑ (squash-merged 0eb861c) | Severity::forImpact/forScore consumed by all reporters |
+| 8.3 | Q4 | `refactor/Q4-pipelinestate-helpers` | https://github.com/detain/php-dup-finder/pull/101 | 701✓ / ✓ / ✓ | ☑ (squash-merged afd082a) | sampleMemory/debug helpers; wrong $scannedFiles→$processedFiles counter fixed |
+| 8.4 | Q1+C5b | `refactor/Q1-override-resolver` | https://github.com/detain/php-dup-finder/pull/102 | 701✓ / ✓ / ✓ | ☑ (squash-merged 8c69b38) | OverrideResolver extracted; Command::execute() split into 6 methods; withOverrides() debugLog regression fixed |
+| 8.5 | Q5 | `refactor/Q5-clusterstage-decompose` | https://github.com/detain/php-dup-finder/pull/103 | 701✓ / ✓ / ✓ | ☑ (squash-merged 1669190) | ClusterStage::iter() decomposed to 9 methods; scorePairs() unifies serial/parallel scoring |
+| 8.6 | Q6 | `refactor/Q6-cooperative-stages-cancelled-check` | https://github.com/detain/php-dup-finder/pull/104 | 701✓ / ✓ / ✓ | ☑ (squash-merged 71a70c0) | PreprocessStage (2 checks) + RefactorStage (4 checks) honor $state->cancelled between yields; 1 phpstan if.alwaysFalse false positive documented (RefactorStage:177) |
+| 8.7 | Q7 | `refactor/Q7-nit-fixes` | https://github.com/detain/php-dup-finder/pull/105 | 701✓ / ✓ / ✓ | ☑ (squash-merged 8a49c12) | 7 of 9 nits fixed; Nits 1+4 skipped (behavior-changing); centralized Delimiters.php; ServeCommand HTTP reason phrases; CliReporter zero-member guard; SarifReporter null-only filter; MinHash per-row seeding; CFG/DataflowSummarizer docblocks; UpdateCommand checksum regex |
+
+> **Phase 8 rollup** (7 steps, all merged): 701 tests throughout; phpstan clean (1 pre-existing if.alwaysFalse false positive at RefactorStage:177 carried from Q6, documented not suppressed); psalm clean; baseline unchanged. New files: `src/Reporting/WritesReportFile.php`, `src/Reporting/Severity.php`, `src/Cli/OverrideResolver.php`, `src/Util/Delimiters.php`. Behavioral invariants maintained: Golden snapshots byte-identical throughout.
+
 | 7.1i | D8 | — (prior) | — | 701✓ / ✓ / ✓ | ☑ (already in master) | reset $namespace on leaveNode in BlockExtractor |
 
 (The driver keeps this table current and shows the operator a per-phase rollup.)
