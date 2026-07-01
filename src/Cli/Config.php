@@ -285,7 +285,7 @@ final class Config
             irThreshold:                    isset($overrides['ir_threshold']) ? (float)$overrides['ir_threshold'] : $this->irThreshold,
             mlPairUrl:                      isset($overrides['ml_pair_url']) ? (string)$overrides['ml_pair_url']  : $this->mlPairUrl,
             mlPairThreshold:                isset($overrides['ml_pair_threshold']) ? (float)$overrides['ml_pair_threshold'] : $this->mlPairThreshold,
-            debugLog:                       $this->debugLog,
+            debugLog:                       isset($overrides['debug_log']) ? (string)$overrides['debug_log'] : $this->debugLog,
             lowMemory:                      isset($overrides['low_memory']) ? (bool)$overrides['low_memory'] : $this->lowMemory,
         );
     }

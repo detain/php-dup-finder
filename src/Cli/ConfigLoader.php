@@ -29,12 +29,38 @@ final class ConfigLoader
             $data = $decoded;
         }
 
-        $get = function (string $key, mixed $default) use ($data, $overrides): mixed {
-            if (array_key_exists($key, $overrides)) {
-                return $overrides[$key];
-            }
-            return $data[$key] ?? $default;
-        };
+        $flatKeys = [
+            'min_block_size', 'max_block_size', 'normalization_mode',
+            'similarity_threshold', 'tree_threshold', 'min_cluster_impact',
+            'max_df', 'ngram_size', 'cache_dir', 'parallelism',
+            'workers', 'incremental', 'lazy_ast',
+            'sort', 'ted_weights', 'scorer',
+            'ir_threshold', 'ml_pair_threshold', 'debug_log',
+            'low_memory',
+        ];
+        $resolver = new OverrideResolver($flatKeys);
+        $flat = $resolver->resolve($overrides, $data, [
+            'min_block_size' => $base->minBlockSize,
+            'max_block_size' => $base->maxBlockSize,
+            'normalization_mode' => $base->normalizationMode,
+            'similarity_threshold' => $base->similarityThreshold,
+            'tree_threshold' => $base->treeThreshold,
+            'min_cluster_impact' => $base->minClusterImpact,
+            'max_df' => $base->maxDocumentFrequency,
+            'ngram_size' => $base->ngramSize,
+            'cache_dir' => $base->cacheDir,
+            'parallelism' => $base->parallelism,
+            'workers' => $base->workers,
+            'incremental' => $base->incremental,
+            'lazy_ast' => $base->lazyAst,
+            'sort' => $base->sort,
+            'ted_weights' => $base->tedWeights,
+            'scorer' => $base->scorer,
+            'ir_threshold' => $base->irThreshold,
+            'ml_pair_threshold' => $base->mlPairThreshold,
+            'debug_log' => $base->debugLog,
+            'low_memory' => $base->lowMemory,
+        ]);
 
         $report = is_array($data['report'] ?? null) ? $data['report'] : [];
         $htmlOverride = $overrides['html'] ?? ($report['html'] ?? null);
@@ -60,41 +86,41 @@ final class ConfigLoader
         return new Config(
             paths: $resolvedPaths,
             exclude: $resolvedExclude,
-            minBlockSize: (int)$get('min_block_size', $base->minBlockSize),
-            maxBlockSize: (int)$get('max_block_size', $base->maxBlockSize),
-            normalizationMode: (string)$get('normalization_mode', $base->normalizationMode),
-            similarityThreshold: (float)$get('similarity_threshold', $base->similarityThreshold),
-            treeThreshold: (float)$get('tree_threshold', $base->treeThreshold),
-            minClusterImpact: (int)$get('min_cluster_impact', $base->minClusterImpact),
-            maxDocumentFrequency: (float)$get('max_df', $base->maxDocumentFrequency),
-            ngramSize: (int)$get('ngram_size', $base->ngramSize),
-            cacheDir: (string)$get('cache_dir', $base->cacheDir),
-            parallelism: (string)$get('parallelism', $base->parallelism),
+            minBlockSize:                   $flat['min_block_size'],
+            maxBlockSize:                   $flat['max_block_size'],
+            normalizationMode:              $flat['normalization_mode'],
+            similarityThreshold:            $flat['similarity_threshold'],
+            treeThreshold:                  $flat['tree_threshold'],
+            minClusterImpact:               $flat['min_cluster_impact'],
+            maxDocumentFrequency:           $flat['max_df'],
+            ngramSize:                      $flat['ngram_size'],
+            cacheDir:                       $flat['cache_dir'],
+            parallelism:                    $flat['parallelism'],
             htmlReportDir: $htmlOverride !== null ? (string)$htmlOverride : null,
             jsonReportFile: $jsonOverride !== null ? (string)$jsonOverride : null,
-            workers: (int)$get('workers', $base->workers),
-            incremental: (bool)$get('incremental', $base->incremental),
-            lazyAst: (bool)$get('lazy_ast', $base->lazyAst),
+            workers:                        $flat['workers'],
+            incremental:                    $flat['incremental'],
+            lazyAst:                        $flat['lazy_ast'],
             allowedKinds: $allowedKinds,
             optionalBlocksEnabled:        (bool)($overrides['optional_blocks_enabled'] ?? $optBlock['enabled'] ?? $base->optionalBlocksEnabled),
             optionalBlocksContainment:    (float)($overrides['optional_blocks_containment'] ?? $optBlock['containment'] ?? $base->optionalBlocksContainment),
             optionalBlocksMinOverlap:     (float)($overrides['optional_blocks_min_overlap'] ?? $optBlock['min_overlap'] ?? $base->optionalBlocksMinOverlap),
             optionalBlocksMaxPerCluster:  (int)($overrides['optional_blocks_max_per_cluster'] ?? $optBlock['max_per_cluster'] ?? $base->optionalBlocksMaxPerCluster),
             optionalBlocksMinSegmentLength: (int)($overrides['optional_blocks_min_segment_length'] ?? $optBlock['min_segment_length'] ?? $base->optionalBlocksMinSegmentLength),
-            sort: (string)($overrides['sort'] ?? $data['sort'] ?? $base->sort),
-            tedWeights: (string)($overrides['ted_weights'] ?? $data['ted_weights'] ?? $base->tedWeights),
+            sort:                          $flat['sort'],
+            tedWeights:                    $flat['ted_weights'],
             normalizationPlugins: $this->extractNormalizationPlugins($data),
             perDirectoryOverrides: $this->discoverPerDirectoryOverrides($resolvedPaths),
             dbAware: (bool)($overrides['db_aware'] ?? $data['db_aware'] ?? $base->dbAware),
             trinityCollapse: (bool)($overrides['trinity_collapse'] ?? $data['trinity_collapse'] ?? $base->trinityCollapse),
             dbSymbolsMethods: $this->extractDbSymbols($data, $overrides, 'methods'),
             dbSymbolsFunctions: $this->extractDbSymbols($data, $overrides, 'functions'),
-            scorer: (string)($overrides['scorer'] ?? $data['scorer'] ?? $base->scorer),
-            irThreshold: (float)($overrides['ir_threshold'] ?? $data['ir_threshold'] ?? $base->irThreshold),
+            scorer:                         $flat['scorer'],
+            irThreshold:                    $flat['ir_threshold'],
             mlPairUrl: (string)($overrides['ml_pair_url'] ?? $data['ml_pair_url'] ?? $base->mlPairUrl),
-            mlPairThreshold: (float)($overrides['ml_pair_threshold'] ?? $data['ml_pair_threshold'] ?? $base->mlPairThreshold),
-            debugLog: isset($overrides['debug_log']) ? (string)$overrides['debug_log'] : ($data['debug_log'] ?? $base->debugLog),
-            lowMemory: (bool)($overrides['low_memory'] ?? $data['low_memory'] ?? $base->lowMemory),
+            mlPairThreshold:               $flat['ml_pair_threshold'],
+            debugLog:                      $flat['debug_log'],
+            lowMemory:                     $flat['low_memory'],
         );
     }
 

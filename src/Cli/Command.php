@@ -21,6 +21,29 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 
+/**
+ * `phpdup analyze` entry-point.
+ *
+ * execute() delegates to six private methods that each own one logical phase.
+ * Keeping them private enforces a strict call order and makes the flow
+ * easier to follow than a long linear method:
+ *
+ *  1. parseCliOverrides()   — validate and collect every CLI flag into a
+ *                             flat override dict; returns [] on error.
+ *  2. resolveProfile()       — load a --profile preset and merge its values
+ *                             into $overrides (only for unset keys).
+ *  3. resolveAutoTune()      — probe the corpus and append auto-suggested
+ *                             overrides; also returns whether --exact-only
+ *                             was forced by the tuner.
+ *  4. ConfigLoader::load()   — applies the three-tier precedence chain
+ *                             (overrides → config file → defaults) and
+ *                             returns a frozen Config object.
+ *  5. parseRuntimeOptions()  — extract options that control pipeline runtime
+ *                             behaviour (cache, TUI, watch, output formats).
+ *  6. buildPipelineFactory() — build the Pipeline with resolved options.
+ *  7. dispatch()             — run the pipeline directly, via TUI, or via
+ *                             watch-mode, and return the process exit code.
+ */
 final class Command extends SymfonyCommand
 {
     protected function configure(): void
@@ -154,6 +177,46 @@ HELP;
             return 2;
         }
 
+        $overrides = $this->parseCliOverrides($input, $output);
+        if ($overrides === []) {
+            return 2; // parseCliOverrides emitted an error and returned []
+        }
+
+        $profileExclude = $this->resolveProfile($input, $output, $paths, $overrides);
+
+        $autoTuneExactOnly = $this->resolveAutoTune($input, $output, $paths, $overrides);
+
+        $config = (new ConfigLoader())->load(
+            paths: $paths,
+            configFile: $input->getOption('config'),
+            overrides: $overrides,
+            profileExclude: $profileExclude,
+        );
+
+        $runtimeOptions = $this->parseRuntimeOptions($input, $output, $autoTuneExactOnly);
+
+        // buildPipelineFactory only needs a subset of runtimeOptions
+        $pipelineOpts = [
+            'useCache'   => $runtimeOptions['useCache'],
+            'exactOnly'  => $runtimeOptions['exactOnly'],
+            'showStats'  => $runtimeOptions['showStats'],
+            'maxMemoryMb' => $runtimeOptions['maxMemoryMb'],
+            'stopAfter'  => $runtimeOptions['stopAfter'],
+            'reportArgs' => $runtimeOptions['reportArgs'],
+        ];
+        $buildPipeline = $this->buildPipelineFactory($pipelineOpts);
+
+        return $this->dispatch($input, $output, $config, $buildPipeline, $runtimeOptions);
+    }
+
+    /**
+     * Parse all CLI flags into a flat override dict.
+     * Returns [] on error (after emitting diagnostics).
+     *
+     * @return array<string, mixed>
+     */
+    private function parseCliOverrides(InputInterface $input, OutputInterface $output): array
+    {
         $overrides = array_filter([
             'min_block_size'              => $input->getOption('min-block-size'),
             'normalization_mode'          => $input->getOption('mode'),
@@ -168,25 +231,29 @@ HELP;
             'ted_weights'                 => $input->getOption('ted-weights'),
             'debug_log'                   => $input->getOption('debug-log'),
         ], fn($v) => $v !== null);
+
         if ($input->getOption('db-aware')) {
             $overrides['db_aware'] = true;
         }
         if ($input->getOption('trinity-collapse')) {
             $overrides['trinity_collapse'] = true;
         }
+
         $scorerOpt = $input->getOption('scorer');
         if ($scorerOpt !== null) {
             $scorerOpt = strtolower((string)$scorerOpt);
             if (!in_array($scorerOpt, ['default', 'ir'], true)) {
                 $output->writeln('<error>phpdup: --scorer must be one of default|ir</error>');
-                return 2;
+                return [];
             }
             $overrides['scorer'] = $scorerOpt;
         }
+
         $irThresholdOpt = $input->getOption('ir-threshold');
         if ($irThresholdOpt !== null) {
             $overrides['ir_threshold'] = (float)$irThresholdOpt;
         }
+
         $mlPairUrlOpt = $input->getOption('ml-pair-url');
         if ($mlPairUrlOpt !== null) {
             $url = (string)$mlPairUrlOpt;
@@ -194,26 +261,30 @@ HELP;
                 && !\Phpdup\Ml\MlClient::isAllowedUrl(rtrim($url, '/') . '/score-pair')
             ) {
                 $output->writeln('<error>phpdup: --ml-pair-url must be an http(s) URL with a non-empty host (and not 0.0.0.0)</error>');
-                return 2;
+                return [];
             }
             $overrides['ml_pair_url'] = $url;
         }
+
         $mlPairThresholdOpt = $input->getOption('ml-pair-threshold');
         if ($mlPairThresholdOpt !== null) {
             $overrides['ml_pair_threshold'] = (float)$mlPairThresholdOpt;
         }
+
         $obFlag = $input->getOption('optional-blocks');
         if ($obFlag !== null) {
             $obFlag = strtolower((string)$obFlag);
             if (!in_array($obFlag, ['on', 'off', 'true', 'false', '1', '0', 'yes', 'no'], true)) {
                 $output->writeln('<error>phpdup: --optional-blocks must be on|off</error>');
-                return 2;
+                return [];
             }
             $overrides['optional_blocks_enabled'] = in_array($obFlag, ['on', 'true', '1', 'yes'], true);
         }
+
         if ($input->getOption('no-incremental')) $overrides['incremental'] = false;
         if ($input->getOption('no-lazy-ast'))    $overrides['lazy_ast']   = false;
         if ($input->getOption('low-memory'))    $overrides['low_memory'] = true;
+
         // Validate --sort eagerly so the user gets a friendly exit 2 instead
         // of an uncaught InvalidArgumentException out of Config::__construct.
         $sortOpt = $input->getOption('sort');
@@ -226,9 +297,10 @@ HELP;
                     $e->getMessage(),
                     implode(', ', \Phpdup\Reporting\ClusterSort::ALL_KEYS),
                 ));
-                return 2;
+                return [];
             }
         }
+
         $kindsOpt = $input->getOption('kinds');
         if ($kindsOpt !== null) {
             $kinds = array_values(array_filter(array_map('trim', explode(',', (string)$kindsOpt))));
@@ -239,82 +311,106 @@ HELP;
                     implode(',', $invalid),
                     implode(',', \Phpdup\Extraction\BlockExtractor::ALL_KINDS),
                 ));
-                return 2;
+                return [];
             }
             $overrides['allowed_kinds'] = $kinds;
         }
 
-        // Profile detection (V.A.2): runs before --auto-tune so the
-        // tuner sees the framework-aware excludes / kinds. Order:
-        //   1. Profile fills in *missing* keys.
-        //   2. Auto-tune fills in still-missing keys.
-        //   3. ConfigLoader merges JSON config + final $overrides.
-        // Explicit --foo CLI flags went into $overrides up top, so
-        // they always beat profile + tuner.
-        $profileData = [];
+        return $overrides;
+    }
+
+    /**
+     * Load and apply a profile if --profile is set.
+     *
+     * Modifies $overrides in place: profile values fill in only keys
+     * the user did not already set via CLI flags.
+     *
+     * @param list<string> $paths
+     * @param array<string, mixed> $overrides
+     * @return list<string>|null $profileExclude
+     */
+    private function resolveProfile(InputInterface $input, OutputInterface $output, array $paths, array &$overrides): ?array
+    {
         $profileOpt = $input->getOption('profile');
-        if ($profileOpt !== null) {
-            $registry = ProfileRegistry::bundled();
-            $profileName = (string)$profileOpt;
-            if ($profileName === 'auto') {
-                $profileName = (new ProjectProfileDetector())->detect($paths);
-                $output->writeln("<info>phpdup</info> profile auto-detect: {$profileName}");
-            } elseif (!in_array($profileName, $registry->listAvailable(), true)) {
-                $output->writeln(sprintf(
-                    '<error>phpdup: --profile must be one of %s|auto</error>',
-                    implode('|', $registry->listAvailable()),
-                ));
-                return 2;
-            }
-            try {
-                $profileData = $registry->load($profileName);
-            } catch (\RuntimeException $e) {
-                $output->writeln('<error>phpdup: ' . $e->getMessage() . '</error>');
-                return 2;
-            }
-            // Map profile JSON keys to override-dict keys.
-            $profileOverrides = $this->profileToOverrides($profileData);
-            foreach ($profileOverrides as $k => $v) {
-                if (!array_key_exists($k, $overrides)) {
-                    $overrides[$k] = $v;
-                }
+        if ($profileOpt === null) {
+            return null;
+        }
+
+        $registry = ProfileRegistry::bundled();
+        $profileName = (string)$profileOpt;
+
+        if ($profileName === 'auto') {
+            $profileName = (new ProjectProfileDetector())->detect($paths);
+            $output->writeln("<info>phpdup</info> profile auto-detect: {$profileName}");
+        } elseif (!in_array($profileName, $registry->listAvailable(), true)) {
+            $output->writeln(sprintf(
+                '<error>phpdup: --profile must be one of %s|auto</error>',
+                implode('|', $registry->listAvailable()),
+            ));
+            return null;
+        }
+
+        try {
+            $profileData = $registry->load($profileName);
+        } catch (\RuntimeException $e) {
+            $output->writeln('<error>phpdup: ' . $e->getMessage() . '</error>');
+            return null;
+        }
+
+        $profileOverrides = $this->profileToOverrides($profileData);
+        foreach ($profileOverrides as $k => $v) {
+            if (!array_key_exists($k, $overrides)) {
+                $overrides[$k] = $v;
             }
         }
+
         $profileExclude = isset($profileData['exclude']) && is_array($profileData['exclude'])
             ? array_values(array_filter($profileData['exclude'], 'is_string'))
             : null;
-        unset($profileData);
+
+        return $profileExclude;
+    }
+
+    /**
+     * Run auto-tune and merge suggestions into $overrides.
+     *
+     * @param list<string> $paths
+     * @param array<string, mixed> $overrides
+     * @return bool $autoTuneExactOnly
+     */
+    private function resolveAutoTune(InputInterface $input, OutputInterface $output, array $paths, array &$overrides): bool
+    {
+        if (!$input->getOption('auto-tune')) {
+            return false;
+        }
+
+        $base = Config::defaults($paths);
+        $tuner = new AutoTuner();
+        $suggestion = $tuner->tune($paths, $base->exclude);
+        $output->writeln(sprintf(
+            '<info>phpdup</info> auto-tune: %s',
+            $suggestion->rationale,
+        ));
 
         $autoTuneExactOnly = false;
-        if ($input->getOption('auto-tune')) {
-            $base = Config::defaults($paths);
-            $tuner = new AutoTuner();
-            $suggestion = $tuner->tune($paths, $base->exclude);
-            $output->writeln(sprintf(
-                '<info>phpdup</info> auto-tune: %s',
-                $suggestion->rationale,
-            ));
-            // Explicit CLI flags win — only fill in keys the user didn't
-            // override. 'exact_only' is a synthetic CLI-level switch handled
-            // below, not a Config override.
-            foreach ($suggestion->overrides as $k => $v) {
-                if ($k === 'exact_only') {
-                    $autoTuneExactOnly = (bool)$v;
-                    continue;
-                }
-                if (!array_key_exists($k, $overrides)) {
-                    $overrides[$k] = $v;
-                }
+        foreach ($suggestion->overrides as $k => $v) {
+            if ($k === 'exact_only') {
+                $autoTuneExactOnly = (bool)$v;
+                continue;
+            }
+            if (!array_key_exists($k, $overrides)) {
+                $overrides[$k] = $v;
             }
         }
 
-        $config = (new ConfigLoader())->load(
-            paths: $paths,
-            configFile: $input->getOption('config'),
-            overrides: $overrides,
-            profileExclude: $profileExclude,
-        );
+        return $autoTuneExactOnly;
+    }
 
+    /**
+     * @return array{useCache: bool, exactOnly: bool, showStats: bool, limit: int, cliVerbosity: string, maxMemoryMb: int, stopAfter: Stage|null, watchMode: bool, tuiMode: bool, themeName: string, reportArgs: array<string, mixed>}
+     */
+    private function parseRuntimeOptions(InputInterface $input, OutputInterface $output, bool $autoTuneExactOnly): array
+    {
         $useCache  = !$input->getOption('no-cache');
         $exactOnly = (bool)$input->getOption('exact-only') || $autoTuneExactOnly;
         $showStats = (bool)$input->getOption('stats');
@@ -335,7 +431,6 @@ HELP;
             if ($stopAfter === null) {
                 $allowed = implode('|', array_map(fn(Stage $s) => $s->value, Stage::ordered()));
                 $output->writeln("<error>phpdup: --stage must be one of {$allowed}</error>");
-                return 2;
             }
         }
 
@@ -347,14 +442,9 @@ HELP;
                 '<error>phpdup: --theme must be one of %s</error>',
                 implode('|', TuiRunner::knownThemes()),
             ));
-            return 2;
         }
 
-        // Factory closure used both for live TUI mode (init() + restart on watch change)
-        // and for the synchronous code path. Captures all the runtime knobs by value;
-        // $modelRef is by-reference so the listener resolves once the model is built.
-        $modelRef    = null;
-        $reportArgs  = [
+        $reportArgs = [
             'limit'          => $limit,
             'showStats'      => $showStats,
             'sarifFile'      => $input->getOption('sarif'),
@@ -373,51 +463,84 @@ HELP;
             'minSafety'      => $input->getOption('min-safety') !== null ? (float)$input->getOption('min-safety') : 0.0,
             'pagerMode'      => (string)($input->getOption('pager') ?? Pager::MODE_NEVER),
         ];
+
         if (!in_array($reportArgs['pagerMode'], Pager::MODES, true)) {
             $output->writeln('<error>phpdup: --pager must be one of ' . implode('|', Pager::MODES) . '</error>');
-            return 2;
         }
         if ($reportArgs['minSafety'] < 0.0 || $reportArgs['minSafety'] > 1.0) {
             $output->writeln('<error>phpdup: --min-safety must be in [0, 1]</error>');
-            return 2;
         }
-        $buildPipeline = static function (?ProgressListener $listener) use (
-            $useCache, $exactOnly, $showStats, $maxMemoryMb, $stopAfter, $reportArgs
-        ): Pipeline {
+
+        return [
+            'useCache' => $useCache,
+            'exactOnly' => $exactOnly,
+            'showStats' => $showStats,
+            'limit' => $limit,
+            'cliVerbosity' => $cliVerbosity,
+            'maxMemoryMb' => $maxMemoryMb,
+            'stopAfter' => $stopAfter,
+            'watchMode' => $watchMode,
+            'tuiMode' => $tuiMode,
+            'themeName' => $themeName,
+            'reportArgs' => $reportArgs,
+        ];
+    }
+
+    /**
+     * Build the pipeline factory closure.
+     *
+     * @param array{useCache: bool, exactOnly: bool, showStats: bool, maxMemoryMb: int, stopAfter: Stage|null, reportArgs: array<string, mixed>} $opts
+     * @return \Closure(?ProgressListener): Pipeline
+     */
+    private function buildPipelineFactory(array $opts): \Closure
+    {
+        return static function (?ProgressListener $listener) use ($opts): Pipeline {
             return new Pipeline(
                 stages: [
                     new ScanningStage($listener),
-                    new PreprocessStage($useCache, $showStats, $listener, $maxMemoryMb),
-                    new ClusterStage($exactOnly, $maxMemoryMb, $listener),
-                    new RefactorStage($useCache, $listener),
+                    new PreprocessStage($opts['useCache'], $opts['showStats'], $listener, $opts['maxMemoryMb']),
+                    new ClusterStage($opts['exactOnly'], $opts['maxMemoryMb'], $listener),
+                    new RefactorStage($opts['useCache'], $listener),
                     new ReportStage(
-                        limit:          $reportArgs['limit'],
-                        showStats:      $reportArgs['showStats'],
-                        sarifFile:      $reportArgs['sarifFile'],
-                        gitlabSastFile: $reportArgs['gitlabSastFile'],
-                        diffDir:        $reportArgs['diffDir'],
-                        patchFile:      $reportArgs['patchFile'],
-                        checkstyleFile: $reportArgs['checkstyleFile'],
-                        csvFile:        $reportArgs['csvFile'],
-                        prometheusFile: $reportArgs['prometheusFile'],
-                        timeseriesFile: $reportArgs['timeseriesFile'],
-                        cliVerbosity:   $reportArgs['cliVerbosity'],
-                        minSafety:      $reportArgs['minSafety'],
-                        graphvizFile:   $reportArgs['graphvizFile'],
-                        plantumlFile:   $reportArgs['plantumlFile'],
-                        pagerMode:      $reportArgs['pagerMode'],
-                        refactorPatchDir: $reportArgs['refactorPatchDir'],
-                        refactorTestsDir: $reportArgs['refactorTestsDir'],
+                        limit:          $opts['reportArgs']['limit'],
+                        showStats:      $opts['reportArgs']['showStats'],
+                        sarifFile:      $opts['reportArgs']['sarifFile'],
+                        gitlabSastFile: $opts['reportArgs']['gitlabSastFile'],
+                        diffDir:        $opts['reportArgs']['diffDir'],
+                        patchFile:      $opts['reportArgs']['patchFile'],
+                        checkstyleFile: $opts['reportArgs']['checkstyleFile'],
+                        csvFile:        $opts['reportArgs']['csvFile'],
+                        prometheusFile: $opts['reportArgs']['prometheusFile'],
+                        timeseriesFile: $opts['reportArgs']['timeseriesFile'],
+                        cliVerbosity:   $opts['reportArgs']['cliVerbosity'],
+                        minSafety:      $opts['reportArgs']['minSafety'],
+                        graphvizFile:   $opts['reportArgs']['graphvizFile'],
+                        plantumlFile:   $opts['reportArgs']['plantumlFile'],
+                        pagerMode:      $opts['reportArgs']['pagerMode'],
+                        refactorPatchDir: $opts['reportArgs']['refactorPatchDir'],
+                        refactorTestsDir: $opts['reportArgs']['refactorTestsDir'],
                     ),
                 ],
-                stopAfter: $stopAfter,
+                stopAfter: $opts['stopAfter'],
                 listener:  $listener,
             );
         };
+    }
 
+    /**
+     * @param array{useCache: bool, exactOnly: bool, showStats: bool, limit: int, cliVerbosity: string, maxMemoryMb: int, stopAfter: Stage|null, watchMode: bool, tuiMode: bool, themeName: string, reportArgs: array<string, mixed>} $opts
+     */
+    private function dispatch(
+        InputInterface $input,
+        OutputInterface $output,
+        Config $config,
+        \Closure $buildPipeline,
+        array $opts,
+    ): int {
         $tuiRunner = new TuiRunner();
 
-        if ($tuiMode) {
+        if ($opts['tuiMode']) {
+            $modelRef = null;
             $iteratorFactory = static function () use (&$modelRef, $buildPipeline, $config, $output): array {
                 $state = new PipelineState($config);
                 /** @var ProgressListener|null $listener */
@@ -425,15 +548,15 @@ HELP;
                 $gen = $buildPipeline($listener)->iter($state, $output);
                 return [$gen, $state];
             };
-            $modelRef = $tuiRunner->buildLiveModel($themeName, $iteratorFactory);
+            $modelRef = $tuiRunner->buildLiveModel($opts['themeName'], $iteratorFactory);
 
-            if ($watchMode) {
+            if ($opts['watchMode']) {
                 return $this->runWatchTui($modelRef, $tuiRunner, $config, $output);
             }
             return $tuiRunner->runWithModel($modelRef);
         }
 
-        if ($watchMode) {
+        if ($opts['watchMode']) {
             $pipeline = $buildPipeline(null);
             $rebuild  = static fn(): PipelineState => new PipelineState($config);
             return (new WatchRunner($pipeline, $rebuild, $output))->run();
@@ -455,6 +578,14 @@ HELP;
         return 0;
     }
 
+    /**
+     * Run the live SugarCraft dashboard with a 1.5 s poll loop that
+     * snapshots file mtimes after every completed analysis pass and
+     * triggers a fresh run when any file changes.
+     *
+     * @see WatchRunner  Plain (non-TUI) watch-mode runner used when --tui
+     *                  is absent but --watch is present.
+     */
     private function runWatchTui(
         PhpdupModel $model,
         TuiRunner $tuiRunner,
