@@ -68,6 +68,8 @@ for the full JSON-Schema-compatible spec.
 | `--diff DIR`                               | —       | Write one `.diff` per cluster (pairwise from member[0]) into DIR.                      |
 | `--patch FILE`                             | —       | Write a single cumulative patch file containing every cluster diff.                    |
 | `--checkstyle FILE`                        | —       | Write Checkstyle XML to FILE (Jenkins / Sonar / Bitbucket consumers).                  |
+| `--baseline FILE`                          | —       | CI baseline file. If FILE exists: compare and exit 4 if new clusters found. If FILE does not exist: write baseline and exit 0 (first-run auto-baseline). |
+| `--baseline-out FILE`                      | —       | Write current clusters as a baseline snapshot to FILE (overwrites existing).           |
 | `--limit N`                                | `50`    | Maximum number of clusters to print to the terminal. Doesn't affect file outputs.       |
 | `--sort KEY[:asc\|desc]`                   | `impact:desc` | Cluster sort. Keys: `impact`, `members`, `block-size`, `lines`, `similarity`, `confidence`, `name`, `file`, `id`. Aliases: `size`/`count` → `members`. Direction may also be given as a leading `-` (desc) or `+` (asc), e.g. `-members`, `+lines`. |
 | `--stats`                                  | off     | Print pipeline stage timings, block-kind histogram, and worker info after the report.  |
@@ -93,6 +95,68 @@ for the full JSON-Schema-compatible spec.
 | `--theme NAME`                             | `ansi`  | TUI theme: `ansi` \| `plain` \| `charm` \| `dracula` \| `nord` \| `catppuccin`.                      |
 | `--plain`                                  | off     | Force plain CLI output (no TUI, no ANSI colours). Useful when CI shells report `isatty()=true`.      |
 | `--watch`                                  | off     | Stay running and re-analyze on file changes via a poll-based `React\EventLoop` timer (1.5 s default poll). Combines with `--tui`. |
+
+### CI / Baseline
+
+The `--baseline` and `--baseline-out` flags implement an incremental CI gate
+workflow: accept the current state of duplication as a baseline, then fail the
+CI build only when **new** duplicate clusters appear in subsequent runs.
+
+**How it works:**
+
+- `member_hashes` are the primary identity key. They are SHA-256 fingerprints
+  computed from `sha256(file_path + start_line + end_line)` for each block
+  in a cluster. They are stable across runs (not dependent on cluster IDs,
+  which may change as clustering algorithms evolve).
+- A cluster is considered **new** if its member hashes are not a subset of
+  any baseline cluster's member hashes. This means a baseline cluster may
+  grow (new members added) without triggering a new-duplicate gate.
+
+**Workflow:**
+
+1. **First run — create baseline:**
+   ```bash
+   bin/phpdup analyze src --baseline baseline.json
+   # If baseline.json does not exist: writes baseline, exits 0
+   ```
+
+2. **Subsequent runs — detect regressions:**
+   ```bash
+   bin/phpdup analyze src --baseline baseline.json
+   # Exit 0 if no new clusters
+   # Exit 4 if new clusters found (CI gate failed)
+   ```
+
+3. **Explicit baseline update:**
+   ```bash
+   bin/phpdup analyze src --baseline-out baseline.json
+   # Always writes baseline (overwrites existing), exits 0
+   ```
+
+**Exit codes:**
+
+| Code | Condition                                                            |
+|------|----------------------------------------------------------------------|
+| `0`  | Normal run, OR baseline written (first run / --baseline-out), OR `--baseline FILE` exists and no new clusters detected |
+| `4`  | `--baseline FILE` exists and new duplicate clusters were found       |
+
+**Example CI pipeline:**
+
+```bash
+# In CI: fail if new duplication introduced since main branch baseline
+git fetch origin main
+git diff origin/main -- baseline.json > /dev/null 2>&1 && \
+    cp baseline.json baseline-branch.json || \
+    cp /dev/null baseline-branch.json
+
+bin/phpdup analyze src --baseline baseline-branch.json
+STATUS=$?
+
+# Restore main baseline
+cp baseline-branch.json baseline.json
+
+exit $STATUS
+```
 
 ### Validation
 
@@ -149,6 +213,7 @@ first line of the zsh dump.
 | `1`  | Internal error (uncaught exception, reporter failure, etc.).                       |
 | `2`  | Invalid input: missing required argument, unknown shell for `completion`, schema-validation failure for `--validate-config`, invalid `--theme`, etc. |
 | `3`  | CI gate triggered: `--fail-on-impact N` exceeded (total cluster impact > N) or `--max-clusters N` exceeded (cluster count > N). |
+| `4`  | CI gate triggered: `--baseline FILE` was provided, FILE exists, and new duplicate clusters were found that were not present in the baseline. |
 
 ## Environment variables
 

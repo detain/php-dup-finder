@@ -146,6 +146,14 @@ final class Config
         // CI gate: exit code 3 when cluster count exceeds this value.
         // 0 = disabled. CLI: --max-clusters.
         public readonly int $maxClusters = 0,
+        // Baseline file path for CI incremental gating (--baseline FILE).
+        // If file exists: load baseline and exit 4 if new clusters found.
+        // If file doesn't exist: behave like --baseline-out (write baseline, exit 0).
+        public readonly ?string $baselineFile = null,
+        // Baseline output path (--baseline-out FILE).
+        // Write current clusters as a baseline snapshot to FILE.
+        // Overwrites if FILE exists.
+        public readonly ?string $baselineOutFile = null,
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -301,6 +309,8 @@ final class Config
             lowMemory:                      isset($overrides['low_memory']) ? (bool)$overrides['low_memory'] : $this->lowMemory,
             failOnImpact:                   isset($overrides['fail_on_impact']) ? (int)$overrides['fail_on_impact'] : $this->failOnImpact,
             maxClusters:                    isset($overrides['max_clusters']) ? (int)$overrides['max_clusters'] : $this->maxClusters,
+            baselineFile:                    isset($overrides['baseline']) ? (string)$overrides['baseline'] : $this->baselineFile,
+            baselineOutFile:                 isset($overrides['baseline_out']) ? (string)$overrides['baseline_out'] : $this->baselineOutFile,
         );
     }
 }
