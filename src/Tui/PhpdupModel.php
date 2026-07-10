@@ -20,6 +20,7 @@ use SugarCraft\Core\Msg\KeyMsg;
 use SugarCraft\Core\Msg\WindowSizeMsg;
 use SugarCraft\Core\Progress;
 use SugarCraft\Core\ProgressBarState;
+use SugarCraft\Core\Subscriptions;
 use SugarCraft\Core\View;
 use SugarCraft\Kit\Theme;
 use SugarCraft\Stickers\Flex\FlexBox;
@@ -236,6 +237,16 @@ final class PhpdupModel implements Model, ProgressListener
             body: $this->renderBody(),
             progressBar: $this->taskbarProgress(),
         );
+    }
+
+    /**
+     * No subscriptions: the dashboard drives its pipeline via a self-rescheduling
+     * {@see Cmd::tick} pump (see {@see scheduleNextPump()}), not the subscription
+     * system, so the reconciler has nothing to manage here.
+     */
+    public function subscriptions(): ?Subscriptions
+    {
+        return null;
     }
 
     private function taskbarProgress(): Progress
