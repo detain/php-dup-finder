@@ -8,9 +8,9 @@ use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Pipeline\Stage;
 use Phpdup\Tui\Msg\RestartPipelineMsg;
 use Phpdup\Tui\Msg\StagePumpedMsg;
-use SugarCraft\Bits\Spinner\Spinner;
-use SugarCraft\Bits\Spinner\Style as SpinnerStyle;
-use SugarCraft\Bits\Spinner\TickMsg as SpinnerTickMsg;
+use SugarCraft\Widgets\Spinner\Spinner;
+use SugarCraft\Widgets\Spinner\Style as SpinnerStyle;
+use SugarCraft\Widgets\Spinner\TickMsg as SpinnerTickMsg;
 use SugarCraft\Charts\Sparkline\Sparkline;
 use SugarCraft\Core\Cmd;
 use SugarCraft\Core\KeyType;
@@ -22,9 +22,9 @@ use SugarCraft\Core\Progress;
 use SugarCraft\Core\ProgressBarState;
 use SugarCraft\Core\Subscriptions;
 use SugarCraft\Core\View;
-use SugarCraft\Kit\Theme;
-use SugarCraft\Stickers\Flex\FlexBox;
-use SugarCraft\Stickers\Flex\FlexItem;
+use SugarCraft\Cli\Theme;
+use SugarCraft\Flexbox\Flex\FlexBox;
+use SugarCraft\Flexbox\Flex\FlexItem;
 
 /**
  * SugarCraft TUI model for phpdup.

@@ -7,7 +7,7 @@ use Phpdup\Pipeline\PipelineState;
 use React\EventLoop\LoopInterface;
 use SugarCraft\Core\Program;
 use SugarCraft\Core\ProgramOptions;
-use SugarCraft\Kit\Theme;
+use SugarCraft\Cli\Theme;
 
 /**
  * Boots a SugarCraft {@see Program} for a {@see PhpdupModel}.

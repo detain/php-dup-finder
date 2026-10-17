@@ -5,7 +5,7 @@ namespace Phpdup\Tests\Unit\Tui;
 
 use PHPUnit\Framework\TestCase;
 use Phpdup\Tui\TuiRunner;
-use SugarCraft\Kit\Theme;
+use SugarCraft\Cli\Theme;
 
 final class TuiRunnerTest extends TestCase
 {

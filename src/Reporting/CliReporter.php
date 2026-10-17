@@ -6,14 +6,14 @@ namespace Phpdup\Reporting;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Refactor\Hole;
 use SugarCraft\Core\Util\Color;
-use SugarCraft\Kit\Banner;
-use SugarCraft\Kit\Section;
-use SugarCraft\Kit\StatusLine;
-use SugarCraft\Kit\Theme;
-use SugarCraft\Sprinkles\Align;
-use SugarCraft\Sprinkles\Border;
-use SugarCraft\Sprinkles\Style;
-use SugarCraft\Sprinkles\Table\Table;
+use SugarCraft\Cli\Banner;
+use SugarCraft\Cli\Section;
+use SugarCraft\Cli\StatusLine;
+use SugarCraft\Cli\Theme;
+use SugarCraft\Style\Align;
+use SugarCraft\Style\Border;
+use SugarCraft\Style\Style;
+use SugarCraft\Style\Table\Table;
 use Symfony\Component\Console\Output\OutputInterface;
 
 /**
