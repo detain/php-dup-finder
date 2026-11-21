@@ -32,7 +32,8 @@ use Symfony\Component\Console\Output\OutputInterface;
  * easier to follow than a long linear method:
  *
  *  1. parseCliOverrides()   — validate and collect every CLI flag into a
- *                             flat override dict; returns [] on error.
+ *                             flat override dict; returns null on error (an
+ *                             empty dict is a legal bare run, not a failure).
  *  2. resolveProfile()       — load a --profile preset and merge its values
  *                             into $overrides (only for unset keys).
  *  3. resolveAutoTune()      — probe the corpus and append auto-suggested
@@ -79,7 +80,7 @@ final class Command extends SymfonyCommand
             ->addOption('ted-weights', null, InputOption::VALUE_REQUIRED, 'Tree-edit cost model: default|semantic. semantic weights method calls / control flow heavier than literals.')
             ->addOption('db-aware', null, InputOption::VALUE_NONE, 'ORM-/DB-aware semantic dedup: rewrite recognised database calls (Eloquent, Doctrine, PDO, mysqli, pg_*, raw SQL) to canonical __DB_<OP>__ tokens during normalisation so equivalent ORM and raw-SQL variants cluster together. Off by default — opt-in for ORM-heavy codebases. See docs/plans/orm-db-semantic-dedup.md.')
             ->addOption('trinity-collapse', null, InputOption::VALUE_NONE, 'Detect the canonical CRUD trinity (read → mutate → save) and rewrite the three-statement sequence as a single __DB_UPSERT__("entity") synthetic call so ORM upserts cluster with raw UPDATE queries. Composes with --db-aware. Off by default. See option 2 of docs/plans/orm-db-semantic-dedup.md.')
-            ->addOption('scorer', null, InputOption::VALUE_REQUIRED, 'Scoring tier set: default | ir. "ir" enables option-5 IR-tier fallback — when AST Jaccard / TED / containment all reject a pair, lift both blocks to the canonical IR (Phpdup\\Ir\\IrLifter) and Jaccard their token bags. Pairs at or above --ir-threshold form edges weighted by the IR similarity. Off by default.', 'default')
+            ->addOption('scorer', null, InputOption::VALUE_REQUIRED, 'Scoring tier set: default | ir. "ir" enables option-5 IR-tier fallback — when AST Jaccard / TED / containment all reject a pair, lift both blocks to the canonical IR (Phpdup\\Ir\\IrLifter) and Jaccard their token bags. Pairs at or above --ir-threshold form edges weighted by the IR similarity. When the flag is absent the config-file / built-in scorer applies (NN1: the flag used to shadow a config-file "scorer" unconditionally).')
             ->addOption('ir-threshold', null, InputOption::VALUE_REQUIRED, 'IR-tier multiset-Jaccard threshold (0..1). Pairs at or above this score form edges. Default 0.85.')
             ->addOption('ml-pair-url', null, InputOption::VALUE_REQUIRED, 'External pair-similarity ML sidecar URL (option 6 of docs/plans/orm-db-semantic-dedup.md). Empty = disabled. When set, the very last clustering tier — runs after structural-hash, AST Jaccard + TED, containment, and IR all reject a pair. Posts a PairFeatures vector to <URL>/score-pair and accepts pairs at or above --ml-pair-threshold. Returns null on transport failure so unavailability never breaks the run. http(s) only.')
             ->addOption('ml-pair-threshold', null, InputOption::VALUE_REQUIRED, 'Similarity threshold (0..1) for the option-6 ML pair tier. Pairs whose model-returned similarity meets this value emit edges. Default 0.80.')
@@ -193,8 +194,8 @@ HELP;
         }
 
         $overrides = $this->parseCliOverrides($input, $output);
-        if ($overrides === []) {
-            return 2; // parseCliOverrides emitted an error and returned []
+        if ($overrides === null) {
+            return 2; // parseCliOverrides emitted the specific error and rejected the input
         }
 
         $profileExclude = $this->resolveProfile($input, $output, $paths, $overrides);
@@ -233,11 +234,13 @@ HELP;
 
     /**
      * Parse all CLI flags into a flat override dict.
-     * Returns [] on error (after emitting diagnostics).
+     * Returns null on error (after emitting diagnostics); a legitimately
+     * bare invocation returns [] — empty NO LONGER means error (NN1 made
+     * that possible by removing --scorer's shadowing Symfony default).
      *
-     * @return array<string, mixed>
+     * @return array<string, mixed>|null
      */
-    private function parseCliOverrides(InputInterface $input, OutputInterface $output): array
+    private function parseCliOverrides(InputInterface $input, OutputInterface $output): ?array
     {
         $overrides = array_filter([
             'min_block_size'              => $input->getOption('min-block-size'),
@@ -275,7 +278,7 @@ HELP;
             $scorerOpt = strtolower((string)$scorerOpt);
             if (!in_array($scorerOpt, ['default', 'ir'], true)) {
                 $output->writeln('<error>phpdup: --scorer must be one of default|ir</error>');
-                return [];
+                return null;
             }
             $overrides['scorer'] = $scorerOpt;
         }
@@ -296,7 +299,7 @@ HELP;
                 && !\Phpdup\Ml\MlClient::isAllowedUrl(rtrim($url, '/') . '/score-pair')
             ) {
                 $output->writeln('<error>phpdup: --ml-pair-url must be an http(s) URL with a non-empty host (and not 0.0.0.0)</error>');
-                return [];
+                return null;
             }
             $overrides['ml_pair_url'] = $url;
         }
@@ -313,7 +316,7 @@ HELP;
             $obFlag = strtolower((string)$obFlag);
             if (!in_array($obFlag, ['on', 'off', 'true', 'false', '1', '0', 'yes', 'no'], true)) {
                 $output->writeln('<error>phpdup: --optional-blocks must be on|off</error>');
-                return [];
+                return null;
             }
             $overrides['optional_blocks_enabled'] = in_array($obFlag, ['on', 'true', '1', 'yes'], true);
         }
@@ -334,7 +337,7 @@ HELP;
                     $e->getMessage(),
                     implode(', ', \Phpdup\Reporting\ClusterSort::ALL_KEYS),
                 ));
-                return [];
+                return null;
             }
         }
 
@@ -348,7 +351,7 @@ HELP;
                     implode(',', $invalid),
                     implode(',', \Phpdup\Extraction\BlockExtractor::ALL_KINDS),
                 ));
-                return [];
+                return null;
             }
             $overrides['allowed_kinds'] = $kinds;
         }
@@ -753,7 +756,7 @@ HELP;
      * Map a profile JSON document onto the override-dict shape that
      * ConfigLoader::load() / Config::withOverrides() understand.
      * 'exclude' is handled separately (it goes through ConfigLoader's
-     * profileExclude param so excludes only kick in as a default).
+     * profileExclude param and APPENDS to the stock defaults, item 5.2).
      *
      * @param array<string,mixed> $data
      * @return array<string,mixed>

@@ -14,11 +14,13 @@ use Symfony\Component\Console\Tester\CommandTester;
  * Regression net for plan item 0.2.
  *
  * Symfony Console hands every VALUE_REQUIRED option to the command as a
- * raw string; the seven numeric flags that flow through
+ * raw string; the seven numeric flags exercised here that flow through
  * OverrideResolver into Config's strict-typed constructor
  * (--min-block-size, --similarity, --max-df, --min-impact,
  * --fail-on-impact, --max-clusters, -j/--workers) used to die with a
- * TypeError at exit 255. Coercion now happens at the
+ * TypeError at exit 255. The coercion boundary (ConfigLoader::NUMERIC_KEYS)
+ * has since grown past these seven — the flag-train additions are pinned
+ * in their own tests. Coercion now happens at the
  * ConfigLoader/OverrideResolver boundary: valid numeric strings arrive
  * as real int/float, invalid ones surface the conventional friendly
  * exit 2 (same convention as invalid-config-schema input).
