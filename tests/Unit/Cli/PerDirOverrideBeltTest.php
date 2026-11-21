@@ -1,0 +1,181 @@
+<?php
+declare(strict_types=1);
+
+namespace Phpdup\Tests\Unit\Cli;
+
+use PHPUnit\Framework\TestCase;
+use Phpdup\Cli\Config;
+use Phpdup\Cli\ConfigLoader;
+
+/**
+ * Two-sided drift tripwire (ft-r2 [M-1] remediation, owner-gate R8):
+ * every key ConfigLoader::shapeOverrides() ADMITS for per-directory
+ * .phpdup.json files must be CONSUMED by Config::withOverrides(), or sit
+ * deliberately in the BANKED allowlist below. This is the mechanical
+ * guard that would have caught the m1 orphan class (candidate_budget,
+ * fixed in e221652) and its six silently-dropped siblings.
+ *
+ * Nothing here hand-copies key lists: the emitted set is derived by
+ * feeding shapeOverrides a fully-populated per-dir payload; the consumed
+ * set is derived behaviorally — for each emitted key, a sentinel value
+ * that MOVES no property of the derived Config marks the key as an
+ * orphan. A new admitted-but-unconsumed key fails the belt unless it is
+ * consciously banked, and the planted-key test proves the belt itself is
+ * not vacuous.
+ */
+final class PerDirOverrideBeltTest extends TestCase
+{
+    /**
+     * Keys shapeOverrides emits but withOverrides does not consume —
+     * every reader is globally root-anchored (sort: ReportStage;
+     * optional_blocks_*: ClusterStage/RefactorStage), so per-file
+     * consumption would be misleading; the scope decision (admission
+     * exclusion vs root-only documentation) is owner-gate R8.
+     */
+    private const BANKED = [
+        // owner-gate R8 (ft-r2 M-1): validated per-dir, globally-scoped reader, admission TBD
+        'sort',
+        // owner-gate R8 (ft-r2 M-1): validated per-dir, globally-scoped reader, admission TBD
+        'optional_blocks_enabled',
+        // owner-gate R8 (ft-r2 M-1): validated per-dir, globally-scoped reader, admission TBD
+        'optional_blocks_containment',
+        // owner-gate R8 (ft-r2 M-1): validated per-dir, globally-scoped reader, admission TBD
+        'optional_blocks_min_overlap',
+        // owner-gate R8 (ft-r2 M-1): validated per-dir, globally-scoped reader, admission TBD
+        'optional_blocks_max_per_cluster',
+        // owner-gate R8 (ft-r2 M-1): validated per-dir, globally-scoped reader, admission TBD
+        'optional_blocks_min_segment_length',
+    ];
+
+    /** @return array<string,mixed> shapeOverrides-input payload covering every admitted shape */
+    public static function fullPerDirectoryPayload(): array
+    {
+        return [
+            'min_block_size'       => 17,
+            'max_block_size'       => 413,
+            'normalization_mode'   => 'strict',
+            'similarity_threshold' => 0.44,
+            'tree_threshold'       => 0.45,
+            'min_cluster_impact'   => 7,
+            'max_df'               => 0.33,
+            'ngram_size'           => 7,
+            'sort'                 => 'members:asc',
+            'fail_on_impact'       => 11,
+            'max_clusters'         => 12,
+            'candidate_budget'     => 777,
+            'baseline'             => '/belt/baseline.json',
+            'baseline_out'         => '/belt/baseline-out.json',
+            'diff_base'            => 'belt-ref',
+            'kinds'                => ['method'],
+            'optional_blocks'      => [
+                'enabled'            => false,
+                'containment'        => 0.12,
+                'min_overlap'        => 0.13,
+                'max_per_cluster'    => 9,
+                'min_segment_length' => 4,
+            ],
+            'db_symbols' => [
+                'methods'   => ['BeltEntity::probe' => 'db.read'],
+                'functions' => ['belt_fn' => 'db.write'],
+            ],
+            'debug_log'  => '/belt/debug.log',
+            'low_memory' => true,
+        ];
+    }
+
+    public function testEveryEmittedPerDirKeyIsConsumedOrBanked(): void
+    {
+        $emitted = self::emittedKeys();
+        self::assertCount(25, $emitted, 'fully-populated payload must exercise every admitted shape');
+
+        [$consumed, $orphans] = self::classifyKeys($emitted);
+
+        sort($orphans);
+        $banked = self::BANKED;
+        sort($banked);
+        self::assertSame(
+            $banked,
+            $orphans,
+            'shapeOverrides admits keys that withOverrides neither consumes nor has banked (owner-gate R8): '
+            . implode(', ', array_diff($orphans, $banked))
+            . ' — a newly admitted key must be consumed in Config::withOverrides() or consciously BANKED there.',
+        );
+        self::assertCount(19, $consumed, 'the consumed half of the belt is 25 emitted minus 6 banked');
+    }
+
+    /**
+     * Non-vacuity proof: a planted key that shapeOverrides-like admission
+     * emits but withOverrides ignores MUST classify as an unconsumed,
+     * unbanked orphan — i.e. the belt mechanism actually bites.
+     */
+    public function testPlantedOrphanIsCaughtByTheSameMechanism(): void
+    {
+        $emitted   = self::emittedKeys();
+        $emitted[] = 'planted_orphan';
+        // classifyKeys exercises the planted key exactly like a real
+        // emitted key via its $extraSentinel fallback.
+        [, $orphans] = self::classifyKeys($emitted, extraSentinel: 'not-a-real-key');
+        self::assertContains('planted_orphan', $orphans, 'the belt must fail loud on unbanked orphans');
+        self::assertContains('sort', $orphans);
+    }
+
+    /**
+     * Derive the EMITTED key set behaviorally from the private admission
+     * table itself (no hand copy): feed the full payload, take result keys.
+     *
+     * @return array<string,mixed> emitted key => sentinel value
+     */
+    private static function emittedSentinels(): array
+    {
+        $loader = new ConfigLoader();
+        $method = new \ReflectionMethod($loader, 'shapeOverrides');
+        $method->setAccessible(true);
+        /** @var array<string,mixed> $emitted */
+        $emitted = $method->invoke($loader, self::fullPerDirectoryPayload());
+        self::assertIsArray($emitted);
+        return $emitted;
+    }
+
+    /** @return list<string> */
+    private static function emittedKeys(): array
+    {
+        return array_keys(self::emittedSentinels());
+    }
+
+    /**
+     * For each emitted key: build withOverrides([key => sentinel]) off a
+     * common root and diff the resulting public readonly property vectors
+     * against withOverrides([]). Any movement means the key is consumed.
+     *
+     * @param list<string> $keys
+     * @return array{0: array<string,list<string>>, 1: list<string>} [consumedKey=>movedProps, orphans]
+     */
+    private static function classifyKeys(array $keys, mixed $extraSentinel = null): array
+    {
+        $sentinels = self::emittedSentinels();
+        if ($extraSentinel !== null) {
+            $sentinels['planted_orphan'] = $extraSentinel;
+        }
+
+        $root     = new Config(paths: [__DIR__], exclude: []);
+        $baseline = get_object_vars($root->withOverrides([]));
+
+        $consumed = [];
+        $orphans  = [];
+        foreach ($keys as $key) {
+            $derived = get_object_vars($root->withOverrides([$key => $sentinels[$key] ?? $extraSentinel]));
+            $moved   = [];
+            foreach ($baseline as $prop => $value) {
+                if (($derived[$prop] ?? null) !== $value) {
+                    $moved[] = $prop;
+                }
+            }
+            if ($moved === []) {
+                $orphans[] = $key;
+            } else {
+                $consumed[$key] = $moved;
+            }
+        }
+        return [$consumed, $orphans];
+    }
+}

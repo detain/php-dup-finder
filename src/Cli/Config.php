@@ -281,8 +281,13 @@ final class Config
 
     /**
      * Build a new Config that copies $this but replaces only the keys
-     * named in $overrides. Unknown keys are silently ignored — the
-     * caller has already validated the shape via ConfigLoader::validate.
+     * named in $overrides. Admission is not consumption: a key that
+     * ConfigLoader::shapeOverrides() validates and emits but this method
+     * does not consume falls back to its root value. The emitted-vs-
+     * consumed delta is pinned by tests/Unit/Cli/PerDirOverrideBeltTest.php;
+     * every currently non-consumed emitted key sits in that test's BANKED
+     * allowlist under owner-gate R8 (ft-r2 M-1). New admitted keys must be
+     * consumed here or consciously banked there — never silently ignored.
      *
      * @param array<string, mixed> $overrides
      */
