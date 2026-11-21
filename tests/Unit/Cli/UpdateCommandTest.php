@@ -8,6 +8,9 @@ use Phpdup\Cli\UpdateCommand;
 use Symfony\Component\Console\Application;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\BufferedOutput;
+use Symfony\Component\Console\Output\ConsoleOutputInterface;
+use Symfony\Component\Console\Output\ConsoleSectionOutput;
+use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
 /**
@@ -148,6 +151,29 @@ final class UpdateCommandTest extends TestCase
         // Even when driven straight (offline-style call sites), the real
         // verifySignature must REFUSE with the placeholder — never pass.
         $this->assertFalse($command->verifyDirect($manifest, trim((string)file_get_contents($sig))));
+
+        // Fix r1 M-1(i): the pair above passes the assertFalse even with the
+        // :848 placeholder arm deleted (plain HMAC mismatch). This second
+        // pair is signed UNDER the publicly-known placeholder string itself —
+        // the known-plaintext shape — so the raw HMAC MATCHES and only the
+        // arm can refuse it. Deleting the `=== self::VERIFICATION_KEY_PLACEHOLDER`
+        // check flips this assert red.
+        [$plainTextManifest, $plainTextSig] = $this->makeSignedManifestPair(
+            $artifact,
+            'v0.0.0-known-plaintext',
+            UpdateCommand::VERIFICATION_KEY_PLACEHOLDER,
+        );
+        $sigBytes = trim((string)file_get_contents($plainTextSig));
+        $this->assertSame(
+            $sigBytes,
+            hash_hmac_file('sha256', $plainTextManifest, UpdateCommand::VERIFICATION_KEY_PLACEHOLDER),
+            'fixture sanity: the pair must HMAC-match under the placeholder key, '
+            . 'otherwise the arm below is not what refuses it (vacuity guard)',
+        );
+        $this->assertFalse(
+            $command->verifyDirect($plainTextManifest, $sigBytes),
+            'a signature that HMAC-matches under the committed placeholder string must still REFUSE',
+        );
     }
 
     public function testRawKeyFormMatchesSigningFormulaBothSides(): void
@@ -324,6 +350,36 @@ final class UpdateCommandTest extends TestCase
         $this->assertStringEqualsFile($this->fakePharPath(), (string)file_get_contents($artifact));
     }
 
+    public function testDevAllowUnsignedBannerLandsOnErrorStream(): void
+    {
+        // Fix r1 L-2: the acceptance says "loud stderr" — the existing banner
+        // test drives a plain BufferedOutput, so only the in-band half is
+        // asserted there. This pin drives a ConsoleOutputInterface double and
+        // asserts the banner is written to the ERROR stream as well; deleting
+        // the ConsoleOutputInterface branch in devUnsignedBanner flips it red.
+        $artifact = $this->makeArtifact();
+        $command = $this->s05Command($artifact, null, null);
+
+        $stderr = new BufferedOutput();
+        $output = new S05ConsoleOutput($stderr);
+        $exit = $command->run(new ArrayInput(['--dev-allow-unsigned' => true]), $output);
+
+        $this->assertSame(0, $exit);
+
+        $errorStream = $stderr->fetch();
+        $this->assertStringContainsString(
+            '*** --dev-allow-unsigned: INSTALLING WITHOUT INTEGRITY VERIFICATION ***',
+            $errorStream,
+            'the banner must hit the error stream, not only the in-band output',
+        );
+        $this->assertStringContainsString('never for production installs', $errorStream);
+        $this->assertStringNotContainsString('<', $errorStream, 'stderr lines are raw, no markup tags leak');
+
+        // The in-band half is still present (S05ConsoleOutput is itself a
+        // BufferedOutput; SymfonyStyle writes go to its main buffer).
+        $this->assertStringContainsString('INSTALLING WITHOUT INTEGRITY VERIFICATION', $output->fetch());
+    }
+
     // ------------------------------------------------------------------
     // once-S05 — offline --verify-* mode (CI round-trip code path)
     // ------------------------------------------------------------------
@@ -410,6 +466,59 @@ final class UpdateCommandTest extends TestCase
 
         $this->assertSame(1, $exit);
         $this->assertStringContainsString('together', $output->fetch());
+    }
+
+    /**
+     * Fix r1 M-1(ii): the four post-HMAC validateManifest arms. Each case is
+     * a manifest signed with the REAL key (the HMAC leg PASSES — the refusal
+     * must come from the arm itself, never from a signature mismatch), then
+     * driven through the offline --verify-* path exactly as release.yml's
+     * round-trip job does. Deleting any single arm lets its case fall
+     * through to a different message or exit 0 — flipping that case red.
+     *
+     * @return array<string, array{0: array<string, mixed>, 1: string}>
+     */
+    public static function malformedSignedManifestCases(): array
+    {
+        return [
+            'schema arm'  => [['schema' => 2], 'schema 2 is not supported'],
+            'file arm'    => [['file' => 'phpdup.evil.phar'], 'unexpected artifact: phpdup.evil.phar'],
+            'tag arm'     => [['tag' => ''], 'carries no tag'],
+            'sha arm'     => [['sha256' => 'nothex'], 'no well-formed sha256'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('malformedSignedManifestCases')]
+    public function testOfflineVerifyMalformedSignedManifestExitsOne(array $fieldOverrides, string $expectedMessage): void
+    {
+        putenv(self::KEY_ENV . '=' . self::RAW_KEY);
+        $artifact = $this->makeArtifact();
+        [$manifest, $sig] = $this->makeSignedManifestPair($artifact, self::TAG, self::RAW_KEY, $fieldOverrides);
+
+        // Positive control: the envelope is genuinely HMAC-valid under
+        // RAW_KEY — so any refusal below is the arm, not the signature.
+        $this->assertSame(
+            trim((string)file_get_contents($sig)),
+            hash_hmac_file('sha256', $manifest, self::RAW_KEY),
+        );
+
+        $command = new UpdateCommand();
+        $app = new Application('phpdup', '0.0.0');
+        $app->add($command);
+
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput([
+            '--verify-artifact' => $artifact,
+            '--verify-manifest' => $manifest,
+            '--verify-signature' => $sig,
+        ]), $output);
+
+        $this->assertSame(1, $exit, 'malformed signed manifest (' . $expectedMessage . ') must exit 1');
+        $this->assertStringContainsString(
+            $expectedMessage,
+            $output->fetch(),
+            'each validateManifest arm must speak its own distinct message',
+        );
     }
 
     // ------------------------------------------------------------------
@@ -673,21 +782,27 @@ final class UpdateCommandTest extends TestCase
      * formula: JSON envelope (schema 1, tag, file, sha256) and
      * hash_hmac_file over the manifest FILE bytes with the RAW key string.
      *
+     * $fieldOverrides (fix r1 M-1; replaces the previously-unused raw
+     * $shaOverride knob) lets one builder mint MALFORMED envelopes — e.g.
+     * ['schema' => 2] or ['sha256' => 'nothex'] — still signed so the HMAC
+     * leg passes and validateManifest arms are what refuses.
+     *
+     * @param array<string, mixed>|null $fieldOverrides
      * @return array{0: string, 1: string} [manifestPath, signaturePath]
      */
-    private function makeSignedManifestPair(string $artifactPath, string $tag, string $key, ?string $shaOverride = null): array
+    private function makeSignedManifestPair(string $artifactPath, string $tag, string $key, ?array $fieldOverrides = null): array
     {
-        $manifest = $this->scratchFile($tag . '.release.json');
-        $sha = $shaOverride ?? hash_file('sha256', $artifactPath);
+        $manifest = $this->scratchFile(($fieldOverrides === null ? '' : 'malformed-') . $tag . '.release.json');
+        $sha = hash_file('sha256', $artifactPath);
         if ($sha === false) {
             $this->fail('cannot hash artifact');
         }
-        file_put_contents($manifest, json_encode([
+        file_put_contents($manifest, json_encode(array_merge([
             'schema' => 1,
             'tag'    => $tag,
             'file'   => 'phpdup.phar',
             'sha256' => $sha,
-        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+        ], $fieldOverrides ?? []), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
 
         $sig = $this->scratchFile($tag . '.release.json.sig');
         file_put_contents($sig, hash_hmac_file('sha256', $manifest, $key));
@@ -880,6 +995,35 @@ class S05UpdateCommand extends UpdateCommand
             return false;
         }
         return parent::downloadFile($url, $dest, $io);
+    }
+}
+
+/**
+ * once-S05 fix r1 (L-2) harness: a ConsoleOutputInterface double so the
+ * error-stream half of the dev-unsigned banner becomes assertable. The main
+ * stream is this object's own BufferedOutput buffer (SymfonyStyle writes
+ * land there); getErrorOutput() returns the separate stderr buffer.
+ */
+class S05ConsoleOutput extends BufferedOutput implements ConsoleOutputInterface
+{
+    public function __construct(private OutputInterface $error)
+    {
+        parent::__construct();
+    }
+
+    public function getErrorOutput(): OutputInterface
+    {
+        return $this->error;
+    }
+
+    public function setErrorOutput(OutputInterface $error): void
+    {
+        $this->error = $error;
+    }
+
+    public function section(): ConsoleSectionOutput
+    {
+        throw new \LogicException('section() is not modeled by the S05 console-output double');
     }
 }
 

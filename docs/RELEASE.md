@@ -125,8 +125,11 @@ git push origin v1.2.3
 1. Generate a new random secret (e.g. `openssl rand -hex 32`).
 2. Update the `HMAC_SECRET_KEY` repository secret **and** the
    `VERIFICATION_KEY` constant in `src/Cli/UpdateCommand.php` to the identical
-   raw string (a phar built with the old key can only verify new releases
-   after it self-updates once more — rotate by releasing, not by editing).
+   raw string. Clients still holding key K1 can never verify K2-signed bytes —
+   publish the first K2-compiled release while `HMAC_SECRET_KEY` still holds
+   K1 (the transition release), then switch the secret; installs predating the
+   transition release must be re-installed once out-of-band (rotate by
+   releasing, not by editing).
 3. Tag and push the new release; the round-trip gate blocks publication if
    the two sides drifted apart.
 

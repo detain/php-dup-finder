@@ -63,8 +63,12 @@ class UpdateCommand extends SymfonyCommand
     /**
      * Build placeholder that ships in the tree. Verification REFUSES while
      * the resolved key still equals it (fail closed — php-dup-finder-once-005).
+     *
+     * Public so the once-S05 known-plaintext fixture (UpdateCommandTest) can
+     * sign a manifest under the EXACT string the primitive must refuse —
+     * a copied literal in the test could drift and re-vacuate that pin.
      */
-    private const VERIFICATION_KEY_PLACEHOLDER = 'REPLACE_WITH_REAL_PUBLIC_KEY';
+    public const VERIFICATION_KEY_PLACEHOLDER = 'REPLACE_WITH_REAL_PUBLIC_KEY';
 
     /**
      * HMAC-SHA256 verification key, in its RAW string form.
