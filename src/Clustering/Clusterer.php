@@ -230,7 +230,16 @@ final class Clusterer
             $guardIndex = new BlockIndex();
             $fp = new \Phpdup\Fingerprint\NgramFingerprint($this->candidateGuardNgramSize);
             foreach ($index->all() as $b) {
-                if ($b->canonical === null) {
+                // Block::$canonical is a non-nullable typed property with no
+                // default: `=== null` here was statically dead (the value is
+                // either a Node or unset), and on a block that never went
+                // through Normalizer the ACCESS itself threw
+                // "Error: Typed property Block::$canonical must not be
+                // accessed before initialization" — the guard turned its
+                // intended skip into a fatal. isset() is the honest shape:
+                // false for an uninitialized typed property, never fatal.
+                // (engine-023)
+                if (!isset($b->canonical)) {
                     continue; // no tree to re-derive the numbered species from
                 }
                 $view = clone $b;

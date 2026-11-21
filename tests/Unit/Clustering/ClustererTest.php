@@ -412,4 +412,90 @@ final class ClustererTest extends TestCase
         $this->assertNotNull($cdCluster, 'CD cluster must exist');
         $this->assertNotSame($abCluster, $cdCluster, 'AB and CD must be separate cluster objects');
     }
+
+    /**
+     * engine-023 pin: a Block whose canonical tree was never stamped (it
+     * never went through Normalizer) must be SKIPPED by the §5a R-4 guard
+     * projection inside generateCandidatePairs(), not explode. The old
+     * check read `$b->canonical === null` — on a non-nullable typed
+     * property without default that access itself throws before the
+     * comparison can happen, turning the intended skip into a fatal.
+     */
+    public function testUnnumberedCandidateGuardSkipsUnnormalizedBlockWithoutFatal(): void
+    {
+        $funcA = $this->parseFunction('<?php function a() { $v = 1; return $v; }');
+        $funcB = $this->parseFunction('<?php function b() { $v = 1; return $v; }');
+
+        $blockA = $this->makeBlock('A', 'hash_a', ['gram_1' => 1, 'gram_2' => 1], $funcA);
+        $blockB = $this->makeBlock('B', 'hash_b', ['gram_1' => 1, 'gram_2' => 1], $funcB);
+
+        // Block C: built exactly like makeBlock() does, but deliberately
+        // WITHOUT assigning ->canonical — an unnormalized block.
+        $blockC = new Block(
+            file: 'synthetic.php',
+            range: new \Phpdup\Util\LineRange(1, 1),
+            kind: 'function',
+            namespace: null,
+            class: null,
+            name: null,
+            ast: new \PhpParser\Node\Stmt\Return_(new \PhpParser\Node\Scalar\String_('C')),
+        );
+        $blockC->id = 'C';
+        $blockC->structuralHash = 'hash_c';
+        $blockC->ngramBag = ['gram_9' => 1];
+
+        $this->assertFalse(isset($blockC->canonical), 'fixture C must be unnormalized');
+
+        $index = new BlockIndex();
+        $index->add($blockA);
+        $index->add($blockB);
+        $index->add($blockC);
+
+        $clusterer = new Clusterer(
+            similarity: new JaccardSimilarity(),
+            tree: new TreeEditDistance(),
+            similarityThreshold: 0.0,
+            treeThreshold: 0.0,
+            maxDocumentFrequency: 1.0,
+            exactOnly: false,
+            optionalBlocksEnabled: false,
+            unnumberedCandidateGuard: true,
+        );
+
+        $pairs = [];
+        foreach ($clusterer->generateCandidatePairs($index, new NullOutput()) as [$aId, $bId]) {
+            $pairs[] = [$aId, $bId];
+        }
+
+        $this->assertSame([['A', 'B']], $pairs, 'The normalized pair is still proposed; the unnormalized block is skipped, no Error fatal');
+    }
+
+    /**
+     * engine-023: this is what the OLD `$b->canonical === null` guard hit
+     * on an unnormalized block — a hard Error before any comparison. The
+     * isset() guard in generateCandidatePairs() is the fix; this pin
+     * documents the failure mode it prevents.
+     */
+    public function testCanonicalAccessOnUnnormalizedBlockRaisesTypedPropertyError(): void
+    {
+        $block = new Block(
+            file: 'synthetic.php',
+            range: new \Phpdup\Util\LineRange(1, 1),
+            kind: 'function',
+            namespace: null,
+            class: null,
+            name: null,
+            ast: new \PhpParser\Node\Stmt\Return_(new \PhpParser\Node\Scalar\String_('X')),
+        );
+
+        try {
+            $access = $block->canonical;
+            $this->fail(sprintf(
+                'Expected typed-property Error, got %s instead',
+                is_object($access) ? get_class($access) : gettype($access),
+            ));
+        } catch (\Error $e) {
+            $this->assertStringContainsString('must not be accessed before initialization', $e->getMessage());
+        }
+    }
 }
