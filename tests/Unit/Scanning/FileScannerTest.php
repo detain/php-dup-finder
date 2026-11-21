@@ -261,6 +261,43 @@ final class FileScannerTest extends TestCase
     }
 
     /**
+     * LOW shell-S20-r1 #1: when the real scan root is the filesystem root,
+     * realpath('/') returns "/" itself, so a raw `$rootReal . '/'` yard-stick
+     * became "//" and falsely refused EVERY in-root symlink as escaping.
+     * Scanning a real "/" root in CI is impractical (it walks the whole
+     * filesystem), so this pins the rtrim normalization directly on the
+     * private gate: with $rootReal === '/', any resolving link is by
+     * definition in-root and must pass, while the self-loop equality (a
+     * link whose realpath IS '/') still fires — the equality arm is checked
+     * before the prefix arm, and a "/" prefix would otherwise swallow it.
+     */
+    public function testFileSystemRootYardStickDoesNotFalselyRefuseInRootLinks(): void
+    {
+        $t = $this->symlinkTree();
+        $gate = new \ReflectionMethod(FileScanner::class, 'escapeReason');
+        $scanner = new FileScanner([], warnOnSkip: false);
+
+        // An ordinary in-root file link under a "/"-style real root: passes.
+        $this->assertNull(
+            $gate->invoke($scanner, new \SplFileInfo($t['root'] . '/alias.php'), '/'),
+            'under a "/" real root no resolving link may be refused as escaping'
+        );
+
+        // A link that re-enters the "/" root (its realpath is exactly "/"):
+        // still pruned as a self-loop, not accepted by the now-normalized
+        // "/" prefix check.
+        $rootLoop = $t['root'] . '/root-loop';
+        if (!is_link($rootLoop)) {
+            symlink('/', $rootLoop);
+        }
+        clearstatcache();
+        $this->assertSame(
+            'target re-enters the scan root',
+            $gate->invoke($scanner, new \SplFileInfo($rootLoop), '/')
+        );
+    }
+
+    /**
      * Remove every scratch tree this test class built — the unreadable-tree
      * fixture and the shell-006 symlink fixture (see {@see symlinkTree()}) —
      * purging links without ever following them.

@@ -36,8 +36,8 @@ final class FileScanner
     /**
      * @param list<string> $excludeGlobs
      * @param bool         $warnOnSkip emit a stderr warning line per skipped
-     *                                 unreadable path (in addition to the
-     *                                 note recorded in skipNotes()).
+     *                                 path recorded in skipNotes() (in
+     *                                 addition to the note itself).
      */
     public function __construct(array $excludeGlobs, private readonly bool $warnOnSkip = true)
     {
@@ -172,7 +172,8 @@ final class FileScanner
      * the ancestor chain already passed this exact gate on the way down
      * (a link that resolves outside the root is pruned as a directory BEFORE
      * the iterator descends into it, so out-of-root subtrees are never
-     * walked and symlink loops terminate).
+     * walked; loops through the root are pruned here, and other in-root
+     * cycles terminate at the OS path limit).
      */
     private function escapeReason(\SplFileInfo $entry, string $rootReal): ?string
     {
@@ -186,7 +187,11 @@ final class FileScanner
         if ($real === $rootReal) {
             return 'target re-enters the scan root';
         }
-        if (!str_starts_with($real, $rootReal . '/')) {
+        // rtrim first: realpath() of the filesystem root is "/" itself, and
+        // naively appending "/" would build a "//" yard-stick that falsely
+        // refuses every in-root link under a "/"-style real root.
+        $prefix = rtrim($rootReal, '/') . '/';
+        if (!str_starts_with($real, $prefix)) {
             return 'target escapes the scan root';
         }
         return null;
