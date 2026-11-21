@@ -136,12 +136,13 @@ final class CacheBlob
 
     /**
      * True when every slot of a decoded AST holds null, a scalar, an
-     * array of the same, or another real Node.
+     * array of the same, another real Node, or a real PhpParser comment.
      *
-     * `__PHP_Incomplete_Class` — and any other non-Node object sneaking
-     * through an untyped array slot — fails the walk. Iterative on
-     * purpose: a hostile blob must not be able to blow the stack of the
-     * checker that is supposed to survive it.
+     * `__PHP_Incomplete_Class` — and any other object that is neither a
+     * Node nor a Comment, sneaking through an untyped array or attribute
+     * slot — fails the walk. Iterative on purpose: a hostile blob must
+     * not be able to blow the stack of the checker that is supposed to
+     * survive it.
      */
     public static function isCleanTree(Node $root): bool
     {
@@ -167,6 +168,9 @@ final class CacheBlob
                     $stack[] = $item;
                 }
                 continue;
+            }
+            if ($value instanceof \PhpParser\Comment) {
+                continue; // real comments ride the attributes: scalar-only value object, allowed leaf
             }
             return false;
         }

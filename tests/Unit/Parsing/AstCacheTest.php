@@ -182,6 +182,46 @@ final class AstCacheTest extends TestCase
         $this->assertNull($cache->get($this->sourceFile), 'decode screening must walk the attributes slot too');
     }
 
+    public function testCommentedSourceRoundTripsToHit(): void
+    {
+        // engine-S23a r2 HIGH-1: PhpParser\Comment — and its Doc subclass —
+        // are NOT Nodes; they ride the parser's default `comments`
+        // attribute as scalar-only value objects. The attributes walk must
+        // accept them as allowed leaves, or every honest commented file
+        // decodes to a permanent MISS while put() keeps writing blobs no
+        // one can ever read (r1's over-widening premise "comments ride as
+        // real Nodes" was false).
+        $file = $this->tmp . '/src/Commented.php';
+        file_put_contents($file, "<?php\n/**\n * Header docblock.\n */\n// leading line\nfunction greet(\$n) { /* inline */ echo 'hi'; }\n");
+
+        // Counter-assert the premise on freshly parsed nodes: the top-level
+        // function really carries the docblock + line comment, and a nested
+        // statement really carries the inline comment.
+        $stmts = $this->parseSource($file);
+        $topComments = $stmts[0]->getAttributes()['comments'] ?? [];
+        $this->assertCount(2, $topComments, 'parser must attach comments to the function node');
+        $this->assertInstanceOf(\PhpParser\Comment\Doc::class, $topComments[0]);
+        $this->assertInstanceOf(\PhpParser\Comment::class, $topComments[1]);
+
+        $cache = $this->cache();
+        $cache->put($file, $stmts);
+
+        // get() never parses: a non-null return is the cache hit itself —
+        // the differential the r2 review measured as MISS at 0051aff.
+        $loaded = $cache->get($file);
+        $this->assertNotNull($loaded, 'commented files must cache-hit, not silently void the AST cache');
+        $this->assertCount(1, $loaded);
+
+        // Comments survive the round-trip as real objects with text and
+        // class intact — the contract DeclaredTwinAnalyzer relies on.
+        $loadedComments = $loaded[0]->getAttributes()['comments'] ?? [];
+        $this->assertCount(2, $loadedComments);
+        $this->assertInstanceOf(\PhpParser\Comment\Doc::class, $loadedComments[0]);
+        $this->assertInstanceOf(\PhpParser\Comment::class, $loadedComments[1]);
+        $this->assertSame($topComments[0]->getText(), $loadedComments[0]->getText());
+        $this->assertSame('// leading line', $loadedComments[1]->getText());
+    }
+
     public function testDeepAstIsNotCachedAndDoesNotThrow(): void
     {
         // ~4k node levels — inside the serialize() stack-guard crash zone
