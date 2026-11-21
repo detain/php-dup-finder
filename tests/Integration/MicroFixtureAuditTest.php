@@ -33,7 +33,9 @@ use Symfony\Component\Console\Output\NullOutput;
  *
  * f15's 5-file prototype recorded 3× 5-member if-clusters plus a 2-member
  * method cluster; on the full 14-file corpus with Appendix-A knobs the
- * method cluster spans all five preambles at similarity 0.8903. The three
+ * method cluster spans all five preambles at similarity 0.8903 as pinned
+ * (re-measured 0.9226 post engine-S02a 4c543f3 — the sanctioned Wave-3
+ * flip; see the row note in RED_STATE_SIGNATURE below). The three
  * 5-member if-clusters reproduce exactly (lines 14-16 / 19-21 / 22-24).
  * Disk-truth of this run governs the pin.
  */
@@ -43,12 +45,26 @@ final class MicroFixtureAuditTest extends TestCase
     public const FLIP_MARKER = 'EXPECTED-TO-FLIP-WAVE-3';
 
     /**
-     * Measured defective detection on master (ce9dc03 lineage).
+     * Measured defective detection on master (ce9dc03 lineage; row 0
+     * similarity re-measured on the 4c543f3 lineage, 2026-11-21 — see row note).
      * Each row: [kind, memberCount, impact, similarity, sortedMembers(file:start-end)].
      * Sorted canonically by impact desc, then kind, then first member.
      */
     public const RED_STATE_SIGNATURE = [
-        ['method', 5, 434, 0.8903, [
+        // Flip 2026-11-21 (wave cure 4c543f3 engine-S02a): row 0 similarity
+        // 0.8903 -> 0.9226. The binding edge is the Containment-tier pair
+        // preamble_0.php:10-33 <-> preamble_1.php:10-28. Pre-cure, aggressive
+        // ordinal call-renaming cascaded across the tail (p0's extra
+        // next_record shifted json_response to __CALL8 while p1 kept
+        // __CALL6, plus a spurious 6/6 ordinal collision), costing 5 of 155
+        // ngram matches; name-stamped sentinels (__CALL_json_response on
+        // both sides, folded to the family base in the bag) restore honest
+        // shared-vocabulary alignment: common mass 138/155 -> 143/155,
+        // i.e. 0.8903225806 -> 0.9225806452. Re-derived hermetically
+        // (git-archive extract + hardlinked vendor, earliest mover located
+        // by bisection dbbf493..HEAD); all other eight rows byte-identical.
+        // Similarity stays < 1.0 — P1 remains an unfixed blind spot.
+        ['method', 5, 434, 0.9226, [
             "preamble_0.php:10-33", "preamble_1.php:10-28", "preamble_2.php:10-29",
             "preamble_3.php:10-28", "preamble_4.php:10-29",
         ]],
