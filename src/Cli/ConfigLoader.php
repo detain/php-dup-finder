@@ -211,7 +211,19 @@ final class ConfigLoader
         if (is_int($value)) {
             $parsed = $value;
         } elseif (is_string($value) && preg_match('/^[+-]?\d+$/', trim($value)) === 1) {
-            $parsed = (int)trim($value);
+            $text = trim($value);
+            if (self::textBeyondInt64($text)) {
+                // ft-n1: the regex proves shape, not magnitude. (int) on a
+                // 20-nine string saturates silently to PHP_INT_MAX, which
+                // guards like the candidate-budget read as "effectively
+                // unlimited" — the knob disarms itself. Anything outside
+                // the signed 64-bit range fails loud here instead, and the
+                // CLI layer turns it into the conventional friendly exit 2.
+                throw new \InvalidArgumentException(
+                    sprintf('%s must fit a signed 64-bit integer, got %s', $key, self::describeValue($value))
+                );
+            }
+            $parsed = (int)$text;
         } else {
             throw new \InvalidArgumentException(
                 sprintf('%s must be an integer, got %s', $key, self::describeValue($value))
@@ -219,6 +231,26 @@ final class ConfigLoader
         }
         self::assertDomain($key, $parsed, $min, $max);
         return $parsed;
+    }
+
+    /**
+     * Whether a signed decimal string (regex shape already proven: optional
+     * single sign, one or more digits) lies outside the (int) range. The
+     * magnitude compare is string-vs-string because the number, if out of
+     * range, no longer exists inside a PHP scalar. Exact boundaries stay
+     * in range: PHP_INT_MAX, and the 9223372036854775808 that PHP_INT_MIN
+     * owns.
+     */
+    private static function textBeyondInt64(string $text): bool
+    {
+        $negative = $text[0] === '-';
+        $digits = $text[0] === '-' || $text[0] === '+' ? substr($text, 1) : $text;
+        $digits = ltrim($digits, '0');
+        $limit = $negative ? '9223372036854775808' : (string)PHP_INT_MAX;
+        if (strlen($digits) !== strlen($limit)) {
+            return strlen($digits) > strlen($limit);
+        }
+        return strcmp($digits, $limit) > 0;
     }
 
     private static function coerceFloat(string $key, mixed $value, int|float $min, int|float|null $max): float

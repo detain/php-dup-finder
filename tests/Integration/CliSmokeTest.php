@@ -130,6 +130,9 @@ final class CliSmokeTest extends TestCase
             'workers-text'          => ['--workers=abc', 'workers'],
             'workers-negative'      => ['--workers=-1', 'workers'],
             'candidate-budget-text' => ['--candidate-budget=abc', 'candidate_budget'],
+            // ft-n1: a digit string beyond the 64-bit range must fail loud
+            // (exit 2), never saturate to PHP_INT_MAX and read as unlimited.
+            'candidate-budget-huge' => ['--candidate-budget=99999999999999999999', 'candidate_budget'],
             'fail-on-impact-text'   => ['--fail-on-impact=abc', 'fail_on_impact'],
             'max-clusters-text'     => ['--max-clusters=abc', 'max_clusters'],
             'ir-threshold-high'     => ['--ir-threshold=2', 'ir_threshold'],

@@ -84,6 +84,36 @@ final class CandidateBudgetFlagTest extends TestCase
         (new ConfigLoader())->load([self::scratchDir()], null, ['candidate_budget' => '-5']);
     }
 
+    public function testBeyondInt64CliValueFailsLoudInsteadOfSaturating(): void
+    {
+        // ft-n1: twenty nines used to pass the integer-shape regex and
+        // (int)-saturate to PHP_INT_MAX — the generation guard read that
+        // as "unlimited" and the knob silently disarmed. Now rejected at
+        // the coercion boundary (same friendly exit-2 class as 'abc').
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('64-bit');
+        (new ConfigLoader())->load([self::scratchDir()], null, ['candidate_budget' => '99999999999999999999']);
+    }
+
+    public function testInt64BoundariesAreInRangeAndHandledDownstream(): void
+    {
+        // Exactly PHP_INT_MAX is representable, so coercion must accept it
+        // (a huge-but-finite budget is the caller's legitimate problem).
+        $config = (new ConfigLoader())->load(
+            [self::scratchDir()],
+            null,
+            ['candidate_budget' => (string)PHP_INT_MAX],
+        );
+        self::assertSame(PHP_INT_MAX, $config->candidateBudget);
+
+        // -9223372036854775808 (PHP_INT_MIN's magnitude) fits the signed
+        // range; it fails one layer later at the Config min>=0 bound —
+        // proving the overflow guard never acts as a blanket negative veto.
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('candidate_budget');
+        (new ConfigLoader())->load([self::scratchDir()], null, ['candidate_budget' => '-9223372036854775808']);
+    }
+
     public function testConfigFileDomainValidation(): void
     {
         $loader = new ConfigLoader();
