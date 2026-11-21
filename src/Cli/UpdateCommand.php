@@ -425,11 +425,15 @@ HELP
         // CI-85: PHP 8.5 deprecates the $http_response_header magic-
         // variable read in favour of http_get_last_response_headers();
         // on 8.3/8.4 the function does not exist and the legacy branch
-        // supplies byte-identical content. Read once — the headers are
-        // fixed by the time fopen() has returned.
-        $respHeaders = function_exists('http_get_last_response_headers')
-            ? (array) http_get_last_response_headers()
-            : ($http_response_header ?? []);
+        // supplies byte-identical content. Read once, and only for the
+        // http(s) schemes the wrapper actually sets headers for — a
+        // local-path fopen leaves the magic variable unset.
+        $respHeaders = [];
+        if (preg_match('#^https?://#i', $url)) {
+            $respHeaders = function_exists('http_get_last_response_headers')
+                ? (array) http_get_last_response_headers()
+                : $http_response_header;
+        }
 
         $outHandle = fopen($dest, 'wb');
         if ($outHandle === false) {
