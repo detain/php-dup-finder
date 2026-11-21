@@ -232,9 +232,11 @@ final class JobQueueTest extends TestCase
     // ------------------------------------------------------------------
     // shell-S06 (php-dup-finder-shell-048): bounded memory for retained
     // payloads — the queue stores {digest, bytes}, never raw arrays.
-    // Posture: the async leg snapshots its dispatch frame at 202-time
-    // (Application::enqueueJob encodes RUN <id> <json> BEFORE enqueueing);
-    // the digest is pinned below to that exact wire encoding.
+    // Posture: the async leg serializes its `RUN <id> <json>` frame from
+    // a request-local copy and writes it to the worker within the same
+    // request before responding 202 — the queue row is never read back
+    // for dispatch. The digest is pinned below to that exact wire
+    // encoding (insertion-order bytes, key order included).
     // ------------------------------------------------------------------
 
     public function testGetSurfacesDescriptorOnlyNoRawPaths(): void
@@ -273,23 +275,33 @@ final class JobQueueTest extends TestCase
         );
     }
 
-    public function testHundredSixteenMebibytePayloadsRetainFixedBudget(): void
+    public function testHundredDistinctLargePayloadsRetainFixedBudget(): void
     {
-        // 1,677,723 × 10 chars = 16,777,230 bytes ≥ 16MiB of canonical JSON.
-        $payload = ['paths' => [str_repeat("/deep/dir/", 1_677_723)]];
-        $canonical = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
-        $this->assertGreaterThanOrEqual(16 * 1024 * 1024, strlen($canonical));
+        // Every enqueue gets its OWN large allocation: the 11-12 char
+        // "/deep/dir$i/" repeated 26,214 times lands each wire frame at
+        // 288,368-314,582 bytes (~282-307 KiB), so raw retention would
+        // keep ≈29.7 MiB across the 100 jobs — far over the fixed 2 MiB
+        // budget. The {digest, bytes} posture must settle at tens of
+        // kilobytes. A distinct allocation per iteration is what makes
+        // the budget assert discriminating: copy-on-write never collapses
+        // separate strings, so reverting to raw retention fails HERE as
+        // well as on the descriptor-keys asserts. (Any fixed large shape
+        // meets the acceptance "16MiB-shape" literal — the discriminating
+        // budget is what the pin is for.)
+        $firstPayload = ['paths' => [str_repeat("/deep/dir0/", 26_214)]];
+        $firstFrame = json_encode($firstPayload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
 
         $queue = new JobQueue();
         $start = memory_get_usage();
+
         $ids = [];
         for ($i = 0; $i < JobQueue::MAX_JOBS; $i++) {
-            $ids[] = $queue->enqueue($payload);
+            $ids[] = $queue->enqueue(['paths' => [str_repeat("/deep/dir$i/", 26_214)]]);
         }
         $retained = memory_get_usage() - $start;
 
-        // Raw retention would cost MAX_JOBS × 16MiB ≈ 1.6GiB here; the
-        // {digest, bytes} posture must stay under a fixed 2MiB budget.
+        // Raw retention costs ≈29.7 MiB here (≈100 × ~300 KiB, one live
+        // string per job); descriptors stay under the fixed 2 MiB budget.
         $this->assertLessThan(2 * 1024 * 1024, $retained);
 
         // Ids and statuses survive bounding, one per enqueued job.
@@ -301,8 +313,8 @@ final class JobQueueTest extends TestCase
         // The descriptor carries the full payload identity, not its bytes.
         $descriptor = $queue->get($ids[0])['payload'];
         $this->assertSame(['digest', 'bytes'], array_keys($descriptor));
-        $this->assertSame(JobQueue::payloadDigest($payload), $descriptor['digest']);
-        $this->assertSame(strlen($canonical), $descriptor['bytes']);
+        $this->assertSame(hash('sha256', $firstFrame), $descriptor['digest']);
+        $this->assertSame(strlen($firstFrame), $descriptor['bytes']);
     }
 
     public function testDequeueAndCompletionLegSurvivePayloadBounding(): void
@@ -350,7 +362,24 @@ final class JobQueueTest extends TestCase
         $this->assertSame(['digest', 'bytes'], array_keys($descriptor));
         $this->assertSame(64, strlen($descriptor['digest']));
 
-        // The digest stays a stable identity of the lossy canonical form.
+        // The digest stays a stable identity of the lossy wire form.
         $this->assertSame(JobQueue::payloadDigest(['paths' => ['src'], 'limit' => INF]), $descriptor['digest']);
+
+        // Cycle arm: a by-ref self-cycle never arrives through HTTP, but
+        // enqueue() is public API and the fallback claims cycles too — so
+        // a self-referencing payload must settle on a stable, BOUNDED
+        // descriptor (partial-encode substitutes null), never throw or
+        // chase the recursion.
+        $cyclic = ['paths' => ['src']];
+        $cyclic['mirror'] = &$cyclic;
+        $cycleId = $queue->enqueue($cyclic);
+
+        $cycleDescriptor = $queue->get($cycleId)['payload'];
+        $this->assertSame(['digest', 'bytes'], array_keys($cycleDescriptor));
+        $this->assertSame(64, strlen($cycleDescriptor['digest']));
+        $this->assertSame(JobQueue::payloadDigest($cyclic), $cycleDescriptor['digest']);
+        // `{"paths":["src"],"mirror":null}` — 31 bytes, bounded and
+        // independent of the (infinite) logical depth of the structure.
+        $this->assertSame(31, $cycleDescriptor['bytes']);
     }
 }

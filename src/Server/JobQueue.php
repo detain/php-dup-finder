@@ -29,16 +29,19 @@ namespace Phpdup\Server;
  * -----------------
  * Raw request payloads (which may carry arbitrarily large `paths`
  * lists) are NOT retained. `enqueue()` reduces each payload to a
- * fixed-size `{digest, bytes}` descriptor: the SHA-256 of the
- * canonical JSON frame (the same byte encoding the async dispatch leg
- * writes to the worker socket) plus its length. Retained queue memory
- * per job is therefore bounded by the descriptor and the result
- * summary, independent of payload size.
+ * fixed-size `{digest, bytes}` descriptor: the SHA-256 of the wire
+ * frame (the exact byte encoding the async dispatch leg writes to the
+ * worker socket; serialized in insertion order, so the digest is
+ * key-order sensitive) plus its length. Retained queue memory per job
+ * is therefore bounded by the descriptor and the result summary,
+ * independent of payload size.
  *
  * Consequence for consumers: anything that needs the payload contents
  * after admission must snapshot it at dispatch time. The async leg
- * already does exactly that — `Application::enqueueJob()` encodes the
- * `RUN <id> <json>` frame *before* minting the job — and
+ * already does exactly that — `Application::enqueueJob()` serializes
+ * the `RUN <id> <json>` frame from its own request-local copy and
+ * writes it to the worker within the same request, before responding
+ * 202; the queue row is never read back for dispatch.
  * {@see JobQueue::payloadDigest()} lets a result writer prove the
  * frame it ran matches the descriptor the queue kept. The `/api/jobs`
  * status routes are unaffected (they never exposed the payload);
@@ -82,7 +85,7 @@ final class JobQueue
      * completed/failed entry is evicted before the new one is added.
      *
      * The retained `payload` is a bounded `{digest, bytes}` descriptor
-     * of the canonical JSON frame, not the raw array (see class docblock).
+     * of the wire frame, not the raw array (see class docblock).
      *
      * @param array<string,mixed> $payload
      * @return string Hex-encoded 16-character random id.
@@ -108,18 +111,21 @@ final class JobQueue
     }
 
     /**
-     * SHA-256 identity of a payload's canonical JSON frame.
+     * SHA-256 identity of a payload's wire frame.
      *
-     * The frame is encoded with {@see JSON_UNESCAPED_SLASHES} — the
-     * same flags `Application::enqueueJob()` uses for the worker
-     * dispatch — so a leg that snapshots the frame at 202-time can
-     * verify it against the descriptor the queue retained.
+     * The frame is encoded with {@see JSON_UNESCAPED_SLASHES} in the
+     * payload's insertion order — the same flags and byte order the
+     * async dispatch leg uses for the worker socket — so the digest
+     * identifies the exact wire bytes, key order included: two
+     * semantically equal payloads whose keys differ in order digest
+     * differently. A leg that snapshots the frame can verify it
+     * against the descriptor the queue retained.
      *
      * @param array<string,mixed> $payload
      */
     public static function payloadDigest(array $payload): string
     {
-        return hash('sha256', self::canonicalJson($payload));
+        return hash('sha256', self::wireFrameJson($payload));
     }
 
     /**
@@ -130,29 +136,36 @@ final class JobQueue
      */
     private static function describePayload(array $payload): array
     {
-        $canonical = self::canonicalJson($payload);
+        $wire = self::wireFrameJson($payload);
         return [
-            'digest' => hash('sha256', $canonical),
-            'bytes'  => strlen($canonical),
+            'digest' => hash('sha256', $wire),
+            'bytes'  => strlen($wire),
         ];
     }
 
     /**
-     * Canonical byte form a payload is digested over.
+     * Exact wire byte-form a payload is digested over.
+     *
+     * Serialized in insertion order, NOT key-sorted: the digest is a
+     * fingerprint of the bytes the async leg would write to the worker
+     * socket, so key order is part of the identity by design.
      *
      * @param array<string,mixed> $payload
      */
-    private static function canonicalJson(array $payload): string
+    private static function wireFrameJson(array $payload): string
     {
         try {
             return (string) json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         } catch (\JsonException) {
-            // Unreachable through `phpdup serve`: every HTTP payload is
-            // json_decode output and therefore encodable; the async leg
-            // additionally rejects non-encodable frames before enqueue.
-            // A direct caller passing the rest (INF/NAN/cycles) must not
-            // crash the request path, so fall back to the lossless-where-
-            // possible partial encode instead of throwing.
+            // Non-encodable payloads ARE reachable through `phpdup serve`:
+            // `json_decode('{"limit":1e400}')` yields `float(INF)`, which
+            // JSON_THROW_ON_ERROR rejects. Request-level handling of such
+            // bodies (the throw-after-mint crash leg) is owned by shell-S01
+            // as crash-proof request handling — pre-existing at this commit,
+            // neither introduced nor regressed here. The partial-encode
+            // fallback keeps enqueue() itself bounded and total: a caller
+            // passing INF/NAN/cycles settles on a stable lossy descriptor
+            // instead of an exception.
             return (string) json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR);
         }
     }
