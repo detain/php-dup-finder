@@ -58,11 +58,11 @@ final class BenchmarkResultsRenderer
                 $note = $extra === [] ? '—' : implode(', ', $extra);
                 $out .= sprintf(
                     "| %s | %s | %s | %s | %s |\n",
-                    $r['tool'],
+                    $this->escapeCell($r['tool']),
                     $this->fmt($r['wall_s'], '%.2f'),
                     $this->fmt($r['peak_mb'], '%.1f'),
                     $r['clusters'] === null ? '—' : (string)$r['clusters'],
-                    $note,
+                    $this->escapeCell($note),
                 );
             }
             $out .= "\n";
@@ -101,7 +101,7 @@ final class BenchmarkResultsRenderer
         foreach ($scores as $s) {
             $out .= sprintf(
                 "| %s | %.2f | %.2f | %.2f | %d | %d | %d | %d | %d |\n",
-                $s['tool'],
+                $this->escapeCell($s['tool']),
                 $s['precision'],
                 $s['recall'],
                 $s['f1'],
@@ -113,6 +113,15 @@ final class BenchmarkResultsRenderer
             );
         }
         return $out;
+    }
+
+    /**
+     * Escape a value for safe use in a markdown table cell: a bare '|'
+     * would split the row into extra columns, so it is emitted as '\|'.
+     */
+    private function escapeCell(string $value): string
+    {
+        return str_replace('|', '\\|', $value);
     }
 
     private function fmt(?float $v, string $fmt): string

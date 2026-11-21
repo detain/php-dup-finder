@@ -109,4 +109,80 @@ final class BenchmarkResultsRendererTest extends TestCase
         self::assertNotFalse($bPos);
         self::assertLessThan($bPos, $aPos);
     }
+
+    public function testPipeInToolNameAndNotesRendersEscapedAndColumnCountHolds(): void
+    {
+        $rows = [[
+            'corpus'   => 'sample',
+            'files'    => 5,
+            'tool'     => 'php|dup',
+            'wall_s'   => 1.23,
+            'peak_mb'  => 64.0,
+            'clusters' => 7,
+            'extra'    => ['filter' => 'a|b'],
+        ]];
+        $md = (new BenchmarkResultsRenderer())->renderRunMarkdown($rows);
+        self::assertStringContainsString('| php\\|dup | 1.23 | 64.0 | 7 | filter=a\\|b |', $md);
+        $header = self::findRow($md, 'Tool');
+        $data = self::findRow($md, 'php\\|dup');
+        self::assertNotSame('', $data);
+        self::assertSame(self::columnCount($header), self::columnCount($data));
+    }
+
+    public function testDetectionRatePipeInToolNameRendersEscapedAndColumnCountHolds(): void
+    {
+        $scores = [[
+            'tool'         => 'php|cpd',
+            'precision'    => 1.0,
+            'recall'       => 0.5,
+            'f1'           => 0.667,
+            'tp'           => 2,
+            'fp'           => 0,
+            'fn'           => 2,
+            'reported'     => 2,
+            'ground_truth' => 4,
+        ]];
+        $md = (new BenchmarkResultsRenderer())->renderDetectionRateMarkdown($scores);
+        self::assertStringContainsString('| php\\|cpd | 1.00 | 0.50 | 0.67 |', $md);
+        $header = self::findRow($md, 'Precision');
+        $data = self::findRow($md, 'php\\|cpd');
+        self::assertNotSame('', $data);
+        self::assertSame(self::columnCount($header), self::columnCount($data));
+    }
+
+    public function testNamesWithoutPipesAreEmittedUnchanged(): void
+    {
+        $rows = [[
+            'corpus'   => 'sample',
+            'files'    => 1,
+            'tool'     => 'phpdup',
+            'wall_s'   => 0.5,
+            'peak_mb'  => 10.0,
+            'clusters' => 1,
+            'extra'    => ['note' => 'ok'],
+        ]];
+        $md = (new BenchmarkResultsRenderer())->renderRunMarkdown($rows);
+        self::assertStringContainsString('| phpdup | 0.50 | 10.0 | 1 | note=ok |', $md);
+        self::assertStringNotContainsString('\\|', $md);
+    }
+
+    /** First markdown table row (line starting with '|') containing $needle. */
+    private static function findRow(string $md, string $needle): string
+    {
+        foreach (explode("\n", $md) as $line) {
+            if (str_starts_with($line, '|') && str_contains($line, $needle)) {
+                return $line;
+            }
+        }
+        return '';
+    }
+
+    /**
+     * Cell count of a table row: an escaped '\|' is content, an unescaped
+     * '|' is a column delimiter.
+     */
+    private static function columnCount(string $row): int
+    {
+        return substr_count(str_replace('\\|', '', $row), '|') - 1;
+    }
 }
