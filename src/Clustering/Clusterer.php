@@ -296,7 +296,13 @@ final class Clusterer
         // of scanning all O(k²) member pairs in a component of size k.
         $componentMinSim = [];
         foreach ($edges as [$aId, $bId, $sim, $tier]) {
-            $key = $aId . '|' . $bId;
+            // Orientation-agnostic key, mirroring the buildPairsFromEdges
+            // lookup (strcmp-canonical). An inverted arrival must not
+            // silently vanish from $edgeMap: since item 1.4, Cluster::$pairs
+            // is the medoid-ball splitter's SOLE input, so a dropped edge
+            // would be a dropped adjacency. A pair seen twice (any mix of
+            // orientations) keeps the last-arrival edge.
+            $key = strcmp($aId, $bId) < 0 ? $aId . '|' . $bId : $bId . '|' . $aId;
             $edgeMap[$key] = ['sim' => $sim, 'tier' => $tier];
             // Capture roots BEFORE union so the pre-union condition is meaningful.
             $rx = $uf->find($aId);
@@ -520,12 +526,21 @@ final class Clusterer
                     }
                 }
             }
-            // Guaranteed by the residue invariant above; the guard keeps
-            // the shape honest rather than trusting it implicitly.
-            if ($bestGroup !== null) {
-                $groups[$bestGroup]['members'][]                  = $straggler;
-                $groups[$bestGroup]['anchors'][$straggler->id]    = $bestTether;
+            // Unreachable by the residue invariant above (a residue
+            // member's neighbours all live in surviving groups — an edge
+            // to another residue would have kept both in the remaining
+            // graph). If it ever fires the partition assumption broke, so
+            // fail loud instead of silently dropping a block out of the
+            // coverage (emittedBlocks cannot notice it: it only gates
+            // X-bucket re-adds).
+            if ($bestGroup === null) {
+                throw new \LogicException(sprintf(
+                    'medoid-ball split: lone residue block %s has no accepted edge into any surviving group; partition invariant broken.',
+                    $straggler->id,
+                ));
             }
+            $groups[$bestGroup]['members'][]                  = $straggler;
+            $groups[$bestGroup]['anchors'][$straggler->id]    = $bestTether;
         }
 
         $memberToGroup = [];

@@ -357,16 +357,159 @@ final class ClustererMedoidSplitTest extends TestCase
         $baseline = $this->signatures($this->clusterer()->cluster($index, $edges));
 
         foreach ([1, 42, 1337] as $seed) {
-            $shuffled = $edges;
-            mt_srand($seed);
-            for ($i = count($shuffled) - 1; $i > 0; $i--) {
-                $j = mt_rand(0, $i);
-                [$shuffled[$i], $shuffled[$j]] = [$shuffled[$j], $shuffled[$i]];
-            }
             $this->assertSame(
                 $baseline,
-                $this->signatures($this->clusterer()->cluster($index, $shuffled)),
+                $this->signatures($this->clusterer()->cluster($index, $this->shuffled($edges, $seed))),
                 "cluster set (ids, membership, similarity) must be invariant under edge arrival order ($seed)",
+            );
+        }
+    }
+
+    /**
+     * Fisher-Yates shuffle on a copy, seeded via mt_srand so the permuted
+     * order is reproducible across PHP builds.
+     *
+     * @param list<mixed> $items
+     * @return list<mixed>
+     */
+    private function shuffled(array $items, int $seed): array
+    {
+        mt_srand($seed);
+        for ($i = count($items) - 1; $i > 0; $i--) {
+            $j = mt_rand(0, $i);
+            [$items[$i], $items[$j]] = [$items[$j], $items[$i]];
+        }
+        return $items;
+    }
+
+    /**
+     * Per-edge coin-flip on orientation after positional shuffle: both the
+     * arrival order AND the (a,b)/(b,a) orientation of every edge vary.
+     *
+     * @param list<array{0:string,1:string,2:float,3:string}> $edges
+     * @return list<array{0:string,1:string,2:float,3:string}>
+     */
+    private function shuffledOrientationAware(array $edges, int $seed): array
+    {
+        $out = $this->shuffled($edges, $seed);
+        mt_srand($seed + 1);
+        foreach ($out as &$edge) {
+            if (mt_rand(0, 1) === 1) {
+                [$edge[0], $edge[1]] = [$edge[1], $edge[0]];
+            }
+        }
+        return $out;
+    }
+
+    public function testInvertedEdgeOrientationFeedsTheSplitterIntact(): void
+    {
+        // [M] regression: $edgeMap keys are strcmp-canonical like the
+        // buildPairsFromEdges lookup. An inverted arrival must not silently
+        // vanish from Cluster::$pairs — since 1.4 that stream is the
+        // medoid-ball splitter's SOLE input (raw-key era: reversed triangle
+        // fed to the public seam produced pairs=0, medoid null, legacy
+        // de-form).
+        $blocks = [
+            $this->block('A', 'hash_A'), $this->block('B', 'hash_B'), $this->block('C', 'hash_C'),
+        ];
+        $canonical = [
+            ['A', 'B', 0.95, MatchTier::Jaccard->value],
+            ['A', 'C', 0.90, MatchTier::Jaccard->value],
+            ['B', 'C', 0.88, MatchTier::Jaccard->value],
+        ];
+        $inverted = array_map(
+            static fn (array $e): array => [$e[1], $e[0], $e[2], $e[3]],
+            $canonical,
+        );
+        $mixed = [$canonical[0], $inverted[1], $canonical[2]];
+
+        $index = $this->index($blocks);
+        $base  = $this->clusterer()->cluster($index, $canonical);
+
+        $this->assertCount(1, $base);
+        $this->assertCount(3, $base[0]->pairs, 'all accepted edges reach the evidence stream');
+        $this->assertSame('A', $base[0]->medoidId, 'degree tie A/B resolves on structuralHash');
+
+        foreach (['fully inverted' => $inverted, 'mixed orientation' => $mixed] as $label => $stream) {
+            $clusters = $this->clusterer()->cluster($index, $stream);
+            $this->assertSame(
+                $this->signatures($base),
+                $this->signatures($clusters),
+                "$label arrivals must shape the identical cluster set",
+            );
+            $this->assertCount(3, $clusters[0]->pairs, "$label: pairs must survive orientation canonicalization");
+            $this->assertSame('A', $clusters[0]->medoidId, "$label: medoid invariant under edge orientation");
+        }
+    }
+
+    public function testMedoidPickIsStableUnderIndexInsertionAndEdgeArrivalOrder(): void
+    {
+        // [m2] non-degenerate medoid pin: a 5-node path with a THREE-WAY
+        // degree tie (C1/C2/C3, degree 2 each). The structuralHash
+        // tie-break must crown C2 (hash_m1) every time — under an
+        // arrival-first medoid (mutation probe MUT-1) the ball slides to
+        // whoever came in first and the partition itself changes, so this
+        // leg fails on that mutation while degenerate clique corpora stay
+        // green. Index insertion order, edge arrival order and per-edge
+        // orientation all vary across seeded variants.
+        $blocks = [
+            $this->block('C0', 'hash_C0'),
+            $this->block('C1', 'hash_m2'),
+            $this->block('C2', 'hash_m1'),
+            $this->block('C3', 'hash_m3'),
+            $this->block('C4', 'hash_C4'),
+        ];
+        $edges = [
+            ['C0', 'C1', 0.95, MatchTier::Jaccard->value],
+            ['C1', 'C2', 0.90, MatchTier::Jaccard->value],
+            ['C2', 'C3', 0.88, MatchTier::Jaccard->value],
+            ['C3', 'C4', 0.85, MatchTier::Jaccard->value],
+        ];
+
+        $baseline  = $this->clusterer()->cluster($this->index($blocks), $edges);
+        $this->assertCount(2, $baseline, 'degree-tie ball {C1,C2,C3} plus the legacy residue pair {C0,C4}');
+        $bySize = [];
+        foreach ($baseline as $c) {
+            $bySize[$c->size()] = $c;
+        }
+        $this->assertSame('C2', $bySize[3]->medoidId, 'hash tie-break crowns the smallest-hash degree-tied node');
+        $this->assertEqualsWithDelta(0.88, $bySize[3]->similarity, 1e-9, 'weakest member-vs-medoid edge');
+        $this->assertNull($bySize[2]->medoidId, 'isolated leftovers re-form under legacy semantics');
+        $this->assertEqualsWithDelta(0.85, $bySize[2]->similarity, 1e-9, 'residue keeps the component min');
+
+        $expected = $this->signatures($baseline);
+        foreach ([5, 77, 20261] as $seed) {
+            $clusters = $this->clusterer()->cluster(
+                $this->index($this->shuffled($blocks, $seed)),
+                $this->shuffledOrientationAware($edges, $seed),
+            );
+            $this->assertSame(
+                $expected,
+                $this->signatures($clusters),
+                "medoid partition must be invariant under index+arrival+orientation order ($seed)",
+            );
+        }
+    }
+
+    public function testStormIsInvariantUnderIndexInsertionOrderToo(): void
+    {
+        // [m2] companion: the 167-storm partition survives member-INSERTION
+        // shuffles on top of arrival+orientation shuffling (reviewer's
+        // six-variant external probe, now committed).
+        [$blocks, $edges] = $this->stormFixture();
+        $baseline = $this->signatures(
+            $this->clusterer()->cluster($this->index($blocks), $edges),
+        );
+
+        foreach ([3, 99] as $seed) {
+            $clusters = $this->clusterer()->cluster(
+                $this->index($this->shuffled($blocks, $seed)),
+                $this->shuffledOrientationAware($edges, $seed),
+            );
+            $this->assertSame(
+                $baseline,
+                $this->signatures($clusters),
+                "storm signature set must be invariant under full-order randomization ($seed)",
             );
         }
     }
