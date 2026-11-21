@@ -28,6 +28,26 @@ final class SerializedClassAllowListTest extends TestCase
         self::assertContains(\PhpParser\Node\Expr\Variable::class, $list);
     }
 
+    /**
+     * engine-S23b interplay: TokenCache decodes its blob through
+     * CacheBlob::decode(..., parserClasses(), Token::class). The element
+     * class MUST be a member of the allow-list — if the enumeration ever
+     * stops admitting it, every put() silently voids the cache (each
+     * get() rejects its own honest payload at the instance screen).
+     */
+    public function testParserClassesAdmitsTokenCacheElementClass(): void
+    {
+        $list = SerializedClassAllowList::parserClasses();
+        self::assertContains(\PhpParser\Token::class, $list);
+
+        // Round-trip over the real decode path with the parser list:
+        // an honest token stream survives screening.
+        $payload = serialize([new \PhpParser\Token(T_OPEN_TAG, '<?php ', 1, 0)]);
+        $decoded = \Phpdup\Parsing\CacheBlob::decode($payload, $list, \PhpParser\Token::class);
+        self::assertNotNull($decoded, 'allow-list and TokenCache element contract must agree');
+        self::assertInstanceOf(\PhpParser\Token::class, $decoded[0]);
+    }
+
     public function testBlockCacheClassesIsUnion(): void
     {
         $list = SerializedClassAllowList::blockCacheClasses();

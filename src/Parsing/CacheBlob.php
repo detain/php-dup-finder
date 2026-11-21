@@ -24,7 +24,10 @@ use PhpParser\Node;
  *    shape — or decodes a `__PHP_Incomplete_Class` into an untyped slot
  *    where it would silently poison downstream hashing. The flat
  *    top-level scan both caches had only caught the second shape one
- *    level deep; {@see self::decode()} catches both (engine-017a).
+ *    level deep; {@see self::decode()} catches both (engine-017a), and
+ *    since engine-S23b it screens the token stream's plain value
+ *    objects the same way, so {@see TokenCache} reaches full parity
+ *    (engine-018).
  *  - **Private file mode.** Fresh dirs are 0700 and blobs are written
  *    0600: a cached AST embeds every string literal of the scanned
  *    source, so on a shared runner group-readable cache files leak
@@ -106,6 +109,12 @@ final class CacheBlob
      * Every rejection path degrades to null (a cache miss) rather than
      * an exception — a corrupted or forged cache must never abort a run.
      *
+     * Element screening follows the element's nature: {@see Node}
+     * elements get the full recursive tree walk; any other admitted
+     * element (the token-stream caches' plain value objects) must prove
+     * every restored property null-or-scalar, so a class smuggled into
+     * a declared or dynamic slot fails closed the same way (engine-018).
+     *
      * @template T of object
      * @param list<class-string> $allowedClasses
      * @param class-string<T> $elementClass
@@ -127,11 +136,34 @@ final class CacheBlob
             if (!$element instanceof $elementClass) {
                 return null;
             }
-            if ($element instanceof Node && !self::isCleanTree($element)) {
+            if ($element instanceof Node) {
+                if (!self::isCleanTree($element)) {
+                    return null;
+                }
+            } elseif (!self::isScalarOnlyLeaf($element)) {
                 return null;
             }
         }
         return $data;
+    }
+
+    /**
+     * True when every property of a plain value object is null-or-scalar.
+     *
+     * Shared leaf rule for the object shapes that ride the caches without
+     * being Nodes: comment attributes on an AST, and every element of a
+     * cached token stream. The cast exposes undeclared (dynamically
+     * restored) properties too, which is exactly the slot a hostile blob
+     * smuggles through when all declared properties are typed scalars.
+     */
+    public static function isScalarOnlyLeaf(object $value): bool
+    {
+        foreach ((array)$value as $leaf) {
+            if ($leaf !== null && !is_scalar($leaf)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -175,7 +207,9 @@ final class CacheBlob
                 // accept the leaf only after its own properties prove
                 // null-or-scalar, or a smuggled dynamic property passes
                 // the screen (engine-S23a r3 LOW).
-                foreach ((array)$value as $cv) { if ($cv !== null && !is_scalar($cv)) { return false; } }
+                if (!self::isScalarOnlyLeaf($value)) {
+                    return false;
+                }
                 continue;
             }
             return false;
