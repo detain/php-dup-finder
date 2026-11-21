@@ -83,19 +83,28 @@ final class TedSizeGateTest extends TestCase
      * identical and land the exact-hash bucket), so the structural
      * difference is what keeps the pair in the Jaccard/TED lane. One
      * statement out of ~730 keeps Jaccard ≈ 0.99 while the structural
-     * hashes differ.
+     * hashes differ. $foreachB instead (or additionally) appends that
+     * many top-level foreach insertions to B: a foreach subtree costs
+     * APTED slightly MORE than it costs the 5-gram bag Jaccard, so the
+     * pair becomes value-discriminative (ted < jac) — the control test
+     * needs the min() to be the TED verdict, not the raw Jaccard.
      *
      * @return array{0: Block, 1: Block}
      */
-    private function realPair(int $units, bool $extraB = true): array
+    private function realPair(int $units, bool $extraB = true, int $foreachB = 0): array
     {
-        $mk = static function (string $tag, bool $extra) use ($units): string {
+        $mk = static function (string $tag, bool $extra) use ($units, $extraB, $foreachB): string {
             $code = "<?php\nfunction probe_{$tag}(\$p) {\n";
             for ($i = 0; $i < $units; $i++) {
                 $code .= "    \$m{$tag}_{$i} = strlen(\$p) + {$i}; if (\$m{$tag}_{$i} > {$i}) { \$out[] = 'v{$tag}_{$i}'; }\n";
             }
-            if ($extra) {
+            if ($extra && $extraB) {
                 $code .= "    if (\$p) { \$extraGuard = 1; }\n";
+            }
+            if ($extra) {
+                for ($g = 0; $g < $foreachB; $g++) {
+                    $code .= "    foreach ((array)\$p as \$k{$g} => \$v{$g}) { \$acc[\$k{$g}] = \$v{$g} + {$g}; }\n";
+                }
             }
             $code .= "    return \$out ?? [];\n}\n";
             return $code;
@@ -108,7 +117,7 @@ final class TedSizeGateTest extends TestCase
         $fingerprint = new NgramFingerprint(5);
         $blocks = [];
         foreach (['A', 'B'] as $tag) {
-            $stmts = $parser->parseCode($mk($tag, $extraB && $tag === 'B'));
+            $stmts = $parser->parseCode($mk($tag, ($extraB || $foreachB > 0) && $tag === 'B'));
             $this->assertNotNull($stmts);
             $b = $extractor->extract("probe_{$tag}.php", $stmts)[0];
             $normalizer->normalize($b);
@@ -257,28 +266,35 @@ final class TedSizeGateTest extends TestCase
 
     public function testControlPairWithoutGatePaysTheTedMatrix(): void
     {
-        // The negative control that keeps (b) honest: the SAME ~728-node
-        // pair under a cap above the block sizes runs real APTED — tier
-        // 'jaccard', seconds of wall time, tens of MB of matrix. Proves
-        // the memory/time signal in the gated test measures the skip.
-        [$a, $b] = $this->realPair(40);
+        // The negative control that keeps (b) honest: a sibling probe pair
+        // (~730 nodes, six foreach insertions on B) under a cap above the
+        // block sizes runs real APTED. The old
+        // proof-of-payment was wall time >= 1.0s — host-dependent (it
+        // flaked at 0.659s on a fast CI runner). The proof is structural
+        // now: tier 'jaccard' is minted ONLY by the arm that ran TED to
+        // completion (the gate arm spells 'jaccard-unverified'), and the
+        // edge weight equals an INDEPENDENT recomputation of
+        // min(jac, tedSim) that lands strictly below the raw Jaccard.
+        // Reinstating the gate branch on this pair flips the tier and
+        // snaps the weight to raw jac (red); skipping the TED call while
+        // faking the tier still fails the weight pin (red). The memory
+        // delta remains deliberately unasserted — a warm emalloc arena
+        // (every preceding battery test) shows 0 even after a 30MB matrix.
+        [$a, $b] = $this->realPair(40, extraB: false, foreachB: 6);
         $index  = $this->indexOf($a, $b);
         $worker = $this->worker($index, 5000); // cap far above the pair
 
-        $before = memory_get_usage(true);
-        $t0     = microtime(true);
-        $edges  = $worker->score([['R-A', 'R-B']]);
-        $wall   = microtime(true) - $t0;
-        unset($before);
+        $edges = $worker->score([['R-A', 'R-B']]);
+
+        $jac    = (new JaccardSimilarity())->similarity($a->ngramBag ?? [], $b->ngramBag ?? []);
+        $tedSim = (new TreeEditDistance())->similarity($a->canonical, $b->canonical, 0.85);
 
         $this->assertCount(1, $edges);
-        $this->assertSame('jaccard', $edges[0][3]);
-        // The PROOF of the wall-time signal in the gated test is wall time
-        // itself: APTED over this pair costs ~4s (probe-measured). The
-        // memory delta is deliberately NOT asserted — a warm emalloc arena
-        // (every preceding battery test) satisfies the matrix from cached
-        // chunks and shows a 0 delta even when APTED allocated 30MB.
-        $this->assertGreaterThanOrEqual(1.0, $wall, 'control must actually pay APTED (probe: ~4s)');
+        $this->assertGreaterThan(0.8, $jac, 'probe builder sanity: the pair reaches the Jaccard/TED lane');
+        $this->assertGreaterThan(0.85, $tedSim, 'probe builder sanity: the pair passes the TED threshold (else the control never reaches the minting arm)');
+        $this->assertLessThan($jac, $tedSim, 'value-discriminative pair: min(jac, ted) must be TED, not the raw-Jaccard gate weight');
+        $this->assertSame('jaccard', $edges[0][3], "tier 'jaccard' is minted only post-TED");
+        $this->assertSame($tedSim, $edges[0][2], 'edge weight is the TED verdict itself, recomputed independently');
     }
 
     // ------------------------------------------------------------------
