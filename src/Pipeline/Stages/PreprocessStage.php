@@ -149,21 +149,36 @@ final class PreprocessStage implements CooperativeStageInterface
             $state->debug($output, sprintf('preprocess: processing %d files across %d workers [%s]', count($toProcess), $workerCount, MemoryDebug::getMemoryUsage()));
 
             $processedFilesSet = [];
+            $skippedFilesSet   = []; // files that parsed but yielded zero blocks (0.6)
             $errorFiles        = []; // files that emitted an error row — never cache-saved
             $sinceYield        = 0;
 
             $state->debug($output, sprintf('preprocess: collecting results from workers... [%s]', MemoryDebug::getMemoryUsage()));
             foreach ($pool->runStreaming($toProcess, $task) as $row) {
-                $processedFilesSet[$row['file']] = true;
+                // Counter law (0.6): every fresh file lands in exactly one
+                // bucket — a 'block'-emitting file counts as processed, a
+                // 'skipped' file as without-blocks, an 'error' file as a
+                // parse error. The worker emits one error row per file and
+                // one skipped row per zero-block file, so per-row counting
+                // here is per-file counting. Previously EVERY row (errors
+                // included) entered $processedFilesSet, so a file that only
+                // produced an error was double-counted (processed + error)
+                // and a zero-block file was counted as processed while
+                // contributing no blocks — scanned vs processed vs the
+                // blocks/buckets below never balanced.
                 if ($row['type'] === 'error') {
                     $state->parseErrors++;
                     $errorFiles[$row['file']] = true;
                 } elseif ($row['type'] === 'block') {
+                    $processedFilesSet[$row['file']] = true;
                     /** @var Block $b */
                     $b = $row['block'];
                     $blocks[] = $b;
+                } elseif ($row['type'] === 'skipped') {
+                    $skippedFilesSet[$row['file']] = true;
                 }
                 $state->processedFiles = count($processedFilesSet);
+                $state->skippedFiles = count($skippedFilesSet);
 
                 if (++$sinceYield >= self::YIELD_EVERY) {
                     $sinceYield = 0;
@@ -178,7 +193,7 @@ final class PreprocessStage implements CooperativeStageInterface
                     yield Stage::Preprocessing;
                 }
             }
-            unset($processedFilesSet);
+            unset($processedFilesSet, $skippedFilesSet);
 
             if ($store !== null) {
                 $byFile = [];
@@ -217,9 +232,16 @@ final class PreprocessStage implements CooperativeStageInterface
         $state->blocks = $blocks;
         $state->timings['preprocess'] = microtime(true) - $tPre;
 
+        // Counter labels are deliberate (0.6): 'files' is what the scanner
+        // handed this stage; 'reused' came from the per-file index cache;
+        // 'processed' produced at least one comparable block; 'no blocks'
+        // parsed cleanly but yielded none (enums, interfaces, const-
+        // definitions, ...); 'parse errors' failed to parse. Every scanned
+        // file is in exactly one bucket: reused + processed + no blocks +
+        // parse errors == files.
         $output->writeln(sprintf(
-            "<info>phpdup</info> %d files (%d reused · %d processed) → %d blocks · %d parse errors",
-            count($files), $state->reusedFiles, $state->processedFiles, count($blocks), $state->parseErrors,
+            "<info>phpdup</info> %d files (%d reused · %d processed · %d no blocks · %d parse errors) → %d blocks",
+            count($files), $state->reusedFiles, $state->processedFiles, $state->skippedFiles, $state->parseErrors, count($blocks),
         ));
 
         if ($this->showStats) {

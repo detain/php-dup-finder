@@ -52,7 +52,7 @@ for the full JSON-Schema-compatible spec.
 | `--optional-blocks-containment N`          | `0.85`         | Containment-fallback threshold for the type-3 path (`0..1`).                                      |
 | `--db-aware`                               | off            | ORM-/DB-aware semantic deduplication: rewrite recognised database calls (Eloquent, Doctrine, query builders, PDO, mysqli, pg_*, raw SQL strings) to canonical `__DB_<OP>__("table")` tokens during normalisation so equivalent ORM/raw-SQL variants of the same operation cluster together. Off by default — opt-in for ORM-heavy codebases. See [`docs/plans/orm-db-semantic-dedup.md`](plans/orm-db-semantic-dedup.md). |
 | `--trinity-collapse`                       | off            | Detect the canonical CRUD trinity (read → mutate → save) and rewrite the three-statement sequence as a single `__DB_UPSERT__("entity")` synthetic call so ORM upserts cluster with raw `UPDATE` queries. Composes with `--db-aware`. Off by default. See option 2 of [`docs/plans/orm-db-semantic-dedup.md`](plans/orm-db-semantic-dedup.md). |
-| `--scorer MODE`                            | `default`      | Scoring tier set: `default` (stock AST tiers) or `ir` (option-5 IR-tier fallback). When `ir`, after AST Jaccard / TED / containment all reject a pair, both blocks are lifted to canonical IR (`Phpdup\Ir\IrLifter`) and their token bags scored by multiset Jaccard; pairs at or above `--ir-threshold` form edges weighted by the IR similarity. Lift failure on either side silently skips the IR tier for that pair. |
+| `--scorer MODE`                            | —              | Scoring tier set: `default` (stock AST tiers) or `ir` (option-5 IR-tier fallback). When the flag is absent the config-file `scorer` (or the built-in `default`) applies — it used to be shadowed by an always-injected CLI default (NN1). When `ir`, after AST Jaccard / TED / containment all reject a pair, both blocks are lifted to canonical IR (`Phpdup\Ir\IrLifter`) and their token bags scored by multiset Jaccard; pairs at or above `--ir-threshold` form edges weighted by the IR similarity. Lift failure on either side silently skips the IR tier for that pair. |
 | `--ir-threshold N`                         | `0.85`         | Multiset-Jaccard threshold for the option-5 IR tier (`0..1`). Only consulted when `--scorer=ir`. |
 | `--ml-pair-url URL`                        | —              | External pair-similarity ML sidecar URL (option 6 of the ORM dedup plan). Empty (the default) disables the tier. When set, the very last clustering tier — runs after structural-hash, AST Jaccard + TED, containment, and IR all reject. POSTs a `PairFeatures` vector to `<URL>/score-pair`; pairs at or above `--ml-pair-threshold` form edges. http(s) only; SSRF-hardened (`0.0.0.0` rejected). Returns null on transport failure so unavailability never breaks the run. |
 | `--ml-pair-threshold N`                    | `0.80`         | Similarity threshold (`0..1`) for the option-6 ML pair tier. |
@@ -74,6 +74,32 @@ for the full JSON-Schema-compatible spec.
 | `--limit N`                                | `50`    | Maximum number of clusters to print to the terminal. Doesn't affect file outputs.       |
 | `--sort KEY[:asc\|desc]`                   | `impact:desc` | Cluster sort. Keys: `impact`, `members`, `block-size`, `lines`, `similarity`, `confidence`, `name`, `file`, `id`. Aliases: `size`/`count` → `members`. Direction may also be given as a leading `-` (desc) or `+` (asc), e.g. `-members`, `+lines`. |
 | `--stats`                                  | off     | Print pipeline stage timings, block-kind histogram, and worker info after the report.  |
+
+### What the file counters mean
+
+`analyze` buckets **every scanned file into exactly one** category. The
+preprocess summary line, the CLI `files …` accounting line and the JSON
+`summary` object (schema 1.2; `JsonSchemaSpec::summaryShape()`) all label
+these buckets identically:
+
+| Bucket    | Summary / accounting label | JSON key                          | Meaning                                                                                   |
+|-----------|----------------------------|-----------------------------------|-------------------------------------------------------------------------------------------|
+| scanned   | `N files` / `N scanned`    | `summary.files` / `files_scanned` | Every file the scanner handed to preprocessing.                                            |
+| reused    | `N reused`                 | `summary.files_reused`            | Blocks came from the per-file index cache; the file was not re-parsed.                     |
+| processed | `N processed`              | `summary.files_processed`         | Freshly parsed and produced at least one comparable block.                                 |
+| no blocks | `N no blocks`              | `summary.files_without_blocks`    | Parsed cleanly but contained no extractable blocks (enums, interfaces, methods-less classes, config arrays). |
+| errors    | `N parse errors`           | `summary.parse_errors`            | The file could not be parsed or failed mid-preprocessing.                                  |
+
+**Balance law:** `scanned = reused + processed + no blocks + parse errors`.
+The historical `summary.files` key keeps its meaning (scanned); `null` in
+the three new counter keys means the producer does not track the bucket
+(built-in library path) — distinct from a tracked `0`.
+
+When files skipped extraction or failed to parse, the final verdict is no
+longer a bare `clean.`: it reads
+`no clusters above threshold — but N of M files produced nothing
+comparable.` so a corpus that never entered the comparison cannot report
+silent success.
 
 ### Runtime
 
@@ -363,8 +389,33 @@ A few keys use different fallback paths:
 | `allowed_kinds` | CLI → config `kinds` → `BlockExtractor::ALL_KINDS` |
 | `optional_blocks.*` | CLI → config `optional_blocks` → `Config` defaults |
 | `db_aware`, `trinity_collapse` | CLI → config → `Config` defaults |
-| `exclude` | config `exclude` → profile exclude globs → `Config` defaults |
+| `exclude` | APPEND: `Config` defaults + profile globs + config-file list (deduped, in that order) — never a replacement; `"exclude_reset": true` drops the inherited layers. Per-directory `.phpdup.json` lists accumulate down the tree the same way. |
 | `paths` | config `paths` → `Config` defaults (CLI argument is separate) |
+
+### `exclude` stacks — the glob dialect (item 5.2)
+
+Explicit exclude lists APPEND to the stock defaults; a single list no
+longer wipes them. The one documented escape hatch is `"exclude_reset":
+true` (root config file or any per-directory file): everything inherited
+below that layer (defaults, profile, ancestors) is discarded and only the
+layer's own list survives.
+
+Patterns are matched against paths relative to the scan root and are
+**segment-safe** — no star form crosses `/` by accident:
+
+| Pattern            | Meaning                                                             |
+|--------------------|---------------------------------------------------------------------|
+| `**/vendor/**`     | any `vendor/` directory at any depth — and never `myvendor/`         |
+| `vendor/**`        | the root-level `vendor/` only (deep form needs the leading `**/`)    |
+| `**` (trailing)    | everything below the preceding directory                             |
+| `*`                | within one path segment (never crosses `/`)                          |
+| `?`                | exactly one character in a segment                                   |
+| `**` mid-segment   | degenerates to `*` (globstar convention) — `**.php` is one segment;  |
+|                    | write `**/*.php` for any depth                                       |
+
+Unreadable directories are skipped with a `phpdup: warning: skipping
+unreadable path …` line on stderr (and recorded on the scanner's
+skip-notes) instead of aborting the run.
 
 ## Configuration file
 
@@ -376,7 +427,7 @@ values.
 ```json
 {
   "paths":   ["src", "app", "lib"],
-  "exclude": ["vendor/**", "node_modules/**", "**/*.tpl.php", "tests/**"],
+  "exclude": ["**/vendor/**", "**/node_modules/**", "**/*.tpl.php", "**/tests/**"],
   "min_block_size":       8,
   "max_block_size":       800,
   "normalization_mode":   "aggressive",
@@ -418,7 +469,7 @@ with the offending field path on the first violation.
 | Field                                  | Type             | Default          | Constraints                                                              |
 |----------------------------------------|------------------|------------------|--------------------------------------------------------------------------|
 | `paths`                                | list of strings  | (CLI args)       | Non-empty when present; each entry non-empty.                            |
-| `exclude`                              | list of strings  | sensible default | Glob patterns; `**` matches recursively.                                 |
+| `exclude`                              | list of strings  | sensible default | Segment-safe glob patterns appended to the defaults; `**`/ anchors on whole path segments (see "exclude stacks" above); `"exclude_reset": true` opts out. |
 | `min_block_size`                       | integer          | `8`              | `>= 1` and `<= max_block_size`.                                          |
 | `max_block_size`                       | integer          | `800`            | `>= 1` and `>= min_block_size`.                                          |
 | `normalization_mode`                   | string           | `"aggressive"`   | One of `strict`, `default`, `aggressive`.                                |

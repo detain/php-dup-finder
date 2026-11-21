@@ -11,6 +11,7 @@ use Phpdup\Pipeline\Stages\PreprocessStage;
 use Phpdup\Pipeline\Stages\RefactorStage;
 use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Reporting\JsonReporter;
+use Phpdup\Reporting\JsonSchemaSpec;
 use Phpdup\Reporting\Ranker;
 use Phpdup\Reporting\Report;
 use Symfony\Component\Console\Output\NullOutput;
@@ -24,6 +25,46 @@ final class JsonReporterTest extends TestCase
         $this->assertSame([], $payload['clusters']);
         $this->assertArrayHasKey('phpdup_version', $payload);
         $this->assertSame('aggressive', $payload['config']['normalization_mode']);
+    }
+
+    /**
+     * 0.6 additive summary keys: JsonSchemaSpec::summaryShape() and the
+     * emitted object must agree key-for-key in order (trailing-additive —
+     * the six historical 1.1 keys keep their positions), null-vs-zero is
+     * respected, and the balance law holds on a tracked producer.
+     */
+    public function testSummaryCarriesFileAccountingKeys(): void
+    {
+        $report  = new Report(
+            files: 10, blocks: 42, parseErrors: 1, clusters: [], config: Config::defaults([]),
+            reusedFiles: 3, processedFiles: 5, skippedFiles: 1,
+        );
+        $payload = (new JsonReporter())->build($report);
+
+        $this->assertSame('1.2', $payload['schema_version']);
+        $summary = $payload['summary'];
+        $this->assertSame(array_keys(JsonSchemaSpec::summaryShape()), array_keys($summary));
+        $this->assertSame(10, $summary['files']);          // historical key = files scanned
+        $this->assertSame(10, $summary['files_scanned']);  // restated unambiguously
+        $this->assertSame(3, $summary['files_reused']);
+        $this->assertSame(5, $summary['files_processed']);
+        $this->assertSame(1, $summary['files_without_blocks']);
+        $this->assertSame(
+            $summary['files_scanned'],
+            $summary['files_reused'] + $summary['files_processed']
+                + $summary['files_without_blocks'] + $summary['parse_errors'],
+            'balance law: scanned = reused + processed + no-blocks + parse-errors',
+        );
+    }
+
+    /** Legacy `new Report(...)` producers (library API, server workers) emit nulls, not fake zeros. */
+    public function testSummaryNullCountersForLegacyProducer(): void
+    {
+        $payload = (new JsonReporter())->build(new Report(4, 7, 0, [], Config::defaults([])));
+        $this->assertNull($payload['summary']['files_reused']);
+        $this->assertNull($payload['summary']['files_processed']);
+        $this->assertNull($payload['summary']['files_without_blocks']);
+        $this->assertSame(4, $payload['summary']['files_scanned']);
     }
 
     public function testFixtureReportPopulatesClusters(): void

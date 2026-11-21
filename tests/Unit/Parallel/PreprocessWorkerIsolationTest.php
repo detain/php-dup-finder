@@ -97,6 +97,47 @@ final class PreprocessWorkerIsolationTest extends TestCase
         }
     }
 
+    /**
+     * 0.6: the 'skipped' row promised by process()'s declared contract (and
+     * by PreprocessStage's consumer) but never emitted. One zero-block file
+     * must produce EXACTLY one row — scalars only, so it satisfies the
+     * SOCKETPAIR law (worker wire payloads must survive plain serialize)
+     * — and nothing else.
+     */
+    public function testZeroBlockFileEmitsExactlyOneScalarSkippedRow(): void
+    {
+        $path = $this->writePhp('empty.php', "<?php\n// comment-only file: parses clean, extracts nothing\n");
+
+        $rows = (new PreprocessWorker($this->config(poisoned: false)))->process([$path]);
+
+        $this->assertCount(1, $rows, 'a zero-block file emits its single skipped row');
+        $this->assertSame(['type' => 'skipped', 'file' => $path, 'blocks' => 0], $rows[0]);
+        foreach ($rows[0] as $key => $value) {
+            $this->assertIsScalar($value, "skipped row field '{$key}' must be scalar for the worker wire");
+        }
+        $this->assertSame($rows[0], unserialize(serialize($rows[0])), 'skipped row is wire-round-trip safe');
+    }
+
+    /**
+     * 0.6 balance by construction: every file lands in exactly one bucket
+     * — blocks XOR skipped XOR error — so the stage-side counters can never
+     * double-count a file.
+     */
+    public function testEachFileLandsInExactlyOneRowBucket(): void
+    {
+        $withBlocks = $this->writePhp('blocks.php', "<?php\nfunction a() { x(); }\n");
+        $zeroBlock  = $this->writePhp('nothing.php', "<?php\n\n");
+
+        $rows = (new PreprocessWorker($this->config(poisoned: false)))->process([$withBlocks, $zeroBlock]);
+
+        $buckets = [];
+        foreach ($rows as $row) {
+            $buckets[$row['file']][$row['type']] = ($buckets[$row['file']][$row['type']] ?? 0) + 1;
+        }
+        $this->assertSame(['block' => 1], $buckets[$withBlocks]);
+        $this->assertSame(['skipped' => 1], $buckets[$zeroBlock]);
+    }
+
     private function config(bool $poisoned): Config
     {
         return new Config(

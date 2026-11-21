@@ -90,6 +90,12 @@ final class GoldenTest extends TestCase
             parseErrors: $state->parseErrors,
             clusters: (new Ranker($config->minClusterImpact))->rank($state->clusters),
             config: $config,
+            // 0.6 accounting flows into the snapshots too (useCache:false
+            // → reused is a tracked 0, never null): the goldens pin the
+            // balance law per fixture corpus.
+            reusedFiles: $state->reusedFiles,
+            processedFiles: $state->processedFiles,
+            skippedFiles: $state->skippedFiles,
         );
         return (new JsonReporter())->build($report);
     }

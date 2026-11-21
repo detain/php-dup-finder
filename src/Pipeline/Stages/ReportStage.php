@@ -61,7 +61,13 @@ final class ReportStage implements StageInterface
 
     public function run(PipelineState $state, OutputInterface $output): void
     {
-        if (!$state->blocks) {
+        // 0.6: the old guard was `if (!$state->blocks) return;` which masked
+        // the entire skip surface — a corpus whose files all parse into zero
+        // comparable blocks (or all error) produced no Report, no CLI
+        // verdict, and never wrote --json at all. A run with files but no
+        // blocks is exactly the case the new counters exist to report, so
+        // only "the scanner found no files" short-circuits now.
+        if ($state->files === []) {
             return;
         }
 
@@ -109,6 +115,9 @@ final class ReportStage implements StageInterface
             parseErrors: $state->parseErrors,
             clusters: $clusters,
             config: $config,
+            reusedFiles: $state->reusedFiles,
+            processedFiles: $state->processedFiles,
+            skippedFiles: $state->skippedFiles,
         );
         $state->report   = $report;
         $state->clusters = $clusters;

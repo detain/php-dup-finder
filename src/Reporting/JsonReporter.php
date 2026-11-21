@@ -31,6 +31,19 @@ final class JsonReporter
                 'clusters'     => count($report->clusters),
                 'duplicated_lines' => $report->totalDuplicatedLines(),
                 'total_impact' => array_sum(array_map(fn(Cluster $c) => $c->impact, $report->clusters)),
+                // File accounting (0.6) — trailing-additive keys, schema
+                // '1.1' → '1.2'. 'files' above keeps its historical meaning
+                // (files scanned) and 'files_scanned' restates it under an
+                // unambiguous name. null = the producer does not track the
+                // bucket (legacy `new Report(...)` callers such as the
+                // library API and server worker); a tracked zero is 0.
+                // Balance law when all counters are tracked:
+                //   files_scanned = files_reused + files_processed
+                //                 + files_without_blocks + parse_errors.
+                'files_scanned'        => $report->files,
+                'files_reused'         => $report->reusedFiles,
+                'files_processed'      => $report->processedFiles,
+                'files_without_blocks' => $report->skippedFiles,
             ],
             'config' => [
                 'paths'                => $report->config->paths,

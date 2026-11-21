@@ -22,7 +22,14 @@ namespace Phpdup\Reporting;
  */
 final class JsonSchemaSpec
 {
-    public const SCHEMA_VERSION = '1.1';
+    /**
+     * 1.2 (minor, additive): four trailing file-accounting keys in
+     * `summary` (files_scanned, files_reused, files_processed,
+     * files_without_blocks). Every 1.1 field keeps its name and type, so
+     * 1.1 consumers parse 1.2 payloads untouched — per the rules above a
+     * MINOR bump is a warning, not an error.
+     */
+    public const SCHEMA_VERSION = '1.2';
 
     /**
      * Top-level shape of {@see JsonReporter::build()} output. This is
@@ -38,6 +45,33 @@ final class JsonSchemaSpec
             'summary'         => 'object',
             'config'          => 'object',
             'clusters'        => 'list<object>',
+        ];
+    }
+
+    /**
+     * Shape of the `summary` object (0.6). The legacy `files` key means
+     * "files scanned" and keeps its historical position; `files_scanned`
+     * restates it. The three accounting buckets are `int|null`: null is
+     * emitted by producers that predate per-bucket tracking (library API,
+     * server workers) and means "not tracked", distinct from 0 = tracked
+     * and empty. When non-null, scanned = reused + processed +
+     * without_blocks + parse_errors (see JsonReporter).
+     *
+     * @return array<string, string>
+     */
+    public static function summaryShape(): array
+    {
+        return [
+            'files'                => 'int',   // = files scanned (historical key)
+            'blocks'               => 'int',
+            'parse_errors'         => 'int',
+            'clusters'             => 'int',
+            'duplicated_lines'     => 'int',
+            'total_impact'         => 'int',
+            'files_scanned'        => 'int',
+            'files_reused'         => 'int|null',
+            'files_processed'      => 'int|null',
+            'files_without_blocks' => 'int|null',
         ];
     }
 

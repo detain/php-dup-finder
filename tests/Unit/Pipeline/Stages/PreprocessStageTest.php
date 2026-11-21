@@ -105,6 +105,108 @@ final class PreprocessStageTest extends TestCase
         }
     }
 
+    /**
+     * 0.6 balance law: every scanned file lands in exactly ONE bucket and
+     * the exposed counters sum back to the scan. Before this fix the
+     * zero-block file was invisible (it emitted no row, so 'processed'
+     * counted only files that happened to emit rows while scanned files
+     * evaporated) and the parse-error file was double-counted (its error
+     * row still entered $processedFilesSet).
+     */
+    public function testCountersBalanceAcrossAllBuckets(): void
+    {
+        $tmpDir = $this->createMixedFixture();
+        try {
+            $config = new Config(
+                paths: [$tmpDir],
+                exclude: [],
+                minBlockSize: 1,
+                cacheDir: $tmpDir . '/cache',
+            );
+            $state = new PipelineState($config);
+            (new ScanningStage())->run($state, new NullOutput());
+            $output = new \Symfony\Component\Console\Output\BufferedOutput();
+
+            (new PreprocessStage(useCache: false))->run($state, $output);
+
+            $this->assertSame(2, $state->processedFiles, 'block-bearing files count as processed');
+            $this->assertSame(1, $state->skippedFiles, 'the zero-block file is accounted, not vanished');
+            $this->assertSame(1, $state->parseErrors);
+            $this->assertSame(0, $state->reusedFiles);
+            $this->assertSame(
+                count($state->files),
+                $state->reusedFiles + $state->processedFiles + $state->skippedFiles + $state->parseErrors,
+                'scanned == reused + processed + no-blocks + parse-errors',
+            );
+            // The one-line summary labels every bucket (a silent `6`
+            // vanishing between 156-scanned and 150-processed is exactly
+            // what users could not debug).
+            $this->assertStringContainsString(
+                '4 files (0 reused · 2 processed · 1 no blocks · 1 parse errors)',
+                $output->fetch(),
+            );
+        } finally {
+            $this->removeDirectory($tmpDir);
+        }
+    }
+
+    /**
+     * 0.6 + cache interplay: zero-block and errored files are never
+     * cache-saved (nothing safe to persist), so a warm run still recomputes
+     * them and the balance law holds bucket-for-bucket on reuse.
+     */
+    public function testWarmRunKeepsBalanceWithSkippedAndErroredFiles(): void
+    {
+        $tmpDir = $this->createMixedFixture();
+        try {
+            $config = new Config(
+                paths: [$tmpDir],
+                exclude: [],
+                minBlockSize: 1,
+                incremental: true,
+                cacheDir: $tmpDir . '/cache',
+            );
+
+            $state = new PipelineState($config);
+            (new ScanningStage())->run($state, new NullOutput());
+            (new PreprocessStage(useCache: true))->run($state, new NullOutput());
+
+            $state2 = new PipelineState($config);
+            (new ScanningStage())->run($state2, new NullOutput());
+            (new PreprocessStage(useCache: true))->run($state2, new NullOutput());
+
+            $this->assertSame(2, $state2->reusedFiles, 'block files come from cache on the warm run');
+            $this->assertSame(0, $state2->processedFiles);
+            $this->assertSame(1, $state2->skippedFiles, 'the never-cached zero-block file is recomputed and re-counted');
+            $this->assertSame(1, $state2->parseErrors);
+            $this->assertSame(
+                count($state2->files),
+                $state2->reusedFiles + $state2->processedFiles + $state2->skippedFiles + $state2->parseErrors,
+                'balance law must survive a cache-warm run',
+            );
+        } finally {
+            $this->removeDirectory($tmpDir);
+        }
+    }
+
+    /** Two block files, one zero-block file, one unparseable file. */
+    private function createMixedFixture(): string
+    {
+        $tmpDir = sys_get_temp_dir() . '/phpdup_mixed_' . uniqid();
+        @mkdir($tmpDir . '/cache', 0o775, true);
+        file_put_contents($tmpDir . '/a.php', '<?php
+function foo() { return 1; }
+function bar() { return 2; }
+');
+        file_put_contents($tmpDir . '/b.php', '<?php
+function baz() { return 3; }
+function qux() { return 4; }
+');
+        file_put_contents($tmpDir . '/empty.php', "<?php\n// parses, extracts nothing\n");
+        file_put_contents($tmpDir . '/broken.php', "<?php\nfunction broken( { return 1; }\n");
+        return $tmpDir;
+    }
+
     private function createTempFixture(): string
     {
         $tmpDir = sys_get_temp_dir() . '/phpdup_test_' . uniqid();

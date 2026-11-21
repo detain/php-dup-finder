@@ -42,6 +42,8 @@ final class PipelineState
     public int $parseErrors    = 0;
     public int $reusedFiles    = 0;
     public int $processedFiles = 0;
+    /** Fresh (non-reused) files that parsed but yielded zero blocks (0.6). */
+    public int $skippedFiles   = 0;
 
     /** @var list<Cluster> Final clusters after RefactorStage. */
     public array $clusters = [];

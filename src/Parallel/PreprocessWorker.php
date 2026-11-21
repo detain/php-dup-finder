@@ -27,12 +27,9 @@ use Symfony\Component\Console\Output\OutputInterface;
  * Returns a list of arrays (not Block objects) so the master can
  * deduplicate IDs after collecting batches from all workers.
  *
- * @phpstan-type PreprocessedRow array{
- *   block: Block,
- *   parse_error: ?string,
- *   skipped: bool,
- *   file: string,
- * }
+ * @phpstan-type PreprocessedRow array{type: 'block', file: string, block: Block}
+ *   |array{type: 'error', file: string, message: string}
+ *   |array{type: 'skipped', file: string, blocks: 0}
  */
 final class PreprocessWorker
 {
@@ -78,7 +75,7 @@ final class PreprocessWorker
 
     /**
      * @param list<string> $files
-     * @return list<array{type: 'block'|'error'|'skipped', file: string, block?: Block, message?: string}>
+     * @return list<array{type: 'block'|'error'|'skipped', file: string, block?: Block, message?: string, blocks?: 0}>
      */
     public function process(array $files, ?OutputInterface $output = null): array
     {
@@ -224,6 +221,18 @@ final class PreprocessWorker
                     } else {
                         $output->writeln(sprintf('worker:   extracted %d blocks from %s', $blockCount, $path));
                     }
+                }
+                if ($blockCount === 0) {
+                    // 0.6 skipped-file reporting: a file that parsed cleanly
+                    // but yielded no comparable blocks used to vanish from
+                    // every count. The 'skipped' row shape was pre-declared
+                    // in this method's contract (and in PreprocessStage's
+                    // consumer) but never emitted until now. Payload is
+                    // scalar-only (string path + literal 0) so it rides the
+                    // SOCKETPAIR worker wire unchanged. Staged in $fileRows
+                    // so the buffer-and-discard rule above still applies: a
+                    // file that throws never leaks a row of any type.
+                    $fileRows[] = ['type' => 'skipped', 'file' => $path, 'blocks' => 0];
                 }
             } catch (\Throwable $e) {
                 // Same error-row contract as the parse-error path above:

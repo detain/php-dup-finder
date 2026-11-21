@@ -57,7 +57,22 @@ final class CliReporter
         $out->writeln('');
 
         if (!$clusters) {
-            $out->writeln(StatusLine::success('no clusters above threshold — clean.', $theme));
+            // 0.6: "clean." alone was a lie by omission when much of the
+            // corpus never entered the comparison at all (zero-block files
+            // emitted no rows, parse errors only bumped a number nobody
+            // could attribute). Uncomparable files now surface in the
+            // verdict itself.
+            $uncomparable = ($report->skippedFiles ?? 0) + $report->parseErrors;
+            if ($uncomparable > 0) {
+                $out->writeln(StatusLine::warn(sprintf(
+                    'no clusters above threshold — but %d of %d files produced nothing comparable.',
+                    $uncomparable,
+                    $report->files,
+                ), $theme));
+            } else {
+                $out->writeln(StatusLine::success('no clusters above threshold — clean.', $theme));
+            }
+            $this->renderFileAccounting($report, $theme, $out);
             return;
         }
 
@@ -99,6 +114,40 @@ final class CliReporter
             count($clusters),
             $report->totalDuplicatedLines(),
             array_sum(array_map(fn(Cluster $c) => $c->impact, $clusters)),
+        ), $theme));
+        $this->renderFileAccounting($report, $theme, $out);
+    }
+
+    /**
+     * File-accounting surface (0.6). Emits nothing when the producer never
+     * tracked the buckets (legacy `new Report(...)` callers pass nulls);
+     * when files skipped extraction or failed to parse, a warn line names
+     * them, and the per-bucket breakdown `files  N scanned · ...` gives
+     * every counter a label with ONE definition each (balance law:
+     * scanned = reused + processed + no blocks + parse errors).
+     */
+    private function renderFileAccounting(Report $report, Theme $theme, OutputInterface $out): void
+    {
+        if ($report->reusedFiles === null && $report->processedFiles === null && $report->skippedFiles === null) {
+            return;
+        }
+        $notes = [];
+        if (($report->skippedFiles ?? 0) > 0) {
+            $notes[] = sprintf('%d files produced no comparable blocks', $report->skippedFiles);
+        }
+        if ($report->parseErrors > 0) {
+            $notes[] = sprintf('%d files failed to parse', $report->parseErrors);
+        }
+        if ($notes !== []) {
+            $out->writeln(StatusLine::warn(implode(' · ', $notes), $theme));
+        }
+        $out->writeln(StatusLine::info(sprintf(
+            'files  %d scanned · %d reused · %d processed · %d no blocks · %d parse errors',
+            $report->files,
+            $report->reusedFiles ?? 0,
+            $report->processedFiles ?? 0,
+            $report->skippedFiles ?? 0,
+            $report->parseErrors,
         ), $theme));
     }
 

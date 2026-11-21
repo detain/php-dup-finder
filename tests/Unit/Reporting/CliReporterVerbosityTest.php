@@ -74,6 +74,36 @@ final class CliReporterVerbosityTest extends TestCase
         $this->assertStringContainsString('clean', $out->fetch());
     }
 
+    /** 0.6: a tracked report always surfaces the per-bucket accounting. */
+    public function testTrackedReportAlwaysRendersFileAccounting(): void
+    {
+        $cfg = Config::defaults([__DIR__]);
+        $report = new Report(4, 10, 1, [], $cfg, reusedFiles: 0, processedFiles: 2, skippedFiles: 1);
+        $out = $this->buffered();
+        (new CliReporter(CliReporter::VERBOSITY_SUMMARY_ONLY))->render($report, $out);
+        $rendered = $out->fetch();
+
+        $this->assertStringContainsString('files  4 scanned · 0 reused · 2 processed · 1 no blocks · 1 parse errors', $rendered);
+        $this->assertStringContainsString('1 files produced no comparable blocks', $rendered);
+        $this->assertStringContainsString('1 files failed to parse', $rendered);
+        $this->assertStringNotContainsString('— clean.', $rendered, 'uncomparable files must block the bare clean verdict');
+    }
+
+    /** Pre-0.6 producers pass null counters: the historical surface is untouched. */
+    public function testLegacyNullReportKeepsOriginalSurface(): void
+    {
+        // buildReport() constructs its Report with the 5-arg legacy shape
+        // (counters null) and carries real clusters, so the trailer runs.
+        $report = $this->buildReport();
+        $out = $this->buffered();
+        (new CliReporter(CliReporter::VERBOSITY_SUMMARY_ONLY))->render($report, $out);
+        $rendered = $out->fetch();
+
+        $this->assertStringContainsString('summary  ', $rendered);
+        $this->assertStringNotContainsString('scanned · ', $rendered, 'null counters must not render as fake zeros');
+        $this->assertStringNotContainsString('no comparable blocks', $rendered);
+    }
+
     private function buffered(): BufferedOutput
     {
         $out = new BufferedOutput(OutputInterface::VERBOSITY_NORMAL, decorated: false);
