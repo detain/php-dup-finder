@@ -75,6 +75,53 @@ final class EditCostModelTest extends TestCase
             'semantic model must differ from default for literal-change');
     }
 
+    /**
+     * engine-007 (S08a, PDDETECT companion note) — the worst-cost
+     * denominator bound.
+     *
+     * AptedDistance normalises by `worstCost()` = the sum of per-node
+     * costs of the LARGER tree (AptedDistance::worstCost / :100-107).
+     * For the unit model that is exactly max(|a|,|b|), the true
+     * ordered-tree-diameter, so `sim = 1 - cost/worst` is a genuine
+     * fraction in [0, 1].
+     *
+     * Under `semantic` weights the sum-of-larger-tree is NOT an upper
+     * bound on the achievable distance: a substitution charges
+     * max(costA, costB), so aligning one expensive node in the SMALLER
+     * tree against a cheap node in the larger one can cost more than
+     * the larger tree's own weight-sum. PDDETECT flagged this as dubious
+     * ("worst = maxNodeCount assumption dubious for semantic weights").
+     * It is deliberately NOT "fixed" here — it is unverified as a real
+     * false-negative risk, and `similarity()` guards the overshoot with
+     * `cost > budget → 0.0`, so the OUTCOME never leaves [0, 1]; it just
+     * saturates at 0.0 rather than going negative.
+     *
+     * These two pins lock that saturation contract in: a skewed-cost
+     * pair whose true distance exceeds the denominator must clamp to a
+     * finite value inside [0, 1], never emit a negative similarity.
+     */
+    public function testSemanticWorstCostBoundStaysInUnitInterval(): void
+    {
+        // Heavy scalar-literal tree (cheap nodes under semantic weights)
+        // against a small call-bearing tree (expensive nodes): the
+        // denominators deliberately disagree with node counts.
+        $cheap = $this->stmts('<?php function m() { return 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8; }');
+        $calls = $this->stmts('<?php function m() { return $o->doIt(); }');
+
+        $semantic = new AptedDistance(new EditCostModel(EditCostModel::MODEL_SEMANTIC));
+
+        $sim = $semantic->similarity($cheap, $calls);
+        $this->assertGreaterThanOrEqual(0.0, $sim, 'similarity must never go negative under weighted cost');
+        $this->assertLessThanOrEqual(1.0, $sim, 'similarity must never exceed 1.0 under weighted cost');
+
+        // The budget guard makes a far-apart skewed-cost pair saturate to
+        // the 0.0 floor instead of a negative fraction — the bound may be
+        // loose but the result stays a valid [0, 1] similarity.
+        $far = $semantic->similarity($cheap, $calls, 0.99);
+        $this->assertGreaterThanOrEqual(0.0, $far);
+        $this->assertLessThanOrEqual(1.0, $far);
+    }
+
     private function stmts(string $code): \PhpParser\Node
     {
         $stmts = (new AstParser())->parseCode($code);

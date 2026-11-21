@@ -17,14 +17,21 @@ use Phpdup\Util\IdentifierIds;
  *   with O(n*m) sequence DP at every level. Worst-case it touches each
  *   sub-pair multiple times. This class:
  *
- *     1. linearises both trees into post-order arrays once,
+ *     1. linearises both trees into post-order arrays once, in the
+ *        nodes' physical source order (siblings keep their statement
+ *        sequence — see flatten()),
  *     2. precomputes the leftmost-leaf descendant for every node,
  *     3. identifies key-roots (Zhang-Shasha) — only those start a
  *        tree-distance DP, cutting redundant work,
- *     4. picks the heavy path at each branch (APTED idea) when seeding
- *        the DP, so we explore the densest subtree first and stand a
- *        better chance of bailing early once the running cost passes
- *        the budget.
+ *     4. bounds the DP with an early-exit budget so that pairs too
+ *        far apart to clear the similarity threshold stop filling
+ *        cells once their running minimum passes it.
+ *
+ *     A legitimate APTED heavy-path optimisation reorders only the
+ *     key-root TRAVERSAL order, never the serialized label sequence:
+ *     Zhang-Shasha models ORDERED trees, so the sibling sequence is the
+ *     statement sequence and permuting it silently erases source order
+ *     (engine-007). We therefore keep physical order throughout.
  *
  * Returns a normalised similarity in [0, 1]:
  *     sim = 1 - TED(a,b) / max(|a|, |b|)
@@ -251,10 +258,12 @@ final class AptedDistance
      *   ll[i]      — index of leftmost-leaf descendant of i
      *   kr         — sorted list of key-root indices
      *
-     * APTED's heavy-path heuristic is applied while ordering children:
-     * the heaviest (largest-subtree) child is visited last so its full
-     * traversal becomes the "tail path" of its parent, which empirically
-     * matches the heavy-path strategy.
+     * Children are emitted in their physical source order. The sibling
+     * sequence is the statement sequence, so reordering it (an earlier
+     * size-sort) permuted the comparison model and made statement-
+     * permuted clones score edit distance 0 (engine-007). Any heavy-
+     * path-style speedup belongs to key-root traversal order only, not
+     * to this serialized sequence.
      *
      * @return array{labels: list<string>, ll: list<int>, kr: list<int>}
      */
@@ -265,22 +274,15 @@ final class AptedDistance
         $hasLeftSibling = [];
         $unnumbered = $this->unnumbered;
 
-        // Visit children in heavy-path order (heaviest last) so the DP
-        // hits the densest subtree first and stands a better chance of
-        // exceeding the budget early on near-misses. The walk returns
-        // a tuple (leftmost-leaf-index, own-post-order-index) of the
-        // node it just placed.
+        // Visit children in physical source order; the walk returns a
+        // tuple (leftmost-leaf-index, own-post-order-index) of the node
+        // it just placed.
         $walk = static function (Node $node, bool $hasLeft) use (&$walk, &$labels, &$ll, &$hasLeftSibling, $unnumbered): array {
             $children = self::orderedChildren($node);
-            $sized = [];
-            foreach ($children as $child) {
-                $sized[] = ['node' => $child, 'size' => AstSerializer::nodeCount($child)];
-            }
-            usort($sized, static fn($p, $q) => $p['size'] <=> $q['size']);
 
             $myLeftmost = null;
-            foreach ($sized as $idx => $entry) {
-                $childInfo = $walk($entry['node'], $idx > 0);
+            foreach ($children as $idx => $child) {
+                $childInfo = $walk($child, $idx > 0);
                 if ($idx === 0) {
                     $myLeftmost = $childInfo['leftmost'];
                 }

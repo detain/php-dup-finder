@@ -6,6 +6,7 @@ namespace Phpdup\Tests\Unit\Similarity;
 use PHPUnit\Framework\TestCase;
 use Phpdup\Extraction\BlockExtractor;
 use Phpdup\Normalization\Normalizer;
+use Phpdup\Fingerprint\SubtreeHasher;
 use Phpdup\Parsing\AstParser;
 use Phpdup\Similarity\AptedDistance;
 
@@ -151,6 +152,85 @@ final class AptedDistanceTest extends TestCase
             0.95,
             $sim,
             "Structurally different functions must not get falsely inflated similarity near 1.0"
+        );
+    }
+
+    /**
+     * engine-007 (S08a) — flatten() must not reorder siblings by
+     * subtree size. The reviewer's canonical repro: `{ $u=1;
+     * if($u){g();} }` against its statement-permuted form used to
+     * score TED similarity 1.0000 (edit distance 0) because the size
+     * sort collapsed the two trees to the same canonical sequence.
+     * With physical child order restored the permuted pair is a real
+     * edit and scores strictly below one.
+     */
+    public function testPermutedStatementsScoreBelowOne(): void
+    {
+        $a = $this->canonical('<?php function f() { $u = 1; if ($u) { g(); } }');
+        $b = $this->canonical('<?php function f() { if ($u) { g(); } $u = 1; }');
+
+        $sim = (new AptedDistance())->similarity($a, $b);
+        $this->assertLessThan(
+            1.0000,
+            $sim,
+            "statement-permuted bodies must charge edit distance, got $sim (engine-007 regression)"
+        );
+        $this->assertGreaterThan(0.0, $sim, 'a permutation of the same body is not totally unrelated');
+    }
+
+    /**
+     * engine-007 (S08a) — swapped UNEQUAL-size siblings must yield a
+     * positive distance, never 1.0. The old size-sort pulled the
+     * small statement in front of the large one in both trees, so a
+     * size-skewed reordering was silently erased; order now survives.
+     */
+    public function testSwappedUnequalSizeSiblingsHavePositiveDistance(): void
+    {
+        $a = $this->canonical('<?php function f() { $x = 1; if ($c) { g(); h(); } }');
+        $b = $this->canonical('<?php function f() { if ($c) { g(); h(); } $x = 1; }');
+
+        $sim = (new AptedDistance())->similarity($a, $b);
+        $this->assertLessThan(1.0, $sim, 'size-skewed swap must not collapse to identity');
+        $this->assertGreaterThan(0.0, $sim, 'size-skewed swap is still the same statement multiset');
+    }
+
+    /**
+     * engine-007 (S08a) — the order-sensitive structuralHash and the
+     * TED similarity must never DISAGREE on identical-multiset bodies.
+     * structuralHash is a pre-order token stream (order matters); TED
+     * is an ordered-tree distance (statement order matters). For a body
+     * and its permutation, "identical" must mean the same thing to both.
+     */
+    public function testStructuralHashOrderAgreesWithTedOrder(): void
+    {
+        $hasher = new SubtreeHasher();
+
+        $base = '<?php function f() { $u = 1; if ($u) { g(); } }';
+        $perm = '<?php function f() { if ($u) { g(); } $u = 1; }';
+
+        $nBase = $this->canonical($base);
+        $nPerm = $this->canonical($perm);
+
+        // Same statement order → hash-equal AND TED-identical.
+        $nBase2 = $this->canonical($base);
+        $this->assertSame($hasher->hash($nBase), $hasher->hash($nBase2), 'same order → same hash');
+        $this->assertEqualsWithDelta(
+            1.0,
+            (new AptedDistance())->similarity($nBase, $nBase2),
+            1e-9,
+            'same order → TED identity (hash and TED agree: duplicate)'
+        );
+
+        // Permuted order → hash-different AND TED-not-identity.
+        $this->assertNotSame(
+            $hasher->hash($nBase),
+            $hasher->hash($nPerm),
+            'structuralHash is order-sensitive (pre-order tokens)'
+        );
+        $this->assertLessThan(
+            1.0,
+            (new AptedDistance())->similarity($nBase, $nPerm),
+            'TED charges the permutation too (hash and TED agree: not a duplicate)'
         );
     }
 

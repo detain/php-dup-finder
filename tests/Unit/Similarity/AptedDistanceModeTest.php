@@ -135,4 +135,27 @@ final class AptedDistanceModeTest extends TestCase
         $this->assertEqualsWithDelta(1.0, (new TreeEditDistance())->similarity($a, $a), 1e-9);
         $this->assertEqualsWithDelta(1.0, (new TreeEditDistance(null, true))->similarity($a, $a), 1e-9);
     }
+
+    public function testStatementOrderIsInvisibleToTheNumberingKnob(): void
+    {
+        // engine-007 (S08a): sibling ordering is orthogonal to the
+        // __V-numbering knob — an order-permuted body is a real edit in
+        // BOTH modes. Before flatten() kept physical order, this pair
+        // collapsed to 1.0 in both modes; now both modes charge it. The
+        // numbering strip only coarsens labels, it never restores a
+        // permutation, so numbered and un-numbered must agree that the
+        // permuted pair is below one (and an identical body stays one).
+        [$a] = self::blocksFrom('<?php function f() { $u = 1; if ($u) { g(); } }');
+        [$b] = self::blocksFrom('<?php function f() { if ($u) { g(); } $u = 1; }');
+
+        $numbered   = (new TreeEditDistance())->similarity($a, $b);
+        $unnumbered = (new TreeEditDistance(null, true))->similarity($a, $b);
+
+        $this->assertLessThan(1.0, $numbered,
+            'numbered mode must charge a statement permutation');
+        $this->assertLessThan(1.0, $unnumbered,
+            'un-numbered mode must charge a statement permutation too (order ⊥ numbering)');
+        $this->assertEqualsWithDelta(1.0, (new TreeEditDistance(null, true))->similarity($a, $a), 1e-9,
+            'and an unchanged body stays identical in un-numbered mode');
+    }
 }
