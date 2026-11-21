@@ -37,14 +37,29 @@ use Phpdup\Normalization\SqlTableExtractor;
  * scoring. Per the plan's risk-mitigation note: "fall back to AST
  * scoring on lift failure (Lifter returns null)".
  *
+ * Only `\Error`-family failures are laundered into that `null`;
+ * programmer bugs in any `\Exception` branch propagate loudly
+ * instead of hiding as a silent fallback. Refused lifts are
+ * observable via {@see liftRefusals()} / {@see lastLiftError()}.
+ *
  * **Determinism**
  *
  * Two semantically equivalent ASTs lift to byte-identical IR (both
  * via `serialize()` and via {@see IrPrinter}). That is the whole
  * point — IR-to-IR similarity is then a near-trivial computation.
+ * `switch` is desugared into the same nested-`BranchIr` if/elseif
+ * chain a hand-written counterpart produces — including the
+ * `equal` comparison symbol a genuine `$x == $v` lifts to — so a
+ * switch and its if-chain form emit identical token streams.
  */
 final class IrLifter
 {
+    /** @var int<0, max> Count of \Error-family lifts refused since construction. */
+    private int $refusalCount = 0;
+
+    /** Message of the most recent refused lift, for observability. */
+    private ?string $lastLiftError = null;
+
     public function __construct(
         private readonly DbOpRegistry $registry = new DbOpRegistry(),
     ) {
@@ -55,9 +70,27 @@ final class IrLifter
     {
         try {
             return $this->liftNode($node);
-        } catch (\Throwable) {
+        } catch (\Error $error) {
+            // An unsupported input shape surfacing as an engine-level
+            // error (\Error, \TypeError) is the documented graceful
+            // fallback. Programmer bugs in any \Exception branch are
+            // NOT swallowed here — laundering them hid lifter defects.
+            $this->refusalCount++;
+            $this->lastLiftError = $error->getMessage();
             return null;
         }
+    }
+
+    /** Number of \Error-family lifts this instance has refused (observability hook). */
+    public function liftRefusals(): int
+    {
+        return $this->refusalCount;
+    }
+
+    /** Message of the most recent refused lift, or null when none was refused. */
+    public function lastLiftError(): ?string
+    {
+        return $this->lastLiftError;
     }
 
     private function liftNode(Node $node): IrNode
@@ -85,13 +118,11 @@ final class IrLifter
         if ($node instanceof Node\Stmt\If_) {
             $cond = $this->liftExpr($node->cond);
             $then = new BlockIr($this->liftStmtList($node->stmts));
-            $else = null;
-            if ($node->else !== null) {
-                $else = new BlockIr($this->liftStmtList($node->else->stmts));
-            } elseif (!empty($node->elseifs)) {
-                // Convert elseif chain into nested BranchIr.
-                $else = $this->liftElseIfChain($node->elseifs);
-            }
+            // An if may carry elseifs AND a final else; both must
+            // survive as one nested chain (the else is the chain's
+            // terminal), otherwise a three-arm if silently loses its
+            // elseif bodies.
+            $else = $this->liftElseIfChain($node->elseifs, $node->else);
             return new BranchIr($cond, $then, $else);
         }
 
@@ -117,42 +148,122 @@ final class IrLifter
         return new CallIr(strtolower(self::shortClass($node)));
     }
 
-    /** @param list<Node\Stmt\ElseIf_> $elseifs */
-    private function liftElseIfChain(array $elseifs): BranchIr
+    /**
+     * Fold an elseif chain into nested BranchIr nodes whose terminal
+     * `else` is the trailing else block (null when the chain simply
+     * ends). Empty chain with no trailing else lifts to null.
+     *
+     * @param list<Node\Stmt\ElseIf_> $elseifs
+     */
+    private function liftElseIfChain(array $elseifs, ?Node\Stmt\Else_ $trailingElse): ?IrNode
     {
         $head = array_shift($elseifs);
+        if ($head === null) {
+            return $trailingElse === null
+                ? null
+                : new BlockIr($this->liftStmtList($trailingElse->stmts));
+        }
         $cond = $this->liftExpr($head->cond);
         $then = new BlockIr($this->liftStmtList($head->stmts));
-        $else = $elseifs === [] ? null : $this->liftElseIfChain($elseifs);
-        return new BranchIr($cond, $then, $else);
+        return new BranchIr($cond, $then, $this->liftElseIfChain($elseifs, $trailingElse));
     }
 
     private function liftSwitch(Node\Stmt\Switch_ $node): IrNode
     {
         // Unfold each case into a chain of BranchIr — each case becomes
-        // an `if (subject == case_value) <body> else <next>`.
+        // an `if (subject == case_value) <body> else <next>`. The
+        // comparison uses the exact symbol shortBinaryOp() gives a
+        // genuine `$x == $v`, so a switch and its hand-written if-chain
+        // counterpart lift to identical IR.
         $subject = $this->liftExpr($node->cond);
         $cases = $node->cases;
-        return $this->buildSwitchChain($subject, $cases, 0);
+
+        $defaultIndex = null;
+        foreach ($cases as $i => $case) {
+            if ($case->cond === null) {
+                $defaultIndex = $i;
+                break; // first default is the else terminal; later ones fold into it
+            }
+        }
+        $else = $defaultIndex === null
+            ? null
+            : new BlockIr($this->liftStmtList($this->foldCaseStmts($cases, $defaultIndex)));
+
+        return $this->buildSwitchChain($subject, $cases, $defaultIndex, $else);
     }
 
-    /** @param list<Node\Stmt\Case_> $cases */
-    private function buildSwitchChain(IrNode $subject, array $cases, int $i): IrNode
+    /**
+     * Emit the chain arms: every non-default case keeps its test in
+     * physical position order, each body is the folded fallthrough
+     * body, and the deepest `else` is the default's folded body — or
+     * null, exactly like an if/elseif chain that has no else (no
+     * empty trailing BlockIr residue).
+     *
+     * @param list<Node\Stmt\Case_> $cases
+     */
+    private function buildSwitchChain(
+        IrNode $subject,
+        array $cases,
+        ?int $defaultIndex,
+        ?IrNode $else
+    ): IrNode {
+        $arms = [];
+        foreach ($cases as $i => $case) {
+            if ($case->cond === null) {
+                continue; // the (first) default is the else terminal; duplicates fold into it
+            }
+            $arms[] = [$case->cond, $this->foldCaseStmts($cases, $i)];
+        }
+        $chain = $else;
+        for ($k = count($arms) - 1; $k >= 0; $k--) {
+            $chain = new BranchIr(
+                new CallIr(self::compareSymbol(), [$subject, $this->liftExpr($arms[$k][0])]),
+                new BlockIr($this->liftStmtList($arms[$k][1])),
+                $chain,
+            );
+        }
+        return $chain ?? new BlockIr([]);
+    }
+
+    /**
+     * Fold PHP's physical fallthrough into each case's effective
+     * statement list: a case whose last statement is a bare `break;`
+     * ends there; otherwise the next physical case's folded body is
+     * appended (so cases after `default:` are kept, reached whenever
+     * execution falls through into them).
+     *
+     * Elision policy: only a trailing bare break is recognised as a
+     * terminator, and only that one is stripped — `break 2;` and
+     * breaks that are not the final statement keep their
+     * `call:break_` token and leave the case folding onward. Pinning
+     * this keeps the desugaring stable rather than clever.
+     *
+     * @param list<Node\Stmt\Case_> $cases
+     * @return list<Node\Stmt>
+     */
+    private function foldCaseStmts(array $cases, int $i): array
     {
-        if (!isset($cases[$i])) {
-            return new BlockIr([]);
+        $stmts = $cases[$i]->stmts;
+        $last = $stmts === [] ? null : $stmts[count($stmts) - 1];
+        if ($last instanceof Node\Stmt\Break_ && $last->num === null) {
+            return array_slice($stmts, 0, count($stmts) - 1);
         }
-        $case = $cases[$i];
-        $body = new BlockIr($this->liftStmtList($case->stmts));
-        if ($case->cond === null) {
-            // default
-            return $body;
+        if (!isset($cases[$i + 1])) {
+            return $stmts; // falls off the end of the switch
         }
-        return new BranchIr(
-            new CallIr('==', [$subject, $this->liftExpr($case->cond)]),
-            $body,
-            $this->buildSwitchChain($subject, $cases, $i + 1),
-        );
+        return array_merge($stmts, $this->foldCaseStmts($cases, $i + 1));
+    }
+
+    /**
+     * The IR symbol for a switch arm's comparison, derived (not
+     * re-spelled) so it can never drift from what `==` lifts to.
+     */
+    private static function compareSymbol(): string
+    {
+        return self::shortBinaryOp(new Node\Expr\BinaryOp\Equal(
+            new Node\Expr\ConstFetch(new Node\Name('null')),
+            new Node\Expr\ConstFetch(new Node\Name('null')),
+        ));
     }
 
     /**

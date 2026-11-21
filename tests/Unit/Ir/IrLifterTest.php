@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Phpdup\Tests\Unit\Ir;
 
+use PhpParser\Node;
 use PHPUnit\Framework\TestCase;
 use Phpdup\Ir\IrLifter;
 use Phpdup\Ir\IrPrinter;
@@ -156,8 +157,11 @@ final class IrLifterTest extends TestCase
 
     public function testLiftReturnsNullOnUnsupportedInputGracefully(): void
     {
-        // The lifter swallows exceptions and returns null; here we
-        // ensure normal paths still produce a non-null IR.
+        // Refusal semantics (engine-041): only \Error-family lift
+        // failures launder to null (pinned by
+        // testLiftRefusesEngineErrorsAndCountsThem); \Exception-family
+        // programmer bugs propagate (pinned by
+        // testInjectedExceptionIsNotSwallowed). Normal paths lift.
         $ir = (new IrLifter())->lift($this->parseFunction('<?php function f() { return 1; }'));
         $this->assertNotNull($ir);
     }
@@ -254,6 +258,119 @@ final class IrLifterTest extends TestCase
         $this->assertCount(2, $call->args);
     }
 
+    public function testSwitchLiftsIdenticallyToItsIfChainForm(): void
+    {
+        // engine-025 acceptance: a switch and its hand-written
+        // if-chain counterpart — encoding the SAME PHP fallthrough
+        // semantics — must emit identical IR token streams. Here
+        // `case 2` sits after `default:`: it is reached both by an
+        // exact match and by falling through from default, which the
+        // chain spells as `else { r(); q(); }`.
+        $printer = new IrPrinter();
+        $switch = $this->liftFunction('<?php function f($x) {
+            switch ($x) {
+                case 1: p(); break;
+                default: r();
+                case 2: q(); break;
+            }
+        }');
+        $chain = $this->liftFunction('<?php function f($x) {
+            if ($x == 1) { p(); } elseif ($x == 2) { q(); } else { r(); q(); }
+        }');
+        $this->assertSame($printer->tokens($chain), $printer->tokens($switch),
+            'switch and its if-chain counterpart must emit identical IR token streams');
+        $tokens = implode(' ', $printer->tokens($switch));
+        $this->assertStringContainsString('call:equal(', $tokens,
+            'switch arms must lift to the same `equal` symbol a genuine `==` lifts to');
+        $this->assertStringNotContainsString('==', $tokens,
+            'the legacy `==` split-brain symbol must be gone');
+        $this->assertStringNotContainsString('call:break_', $tokens,
+            'trailing bare breaks are desugaring residue and must not survive');
+    }
+
+    public function testSwitchDefaultBreakStopsFallthroughIntoLaterCase(): void
+    {
+        // `default: ... break;` ends at the break: the post-default
+        // `case 2` is only reached by an exact match, never by
+        // falling through from default — while `case 1` (no break)
+        // does fall into default's body.
+        $printer = new IrPrinter();
+        $switch = $this->liftFunction('<?php function f($x) {
+            switch ($x) {
+                case 1: p();
+                default: r(); break;
+                case 2: q(); break;
+            }
+        }');
+        $chain = $this->liftFunction('<?php function f($x) {
+            if ($x == 1) { p(); r(); } elseif ($x == 2) { q(); } else { r(); }
+        }');
+        $this->assertSame($printer->tokens($chain), $printer->tokens($switch));
+    }
+
+    public function testSwitchWithoutDefaultEndsInNullElse(): void
+    {
+        // No default means no else arm — no empty trailing BlockIr
+        // and no trailing break residue; parity with a bare if.
+        $printer = new IrPrinter();
+        $switch = $this->liftFunction('<?php function f($x) {
+            switch ($x) { case 1: p(); break; }
+        }');
+        $chain = $this->liftFunction('<?php function f($x) { if ($x == 1) { p(); } }');
+        $this->assertSame($printer->tokens($chain), $printer->tokens($switch));
+        $outer = $switch->stmts[0];
+        $this->assertInstanceOf(BranchIr::class, $outer);
+        $this->assertNull($outer->else);
+    }
+
+    public function testNonTrailingBreakKeepsItsTokenAndFoldsOnward(): void
+    {
+        // Elision policy (documented on foldCaseStmts): only a
+        // trailing bare break terminates a case. A break that is not
+        // the final statement — here guarded inside an if — keeps its
+        // `call:break_` token and the arm still folds with the next
+        // physical case.
+        $printer = new IrPrinter();
+        $switch = $this->liftFunction('<?php function f($x, $y) {
+            switch ($x) {
+                case 1: if ($y) { break; } p();
+                case 2: q(); break;
+            }
+        }');
+        $chain = $this->liftFunction('<?php function f($x, $y) {
+            if ($x == 1) { if ($y) { break; } p(); q(); } elseif ($x == 2) { q(); }
+        }');
+        $this->assertSame($printer->tokens($chain), $printer->tokens($switch));
+        $tokens = implode(' ', $printer->tokens($switch));
+        $this->assertStringContainsString('call:break_', $tokens);
+    }
+
+    public function testLiftRefusesEngineErrorsAndCountsThem(): void
+    {
+        // engine-041: \Error-family failures stay a graceful, OBSERVABLE
+        // refusal rather than silent null laundering.
+        $lifter = new IrLifter();
+        $node = new Node\Stmt\Expression(new Node\Expr\FuncCall(new IrLiftErrorName('probe')));
+        $this->assertNull($lifter->lift($node));
+        $this->assertSame(1, $lifter->liftRefusals());
+        $this->assertSame('ir-lift-error-probe', $lifter->lastLiftError());
+        $this->assertNotNull($lifter->lift($this->parseFunction('<?php function f() { return 1; }')));
+        $this->assertSame(1, $lifter->liftRefusals(),
+            'successful lifts neither reset nor grow the refusal counter');
+    }
+
+    public function testInjectedExceptionIsNotSwallowed(): void
+    {
+        // engine-041: a programmer bug in the \Exception family must
+        // propagate loudly out of lift() instead of masquerading as
+        // an unsupported-shape fallback.
+        $lifter = new IrLifter();
+        $node = new Node\Stmt\Expression(new Node\Expr\FuncCall(new IrLiftExceptionName('probe')));
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('ir-lift-bug-probe');
+        $lifter->lift($node);
+    }
+
     private function liftFunction(string $code): BlockIr
     {
         $node = $this->parseFunction($code);
@@ -267,5 +384,29 @@ final class IrLifterTest extends TestCase
         $stmts = (new AstParser())->parseCode($code);
         $this->assertNotEmpty($stmts);
         return $stmts[0];
+    }
+}
+
+/**
+ * Probe node: toString() fails the way an engine-level problem does.
+ * IrLifter::lift() must launder this into a counted null refusal.
+ */
+final class IrLiftErrorName extends Node\Name
+{
+    public function toString(): string
+    {
+        throw new \Error('ir-lift-error-probe');
+    }
+}
+
+/**
+ * Probe node: toString() throws a programmer-bug \Exception — the
+ * lifter must let it propagate (engine-041).
+ */
+final class IrLiftExceptionName extends Node\Name
+{
+    public function toString(): string
+    {
+        throw new \RuntimeException('ir-lift-bug-probe');
     }
 }
