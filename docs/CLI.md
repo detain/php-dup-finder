@@ -41,6 +41,7 @@ for the full JSON-Schema-compatible spec.
 | `--mode MODE`                              | `aggressive`   | Normalization mode: `strict` \| `default` \| `aggressive`.                                        |
 | `--similarity N`                           | `0.80`         | Jaccard similarity threshold for near-duplicate pairs (`0..1`).                                   |
 | `--max-df N`                               | `0.01`         | Maximum document-frequency for n-grams to be candidate-pair seeds (`0..1`). Bump to ~0.5 for tiny corpora; lower for very large codebases. |
+| `--candidate-budget N`                     | `60000000`     | Safety cap on candidate pairs emitted during clustering. A pathological clone family halts loudly (`CandidateBudgetException`) instead of exhausting memory. `0` = unlimited (opts out of the guard). |
 | `--min-impact N`                           | `20`           | Minimum cluster impact (≈ duplicated-line count) to include in output. Quiets reports without changing clustering. |
 | `--fail-on-impact N`                       | `0` (off)      | CI gate: exit code 3 when total cluster impact exceeds N. 0 = disabled. |
 | `--max-clusters N`                         | `0` (off)      | CI gate: exit code 3 when cluster count exceeds N. 0 = disabled. |
@@ -216,6 +217,11 @@ first line of the zsh dump.
 | `3`  | CI gate triggered: `--fail-on-impact N` exceeded (total cluster impact > N) or `--max-clusters N` exceeded (cluster count > N). |
 | `4`  | CI gate triggered: `--baseline FILE` was provided, FILE exists, and new duplicate clusters were found that were not present in the baseline. |
 
+Numeric option values are trimmed before coercion: surrounding whitespace
+is accepted (`--workers ' 4 '` is the same as `--workers 4`). A value that
+is still non-numeric — or outside the option's domain — after trimming
+exits `2` as above.
+
 ## Environment variables
 
 | Variable          | Effect                                                                                  |
@@ -340,10 +346,13 @@ phpdup.json  (medium)
 Config::defaults()  (lowest)
 ```
 
-`src/Cli/OverrideResolver` applies this rule for the 19 flat keys that
-share the same precedence: `min_block_size`, `max_block_size`,
+`src/Cli/OverrideResolver` applies this rule for the numeric/flat keys
+that share the same precedence (the table of record is the `$flatKeys`
+list in `src/Cli/ConfigLoader::load()` plus `ConfigLoader::NUMERIC_KEYS` —
+never hard-count it here, the list grows with each flag): `min_block_size`,
+`max_block_size`,
 `normalization_mode`, `similarity_threshold`, `tree_threshold`,
-`min_cluster_impact`, `max_df`, `ngram_size`, `cache_dir`, `parallelism`,
+`min_cluster_impact`, `max_df`, `candidate_budget`, `ngram_size`, `cache_dir`, `parallelism`,
 `workers`, `incremental`, `lazy_ast`, `sort`, `ted_weights`, `scorer`,
 `ir_threshold`, `ml_pair_threshold`, `debug_log`, and `low_memory`.
 
@@ -375,6 +384,7 @@ values.
   "tree_threshold":       0.85,
   "min_cluster_impact":   20,
   "max_df":               0.01,
+  "candidate_budget":     60000000,
   "ngram_size":           5,
   "cache_dir":            ".phpdup-cache",
   "parallelism":          "auto",
@@ -416,6 +426,7 @@ with the offending field path on the first violation.
 | `tree_threshold`                       | number           | `0.85`           | `0.0 ≤ x ≤ 1.0`.                                                         |
 | `min_cluster_impact`                   | integer          | `20`             | `>= 0`.                                                                  |
 | `max_df`                               | number           | `0.01`           | `0.0 ≤ x ≤ 1.0`.                                                         |
+| `candidate_budget`                     | integer          | `60000000`       | `>= 0`; `0` = unlimited pair generation (guard opted out).               |
 | `ngram_size`                           | integer          | `5`              | `2 ≤ n ≤ 10`.                                                            |
 | `cache_dir`                            | string           | `".phpdup-cache"`| Any path; created on first use.                                          |
 | `parallelism`                          | string           | `"auto"`         | One of `auto`, `off`, `manual`.                                          |

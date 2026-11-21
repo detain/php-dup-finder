@@ -62,6 +62,12 @@
             "default": 0.01,
             "description": "Maximum document-frequency for an n-gram before it is treated as boilerplate and dropped from candidate-pair generation. 0.01 suits real codebases; bump to ~0.5 for tiny fixtures where every n-gram is 'common' by ratio."
         },
+        "candidate_budget": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 60000000,
+            "description": "Safety cap on candidate pairs emitted during clustering. A pathological clone family halts with CandidateBudgetException instead of exhausting memory. 0 = unlimited (opts out of the guard). Default matches Clusterer::MAX_CANDIDATE_PAIRS."
+        },
         "ngram_size": {
             "type": "integer",
             "minimum": 2,

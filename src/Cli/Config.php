@@ -164,6 +164,11 @@ final class Config
         // containing all cluster refactor patches concatenated. F1a produces
         // the same output as --patch; F1b will add actual file rewrite.
         public readonly bool $apply = false,
+        // Safety cap on candidate pairs emitted by Clusterer::generateCandidatePairs()
+        // (--candidate-budget N). 0 = unlimited — the fail-fast generation guard is
+        // opted out entirely. Default mirrors Clusterer::MAX_CANDIDATE_PAIRS
+        // (60,000,000); a pinned unit test keeps the two values equal.
+        public readonly int $candidateBudget = 60_000_000,
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -202,6 +207,9 @@ final class Config
         }
         if ($mlPairThreshold < 0 || $mlPairThreshold > 1) {
             throw new \InvalidArgumentException("ml_pair_threshold out of range");
+        }
+        if ($candidateBudget < 0) {
+            throw new \InvalidArgumentException("candidate_budget must be >= 0 (0 = unlimited pair generation)");
         }
         if ($mlPairUrl !== '' && !\Phpdup\Ml\MlClient::isAllowedUrl(rtrim($mlPairUrl, '/') . '/score-pair')) {
             throw new \InvalidArgumentException("ml_pair_url failed validation: $mlPairUrl");

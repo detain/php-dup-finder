@@ -47,6 +47,7 @@ final class CandidateBudgetException extends \RuntimeException
             . " generation (pair output grows quadratically within such a family).\n"
             . 'Ways forward: lower --max-df to prune common n-grams from seeding; scan a narrower path'
             . " (or exclude the family's directories via the config \"exclude\" list);"
+            . ' raise --candidate-budget N for this run (0 = unlimited, opting out of the guard);'
             . ' or run on a larger box and raise Clusterer::MAX_CANDIDATE_PAIRS.',
             number_format($budget),
             number_format($blocksScanned),

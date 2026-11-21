@@ -204,7 +204,15 @@ final class ClusterStage implements CooperativeStageInterface
         $state->currentTask = 'Generating candidate pairs (n-gram inverted index)';
 
         $state->debug($output, sprintf('clustering: building n-gram inverted index for %d blocks [%s]', count($state->blocks), MemoryDebug::getMemoryUsage()));
-        $candidatePairs = iterator_to_array($clusterer->generateCandidatePairs($index, $output));
+        $candidatePairs = iterator_to_array($clusterer->generateCandidatePairs(
+            $index,
+            $output,
+            // Config 0 is the documented "unlimited" sentinel (--candidate-budget 0);
+            // any positive value arms the guard at exactly that pair count.
+            $state->config->candidateBudget === 0
+                ? Clusterer::UNLIMITED_CANDIDATE_PAIRS
+                : $state->config->candidateBudget,
+        ));
         $state->debug($output, sprintf('clustering: generated %d candidate pairs [%s]', count($candidatePairs), MemoryDebug::getMemoryUsage()));
         $state->candidatePairs = count($candidatePairs);
         $state->scoredPairs    = 0;

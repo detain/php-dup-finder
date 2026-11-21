@@ -32,7 +32,7 @@ final class ConfigLoader
         $flatKeys = [
             'min_block_size', 'max_block_size', 'normalization_mode',
             'similarity_threshold', 'tree_threshold', 'min_cluster_impact',
-            'max_df', 'ngram_size', 'cache_dir', 'parallelism',
+            'max_df', 'candidate_budget', 'ngram_size', 'cache_dir', 'parallelism',
             'workers', 'incremental', 'lazy_ast',
             'sort', 'ted_weights', 'scorer',
             'ir_threshold', 'ml_pair_threshold', 'debug_log',
@@ -48,6 +48,7 @@ final class ConfigLoader
             'tree_threshold' => $base->treeThreshold,
             'min_cluster_impact' => $base->minClusterImpact,
             'max_df' => $base->maxDocumentFrequency,
+            'candidate_budget' => $base->candidateBudget,
             'ngram_size' => $base->ngramSize,
             'cache_dir' => $base->cacheDir,
             'parallelism' => $base->parallelism,
@@ -134,6 +135,7 @@ final class ConfigLoader
             baselineOutFile:               $flat['baseline_out'],
             diffBase:                      $flat['diff_base'],
             apply:                         $flat['apply'],
+            candidateBudget:               $flat['candidate_budget'],
         );
     }
 
@@ -155,6 +157,7 @@ final class ConfigLoader
         'workers'              => ['int',   0,    null],
         'fail_on_impact'       => ['int',   0,    null],
         'max_clusters'         => ['int',   0,    null],
+        'candidate_budget'     => ['int',   0,    null],
         'similarity_threshold' => ['float', 0.0,  1.0],
         'tree_threshold'       => ['float', 0.0,  1.0],
         'max_df'               => ['float', 0.0,  1.0],
@@ -396,7 +399,7 @@ final class ConfigLoader
         foreach (['min_block_size', 'max_block_size', 'normalization_mode',
                   'similarity_threshold', 'tree_threshold', 'min_cluster_impact',
                   'max_df', 'ngram_size', 'sort',
-                  'fail_on_impact', 'max_clusters', 'baseline', 'baseline_out',
+                  'fail_on_impact', 'max_clusters', 'candidate_budget', 'baseline', 'baseline_out',
                   'diff_base'] as $k) {
             if (array_key_exists($k, $data)) {
                 $out[$k] = $data[$k];
@@ -469,6 +472,7 @@ final class ConfigLoader
             'low_memory',
             'fail_on_impact',
             'max_clusters',
+            'candidate_budget',
             'baseline',
             'baseline_out',
             'diff_base', 'apply',
@@ -581,6 +585,9 @@ final class ConfigLoader
         }
         if (array_key_exists('workers', $data)) {
             $assertInt($data['workers'], 'workers', 0);
+        }
+        if (array_key_exists('candidate_budget', $data)) {
+            $assertInt($data['candidate_budget'], 'candidate_budget', 0);
         }
         foreach (['incremental', 'lazy_ast'] as $boolKey) {
             if (array_key_exists($boolKey, $data) && !is_bool($data[$boolKey])) {

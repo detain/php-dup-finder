@@ -67,6 +67,7 @@ final class Command extends SymfonyCommand
             ->addOption('mode', null, InputOption::VALUE_REQUIRED, 'Normalization mode: strict|default|aggressive')
             ->addOption('similarity', null, InputOption::VALUE_REQUIRED, 'Jaccard similarity threshold (0..1)')
             ->addOption('max-df', null, InputOption::VALUE_REQUIRED, 'Max document-frequency (0..1) for n-grams to be candidate-pair seeds. 0.01 default suits real codebases; bump to ~0.5 for small fixtures.')
+            ->addOption('candidate-budget', null, InputOption::VALUE_REQUIRED, 'Safety cap on candidate pairs emitted during clustering. A pathological clone family halts loudly (CandidateBudgetException) instead of exhausting memory. Default 60,000,000; 0 = unlimited (opts out of the guard).')
             ->addOption('optional-blocks', null, InputOption::VALUE_REQUIRED, 'Type-3 / "optional segment" detection: on|off (default on). When on, blocks whose statements differ in length but share a common skeleton cluster together with bool $include* params for the absent-from-some-members segments.')
             ->addOption('optional-blocks-containment', null, InputOption::VALUE_REQUIRED, 'Containment threshold (0..1) for the type-3 fallback path. Default 0.85.')
             ->addOption('min-impact', null, InputOption::VALUE_REQUIRED, 'Minimum cluster impact to report')
@@ -146,7 +147,7 @@ Options grouped by category:
    --config, --validate-config
 
   <comment>Detection tuning</comment>
-    --min-block-size, --mode, --similarity, --max-df,
+    --min-block-size, --mode, --similarity, --max-df, --candidate-budget,
     --optional-blocks, --optional-blocks-containment,
     --min-impact, --min-safety, --fail-on-impact, --max-clusters,
     --exact-only, --kinds, --auto-tune,
@@ -249,6 +250,7 @@ HELP;
             'json'                        => $input->getOption('json'),
             'workers'                     => $input->getOption('workers'),
             'max_df'                      => $input->getOption('max-df'),
+            'candidate_budget'            => $input->getOption('candidate-budget'),
             'optional_blocks_containment' => $input->getOption('optional-blocks-containment'),
             'sort'                        => $input->getOption('sort'),
             'ted_weights'                 => $input->getOption('ted-weights'),
