@@ -389,7 +389,7 @@ A few keys use different fallback paths:
 | `allowed_kinds` | CLI → config `kinds` → `BlockExtractor::ALL_KINDS` |
 | `optional_blocks.*` | CLI → config `optional_blocks` → `Config` defaults |
 | `db_aware`, `trinity_collapse` | CLI → config → `Config` defaults |
-| `exclude` | APPEND: `Config` defaults + profile globs + config-file list (deduped, in that order) — never a replacement; `"exclude_reset": true` drops the inherited layers. Per-directory `.phpdup.json` lists accumulate down the tree the same way. |
+| `exclude` | APPEND: `Config` defaults + profile globs + config-file list + programmatic CLI-dict list (deduped, in that order) — never a replacement; `"exclude_reset": true` drops the inherited layers. A `"exclude": []` in any layer is a pure no-op: an empty list adds nothing, and its mere presence wipes nothing. Per-directory `.phpdup.json` lists accumulate down the tree the same way. |
 | `paths` | config `paths` → `Config` defaults (CLI argument is separate) |
 
 ### `exclude` stacks — the glob dialect (item 5.2)
@@ -407,14 +407,25 @@ Patterns are matched against paths relative to the scan root and are
 |--------------------|---------------------------------------------------------------------|
 | `**/vendor/**`     | any `vendor/` directory at any depth — and never `myvendor/`         |
 | `vendor/**`        | the root-level `vendor/` only (deep form needs the leading `**/`)    |
+| `vendor` / `/vendor` | prunes NO directory: the pattern compiles to a whole-path match (`/vendor` is `/`-trimmed first) while directory probes carry a trailing `/`, so a bare name can only ever hit a FILE named `vendor` — pruning a directory needs `name/**` at root or `**/name/**` at any depth |
 | `**` (trailing)    | everything below the preceding directory                             |
 | `*`                | within one path segment (never crosses `/`)                          |
 | `?`                | exactly one character in a segment                                   |
 | `**` mid-segment   | degenerates to `*` (globstar convention) — `**.php` is one segment;  |
 |                    | write `**/*.php` for any depth                                       |
 
-Unreadable directories are skipped with a `phpdup: warning: skipping
-unreadable path …` line on stderr (and recorded on the scanner's
+**Defaults erratum (p5a-m1).** The 5.2 landing promised the nine stock
+default excludes behave "exactly as before" the compiler rewrite. The
+measured truth is eight of nine: the `**/` prefix form gained segment
+anchoring, so lookalike-suffix directories (`myvendor/`,
+`my.phpdup-cache/`) stop matching where the old `**` → `.*` expansion
+let them through. The one stock default whose real-world result set
+changes is `**/.phpdup-cache/**` — it intentionally no longer swallows a
+sibling `my.phpdup-cache/` directory. The narrowing is a deliberate
+false-positive sweep, not drift.
+
+Unreadable directories are skipped with a `phpdup: warning: skipped
+unreadable path … (…)` line on stderr (and recorded on the scanner's
 skip-notes) instead of aborting the run.
 
 ## Configuration file
