@@ -521,6 +521,154 @@ final class BlockAstLoaderTest extends TestCase
         }
     }
 
+    // ------------------------------------------------- [m-2] freshness law
+
+    public function testFreshGroupsAreProvenWithoutAnyHashing(): void
+    {
+        // The fast path itself: cold-shape members (hints == live spans)
+        // covering EVERY live node of the key — count+position identity
+        // proves zero drift, so the sweep consumes no content
+        // recomputation at all, and resolve() may skip the strict-side
+        // [M-1] gate on the certified key without ever guessing.
+        $file = $this->write('r5a.php', self::twoTwinIfs());
+        $pair = $this->ifPairBlocks($file, null, false);  // loaded, live hints
+        $this->mintHashes($file, $pair[0], $pair[1]);
+        self::assertSame($pair[0]->structuralHash, $pair[1]->structuralHash,
+            'aggressive mode folds the literals: both twins share one class');
+        [$m1, $m2] = $pair;
+        $s1 = [$m1->range->start, $m1->range->end];
+        $s2 = [$m2->range->start, $m2->range->end];
+        $m1->unloadAst();
+        $m2->unloadAst();
+
+        $loader = $this->loaderWithConfig($file);
+        $loader->rebaseClusters([new Cluster('F0123456789abcde', [$m1, $m2], 1.0, true)]);
+
+        $stats = $loader->rebaseStats();
+        self::assertSame(1, $stats['keys']);
+        self::assertSame(1, $stats['freshKeys'], 'fully-clustered span-exact key must be booked fresh');
+        self::assertSame(0, $stats['hashes'], 'the freshness proof must not hash a single candidate');
+        self::assertSame($s1, [$m1->range->start, $m1->range->end], 'span-exact ⇒ nothing to refresh');
+        self::assertSame($s2, [$m2->range->start, $m2->range->end]);
+
+        $n1 = $loader->resolve($m1);
+        $n2 = $loader->resolve($m2);
+        self::assertNotNull($n1);
+        self::assertNotNull($n2);
+        self::assertSame($n1, $m1->ast);
+        self::assertSame(0, $loader->rebaseStats()['hashes'],
+            'strict hits on certified keys skip the content gate — identity, not guess');
+    }
+
+    public function testDecoyCountMismatchEscalatesWithRealHashing(): void
+    {
+        // Rejection side of the same proof: two members among two
+        // same-scope strangers ⇒ counts disagree ⇒ the FULL content law
+        // runs (and costs) — cold spans simply pass through the DP.
+        $file = $this->write('r5b.php', self::decoyGeometry());
+        $pair = $this->decoyMembers($file);
+        $this->mintHashes($file, $pair[0], $pair[1]);
+        [$m1, $m2] = $pair;
+        $m1->unloadAst();
+        $m2->unloadAst();
+
+        $loader = $this->loaderWithConfig($file);
+        $loader->rebaseClusters([new Cluster('Fabcdef0123456789', [$m1, $m2], 1.0, true)]);
+
+        $stats = $loader->rebaseStats();
+        self::assertSame(0, $stats['freshKeys'], 'a key with decoy blocks can never be proven fresh');
+        self::assertGreaterThan(0, $stats['hashes'], 'escalation must pay the content law');
+        self::assertSame([16, 19], [$m1->range->start, $m1->range->end]);
+        self::assertSame([24, 27], [$m2->range->start, $m2->range->end]);
+    }
+
+    public function testDriftedKeyFailsFreshnessAndAnchorsOnTruth(): void
+    {
+        // Drift breaks the proof even with equal counts: count-match holds
+        // (two members, two live nodes) but spans disagree ⇒ escalate ⇒
+        // twins pair onto the moved truth.
+        $file = $this->write('r5c.php', self::twoTwinIfs());
+        $pair = $this->ifPairBlocks($file, null, false);
+        $this->mintHashes($file, $pair[0], $pair[1]);
+        [$m1, $m2] = $pair;
+        $before = [$m1->range->start, $m2->range->start];
+        $m1->unloadAst();
+        $m2->unloadAst();
+
+        $this->insertAfterOpen($file, 2); // both shift +2 — hints now stale
+
+        $loader = $this->loaderWithConfig($file);
+        $loader->rebaseClusters([new Cluster('F987654321fedcba', [$m1, $m2], 1.0, true)]);
+
+        self::assertSame(0, $loader->rebaseStats()['freshKeys'], 'drift must defeat the proof');
+        self::assertGreaterThan(0, $loader->rebaseStats()['hashes']);
+        self::assertSame($before[0] + 2, $m1->range->start);
+        self::assertSame($before[1] + 2, $m2->range->start);
+    }
+
+    public function testNearMissHintWithEqualCountsEscalates(): void
+    {
+        // A stale hint off by one line, counts intact: the pigeonhole
+        // needs EVERY span exact — one near-miss escalates, and the DP
+        // still lands both members on their live bodies.
+        $file = $this->write('r5d.php', self::twoTwinIfs());
+        $pair = $this->ifPairBlocks($file, null, false);
+        $this->mintHashes($file, $pair[0], $pair[1]);
+        [$m1, $m2] = $pair;
+        $m1->unloadAst();
+        $m2->unloadAst();
+        $m1->range = new LineRange($m1->range->start - 1, $m1->range->end - 1);
+
+        $loader = $this->loaderWithConfig($file);
+        $loader->rebaseClusters([new Cluster('F5555aaaa5555aaaa', [$m1, $m2], 1.0, true)]);
+
+        self::assertSame(0, $loader->rebaseStats()['freshKeys']);
+        self::assertGreaterThan(0, $loader->rebaseStats()['hashes']);
+        self::assertSame(9, $m1->range->start, 'DP restores the member onto its own live body');
+        self::assertSame([13, 15], [$m2->range->start, $m2->range->end]);
+    }
+
+    public function testTrustedFreshScanServesWhatTheRunMintedWithoutProofs(): void
+    {
+        // [m-2] run-provenance arm of the fast path. RefactorStage
+        // announces trust on every NON-replayed run: positions and hashes
+        // are then this process's own mint, and policing them is pure
+        // waste. The same shrunken-hint block proves both faces: an
+        // untrusted loader refuses the content-less strict hit and goes
+        // loud (no live body matches the bogus hash), while the trusted
+        // loader serves the run's own bytes at zero proof cost — trust
+        // vouches for the block object exactly as the fresh scan does.
+        $file = $this->write('r5e.php', self::decoyGeometry());
+        $bogus = str_repeat('ab', 32);
+
+        $plain = $this->decoyMembers($file);
+        $plain[0]->structuralHash = $bogus;
+        $plain[0]->unloadAst();
+        $untrusted = $this->loaderWithConfig($file);
+        try {
+            $untrusted->resolve($plain[0]);
+            self::fail('a hash no live body carries must starve loudly when untrusted');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('could not relocate', $e->getMessage());
+        }
+        self::assertGreaterThan(0, $untrusted->rebaseStats()['hashes'], 'untrusted path still proofs');
+
+        $trustedPair = $this->decoyMembers($file);
+        $trustedPair[0]->structuralHash = $bogus;
+        $trustedPair[0]->unloadAst();
+        $trusted = $this->loaderWithConfig($file);
+        $trusted->trustFreshScan();
+        $trusted->rebaseClusters([new Cluster('F13579bdfcafebab', [$trustedPair[0]], 1.0, true)]);
+        self::assertSame(['keys' => 0, 'freshKeys' => 0, 'hashes' => 0], $trusted->rebaseStats(),
+            'a trusted run has nothing replayed — the sweep must be a no-op');
+
+        $node = $trusted->resolve($trustedPair[0]);
+        self::assertNotNull($node);
+        self::assertSame([16, 19], [$trustedPair[0]->range->start, $trustedPair[0]->range->end],
+            'trusted strict hit is served as identity, exactly as minted');
+        self::assertSame(0, $trusted->rebaseStats()['hashes'], 'zero content proofs consumed');
+    }
+
     // ---------------------------------------------------------------- glue
 
     private function loader(): BlockAstLoader

@@ -63,7 +63,9 @@ use Phpdup\Util\LineRange;
  * The claim ledger is PER LOADER INSTANCE (per process); cross-process
  * dedup is not its job — the fork parent rebases merged members through
  * rebaseClusters(), which re-runs this same content law over the real
- * objects before anything is reported or applied.
+ * objects before anything is reported or applied (excepting whole
+ * positional keys it PROVES span-exact — the [m-2] freshness law, see
+ * that method's docblock).
  */
 final class BlockAstLoader
 {
@@ -91,6 +93,44 @@ final class BlockAstLoader
     private ?CanonicalNodePool $nodePool = null;
 
     private ?SubtreeHasher $hasher = null;
+
+    /** Evidence counters (per process) — see rebaseStats(). */
+    private int $sweptKeys = 0;
+
+    private int $freshKeyCount = 0;
+
+    private int $hashCalls = 0;
+
+    /** See trustFreshScan(). */
+    private bool $freshScan = false;
+
+    /**
+     * Positional group keys the rebasing sweep PROVED span-exact against
+     * live bytes (freshness law, see rebaseClusters()). Loaders are
+     * per-process and a warm replay is a fresh process over fresh bytes,
+     * so booking stays valid for exactly the run whose bytes it proved;
+     * members anchored on these keys need no content re-proof.
+     *
+     * @var array<string, true>
+     */
+    private array $freshKeys = [];
+
+    /**
+     * [m-2] run-provenance fast path: RefactorStage announces this on
+     * every run whose clusters were NOT replayed from the cluster cache —
+     * i.e. when every member block's range AND structuralHash were minted
+     * from the current bytes inside this very process. In that world a
+     * strict hit IS identity by construction and the rebasing sweep has no
+     * stale object to fix, so all content re-proofs (which exist to catch
+     * replayed stale ranges) are switched off for the whole run. Warm
+     * replay never sets this and keeps the full law; mid-run file edits
+     * remain the program-wide unsupported-flow assumption they already
+     * were for every other stage.
+     */
+    public function trustFreshScan(): void
+    {
+        $this->freshScan = true;
+    }
 
     /**
      * @param Config|null $config when threaded, replayed anchors are
@@ -153,8 +193,15 @@ final class BlockAstLoader
         // block's own if its CONTENT still matches — a different-content
         // sibling that drifted onto the hint (or any same-span stranger)
         // is an imposter, and serving it silently is the Vector-2 door
-        // seen from the strict side.
-        if ($found !== null && $this->contentBound($block) && !$this->candidateMatches($block, $found)) {
+        // seen from the strict side. Keys the sweep proved span-exact
+        // against live bytes ([m-2] freshness law) are exempt: their
+        // strict hit is identity, not a guess.
+        if ($found !== null
+            && !$this->freshScan
+            && !isset($this->freshKeys[$group])
+            && $this->contentBound($block)
+            && !$this->candidateMatches($block, $found)
+        ) {
             $found = null;
         }
         if ($found === null) {
@@ -447,6 +494,7 @@ final class BlockAstLoader
      */
     private function candidateMatches(Block $block, Node $node): bool
     {
+        $this->hashCalls++;
         $probe = new Block(
             $block->file,
             new LineRange($node->getStartLine(), $node->getEndLine()),
@@ -528,6 +576,24 @@ final class BlockAstLoader
     }
 
     /**
+     * Public evidence counters for the [m-2] fast path (per-process,
+     * observation only — NEVER a correctness input): keys = positional
+     * groups swept, freshKeys = groups proven span-exact without a single
+     * content recomputation, hashes = candidate re-normalisations
+     * performed (escalated sweeps plus per-block resolve() gates).
+     *
+     * @return array{keys:int, freshKeys:int, hashes:int}
+     */
+    public function rebaseStats(): array
+    {
+        return [
+            'keys'      => $this->sweptKeys,
+            'freshKeys' => $this->freshKeyCount,
+            'hashes'    => $this->hashCalls,
+        ];
+    }
+
+    /**
      * Parent-side rebase over merged fork results — the [M-2] cure.
      *
      * Worker children re-anchor their private COPIES; the wire carries
@@ -535,14 +601,27 @@ final class BlockAstLoader
      * blocks would otherwise report (and --apply would strict-match)
      * stale pre-drift line numbers, silently. This sweep runs in the
      * parent, once, over the real objects, and it is the SAME content
-     * truth applied batch-wise: for every file+group+structuralHash class
-     * it sorts the stale members by hint, gathers the content-equal live
-     * candidate nodes by position, and takes the unique cost-minimal
-     * ORDER-PRESERVING assignment (sequence DP). Order preservation is
-     * lawful because a content-preserving edit never swaps two same-
-     * content blocks — k-th stale hint maps onto the k-th live twin.
-     * Classes whose member count exceeds the live twin count lost a body:
-     * those members hit the loud spine instead of a silent guess.
+     * truth applied batch-wise.
+     *
+     * Two passes per positional file+group key ([m-2] no-drift fast path):
+     * FIRST the freshness law — if the key's stale members are exactly as
+     * many as its live candidate nodes and every member's hint equals a
+     * distinct live span (sorted elementwise), then nothing drifted: a
+     * cluster-cache HIT certifies every structuralHash unchanged, and the
+     * only edits that leave all hashes intact are comment/whitespace ones,
+     * which shift blocks STRICTLY ORDER-PRESERVING (bodies cannot swap or
+     * cross without changing content, and content change is an honest
+     * MISS). Count-plus-position identity therefore pins each member onto
+     * ITS OWN live body by pure pigeonhole — no re-normalisation is needed
+     * to trust it, and the key is booked in freshKeys so resolve() may skip
+     * the strict-side content gate too. SECOND, any key failing the proof
+     * (decoy blocks below the clustering threshold, drifted spans, lost
+     * bodies) escalates to the full content law, unchanged from [M-1]:
+     * for every file+group+structuralHash class it sorts the stale members
+     * by hint, gathers the content-equal live candidate nodes by position,
+     * and takes the unique cost-minimal ORDER-PRESERVING assignment
+     * (sequence DP); classes whose member count exceeds the live twin
+     * count lost a body and hit the loud spine instead of a silent guess.
      * Members the serial path already resolved carry live ASTs and are
      * skipped; ranges-only mutation keeps the lazy-memory profile intact.
      *
@@ -550,8 +629,11 @@ final class BlockAstLoader
      */
     public function rebaseClusters(array $clusters): void
     {
-        /** @var array<string, list<Block>> $classes */
-        $classes = [];
+        if ($this->freshScan) {
+            return; // nothing replayed, nothing stale, nothing to rebase
+        }
+        /** @var array<string, array<string, list<Block>>> $byKey positional key → hash class → members */
+        $byKey = [];
         foreach ($clusters as $cluster) {
             foreach ($cluster->members as $member) {
                 if (!$member->isAstUnloaded()) {
@@ -560,56 +642,107 @@ final class BlockAstLoader
                 if ($this->config === null || $member->structuralHash === '') {
                     continue; // nothing content-bound to rebase against
                 }
-                $classes[self::groupKey($member) . "\x1e" . $member->structuralHash][] = $member;
+                $poolKey = self::groupKey($member);
+                $byKey[$poolKey][$poolKey . "\x1e" . $member->structuralHash][] = $member;
             }
         }
-        if ($classes === []) {
+        if ($byKey === []) {
             return;
         }
 
         /** @var array<string, list<Node>> $pools candidate pools per file+group */
         $pools = [];
-        foreach ($classes as $classKey => $members) {
-            usort($members, static fn (Block $a, Block $b): int => $a->range->start <=> $b->range->start);
-            $sample = $members[0];
+        foreach ($byKey as $poolKey => $classes) {
+            $this->sweptKeys++;
+            /** @var list<Block> $keyMembers every stale member sharing this key */
+            $keyMembers = array_merge(...array_values($classes));
+            $sample = $keyMembers[0];
             $stmts  = $this->stmtsFor($sample->file);
 
-            $poolKey = self::groupKey($sample);
             if (!isset($pools[$poolKey])) {
                 $pools[$poolKey] = $this->liveCandidateNodes($stmts, $sample);
             }
             $live = $pools[$poolKey];
 
-            // Content gate: keep only true twins of this class (the pool
-            // spans one hash value, so one comparison chain per candidate).
-            $twins = [];
-            foreach ($live as $node) {
-                if ($this->candidateMatches($sample, $node)) {
-                    $twins[] = $node;
+            // [m-2] fast path: prove zero drift from geometry alone (the
+            // freshness law in the docblock). A pass here means EVERY live
+            // node of this key is some member's own body at its own span —
+            // no hashing needed to trust that, and nothing to rebase.
+            if (self::keyIsFresh($keyMembers, $live)) {
+                $this->freshKeys[$poolKey] = true;
+                $this->freshKeyCount++;
+                continue;
+            }
+
+            foreach ($classes as $members) {
+                usort($members, static fn (Block $a, Block $b): int => $a->range->start <=> $b->range->start);
+
+                // Content gate: keep only true twins of this class (the
+                // pool spans one hash value, so one comparison chain per
+                // candidate).
+                $twins = [];
+                foreach ($live as $node) {
+                    if ($this->candidateMatches($members[0], $node)) {
+                        $twins[] = $node;
+                    }
+                }
+                usort($twins, static fn (Node $a, Node $b): int => $a->getStartLine() <=> $b->getStartLine());
+
+                if (count($members) > count($twins)) {
+                    $starved = $members[count($twins)];
+                    throw new \RuntimeException(sprintf(
+                        'BlockAstLoader: could not relocate block %s in %s (kind %s, hinted range %s)',
+                        $starved->qualifiedName(), $starved->file, $starved->kind, (string) $starved->range
+                    ));
+                }
+
+                $pairs = self::monotoneAssign($members, $twins);
+                foreach ($pairs as $i => $node) {
+                    $member = $members[$i];
+                    $hintObj = $member->range;
+                    $member->range = new LineRange($node->getStartLine(), $node->getEndLine());
+                    $this->claims[$poolKey][] = [
+                        'hint'     => [$hintObj->start, $hintObj->end],
+                        'assigned' => [$node->getStartLine(), $node->getEndLine()],
+                        'owner'    => spl_object_id($member),
+                    ];
                 }
             }
-            usort($twins, static fn (Node $a, Node $b): int => $a->getStartLine() <=> $b->getStartLine());
-
-            if (count($members) > count($twins)) {
-                $starved = $members[count($twins)];
-                throw new \RuntimeException(sprintf(
-                    'BlockAstLoader: could not relocate block %s in %s (kind %s, hinted range %s)',
-                    $starved->qualifiedName(), $starved->file, $starved->kind, (string) $starved->range
-                ));
-            }
-
-            $pairs = self::monotoneAssign($members, $twins);
-            foreach ($pairs as $i => $node) {
-                $member = $members[$i];
-                $hintObj = $member->range;
-                $member->range = new LineRange($node->getStartLine(), $node->getEndLine());
-                $this->claims[$poolKey][] = [
-                    'hint'     => [$hintObj->start, $hintObj->end],
-                    'assigned' => [$node->getStartLine(), $node->getEndLine()],
-                    'owner'    => spl_object_id($member),
-                ];
-            }
         }
+    }
+
+    /**
+     * Freshness proof for one positional key: stale member hints and live
+     * candidate spans must agree COUNT-FOR-COUNT and SPAN-FOR-SPAN.
+     * Sound because the only way a warm replay reaches here with live
+     * bytes is a cluster-cache hit, which certifies every structuralHash
+     * (and hence the whole block multiset of this key) unchanged, and
+     * hash-unchanged file edits shift blocks strictly order-preservingly —
+     * so the k-th hint by start is the k-th live body. A count mismatch
+     * (sub-threshold decoy nodes, or a starved member) or ANY positional
+     * difference fails the pigeonhole and escalates to full content
+     * binding; this proof only ever CERTIFES zero staleness, it never
+     * guesses an anchor.
+     *
+     * @param list<Block> $members
+     * @param list<Node>  $live
+     */
+    private static function keyIsFresh(array $members, array $live): bool
+    {
+        if (count($members) !== count($live)) {
+            return false;
+        }
+        $hints = [];
+        foreach ($members as $member) {
+            $hints[] = [$member->range->start, $member->range->end];
+        }
+        usort($hints, static fn (array $a, array $b): int => [$a[0], $a[1]] <=> [$b[0], $b[1]]);
+        $spans = [];
+        foreach ($live as $node) {
+            $spans[] = [$node->getStartLine(), $node->getEndLine()];
+        }
+        usort($spans, static fn (array $a, array $b): int => [$a[0], $a[1]] <=> [$b[0], $b[1]]);
+        return $hints === $spans;
     }
 
     /**

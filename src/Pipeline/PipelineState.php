@@ -48,6 +48,17 @@ final class PipelineState
     /** @var list<Cluster> Final clusters after RefactorStage. */
     public array $clusters = [];
 
+    /**
+     * True iff ClusterStage loaded the whole cluster set from the
+     * persistent cluster cache. Cached Cluster objects carry the line
+     * ranges they had when the snapshot was written, so this flag is the
+     * ONE honest signal that member positions may be stale: a fresh
+     * (non-replayed) scan mints every hash and every range from the
+     * current bytes of this very run, and the refactor AST loader may
+     * trust strict hits without re-proving content.
+     */
+    public bool $clustersReplayed = false;
+
     /** Total candidate pairs queued for scoring (Clustering stage). */
     public int $candidatePairs = 0;
     /** Pairs scored so far (Clustering stage). */

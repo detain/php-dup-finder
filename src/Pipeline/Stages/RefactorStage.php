@@ -91,6 +91,18 @@ final class RefactorStage implements CooperativeStageInterface
         // the wire is scalar-only and the ledger is per-process. A starved
         // content twin throws HERE: before any report render and before
         // --apply writes, so the loud spine still means zero side effects.
+        //
+        // [m-2] run provenance first: a run that did NOT replay the
+        // cluster cache has no stale ranges by construction — every
+        // structuralHash and every member line range was minted from the
+        // current bytes inside this very process — so the content re-proof
+        // (whose whole job is policing replayed-snapshot positions) is
+        // switched off for the run via trustFreshScan(), inherited by any
+        // forked workers exactly like the sweep's own work. Warm replay
+        // never announces and keeps the full law.
+        if (!$state->clustersReplayed) {
+            $loader?->trustFreshScan();
+        }
         $loader?->rebaseClusters($state->clusters);
 
         if ($useParallel) {

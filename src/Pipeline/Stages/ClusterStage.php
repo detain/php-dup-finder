@@ -108,6 +108,10 @@ final class ClusterStage implements CooperativeStageInterface
             $cached = $clusterCache->load($state->blocks);
             if ($cached !== null) {
                 $state->clusters = $cached;
+                // Positions in the replayed objects are only as fresh as the
+                // run that cached them: announce the replay so downstream
+                // lazy AST anchoring knows the bytes moved on disk since.
+                $state->clustersReplayed = true;
                 $state->currentTask = sprintf('Reused %d clusters from cache (corpus unchanged)', count($cached));
                 $state->stageProgress = 1.0;
                 $state->timings['cluster'] = 0.0;
