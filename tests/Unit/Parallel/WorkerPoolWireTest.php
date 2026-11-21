@@ -64,16 +64,22 @@ final class WorkerPoolWireTest extends TestCase
         $poison = new WireProbeForeignObject();
         $pool   = new WorkerPool(workers: 2);
 
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessageMatches('/allow-list/');
-        $this->expectExceptionMessageMatches('/WireProbeForeignObject/');
+        $caught = null;
+        try {
+            iterator_to_array(
+                $pool->runStreaming(range(1, 9), static function (array $batch) use ($poison): array {
+                    return [['type' => 'poison', 'file' => 'wire-test.php', 'object' => $poison]];
+                }),
+                false,
+            );
+        } catch (\RuntimeException $e) {
+            $caught = $e;
+        }
 
-        iterator_to_array(
-            $pool->runStreaming(range(1, 9), static function (array $batch) use ($poison): array {
-                return [['type' => 'poison', 'file' => 'wire-test.php', 'object' => $poison]];
-            }),
-            false,
-        );
+        $this->assertNotNull($caught, 'a mid-stream blocked-class frame must throw');
+        $this->assertMatchesRegularExpression('/allow-list/', $caught->getMessage());
+        $this->assertMatchesRegularExpression('/WireProbeForeignObject/', $caught->getMessage());
+        $this->assertNoWaitableChildrenRemain();
     }
 
     public function testBlockedClassNestedInsideAllowedObjectFailsLoud(): void
@@ -88,15 +94,60 @@ final class WorkerPoolWireTest extends TestCase
         $block->ngramBag = ['probe-token-a' => new WireProbeForeignObject()];
         $pool = new WorkerPool(workers: 2);
 
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessageMatches('/WireProbeForeignObject/');
+        $caught = null;
+        try {
+            iterator_to_array(
+                $pool->runStreaming(range(1, 9), static function (array $batch) use ($block): array {
+                    return [['type' => 'block', 'file' => 'wire-test.php', 'block' => $block]];
+                }),
+                false,
+            );
+        } catch (\RuntimeException $e) {
+            $caught = $e;
+        }
 
-        iterator_to_array(
-            $pool->runStreaming(range(1, 9), static function (array $batch) use ($block): array {
-                return [['type' => 'block', 'file' => 'wire-test.php', 'block' => $block]];
-            }),
-            false,
-        );
+        $this->assertNotNull($caught, 'a blocked class nested in an allowed graph must throw');
+        $this->assertMatchesRegularExpression('/WireProbeForeignObject/', $caught->getMessage());
+        $this->assertNoWaitableChildrenRemain();
+    }
+
+    /**
+     * Zero-orphan pin (reviewer m2): when the frame loop throws mid-stream,
+     * the pool generator's `finally` must have SIGTERMed AND blocking-waited
+     * every forked child before the exception surfaces to us. Drain
+     * pcntl_waitpid(-1, WNOHANG) under a hard iteration cap: reaping any
+     * child here (the finally missed it) or finding the process still
+     * waitable-at-cap fails loud with the live pid list from /proc — never
+     * hangs the suite. The reflection-driven corrupt-frame test throws from
+     * the same loop body and unwinds through this identical finally, so its
+     * reap is covered by pinning the path here.
+     */
+    private function assertNoWaitableChildrenRemain(): void
+    {
+        $reapedLate = [];
+        $stillLive  = false;
+        for ($i = 0; $i < 64; $i++) {
+            $status = 0;
+            $pid    = pcntl_waitpid(-1, $status, WNOHANG);
+            if ($pid === -1) {
+                break; // no waitable children: the pool reaped everything itself
+            }
+            if ($pid === 0) {
+                $stillLive = true; // a child exists and has not exited; keep draining under the cap
+                usleep(5000);
+                continue;
+            }
+            $reapedLate[] = $pid; // still waitable AFTER the throw unwound the generator: orphan
+        }
+
+        if ($reapedLate !== [] || $stillLive) {
+            $children = @file_get_contents('/proc/' . getmypid() . '/task/' . getmypid() . '/children');
+            $this->fail(sprintf(
+                'mid-stream throw left unreaped WorkerPool children (late-reaped pids: %s; /proc children: %s)',
+                implode(',', $reapedLate) ?: '-',
+                is_string($children) && $children !== '' ? trim($children) : '-',
+            ));
+        }
     }
 
     public function testScalarOnlyRowsRoundTripUnchanged(): void
@@ -139,7 +190,10 @@ final class WorkerPoolWireTest extends TestCase
      * throw at the decode seam the stream loop uses — never yield `false`.
      * Driven via reflection because writeRecord owns the encode side, so a
      * task closure cannot legally emit corrupt bytes; the fork round-trip
-     * tests above keep the seam wired into real streaming.
+     * tests above keep the seam wired into real streaming, and the zero-
+     * orphan pin (assertNoWaitableChildrenRemain, applied at the blocked-
+     * class fork throws) unwinds through this path's identical generator
+     * finally.
      */
     public function testCorruptMidStreamFrameFailsLoudInsteadOfYieldingFalse(): void
     {

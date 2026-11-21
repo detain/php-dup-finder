@@ -292,10 +292,21 @@ final class WorkerPool
      * every class legitimately shipped over the worker wire (Block, LineRange,
      * Hole, Cluster and all PhpParser nodes) keeps its state in public
      * properties, which get_object_vars() sees from this scope. Node
-     * PROTECTED $attributes are deliberately not traversed: in the pipeline's
-     * payloads they hold only string-keyed scalars (parser line/token
-     * positions plus the string ATTR_OP markers — AstParser runs no
-     * NameResolver), never a class instance the allow-list could miss.
+     * PROTECTED $attributes are deliberately not traversed — and they are
+     * NOT scalar-only as once claimed here: every wire Block parsed from
+     * commented source carries an object-valued 'comments' attribute
+     * (array<PhpParser\Comment|Comment\Doc>, attached by the parser's own
+     * CommentAnnotatingVisitor at the end of every parse()), alongside
+     * scalar position fields (line/token/file offsets, rawValue, kind)
+     * and the string ATTR_OP markers of DbOpCanonicalizer/TrinityCollapser.
+     * The skip is beneficial, not lucky: every class that legitimately
+     * appears inside an attribute is a PhpParser class already inside
+     * blockCacheClasses(), so it can never arrive as __PHP_Incomplete_Class,
+     * while the guard's real trigger — a foreign off-list class leaking over
+     * the wire — keeps its state in the public properties this scan sees.
+     * AstParser runs no NameResolver. Standing rule for wire-graph growth:
+     * never place an object the allow-list does not cover into a node
+     * attribute.
      *
      * Object ids are visited once: DAG-shaped payloads (the same node shared
      * by many holes) cost a single pass, and a pathological cycle cannot hang
