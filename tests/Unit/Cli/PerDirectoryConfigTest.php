@@ -111,4 +111,47 @@ final class PerDirectoryConfigTest extends TestCase
             @rmdir($tmp);
         }
     }
+
+    /**
+     * Review m2 pin: an unreadable subtree must be SKIPPED by the
+     * discovery walk, not re-thrown. SPL's UnexpectedValueException is a
+     * RuntimeException, so escaping here would have been reclassified by
+     * the CLI's exit-2 catch as invalid config — an environment error
+     * masquerading as user error.
+     */
+    public function testUnreadableDirectoriesAreSkippedDuringDiscovery(): void
+    {
+        $tmp = sys_get_temp_dir() . '/phpdup-perdir-denied-' . uniqid('', true);
+        mkdir($tmp);
+        mkdir($tmp . '/good');
+        mkdir($tmp . '/locked');
+        file_put_contents($tmp . '/good/.phpdup.json', (string)json_encode(['min_block_size' => 4]));
+        file_put_contents($tmp . '/locked/.phpdup.json', (string)json_encode(['min_block_size' => 6]));
+        chmod($tmp . '/locked', 0000);
+        clearstatcache(true, $tmp . '/locked');
+        try {
+            if (is_readable($tmp . '/locked')) {
+                $this->markTestSkipped(
+                    'cannot produce a real permission denial for this effective uid (root-like); refusing to fake it'
+                );
+            }
+
+            $cfg = (new ConfigLoader())->load(paths: [$tmp], configFile: null);
+
+            $good = realpath($tmp . '/good');
+            $this->assertIsString($good);
+            $this->assertArrayHasKey($good, $cfg->perDirectoryOverrides);
+            $this->assertSame(4, $cfg->perDirectoryOverrides[$good]['min_block_size']);
+            // The locked branch yielded nothing — and its mere existence did
+            // not abort discovery of the readable one.
+            $this->assertCount(1, $cfg->perDirectoryOverrides);
+        } finally {
+            chmod($tmp . '/locked', 0755);
+            @unlink($tmp . '/locked/.phpdup.json');
+            @unlink($tmp . '/good/.phpdup.json');
+            @rmdir($tmp . '/locked');
+            @rmdir($tmp . '/good');
+            @rmdir($tmp);
+        }
+    }
 }

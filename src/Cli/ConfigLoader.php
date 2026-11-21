@@ -332,25 +332,51 @@ final class ConfigLoader
             if (!is_dir($root)) {
                 continue;
             }
-            $iter = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS)
+            try {
+                $dirIt = new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS);
+            } catch (\UnexpectedValueException $e) {
+                // Root exists but cannot be opened (permissions, mid-walk race):
+                // skip this path. An escaping SPL UnexpectedValueException (a
+                // RuntimeException) would otherwise be misclassified by the CLI
+                // layer as invalid config and re-badged as exit 2.
+                continue;
+            }
+            // Env robustness: real-world scan trees legitimately contain
+            // subtrees this user cannot read (other users' dirs, chmod-000
+            // seats). Descent is limited to readable directories so an
+            // unreadable branch is SKIPPED, never fatal.
+            $filter = new \RecursiveCallbackFilterIterator(
+                $dirIt,
+                static function (\SplFileInfo $current): bool {
+                    return $current->isDir() ? $current->isReadable() : true;
+                }
             );
-            foreach ($iter as $file) {
-                if (!$file instanceof \SplFileInfo) continue;
-                if ($file->getBasename() !== '.phpdup.json') continue;
-                $decoded = json_decode((string)file_get_contents($file->getPathname()), true);
-                if (!is_array($decoded)) {
-                    throw new \RuntimeException('Per-directory config is not valid JSON: ' . $file->getPathname());
-                }
-                // Re-use the same validator so per-directory files can't
-                // smuggle in misspelled keys or out-of-range values.
-                $this->validate($decoded, $file->getPathname());
+            $iter = new \RecursiveIteratorIterator($filter);
+            try {
+                foreach ($iter as $file) {
+                    if (!$file instanceof \SplFileInfo) continue;
+                    if ($file->getBasename() !== '.phpdup.json') continue;
+                    $decoded = json_decode((string)file_get_contents($file->getPathname()), true);
+                    if (!is_array($decoded)) {
+                        throw new \RuntimeException('Per-directory config is not valid JSON: ' . $file->getPathname());
+                    }
+                    // Re-use the same validator so per-directory files can't
+                    // smuggle in misspelled keys or out-of-range values.
+                    $this->validate($decoded, $file->getPathname());
 
-                $dir = realpath($file->getPath());
-                if ($dir === false) {
-                    continue;
+                    $dir = realpath($file->getPath());
+                    if ($dir === false) {
+                        continue;
+                    }
+                    $out[$dir] = $this->shapeOverrides($decoded);
                 }
-                $out[$dir] = $this->shapeOverrides($decoded);
+            } catch (\UnexpectedValueException $e) {
+                // A directory went unreadable/vanished between list and descend
+                // (race): keep whatever this root yielded so far and move on.
+                // Genuinely invalid per-directory configs still throw
+                // RuntimeException above — config errors stay exit 2,
+                // environment errors stay invisible.
+                continue;
             }
         }
         return $out;

@@ -280,7 +280,11 @@ HELP;
 
         $irThresholdOpt = $input->getOption('ir-threshold');
         if ($irThresholdOpt !== null) {
-            $overrides['ir_threshold'] = (float)$irThresholdOpt;
+            // Pass the raw CLI string through: ConfigLoader::coerceNumerics()
+            // owns the cast AND the [0,1] domain for ir_threshold. A blind
+            // (float) cast here would launder garbage ('hot') into 0.0 and
+            // silently exit 0, bypassing the boundary entirely.
+            $overrides['ir_threshold'] = $irThresholdOpt;
         }
 
         $mlPairUrlOpt = $input->getOption('ml-pair-url');
@@ -297,7 +301,9 @@ HELP;
 
         $mlPairThresholdOpt = $input->getOption('ml-pair-threshold');
         if ($mlPairThresholdOpt !== null) {
-            $overrides['ml_pair_threshold'] = (float)$mlPairThresholdOpt;
+            // Same boundary rationale as ir_threshold: raw string to
+            // coerceNumerics(), no silent (float) laundering.
+            $overrides['ml_pair_threshold'] = $mlPairThresholdOpt;
         }
 
         $obFlag = $input->getOption('optional-blocks');

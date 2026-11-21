@@ -64,6 +64,11 @@ final class NumericFlagCoercionTest extends TestCase
             'similarity-sci'   => ['max_df',               '1e-2',  0.01],
             'similarity-bound' => ['similarity_threshold', '1',     1.0],
             'padded-int'       => ['workers',              ' 3 ',   3],
+            // m1: ir/ml-pair thresholds now arrive raw; exotic valid forms
+            // pinned through the boundary. Trim policy: surrounding
+            // whitespace is TRIMMED and accepted (' .85 ' == 0.85).
+            'ir-trimmed'       => ['ir_threshold',         ' .85 ', 0.85],
+            'ml-integer-str'   => ['ml_pair_threshold',    '1',     1.0],
         ];
     }
 
@@ -106,6 +111,8 @@ final class NumericFlagCoercionTest extends TestCase
             'ngram-too-small'       => ['ngram_size',           '1',    'ngram_size must be >= 2'],
             'ngram-too-big'         => ['ngram_size',           '99',   'ngram_size must be <= 10'],
             'ir-threshold-word'     => ['ir_threshold',         'hot',  'ir_threshold must be a number'],
+            'ir-threshold-high'     => ['ir_threshold',         '1.5',  'ir_threshold must be in [0, 1]'],
+            'ml-pair-threshold-word'=> ['ml_pair_threshold',    'hot',  'ml_pair_threshold must be a number'],
         ];
     }
 
@@ -133,23 +140,28 @@ final class NumericFlagCoercionTest extends TestCase
     // ── CLI surface: exit-2 convention ──────────────────────────────────
 
     /**
-     * @return array<string, array{0: string, 1: string}>
+     * @return array<string, array{0: string, 1: string, 2: string}>
      */
     public static function cliNumericFlags(): array
     {
         return [
-            'min-block-size' => ['--min-block-size', 'abc'],
-            'similarity'     => ['--similarity',     'abc'],
-            'max-df'         => ['--max-df',         'huge'],
-            'min-impact'     => ['--min-impact',     'lots'],
-            'fail-on-impact' => ['--fail-on-impact', 'yes'],
-            'max-clusters'   => ['--max-clusters',   'ten'],
-            'workers'        => ['--workers',        'auto'],
+            'min-block-size'    => ['--min-block-size', 'abc',  'min_block_size must be an integer'],
+            'similarity'        => ['--similarity',     'abc',  'similarity_threshold must be a number'],
+            'max-df'            => ['--max-df',         'huge', 'max_df must be a number'],
+            'min-impact'        => ['--min-impact',     'lots', 'min_cluster_impact must be an integer'],
+            'fail-on-impact'    => ['--fail-on-impact', 'yes',  'fail_on_impact must be an integer'],
+            'max-clusters'      => ['--max-clusters',   'ten',  'max_clusters must be an integer'],
+            'workers'           => ['--workers',        'auto', 'workers must be an integer'],
+            // m1: these two USED to blind-cast at 250 lines earlier and die
+            // silently at 0.0/exit 0 — raw passthrough makes them key-named
+            // exit-2 errors like the rest of the family.
+            'ir-threshold'      => ['--ir-threshold',      'hot', 'ir_threshold must be a number'],
+            'ml-pair-threshold' => ['--ml-pair-threshold', 'hot', 'ml_pair_threshold must be a number'],
         ];
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('cliNumericFlags')]
-    public function testInvalidNumericFlagExitsTwoWithFriendlyMessage(string $flag, string $junk): void
+    public function testInvalidNumericFlagExitsTwoWithFriendlyMessage(string $flag, string $junk, string $messageFragment): void
     {
         $tester = $this->commandTester();
         $exit = $tester->execute(
@@ -160,25 +172,28 @@ final class NumericFlagCoercionTest extends TestCase
         $this->assertSame(2, $exit);
         $combined = $tester->getErrorOutput() . $tester->getDisplay();
         $this->assertStringContainsString('phpdup:', $combined);
+        $this->assertStringContainsString($messageFragment, $combined);
         $this->assertStringNotContainsString('Uncaught', $combined);
         $this->assertStringNotContainsString('TypeError', $combined);
     }
 
-    public function testAllSevenFlagsValidValuesRunCleanlyAndWorkersZeroSentinelWorks(): void
+    public function testAllNineNumericFlagsValidValuesRunCleanlyAndWorkersZeroSentinelWorks(): void
     {
         $tester = $this->commandTester();
         $exit = $tester->execute([
-            'paths'            => [$this->corpusDir()],
-            '--min-block-size' => '10',
-            '--similarity'     => '0.7',
-            '--max-df'         => '0.05',
-            '--min-impact'     => '5',
-            '--fail-on-impact' => '100',
-            '--max-clusters'   => '5',
-            '--workers'        => '0',
-            '--limit'          => '3',
-            '--stage'          => 'scanning',
-            '--plain'          => true,
+            'paths'               => [$this->corpusDir()],
+            '--min-block-size'    => '10',
+            '--similarity'        => '0.7',
+            '--max-df'            => '0.05',
+            '--min-impact'        => '5',
+            '--fail-on-impact'    => '100',
+            '--max-clusters'      => '5',
+            '--workers'           => '0',
+            '--ir-threshold'      => ' .85 ',
+            '--ml-pair-threshold' => '1',
+            '--limit'             => '3',
+            '--stage'             => 'scanning',
+            '--plain'             => true,
         ]);
 
         $this->assertSame(0, $exit);
@@ -233,6 +248,8 @@ final class NumericFlagCoercionTest extends TestCase
             'fail_on_impact'       => $config->failOnImpact,
             'max_clusters'         => $config->maxClusters,
             'workers'              => $config->workers,
+            'ir_threshold'         => $config->irThreshold,
+            'ml_pair_threshold'    => $config->mlPairThreshold,
             default                => throw new \LogicException("unmapped key $key"),
         };
     }
