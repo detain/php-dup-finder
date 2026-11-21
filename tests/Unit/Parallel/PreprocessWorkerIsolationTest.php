@@ -215,6 +215,7 @@ final class PreprocessWorkerIsolationTest extends TestCase
             $shape($arrayRows),
             'row stream shape must match the documented per-file contract',
         );
+        // process() is currently a drain of processStream(), so this equality arm guards a future re-implementation of process(), not current parity.
         $this->assertSame($shape($arrayRows), $shape($streamRows), 'the array API and the generator twin are row-identical');
     }
 
