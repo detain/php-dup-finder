@@ -77,7 +77,9 @@ foreach (['my' => (string)$opts['my'], 'phlix' => (string)$opts['phlix']] as $co
     }
 }
 
-$lines[] = json_encode(['summary' => $counts, 'records' => count($lines)], JSON_PRETTY_PRINT);
+// bench m5: JSONL purity — one value per line. JSON_PRETTY_PRINT used to
+// make the trailer an 11-line multi-line value (297 lines for 287 values).
+$lines[] = json_encode(['summary' => $counts, 'records' => count($lines)], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 if (file_put_contents((string)$opts['out'], implode("\n", $lines) . "\n") === false) {
     fwrite(STDERR, "[err] cannot write {$opts['out']} (packet is derived material — keep it OUTSIDE the repo)\n");
     exit(2);

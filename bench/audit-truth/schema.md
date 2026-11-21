@@ -4,7 +4,7 @@ Both adapters (`extract-my.php`, `extract-phlix.php`) emit this JSON envelope:
 
 ```jsonc
 {
-  "corpus":         "my" | "phlix",
+  "corpus":         "home-my" | "phlix",
   "source_report":  "/abs/path/to/refactor.md",  // which prose report was parsed
   "source_sha256":  "…",                          // digest of those exact bytes
   "derived_by":     "bench/audit-truth/extract-<corpus>.php",

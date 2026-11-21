@@ -19,7 +19,9 @@ embeds file inventories and duplicate-location claims about private customer
 codebases. Committed here: the *scripts* and this documentation only. Outputs
 live in an operator directory **outside the repo** (the nightly host decides
 where; `/tmp/opencode/...` during development). Enforced by simple mechanics:
-every adapter requires an explicit `--out` path, nothing in this directory
+every output path either defaults outside the repo (`/tmp/<corpus>.truth.json`)
+or is required explicitly (`llm-packet.php`), the runbook below passes `--out`
+in every invocation, nothing in this directory
 writes into the repo, and lane commits are pathspec-only — no truth file ever
 enters a staging area. `corpus-pins.txt` deliberately carries paths + commits +
 digests and zero content.

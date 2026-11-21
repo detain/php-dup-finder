@@ -183,7 +183,12 @@ foreach ($truth['findings'] as $f) {
             continue;
         }
         foreach ($prefixes as $p) {
-            if (str_starts_with($file, $p)) {
+            // bench m4: honour path-segment boundaries — the prefix
+            // `include/Api/Vps` must not admit `include/Api/VpsFoo.php`.
+            // A trailing slash keeps the prefix's existing meaning; an
+            // exact file path still matches itself.
+            $rooted = str_ends_with($p, '/') ? $p : $p . '/';
+            if ($file === $p || str_starts_with($file, $rooted)) {
                 $keep[] = $m;
                 break;
             }
