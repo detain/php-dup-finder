@@ -211,6 +211,115 @@ final class ProjectProfileDetectorTest extends TestCase
         $this->assertSame('db-aware-phalcon', (new ProjectProfileDetector())->detect([$root]));
     }
 
+    public function testLaravelFrameworkPackageDetectsDbAwareLaravel(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['laravel/framework' => '^11.0']])]);
+        $this->assertSame('db-aware-laravel', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testLaravelFrameworkBeatsIlluminateDatabase(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode([
+            'require' => ['laravel/framework' => '^11.0', 'illuminate/database' => '^11.0'],
+        ])]);
+        $this->assertSame('db-aware-laravel', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testCodeigniterPackageDetectsDbAwareCodeigniter(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['codeigniter4/framework' => '^4.5']])]);
+        $this->assertSame('db-aware-codeigniter', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testLaminasDbPackageDetectsDbAwareLaminas(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['laminas/laminas-db' => '^2.0']])]);
+        $this->assertSame('db-aware-laminas', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testZendDbPackageDetectsDbAwareLaminas(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['zendframework/zend-db' => '^2.0']])]);
+        $this->assertSame('db-aware-laminas', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testYiiPackageDetectsDbAwareYii(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['yiisoft/yii2' => '^2.0']])]);
+        $this->assertSame('db-aware-yii', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testYiiDbPackageDetectsDbAwareYii(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['yiisoft/db' => '^1.0']])]);
+        $this->assertSame('db-aware-yii', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testMyadminCorePackageDetectsDbAwareMyadminOrm(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['detain/myadmin' => 'dev-master']])]);
+        $this->assertSame('db-aware-myadmin-orm', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testDbAbstractionPackageDetectsDbAwareMyadmin(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode(['require' => ['detain/db_abstraction' => 'dev-master']])]);
+        $this->assertSame('db-aware-myadmin', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    public function testMyadminCoreBeatsDbAbstraction(): void
+    {
+        $root = $this->mkproject(['composer.json' => json_encode([
+            'require' => ['detain/myadmin' => 'dev-master', 'detain/db_abstraction' => 'dev-master'],
+        ])]);
+        $this->assertSame('db-aware-myadmin-orm', (new ProjectProfileDetector())->detect([$root]));
+    }
+
+    /**
+     * shell-S32 class-killer: every db-aware symbol pack shipped in profiles/
+     * must be registered in KNOWN_PROFILES, and every db-aware entry in
+     * KNOWN_PROFILES must ship a file. Set-equality against the live
+     * ProfileRegistry scan means an unregistered (unreachable) pack — the
+     * six orphans this step fixed — can never happen silently again.
+     */
+    public function testKnownProfilesRegisterEveryBundledDbAwarePack(): void
+    {
+        $known = array_values(array_filter(
+            ProjectProfileDetector::knownProfiles(),
+            static fn (string $name): bool => str_starts_with($name, 'db-aware-'),
+        ));
+        $available = array_values(array_filter(
+            ProfileRegistry::bundled()->listAvailable(),
+            static fn (string $name): bool => str_starts_with($name, 'db-aware-'),
+        ));
+        sort($known);
+        sort($available);
+
+        // Registration census moved 23 -> 29 in shell-S32 (php-dup-finder-shell-037):
+        // intentionally a ratchet — adding a 30th pack must bump this number
+        // alongside the set-equality below, forcing the roster to stay honest.
+        $this->assertCount(29, $known, 'db-aware-* entries in KNOWN_PROFILES');
+
+        $this->assertSame(
+            $available,
+            $known,
+            'db-aware packs shipped in profiles/ and registered in KNOWN_PROFILES must be the same set',
+        );
+
+        foreach (
+            [
+                'db-aware-laravel',
+                'db-aware-codeigniter',
+                'db-aware-laminas',
+                'db-aware-yii',
+                'db-aware-myadmin',
+                'db-aware-myadmin-orm',
+            ] as $orphan
+        ) {
+            $this->assertContains($orphan, $known, "the $orphan pack must be registered");
+        }
+    }
+
     /** @param array<string,string> $files */
     private function mkproject(array $files): string
     {

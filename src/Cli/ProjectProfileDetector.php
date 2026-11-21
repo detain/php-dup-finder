@@ -9,8 +9,12 @@ namespace Phpdup\Cli;
  *
  * Detection order favours specificity: framework-specific markers
  * (artisan, bin/console, web/core/lib/Drupal.php, wp-config.php)
- * win over a generic composer.json. Returns 'generic' as the
- * fallback so callers can always rely on a non-null profile name.
+ * win over a generic composer.json. The db-aware-* composer-package
+ * markers sit between the two, and within that group the more
+ * specific package wins (laravel/framework before
+ * illuminate/database, detain/myadmin before detain/db_abstraction).
+ * Returns 'generic' as the fallback so callers can always rely on a
+ * non-null profile name.
  */
 final class ProjectProfileDetector
 {
@@ -21,6 +25,7 @@ final class ProjectProfileDetector
         'drupal',
         'wordpress',
         'myadmin',
+        'db-aware-laravel',
         'db-aware-illuminate',
         'db-aware-aura',
         'db-aware-atlas',
@@ -32,6 +37,11 @@ final class ProjectProfileDetector
         'db-aware-propel',
         'db-aware-redbean',
         'db-aware-cake',
+        'db-aware-codeigniter',
+        'db-aware-laminas',
+        'db-aware-yii',
+        'db-aware-myadmin-orm',
+        'db-aware-myadmin',
         'db-aware-medoo',
         'db-aware-phpactiverecord',
         'db-aware-thinkorm',
@@ -82,6 +92,9 @@ final class ProjectProfileDetector
         if ($this->dirExists($root, ['include/Orm', 'vendor/detain/db_abstraction'])) {
             return 'myadmin';
         }
+        if ($this->hasComposerPackage($root, 'laravel/framework')) {
+            return 'db-aware-laravel';
+        }
         if ($this->hasComposerPackage($root, 'illuminate/database')) {
             return 'db-aware-illuminate';
         }
@@ -114,6 +127,21 @@ final class ProjectProfileDetector
         }
         if ($this->hasComposerPackage($root, 'cakephp/orm')) {
             return 'db-aware-cake';
+        }
+        if ($this->hasComposerPackage($root, 'codeigniter4/framework')) {
+            return 'db-aware-codeigniter';
+        }
+        if ($this->hasComposerPackage($root, 'laminas/laminas-db') || $this->hasComposerPackage($root, 'zendframework/zend-db')) {
+            return 'db-aware-laminas';
+        }
+        if ($this->hasComposerPackage($root, 'yiisoft/yii2') || $this->hasComposerPackage($root, 'yiisoft/db')) {
+            return 'db-aware-yii';
+        }
+        if ($this->hasComposerPackage($root, 'detain/myadmin')) {
+            return 'db-aware-myadmin-orm';
+        }
+        if ($this->hasComposerPackage($root, 'detain/db_abstraction')) {
+            return 'db-aware-myadmin';
         }
         if ($this->hasComposerPackage($root, 'catfan/medoo')) {
             return 'db-aware-medoo';
