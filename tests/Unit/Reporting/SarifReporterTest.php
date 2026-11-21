@@ -136,6 +136,43 @@ final class SarifReporterTest extends TestCase
         }
     }
 
+    /**
+     * php-dup-finder-output-037: result levels route through Severity::sarifLevel
+     * while the emitted bytes stay identical to the pre-centralization inline
+     * `$cluster->exact ? 'warning' : 'note'` — the expected literals below are
+     * that old expression, kept verbatim as a byte-freeze oracle independent
+     * of the center.  Also pins the rule-metadata default ('warning'), whose
+     * literal likewise moved behind Severity::sarifRuleDefaultLevel().
+     */
+    public function testResultLevelsRouteThroughSeverityWithByteIdenticalLabels(): void
+    {
+        $member = static fn(string $name): Block => new Block(
+            file: 'sarif-level.php',
+            range: new LineRange(1, 5),
+            kind: 'function',
+            namespace: null,
+            class: null,
+            name: $name,
+            ast: new \PhpParser\Node\Stmt\Nop(),
+        );
+
+        $exact = new Cluster('F0000000000000003', [$member('a')], 1.0, true);
+        $near  = new Cluster('F0000000000000004', [$member('b')], 0.8, false);
+
+        $report  = new Report(1, 2, 0, [$exact, $near], Config::defaults([]));
+        $payload = (new SarifReporter())->build($report);
+
+        $levels = array_map(
+            static fn(array $r): string => $r['level'],
+            $payload['runs'][0]['results'],
+        );
+        $this->assertSame(['warning', 'note'], $levels,
+            'exact clone keeps warning, near-dup keeps note — the historical inline mapping');
+
+        $default = $payload['runs'][0]['tool']['driver']['rules'][0]['defaultConfiguration']['level'];
+        $this->assertSame('warning', $default);
+    }
+
     private function buildReport(): Report
     {
         $config = new Config(

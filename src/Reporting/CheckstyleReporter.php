@@ -38,7 +38,7 @@ final class CheckstyleReporter
                 $xml .= sprintf(
                     "    <error line=\"%d\" column=\"1\" severity=\"%s\" message=\"%s\" source=\"phpdup.duplicate-logic\"/>\n",
                     $member->range->start,
-                    $cluster->exact ? 'warning' : 'info',
+                    Severity::checkstyleSeverity($cluster->exact),
                     $this->escape(sprintf(
                         '%s:%d-%d duplicates cluster %s (%d members, similarity %.2f, impact %d)',
                         $member->file,

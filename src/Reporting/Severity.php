@@ -7,30 +7,38 @@ namespace Phpdup\Reporting;
  * Centralized severity determination for duplicate clusters.
  *
  * This class is the single source of truth for all severity labeling in phpdup.
- * Every reporter that emits severity information — `GitLabSastReporter`,
- * `GraphvizReporter`, `CliReporter`, and any future consumer — must route through
- * these two methods rather than duplicating threshold logic.
+ * Every reporter that emits severity information must route through these
+ * methods rather than duplicating label or threshold logic at the call site
+ * (php-dup-finder-output-037).  The consumer roster below is kept in sync with
+ * `grep -rn "Severity::" src/Reporting/`:
  *
- * Two orthogonal scales are provided:
+ * - `SarifReporter` — `sarifLevel()` per result, `sarifRuleDefaultLevel()` for rule metadata
+ * - `CheckstyleReporter` — `checkstyleSeverity()` per `<error>` element
+ * - `GitLabSastReporter` — `forImpact()` (severity) and `forScore()` (confidence)
+ * - `GraphvizReporter` — `forImpact()` when colouring nodes by severity
+ * - `CliReporter` — `forScore()` for confidence badges
  *
- * - **Impact scale** (`forImpact`) — integer, calibrated for GitLab SAST / SARIF
- *   compatibility. Used when severity must conform to an industry-standard format.
+ * Three orthogonal label scales are provided:
+ *
+ * - **Impact scale** (`forImpact`) — integer thresholds producing SAST-style
+ *   labels (High/Medium/Low/Info). Used when severity must conform to an
+ *   industry-standard format consumed via that vocabulary.
  *
  * - **Score scale** (`forScore`) — float in [0.0, 1.0], calibrated for the CLI
- *   confidence display. Used for human-oriented output where SARIF alignment is
- *   not required.
+ *   confidence display. Used for human-oriented output where format-standard
+ *   alignment is not required.
  *
- * @see GitLabSastReporter  — SARIF/SAST consumer that calls forImpact()
- * @see GraphvizReporter   — calls forImpact() when rendering node severity
- * @see CliReporter         — calls forScore() for confidence badges
+ * - **Wire-label routing** (`sarifLevel`, `sarifRuleDefaultLevel`,
+ *   `checkstyleSeverity`) — per-format labels driven by a cluster's
+ *   exactness, byte-for-byte preserving the mapping both reporters carried
+ *   inline before it was centralized here.
  */
 final class Severity
 {
     /**
-     * Maps an impact value to a SARIF-compatible severity label.
+     * Maps an impact value to a SAST-style severity label.
      *
-     * The thresholds follow the GitLab SAST / OASIS SARIF severity scale, which
-     * defines four levels: Critical > High > Medium > Low > Info.  phpdup does not
+     * The thresholds follow the GitLab SAST severity scale: phpdup does not
      * emit Critical (reserved for security vulnerabilities with CVSS ≥ 9.0), so
      * the top tier is High.
      *
@@ -55,12 +63,13 @@ final class Severity
      *     (e.g. identical 3-line error-handling snippets) that do not warrant a
      *     CI warning.
      *
-     * SARIF alignment:
-     *   SARIF `warning` level corresponds to Medium/Low; `note` corresponds to
-     *   Info.  High maps directly to SARIF `error`.  GitLab SAST maps these four
-     *   labels onto its own 3-tier pipeline (High / Medium / Low), but the
-     *   phpdup Info tier is included for completeness and is emitted as a note
-     *   in SARIF output.
+     * Format alignment:
+     *   These labels are consumed by GitLabSastReporter (SAST `severity`
+     *   field) and GraphvizReporter (node colours); GitLab SAST folds them
+     *   onto its own severity pipeline, and the phpdup Info tier is kept for
+     *   completeness.  They are NOT what SARIF results carry: SarifReporter
+     *   routes its `level` through sarifLevel() below, which keys on cluster
+     *   exactness rather than impact.
      *
      * @param int $impact  Raw impact score (total duplicated line count across
      *                     all members of a cluster, before normalisation).  Must
@@ -127,5 +136,61 @@ final class Severity
             $score >= 0.65 => 'Medium',
             default        => 'Low',
         };
+    }
+
+    /**
+     * SARIF `level` for a cluster result, routed from cluster exactness.
+     *
+     * SARIF defines three result levels — `error`, `warning`, `note` — and
+     * phpdup never emits `error` (CI integrations treat it as build-breaking,
+     * which duplicate logic is not), so an exact clone lands on `warning` and
+     * a near-duplicate on `note`.  This routing is deliberately independent of
+     * the impact scale: the SARIF surface has always keyed on match certainty,
+     * not on how many lines are affected.
+     *
+     * The mapping is byte-frozen against the inline expression it replaces
+     * (pre-output-037 SarifReporter: `$cluster->exact ? 'warning' : 'note'`);
+     * SeverityTest pins the literals independently of this method.
+     *
+     * @param bool $exact  Whether the cluster is an exact clone.
+     *
+     * @return string      One of: 'warning' | 'note'
+     */
+    public static function sarifLevel(bool $exact): string
+    {
+        return $exact ? 'warning' : 'note';
+    }
+
+    /**
+     * SARIF rule-metadata `defaultConfiguration.level` — the level a viewer
+     * applies to results that omit their own `level`.  phpdup results always
+     * carry an explicit sarifLevel(), so this value never routes a real
+     * finding; it lives here so even the static default cannot drift from the
+     * center's SARIF vocabulary.  It mirrors the label phpdup gives its
+     * strongest results (the exact tier).
+     *
+     * @return string  'warning'
+     */
+    public static function sarifRuleDefaultLevel(): string
+    {
+        return 'warning';
+    }
+
+    /**
+     * Checkstyle `<error severity="...">` label for a cluster.
+     *
+     * The Checkstyle DTD allows error | warning | info; phpdup never emits
+     * `error` for a duplicate finding, mirroring the SARIF posture, so an
+     * exact clone lands on `warning` and a near-duplicate on `info`.
+     * Byte-frozen against the inline expression it replaces
+     * (pre-output-037 CheckstyleReporter: `$cluster->exact ? 'warning' : 'info'`).
+     *
+     * @param bool $exact  Whether the cluster is an exact clone.
+     *
+     * @return string      One of: 'warning' | 'info'
+     */
+    public static function checkstyleSeverity(bool $exact): string
+    {
+        return $exact ? 'warning' : 'info';
     }
 }

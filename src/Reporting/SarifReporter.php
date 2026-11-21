@@ -52,7 +52,7 @@ final class SarifReporter
                                         'text' => 'phpdup detected near- or exact-duplicate logic. Consider extracting a shared abstraction.',
                                     ],
                                     'helpUri'              => 'https://github.com/detain/php-dup-finder',
-                                    'defaultConfiguration' => ['level' => 'warning'],
+                                    'defaultConfiguration' => ['level' => Severity::sarifRuleDefaultLevel()],
                                 ],
                             ],
                         ],
@@ -89,7 +89,7 @@ final class SarifReporter
     {
         return [
             'ruleId'  => 'phpdup/duplicate-logic',
-            'level'   => $cluster->exact ? 'warning' : 'note',
+            'level'   => Severity::sarifLevel($cluster->exact),
             'message' => [
                 'text' => sprintf(
                     'Cluster %s — %d members, similarity %.2f, impact %d. Suggested abstraction: %s',
