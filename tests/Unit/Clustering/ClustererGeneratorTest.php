@@ -220,4 +220,82 @@ final class ClustererGeneratorTest extends TestCase
 
         $this->assertCount(0, $pairs, 'Gram appearing in 100% of blocks (3/3) exceeds 30% threshold and must be excluded');
     }
+
+    /**
+     * engine-043: the generator now decides the canonical (lo, hi) split of
+     * a pair with ONE strcmp and uses that single decision for both the
+     * dedup key and the yielded tuple. This pin demands that the tuple is
+     * exactly the strcmp-canonical ordering the old three-strcmp code
+     * produced, for a corpus that forces BOTH branches to run: ids chosen
+     * so some candidates compare lower and some higher than the swept
+     * block's id (byte order: uppercase < lowercase).
+     */
+    public function testYieldedTupleIsTheStrcmpCanonicalPairUnderIndependentRecomputation(): void
+    {
+        $ids   = ['Z9', 'aa', 'b10', 'b2', 'M3'];
+        $index = new BlockIndex();
+        foreach ($ids as $i => $id) {
+            // One shared gram + a per-block gram: every block is a
+            // candidate of every other, df cap at 1.0 admits the shared gram.
+            $index->add($this->makeBlockWithNgrams($id, 'hash_' . $i, ['common' => 1, 'own' . $i => 1]));
+        }
+
+        $clusterer = new Clusterer(
+            similarity: new JaccardSimilarity(),
+            tree: new TreeEditDistance(),
+            similarityThreshold: 0.0,
+            treeThreshold: 0.0,
+            maxDocumentFrequency: 1.0,
+        );
+
+        $pairs = iterator_to_array($clusterer->generateCandidatePairs($index));
+
+        // Branch coverage belt: the corpus must have exercised both arms
+        // (some sweeps where the anchor id is the lower endpoint, some
+        // where it is the higher one) or the pin below proves nothing.
+        $anchorIsLo = false;
+        $anchorIsHi = false;
+        foreach ($pairs as [$x, $y]) {
+            if (strcmp($x, $y) >= 0) {
+                $this->fail(sprintf('yielded tuple [%s,%s] is not strcmp-canonical: the single-strcmp split must put the lower id first', $x, $y));
+            }
+            foreach ($ids as $anchor) {
+                if ($anchor === $x) {
+                    $anchorIsLo = true;
+                }
+                if ($anchor === $y) {
+                    $anchorIsHi = true;
+                }
+            }
+        }
+        $this->assertTrue($anchorIsLo && $anchorIsHi, 'fixture must force both canonical-split branches');
+
+        // Independent reference in the OLD shape: per unordered pair, run
+        // the ternary the removed three-strcmp code ran twice on the yield
+        // line — the canonical tuple is what must come out.
+        $expected = [];
+        foreach ($ids as $aId) {
+            foreach ($ids as $bId) {
+                if ($aId === $bId) {
+                    continue;
+                }
+                $tuple = strcmp($aId, $bId) < 0 ? [$aId, $bId] : [$bId, $aId];
+                $key   = $tuple[0] . '|' . $tuple[1];
+                $expected[$key] = $tuple;
+            }
+        }
+
+        $actual = [];
+        foreach ($pairs as $tuple) {
+            $key = $tuple[0] . '|' . $tuple[1];
+            $this->assertFalse(isset($actual[$key]), sprintf('pair %s yielded twice', $key));
+            $actual[$key] = $tuple;
+        }
+
+        // Same set, each tuple canonically ordered, no self-pair.
+        $this->assertSame(array_keys($expected), array_keys($actual));
+        foreach ($expected as $key => $tuple) {
+            $this->assertSame($tuple, $actual[$key], sprintf('tuple for %s must equal the independent two-strcmp reference', $key));
+        }
+    }
 }

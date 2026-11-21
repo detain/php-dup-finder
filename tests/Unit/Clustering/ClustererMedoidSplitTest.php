@@ -554,4 +554,197 @@ final class ClustererMedoidSplitTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
         $this->clusterer(minSplitSize: 1);
     }
+
+    /**
+     * engine-052: deterministic byte-stable pseudo-random in [0,1) — no
+     * global RNG state, identical on every PHP build.
+     */
+    private function rand01(string $seed, int $i, int $j): float
+    {
+        return hexdec(substr(md5($seed . '|' . $i . '|' . $j), 0, 8)) / 0xFFFFFFFF;
+    }
+
+    /**
+     * Reference medoid sequence: the OLD per-round O(k²) scan (count
+     * neighbours present in $remaining, max degree, structuralHash asc
+     * tie-break, first-wins on equal hash) plus the identical ball-
+     * removal skeleton. Records the medoid of every SURVIVING ball, in
+     * round order — the pre-counter algorithm the incremental degree
+     * counters must match.
+     *
+     * @param array<string, Block> $byId
+     * @param array<string, array<string, float>> $adjacency
+     * @return list<string>
+     */
+    private function legacyMedoidSequence(array $byId, array $adjacency, int $minSplitSize): array
+    {
+        $remaining = $byId;
+        $medoids   = [];
+        while ($remaining !== []) {
+            $bestId = ''; $bestDeg = -1; $bestHash = null;
+            foreach ($remaining as $id => $block) {
+                $deg = 0;
+                foreach (array_keys($adjacency[$id]) as $nid) {
+                    if (isset($remaining[$nid])) {
+                        $deg++;
+                    }
+                }
+                if ($deg > $bestDeg
+                    || ($deg === $bestDeg && ($bestHash === null || strcmp($block->structuralHash, $bestHash) < 0))) {
+                    $bestId = $id; $bestDeg = $deg; $bestHash = $block->structuralHash;
+                }
+            }
+            $medoidId = $bestId;
+            $ball     = [$medoidId];
+            unset($remaining[$medoidId]);
+            foreach (array_keys($adjacency[$medoidId]) as $nid) {
+                if (!isset($remaining[$nid])) {
+                    continue;
+                }
+                $ball[] = $nid;
+                unset($remaining[$nid]);
+            }
+            if (count($ball) >= $minSplitSize) {
+                $medoids[] = $medoidId;
+            }
+        }
+        return $medoids;
+    }
+
+    /**
+     * Build the adjacency map for one component from its materialized
+     * pairs (edge existence is all the splitter reads; score rides along
+     * only for the unchanged straggler-tether step, never for medoid
+     * degree).
+     *
+     * @param Cluster $c
+     * @return array<string, array<string, float>>
+     */
+    private function adjacencyFromPairs(Cluster $c): array
+    {
+        $byId = [];
+        foreach ($c->members as $m) {
+            $byId[$m->id] = $m;
+        }
+        $adjacency = [];
+        foreach ($byId as $id => $_) {
+            $adjacency[$id] = [];
+        }
+        foreach ($c->pairs as $p) {
+            $a = $p['blockA']; $b = $p['blockB'];
+            if (!isset($byId[$a]) || !isset($byId[$b])) {
+                continue;
+            }
+            $adjacency[$a][$b] = $p['matchScore'];
+            $adjacency[$b][$a] = $p['matchScore'];
+        }
+        return $adjacency;
+    }
+
+    /**
+     * @param list<Cluster> $clusters
+     * @return list<string>
+     */
+    private function emittedMedoidSequence(array $clusters): array
+    {
+        $seq = [];
+        foreach ($clusters as $c) {
+            if ($c->medoidId !== null) {
+                $seq[] = $c->medoidId;
+            }
+        }
+        return $seq;
+    }
+
+    /**
+     * engine-052 property unit: across seeded random graphs AND the
+     * 167-member storm chain, the medoids chosen by production's
+     * counter-based splitComponent round for round equal the ones the
+     * old O(k²) per-round scan would pick. The reference adjacency is
+     * read from the SPLIT-OFF run's materialized pairs, so the only
+     * thing under test is the medoid pick itself.
+     */
+    public function testCounterBasedMedoidSequenceMatchesLegacyScanRoundForRound(): void
+    {
+        $multiRoundSeen = 0;
+
+        $fixtures = [];
+        foreach ([1, 2, 3, 4, 5, 6] as $seed) {
+            $blocks = [];
+            $edges  = [];
+            for ($i = 0; $i < 10; $i++) {
+                $blocks[] = $this->block(sprintf('n%02d', $i), sprintf('h%02d', $i));
+            }
+            for ($i = 0; $i < 10; $i++) {
+                for ($j = $i + 1; $j < 10; $j++) {
+                    if ($this->rand01('er', $seed, $i * 100 + $j) < 0.4) {
+                        $edges[] = [$blocks[$i]->id, $blocks[$j]->id, 0.9 - 0.01 * $j, MatchTier::Jaccard->value];
+                    }
+                }
+            }
+            $fixtures['er-seed-' . $seed] = [$blocks, $edges];
+        }
+        $fixtures['storm-167'] = $this->stormFixture();
+
+        foreach ($fixtures as $name => [$blocks, $edges]) {
+            // Split-off run: component shape + materialized pairs.
+            $components = $this->clusterer(split: false)->cluster($this->index($blocks), $edges);
+            $this->assertNotEmpty($components, $name . ': fixture must produce at least one component');
+
+            $reference = [];
+            foreach ($components as $c) {
+                $byId = [];
+                foreach ($c->members as $m) {
+                    $byId[$m->id] = $m;
+                }
+                $reference = array_merge(
+                    $reference,
+                    $this->legacyMedoidSequence($byId, $this->adjacencyFromPairs($c), 2)
+                );
+            }
+
+            $emitted = $this->emittedMedoidSequence($this->clusterer(split: true)->cluster($this->index($blocks), $edges));
+
+            $this->assertSame($reference, $emitted, $name . ': counter-maintained medoids must equal the legacy per-round scan, in round order');
+            if (count($reference) >= 2) {
+                $multiRoundSeen++;
+            }
+        }
+
+        $this->assertGreaterThanOrEqual(2, $multiRoundSeen, 'battery must include multi-round components (the arm where counters decay)');
+    }
+
+    /**
+     * engine-052 second arm: the tie-break side. Identical degrees force
+     * the structuralHash comparison; a counter init or decrement bug
+     * shifts degrees and flips winners. Star-of-stars: center degree 6,
+     * two arms linked to their neighbours — every removal round exposes
+     * new tie clusters.
+     */
+    public function testMedoidTieSequenceMatchesLegacyOnSymmetricGraph(): void
+    {
+        // Cycle C8: every node has degree 2 forever round-to-round —
+        // maximal hash-tie pressure at every step.
+        $blocks = [];
+        for ($i = 0; $i < 8; $i++) {
+            $blocks[] = $this->block(sprintf('q%02d', $i), sprintf('t%02d', $i));
+        }
+        $edges = [];
+        for ($i = 0; $i < 8; $i++) {
+            $edges[] = [$blocks[$i]->id, $blocks[($i + 1) % 8]->id, 0.9, MatchTier::Jaccard->value];
+        }
+
+        $components = $this->clusterer(split: false)->cluster($this->index($blocks), $edges);
+        $this->assertCount(1, $components);
+        $byId = [];
+        foreach ($components[0]->members as $m) {
+            $byId[$m->id] = $m;
+        }
+        $reference = $this->legacyMedoidSequence($byId, $this->adjacencyFromPairs($components[0]), 2);
+
+        $emitted = $this->emittedMedoidSequence($this->clusterer(split: true)->cluster($this->index($blocks), $edges));
+
+        $this->assertSame($reference, $emitted, 'cycle graph medoid sequence must equal the legacy scan round for round');
+        $this->assertGreaterThanOrEqual(2, count($reference), 'the cycle must go through multiple medoid rounds');
+    }
 }

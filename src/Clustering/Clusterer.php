@@ -281,9 +281,21 @@ final class Clusterer
                     }
                 }
             }
+            // engine-043: $a->id is invariant across the candidate sweep and
+            // the canonical (lo, hi) split is computed ONCE per pair — the
+            // old loop ran strcmp three times per candidate (key + two
+            // ternaries) inside the hottest generator in the pipeline. The
+            // yielded tuple is exactly what the dedup key encodes.
+            $aId = $a->id;
             foreach ($candidates as $bid) {
-                $aId = $a->id;
-                $key = strcmp($aId, $bid) < 0 ? $aId . '|' . $bid : $bid . '|' . $aId;
+                if (strcmp($aId, $bid) < 0) {
+                    $lo = $aId;
+                    $hi = $bid;
+                } else {
+                    $lo = $bid;
+                    $hi = $aId;
+                }
+                $key = $lo . '|' . $hi;
                 if (isset($seen[$key])) continue;
                 $seen[$key] = true;
                 $yieldCount++;
@@ -293,7 +305,7 @@ final class Clusterer
                     // bound. Nothing before this line was reordered or lost.
                     throw CandidateBudgetException::exceeded($candidateBudget, $blockNum, $totalBlocks);
                 }
-                yield [strcmp($aId, $bid) < 0 ? $aId : $bid, strcmp($aId, $bid) < 0 ? $bid : $aId];
+                yield [$lo, $hi];
             }
             if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG && $blockNum % 5000 === 0) {
                 $output->writeln(sprintf('ngram-index: processed %d / %d blocks, %d candidates found [%s]', $blockNum, $totalBlocks, $yieldCount, MemoryDebug::getMemoryUsage()));
@@ -311,6 +323,12 @@ final class Clusterer
      * Phase 2 cluster similarity is computed in O(edges) time via a running
      * per-component minimum maintained during union-find traversal — NOT by
      * re-scanning all member pairs (which would be O(Σk²) for component size k).
+     * Pair materialization (Cluster::$pairs) is likewise edge-bucket driven
+     * (engine-029): the union pass files every distinct edge under its final
+     * union-find root once, and each component emits its pairs from that
+     * bucket in O(members + edges) — the old per-component k²/2 member-pair
+     * rescan is gone. Emission order is unchanged: (lower member index,
+     * higher member index), never edge arrival order.
      *
      * The running minimum is stored in the $componentMinSim array keyed by
      * union-find root. For a new inter-component edge (aId, bId, sim):
@@ -334,7 +352,6 @@ final class Clusterer
     public function cluster(BlockIndex $index, ?array $edges = null): array
     {
         $clusters = [];
-        $exactlyClustered = [];
 
         // Phase 1: hash buckets — always done serially, dirt cheap.
         foreach ($index->hashBuckets() as $hash => $blocks) {
@@ -350,9 +367,6 @@ final class Clusterer
             );
             $cluster->pairs = $this->buildExactPairs($blocks);
             $clusters[] = $cluster;
-            foreach ($blocks as $b) {
-                $exactlyClustered[$b->id] = true;
-            }
         }
 
         if ($this->exactOnly) {
@@ -364,6 +378,14 @@ final class Clusterer
         foreach ($index->all() as $b) {
             $uf->add($b->id);
         }
+        /**
+         * Distinct-edge table keyed by strcmp-canonical id pair; values carry
+         * the edge payload plus its endpoints so the post-union bucket pass
+         * (engine-029) never has to re-split the key. Last arrival wins per
+         * key, as before.
+         *
+         * @var array<string, array{sim: float, tier: string, a: string, b: string}> $edgeMap
+         */
         $edgeMap = [];
 
         if ($edges === null) {
@@ -418,7 +440,7 @@ final class Clusterer
             // would be a dropped adjacency. A pair seen twice (any mix of
             // orientations) keeps the last-arrival edge.
             $key = strcmp($aId, $bId) < 0 ? $aId . '|' . $bId : $bId . '|' . $aId;
-            $edgeMap[$key] = ['sim' => $sim, 'tier' => $tier];
+            $edgeMap[$key] = ['sim' => $sim, 'tier' => $tier, 'a' => $aId, 'b' => $bId];
             // Capture roots BEFORE union so the pre-union condition is meaningful.
             $rx = $uf->find($aId);
             $ry = $uf->find($bId);
@@ -437,6 +459,17 @@ final class Clusterer
                 $root = $uf->find($aId);
                 $componentMinSim[$root] = min($componentMinSim[$root] ?? 1.0, $sim);
             }
+        }
+
+        // engine-029: bucket the materialized edges under their FINAL
+        // union-find root once path compression has settled — one find()
+        // per distinct edge, O(edges) for the whole corpus. This replaces
+        // the per-component k²/2 member-pair rescan buildPairsFromEdges
+        // used to run against $edgeMap directly.
+        /** @var array<array-key, list<array{sim: float, tier: string, a: string, b: string}>> $edgesByRoot */
+        $edgesByRoot = [];
+        foreach ($edgeMap as $edge) {
+            $edgesByRoot[$uf->find($edge['a'])][] = $edge;
         }
 
         // Components → clusters
@@ -471,7 +504,7 @@ final class Clusterer
                 similarity: $allIdenticalHash ? 1.0 : $minSim,
                 exact: $allIdenticalHash,
             );
-            $component->pairs = $this->buildPairsFromEdges($members, $edgeMap);
+            $component->pairs = $this->buildPairsFromEdges($members, $edgesByRoot[$root] ?? []);
 
             $groups = $this->splitClusters
                 ? $this->splitComponent($component, $minSim)
@@ -572,16 +605,33 @@ final class Clusterer
         }
 
         $remaining = $byId;
+
+        // engine-052: incremental "still-remaining neighbours" counters for
+        // the medoid pick, replacing the per-round O(k²) rescan. Init is
+        // exact because every adjacency key is a member of $byId (the pairs
+        // loop above skips non-member endpoints), so at the start every
+        // neighbour is still remaining. Invariant maintained below: for
+        // every id present in $remaining, $remainingDegree[$id] equals the
+        // old scan's per-round count of neighbours present in $remaining
+        // (pinned by the property unit in ClustererMedoidSplitTest).
+        /** @var array<string, int> $remainingDegree */
+        $remainingDegree = [];
+        foreach ($adjacency as $id => $neighbours) {
+            $remainingDegree[$id] = count($neighbours);
+        }
+
         /** @var list<array{medoid: string|null, members: list<Block>, anchors: array<string, float>}> $groups */
         $groups = [];
         /** @var list<Block> $residue */
         $residue = [];
 
         while ($remaining !== []) {
-            $medoidId = $this->pickMedoid($remaining, $adjacency);
+            $medoidId = $this->pickMedoid($remaining, $remainingDegree);
             $ball     = [$medoidId => $remaining[$medoidId]];
             $anchors  = [];
+            $removed  = [];
             unset($remaining[$medoidId]);
+            $removed[] = $medoidId;
             foreach (array_keys($adjacency[$medoidId]) as $neighbourId) {
                 if (!isset($remaining[$neighbourId])) {
                     continue;
@@ -589,6 +639,19 @@ final class Clusterer
                 $ball[$neighbourId]     = $remaining[$neighbourId];
                 $anchors[$neighbourId]  = $adjacency[$medoidId][$neighbourId];
                 unset($remaining[$neighbourId]);
+                $removed[] = $neighbourId;
+            }
+            // Decrement AFTER the whole ball left $remaining: every edge
+            // lost by a removed member hits exactly one still-remaining
+            // endpoint (adjacency is symmetric, so the removed endpoints'
+            // mutual edges are already absent from $remaining and are
+            // skipped). Counting each lost edge once keeps the invariant.
+            foreach ($removed as $removedId) {
+                foreach (array_keys($adjacency[$removedId]) as $neighbourId) {
+                    if (isset($remaining[$neighbourId])) {
+                        $remainingDegree[$neighbourId]--;
+                    }
+                }
             }
             if (count($ball) >= $this->minSplitSize) {
                 $groups[] = ['medoid' => $medoidId, 'members' => array_values($ball), 'anchors' => $anchors];
@@ -693,21 +756,22 @@ final class Clusterer
      * neighbours; ties broken by structuralHash ascending (then scan
      * order for equal hashes). Id-arrival order never leaks in.
      *
-     * @param array<string, Block>                $remaining
-     * @param array<string, array<string, float>> $adjacency
+     * engine-052: the neighbour count arrives pre-maintained from
+     * splitComponent's incremental degree counters — O(k) per round
+     * instead of the old O(k²) rescan over every remaining member's
+     * adjacency list. The selection logic (max degree, hash tie-break,
+     * first-wins on equal hash) is byte-identical to the old scan's.
+     *
+     * @param array<string, Block> $remaining
+     * @param array<string, int>   $remainingDegree
      */
-    private function pickMedoid(array $remaining, array $adjacency): string
+    private function pickMedoid(array $remaining, array $remainingDegree): string
     {
         $bestId   = '';
         $bestDeg  = -1;
         $bestHash = null;
         foreach ($remaining as $id => $block) {
-            $deg = 0;
-            foreach (array_keys($adjacency[$id]) as $neighbourId) {
-                if (isset($remaining[$neighbourId])) {
-                    $deg++;
-                }
-            }
+            $deg = $remainingDegree[$id];
             if ($deg > $bestDeg
                 || ($deg === $bestDeg && ($bestHash === null || strcmp($block->structuralHash, $bestHash) < 0))
             ) {
@@ -812,32 +876,72 @@ final class Clusterer
     }
 
     /**
-     * Build pairs list from edge data for a cluster's members.
+     * Build the pairs list for one component from ITS edge bucket.
      *
-     * Iterates over all unordered member pairs and looks up the edge
-     * (if any) that connected them during scoring. Only pairs with a
-     * recorded edge are included — intra-component edges that failed
-     * scoring thresholds are not present in $edgeMap.
+     * engine-029: the old version re-scanned every unordered member pair
+     * (k²/2 strcmp keys per component) and looked each one up in the
+     * global edge table. Components are BUILT from edges, so cluster()
+     * now hands over the component's own bucket, accumulated in O(edges)
+     * during the post-union pass; this method sweeps it twice over
+     * member positions and never touches non-edge pairs at all.
+     *
+     * Emission order is byte-identical to the old member-pair scan:
+     * pairs sorted by (lower member index, higher member index) with
+     * blockA/blockB following that member order — never edge arrival
+     * order. Sweep 1 files each edge under its higher-index endpoint;
+     * sweep 2 reads the high endpoints ascending, which lands every
+     * low-endpoint row already sorted by its high partner. Only pairs
+     * with a recorded edge are emitted — edges that failed the scoring
+     * thresholds never reach the bucket.
      *
      * @param list<Block> $members
-     * @param array<string, array{sim: float, tier: string}> $edgeMap
+     * @param list<array{sim: float, tier: string, a: string, b: string}> $componentEdges
      * @return list<array{blockA: string, blockB: string, matchTier: string, matchScore: float}>
      */
-    private function buildPairsFromEdges(array $members, array $edgeMap): array
+    private function buildPairsFromEdges(array $members, array $componentEdges): array
     {
-        $pairs = [];
+        $position = [];
+        foreach ($members as $i => $m) {
+            $position[$m->id] = $i;
+        }
+
+        // Sweep 1: file each edge under its higher member position.
+        /** @var array<int, list<array{int, array{sim: float, tier: string, a: string, b: string}}>> $byHigh */
+        $byHigh = [];
+        foreach ($componentEdges as $edge) {
+            $ia = $position[$edge['a']];
+            $ib = $position[$edge['b']];
+            if ($ia === $ib) {
+                // Self-edge: the pair generator never yields one and the
+                // old i<j scan could not look one up either — belt, drop.
+                continue;
+            }
+            if ($ia < $ib) {
+                $byHigh[$ib][] = [$ia, $edge];
+            } else {
+                $byHigh[$ia][] = [$ib, $edge];
+            }
+        }
+
+        // Sweep 2: ascending high endpoints ⇒ low buckets arrive hi-sorted.
+        /** @var array<int, list<array{int, array{sim: float, tier: string, a: string, b: string}}>> $byLow */
+        $byLow = [];
         $count = count($members);
-        for ($i = 0; $i < $count; $i++) {
-            for ($j = $i + 1; $j < $count; $j++) {
-                $aId = $members[$i]->id;
-                $bId = $members[$j]->id;
-                $key = strcmp($aId, $bId) < 0 ? $aId . '|' . $bId : $bId . '|' . $aId;
-                if (!isset($edgeMap[$key])) continue;
+        for ($hi = 0; $hi < $count; $hi++) {
+            foreach ($byHigh[$hi] ?? [] as $row) {
+                $byLow[$row[0]][] = [$hi, $row[1]];
+            }
+        }
+
+        // Emit (low, high) lexicographic — the old scan's exact order.
+        $pairs = [];
+        for ($lo = 0; $lo < $count; $lo++) {
+            foreach ($byLow[$lo] ?? [] as [$hi, $edge]) {
                 $pairs[] = [
-                    'blockA'     => $aId,
-                    'blockB'     => $bId,
-                    'matchTier'  => $edgeMap[$key]['tier'],
-                    'matchScore' => $edgeMap[$key]['sim'],
+                    'blockA'     => $members[$lo]->id,
+                    'blockB'     => $members[$hi]->id,
+                    'matchTier'  => $edge['tier'],
+                    'matchScore' => $edge['sim'],
                 ];
             }
         }

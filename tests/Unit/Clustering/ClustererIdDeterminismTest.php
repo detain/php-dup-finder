@@ -270,4 +270,65 @@ final class ClustererIdDeterminismTest extends TestCase
             $this->sortedIds($clusterer->cluster($this->index($freshBlocks), $freshEdges)),
         );
     }
+
+    /**
+     * @param list<\Phpdup\Clustering\Cluster> $clusters
+     * @return list<array{id: string, members: list<string>, medoid: string|null, pairs: mixed}>
+     */
+    private function fullSignatures(array $clusters): array
+    {
+        return array_map(static fn ($c): array => [
+            'id'      => $c->id,
+            'members' => array_column($c->members, 'id'),
+            'medoid'  => $c->medoidId,
+            'pairs'   => $c->pairs,
+        ], $clusters);
+    }
+
+    /**
+     * engine-029's companion pin: identity of cluster() output is one
+     * thing, the ORDER of Cluster::$pairs is another. The new
+     * bucket-driven emission files edges by arrival under their final
+     * root and must still emit in pure member-position order — no
+     * bucket-order leak. This battery demands the full pairs array
+     * (byte-for-byte, blockA/blockB/tier/score in one) plus ids, member
+     * order and medoid assignment stay identical across every edge
+     * arrival rotation/reversal and flipped orientations, with the
+     * splitter ON and OFF.
+     */
+    public function testPairArraysAreByteIdenticalUnderEdgePermutations(): void
+    {
+        [$blocks, $edges] = $this->clique();
+
+        $variants = [];
+        foreach ($this->permutations($edges) as $i => $perm) {
+            $variants['rot' . $i] = $perm;
+            // Same arrival order, flipped orientation on every edge:
+            // the strcmp-canonical key hides it from $edgeMap, the
+            // bucket list sees it — both must land on one emission.
+            $variants['rot' . $i . '-flip'] = array_map(
+                static fn (array $e): array => [$e[1], $e[0], $e[2], $e[3]],
+                $perm,
+            );
+        }
+
+        $offBase = $this->fullSignatures($this->clusterer(split: false)->cluster($this->index($blocks), $edges));
+        $onBase  = $this->fullSignatures($this->clusterer(split: true)->cluster($this->index($blocks), $edges));
+
+        foreach ($variants as $label => $variantEdges) {
+            $this->assertSame(
+                $offBase,
+                $this->fullSignatures($this->clusterer(split: false)->cluster($this->index($blocks), $variantEdges)),
+                $label . ': split-off pairs/ids/members moved under edge permutation',
+            );
+            $this->assertSame(
+                $onBase,
+                $this->fullSignatures($this->clusterer(split: true)->cluster($this->index($blocks), $variantEdges)),
+                $label . ': split-on pairs/ids/members/medoids moved under edge permutation',
+            );
+        }
+
+        // Belt: the pinned array really carries order-sensitive content.
+        $this->assertNotEmpty($offBase[0]['pairs']);
+    }
 }
