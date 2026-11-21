@@ -41,10 +41,14 @@ namespace Phpdup\Normalization;
  * those three fabricates DB clones of non-DB code. They are excluded
  * from the name-only tier: {@see self::GENERIC_NAME_TIER} and
  * {@see self::requiresReceiverEvidence()} mark them, and
- * {@see DbOpCanonicalizer} refuses to fold an instance call for a
- * tier member unless the receiver carries DB evidence. A name the
- * user configured explicitly via `customMethodOps` is exempt — an
- * explicit mapping is itself the evidence.
+ * {@see DbOpCanonicalizer} refuses to fold a call for a tier member
+ * unless the receiver (instance chains) or the class name (static
+ * calls) carries DB evidence. A `customMethodOps` entry for a tier
+ * name exempts that name **only when the mapping differs from the
+ * stock classification** — re-stating `get => db.read` adds no
+ * information and must not switch the gate off, because bundled
+ * db-aware-* profiles ship exactly such re-statements and are
+ * auto-applied by project detection without any user intent.
  *
  * **Customisation**: callers can pass a `customMethodOps` map to the
  * constructor to override or extend the built-in dispatch table.
@@ -66,11 +70,12 @@ final class DbOpRegistry
      *
      * An instance call carrying one of these names is only rewritten
      * into a `__DB_*__` synthetic when the receiver chain supplies DB
-     * evidence (builder seed or a recognised DB receiver name) — see
-     * {@see DbOpCanonicalizer}. Static calls are not gated: their
-     * receiver is an explicit class symbol. User-configured entries
-     * (customMethodOps / db_symbols profiles) are exempt for that
-     * name — an explicit mapping counts as evidence.
+     * evidence (builder seed literal or a recognised DB receiver
+     * name) — see {@see DbOpCanonicalizer}. Static tier calls consult
+     * the same predicate with the class' last segment as the name
+     * candidate. A `customMethodOps` (db_symbols profile) entry
+     * exempts the name only when its op differs from the stock
+     * classification below; a verbatim re-statement keeps the gate.
      *
      * @var list<string>
      */
@@ -93,7 +98,9 @@ final class DbOpRegistry
         'firstorfail'    => self::OP_READ,
         // NOTE: `get`, `all` and `save` live in the generic name tier —
         // {@see GENERIC_NAME_TIER}. The canonicalizer refuses to fold
-        // them on an instance receiver without DB evidence.
+        // them on an instance or static receiver without DB evidence,
+        // unless a configuration mapping for the name differs from
+        // its stock op below (see {@see requiresReceiverEvidence()}).
         'get'            => self::OP_READ,
         'all'            => self::OP_READ,
         'fetch'          => self::OP_READ,
@@ -329,8 +336,8 @@ final class DbOpRegistry
     /** @var array<string,string> Function-name lookup, lower-cased. */
     private array $functionOps;
 
-    /** @var array<string,true> Lower-cased names supplied via customMethodOps. */
-    private array $configuredMethodNames = [];
+    /** @var array<string,string> Lower-cased method names supplied via customMethodOps → configured op. */
+    private array $configuredMethodOps = [];
 
     /**
      * @param array<string,string> $customMethodOps   Additional or overriding method → op entries.
@@ -342,7 +349,7 @@ final class DbOpRegistry
         foreach ($customMethodOps as $name => $op) {
             $key = strtolower((string) $name);
             $this->methodOps[$key] = $op;
-            $this->configuredMethodNames[$key] = true;
+            $this->configuredMethodOps[$key] = $op;
         }
 
         $this->functionOps = self::FUNCTION_OPS;
@@ -363,18 +370,35 @@ final class DbOpRegistry
     }
 
     /**
-     * Whether an instance method named `$name` may only fold to a
-     * `__DB_*__` synthetic when the receiver carries DB evidence.
+     * Whether a method named `$name` may only fold to a `__DB_*__`
+     * synthetic when the receiver (instance call) or class name
+     * (static call) carries DB evidence.
      *
-     * True exactly for the stock generic tier ({@see GENERIC_NAME_TIER})
-     * unless the user configured that method name explicitly — a
-     * `customMethodOps` entry is itself evidence. Case-insensitive.
+     * True for every stock tier name ({@see GENERIC_NAME_TIER})
+     * except when a `customMethodOps` mapping for that name carries
+     * information the stock table lacks: an op **different** from the
+     * stock classification (the user asserting, e.g., that their
+     * `get()` is a write). A verbatim re-statement of the stock op
+     * adds nothing and keeps the gate — decisive because bundled
+     * db-aware-* packs re-state these very names verbatim (18 of the
+     * 29 packs map tier names; every bundled mapping is a
+     * re-statement) and auto-applied profiles must never be able to
+     * silently switch the gate off. Case-insensitive on the name;
+     * op values are compared verbatim (the `db.*` enum).
      */
     public function requiresReceiverEvidence(string $name): bool
     {
         $key = strtolower($name);
-        return in_array($key, self::GENERIC_NAME_TIER, true)
-            && !isset($this->configuredMethodNames[$key]);
+        if (!in_array($key, self::GENERIC_NAME_TIER, true)) {
+            return false;
+        }
+        $configured = $this->configuredMethodOps[$key] ?? null;
+        if ($configured === null) {
+            return true;
+        }
+        // Every GENERIC_NAME_TIER member is by definition a stock entry,
+        // so the index below is guaranteed present past the tier guard.
+        return $configured === self::METHOD_OPS[$key];
     }
 
     /**

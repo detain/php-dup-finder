@@ -6,8 +6,10 @@ namespace Phpdup\Tests\Unit\Normalization;
 use PHPUnit\Framework\TestCase;
 use Phpdup\Extraction\BlockExtractor;
 use Phpdup\Fingerprint\SubtreeHasher;
+use Phpdup\Normalization\DbOpCanonicalizer;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Parsing\AstParser;
+use Phpdup\Util\AstSerializer;
 
 /**
  * End-to-end tests for {@see \Phpdup\Normalization\DbOpCanonicalizer}
@@ -74,9 +76,11 @@ final class DbOpCanonicalizerTest extends TestCase
         // Identical scaffolding — only the terminal write call differs.
         // The Eloquent receiver `$model` carries DB name evidence, so
         // the generic-tier `save` folds; `flush` is not generic and
-        // folds on its name alone.
-        $eloquent = '<?php function f($a, $b) { $b->name = "Bob"; $model->save(); }';
-        $doctrine = '<?php function f($a, $b) { $b->name = "Bob"; $a->flush(); }';
+        // folds on its name alone. The evidence receiver is a declared
+        // parameter on both snippets (L-3: no free variables, arity
+        // aligned so the signature portion of the hash stays identical).
+        $eloquent = '<?php function f($a, $b, $model) { $b->name = "Bob"; $model->save(); }';
+        $doctrine = '<?php function f($a, $b, $model) { $b->name = "Bob"; $a->flush(); }';
         // Both terminal writes rewrite to __DB_WRITE__("?").
         $this->assertSame(
             $this->canonicalHashDbAware($eloquent),
@@ -146,26 +150,81 @@ final class DbOpCanonicalizerTest extends TestCase
 
     public function testBuilderChainSeedIsReceiverEvidence(): void
     {
-        // Structural evidence: a terminal get() on a query-builder
-        // chain seeded by table() or by a static model call folds.
+        // Structural evidence, strictly: only a real table()/from()/
+        // into() seed literal in the chain proves the builder. This
+        // receiver carries no DB name at all — the seed is what
+        // carries the fold (L-1: pinned on a non-evident receiver so
+        // the name arm can't satisfy it silently).
         $this->assertContains('Name|n:__DB_READ__', $this->canonicalTokens(
-            '<?php function f($db) { return $db->table("users")->where("id", 1)->get(); }', true,
+            '<?php function f($x) { return $x->table("users")->where("id", 1)->get(); }', true,
         ));
         $this->assertContains('Name|n:__DB_READ__', $this->canonicalTokens(
-            '<?php function f() { return User::where("active", 1)->get(); }', true,
+            '<?php function f() { return DB::table("users")->get(); }', true,
         ));
-        // The builder-seeded read still clusters with the same-payload
-        // raw-SQL read (both __DB_READ__ family synthetics), so genuine
-        // DB clones are unaffected by the gate.
+        // An evidence-bearing class seed (`Model` is a DB word) folds.
+        $this->assertContains('Name|n:__DB_READ__', $this->canonicalTokens(
+            '<?php function f() { return Model::where("active", 1)->get(); }', true,
+        ));
+        // Negative pins (engine-003 F-3): before the strict probe any
+        // static-rooted chain counted as structural evidence, so these
+        // two unrelated non-DB chains collapsed to one another AND to
+        // the bug's fabricated EXACT hash. Neither may fold now.
+        $this->assertNotContains('Name|n:__DB_READ__', $this->canonicalTokens(
+            '<?php function f($k) { return Cache::tags("x")->get($k); }', true,
+        ));
+        $this->assertNotContains('Name|n:__DB_READ__', $this->canonicalTokens(
+            '<?php function f($k) { return Store::make("x")->get($k); }', true,
+        ));
+        // Plain domain-model seeds (`User::where(…)->get()`) are
+        // refused by the same rule; restoring them needs composer
+        // class signals — owned by the engine-S06b registry-shape leg
+        // (follow-up row in the S06a fix report), not a disclosure.
     }
 
-    public function testStaticCallsAreOutsideTheGenericGate(): void
+    public function testSeedLiteralClustersWithRawSqlReadOfSamePayload(): void
     {
-        // `User::all()` — the receiver is an explicit class symbol, a
-        // concrete reference even without composer-signal backing; the
-        // gate applies to instance receivers only.
+        // The builder-seeded read and the same-payload raw-SQL read
+        // both canonicalise to a __DB_READ__ synthetic — the shared
+        // op token is what the n-gram fingerprint feeds on, so
+        // genuine DB clones stay in the same family through the gate
+        // (L-2: the claim the old comment made, now actually pinned).
+        $builder = '<?php function f($x) { return $x->table("users")->where("id", 1)->get(); }';
+        $raw = '<?php function f($pdo, $id) { return $pdo->query("SELECT * FROM users WHERE id = " . $id); }';
+        $this->assertContains('Name|n:__DB_READ__', $this->canonicalTokens($builder, true));
+        $this->assertContains('Name|n:__DB_READ__', $this->canonicalTokens($raw, true));
+    }
+
+    public function testStaticTierVerbsCarryTheirOwnEvidenceArms(): void
+    {
+        // engine-003 F-2: the tier verbs on a static call consult the
+        // same predicate, with the class' last segment as name
+        // candidate. Evidence-bearing classes fold (`Model::all()` —
+        // `model` is a DB word; `Repository::get($k)` likewise)…
         $this->assertContains('Name|n:__DB_READ__', $this->canonicalTokens(
+            '<?php function f() { return Model::all(); }', true,
+        ));
+        $this->assertContains('Name|n:__DB_READ__', $this->canonicalTokens(
+            '<?php function f($k) { return Repository::get($k); }', true,
+        ));
+        // …while the framework facades that are *not* databases —
+        // the ecosystem's most-called `get()` — refuse to fold. Before
+        // this cure all three fabricated one EXACT clone class
+        // (hash ebe718e3, the bug's own pre-fix hash).
+        foreach (['Cache', 'Config', 'Session'] as $facade) {
+            $this->assertNotContains('Name|n:__DB_READ__', $this->canonicalTokens(
+                "<?php function f(\$k) { return {$facade}::get(\$k); }", true,
+            ), "{$facade}::get() must not fold without class evidence");
+        }
+        // `User::all()` was pinned as folding here pre-cure; it now
+        // refuses for the same reason the facades do — the AST alone
+        // cannot tell a model class from a facade. Restoring it is
+        // the half-B composer class-signal leg (owned row above).
+        $this->assertNotContains('Name|n:__DB_READ__', $this->canonicalTokens(
             '<?php function f() { return User::all(); }', true,
+        ));
+        // Non-tier static verbs are untouched by the gate:
+        $this->assertContains('Name|n:__DB_READ__', $this->canonicalTokens(
+            '<?php function f($id) { return User::find($id); }', true,
         ));
     }
 
@@ -178,16 +237,40 @@ final class DbOpCanonicalizerTest extends TestCase
         $code = '<?php function f($store, $k) { return $store->get($k); }';
         $this->assertNotContains('Name|n:__DB_READ__', $this->canonicalTokens($code, true));
 
-        $parser = new AstParser();
-        $stmts = $parser->parseCode($code);
-        $blocks = (new BlockExtractor(minSize: 1))->extract('test.php', $stmts);
-        $this->assertNotEmpty($blocks);
-        (new \Phpdup\Normalization\DbOpCanonicalizer(
-            extraReceiverEvidenceNames: ['store'],
-        ))->apply($blocks[0]->ast);
-        (new Normalizer(mode: 'aggressive'))->normalize($blocks[0]);
-        $this->assertContains('Name|n:__DB_READ__',
-            \Phpdup\Util\AstSerializer::tokens($blocks[0]->canonical));
+        $tokens = $this->tokensWithExtraEvidence($code, ['store']);
+        $this->assertContains('Name|n:__DB_READ__', $tokens);
+    }
+
+    public function testExtraEvidenceNamesAreWholeWordAndCaseInsensitive(): void
+    {
+        // L-5 pins for the constructor seam: the merge lower-cases
+        // admitted names (`'STORE'` must admit `$store`) and matches
+        // whole words only (`'stor'` must NOT admit `$store`).
+        $code = '<?php function f($store, $k) { return $store->get($k); }';
+        $this->assertContains('Name|n:__DB_READ__', $this->tokensWithExtraEvidence($code, ['STORE']));
+        $this->assertNotContains('Name|n:__DB_READ__', $this->tokensWithExtraEvidence($code, ['stor']));
+    }
+
+    public function testNullsafeReceiverPathIsGatedAndEvidenceAware(): void
+    {
+        // L-4: the gate and the hop walker both special-case the
+        // nullsafe variants — pin both directions, on both nullsafe
+        // shapes: `?->` on the terminal call (NullsafeMethodCall with
+        // a plain PropertyFetch receiver) and `?->` on the property
+        // hop itself (NullsafePropertyFetch — only the walker's
+        // nullsafe arm can see this one).
+        $this->assertNotContains('Name|n:__DB_READ__', $this->canonicalTokens(
+            '<?php function f($k) { return $this->store?->get($k); }', true,
+        ));
+        $this->assertContains('Name|n:__DB_READ__', $this->canonicalTokens(
+            '<?php function f($k) { return $this->db?->get($k); }', true,
+        ));
+        $this->assertContains('Name|n:__DB_READ__', $this->canonicalTokens(
+            '<?php function f($k) { return $this?->db->get($k); }', true,
+        ));
+        $this->assertNotContains('Name|n:__DB_READ__', $this->canonicalTokens(
+            '<?php function f($k) { return $this?->store->get($k); }', true,
+        ));
     }
 
     public function testQueryBuilderUpdateAndRawUpdateCluster(): void
@@ -285,7 +368,27 @@ final class DbOpCanonicalizerTest extends TestCase
         $this->assertNotEmpty($blocks);
         $normalizer = new Normalizer(mode: 'aggressive', dbAware: $dbAware);
         $normalizer->normalize($blocks[0]);
-        return \Phpdup\Util\AstSerializer::tokens($blocks[0]->canonical);
+        return AstSerializer::tokens($blocks[0]->canonical);
+    }
+
+    /**
+     * Fold $code with the constructor evidence seam. The Normalizer
+     * itself takes no extra-names parameter (config wiring is a later
+     * leg), so exercising the seam means pre-applying the
+     * canonicalizer by hand — one place, reused by every seam pin.
+     *
+     * @param list<string> $extraNames
+     * @return list<string>
+     */
+    private function tokensWithExtraEvidence(string $code, array $extraNames): array
+    {
+        $parser = new AstParser();
+        $stmts = $parser->parseCode($code);
+        $blocks = (new BlockExtractor(minSize: 1))->extract('test.php', $stmts);
+        $this->assertNotEmpty($blocks);
+        (new DbOpCanonicalizer(extraReceiverEvidenceNames: $extraNames))->apply($blocks[0]->ast);
+        (new Normalizer(mode: 'aggressive'))->normalize($blocks[0]);
+        return AstSerializer::tokens($blocks[0]->canonical);
     }
 
     private function canonicalHash(string $code, bool $dbAware): string

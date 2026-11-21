@@ -96,17 +96,25 @@ final class CustomDbSymbolsTest extends TestCase
 
     public function testUserConfiguredGenericNameBypassesReceiverGate(): void
     {
-        // engine-003 half A: `get` sits in the generic name tier and
-        // needs receiver evidence — unless the user mapped it
-        // themselves. An explicit db_symbols entry is itself evidence,
-        // so `$x->get($k)` folds with a bare variable receiver.
-        $registry = new DbOpRegistry(customMethodOps: ['get' => DbOpRegistry::OP_READ]);
+        // engine-003 half A, F-1 cure: `get` sits in the generic name
+        // tier and needs receiver evidence — unless the user's
+        // mapping says something the stock table does NOT. An
+        // informative re-classification (`get` folded as a WRITE) is
+        // itself evidence, so `$x->get($k)` folds on a bare variable.
+        $registry = new DbOpRegistry(customMethodOps: ['get' => DbOpRegistry::OP_WRITE]);
         $tokens = $this->canonicalTokens(
             '<?php function f($x, $k) { return $x->get($k); }',
             $registry,
         );
-        $this->assertContains('Name|n:__DB_READ__', $tokens,
-            'a user-configured generic name must fold without receiver evidence');
+        $this->assertContains('Name|n:__DB_WRITE__', $tokens,
+            'an informative user mapping must fold without receiver evidence');
+        // A verbatim re-statement of the stock op adds nothing and
+        // keeps the gate (this is the shape bundled profiles ship):
+        $restated = new DbOpRegistry(customMethodOps: ['get' => DbOpRegistry::OP_READ]);
+        $this->assertTrue($restated->requiresReceiverEvidence('get'));
+        $this->assertNotContains('Name|n:__DB_READ__', $this->canonicalTokens(
+            '<?php function f($x, $k) { return $x->get($k); }', $restated,
+        ));
         // The stock default registry still gates it (classification
         // lives on the registry; pins kept here so half B can own
         // DbOpRegistryTest without collision).
@@ -116,8 +124,37 @@ final class CustomDbSymbolsTest extends TestCase
         $this->assertFalse(DbOpRegistry::default()->requiresReceiverEvidence('find'));
         $this->assertFalse(DbOpRegistry::default()->requiresReceiverEvidence('flush'));
         $this->assertFalse(DbOpRegistry::default()->requiresReceiverEvidence('frobnicate'));
-        $configured = new DbOpRegistry(customMethodOps: ['save' => DbOpRegistry::OP_WRITE]);
-        $this->assertFalse($configured->requiresReceiverEvidence('save'));
+        // save => db.write restates the stock op (gate survives);
+        // save => db.read differs (informative, exempt).
+        $this->assertTrue((new DbOpRegistry(customMethodOps: ['save' => DbOpRegistry::OP_WRITE]))
+            ->requiresReceiverEvidence('save'));
+        $this->assertFalse((new DbOpRegistry(customMethodOps: ['save' => DbOpRegistry::OP_READ]))
+            ->requiresReceiverEvidence('save'));
+    }
+
+    public function testBundledPackRestatementDoesNotDisableReceiverGate(): void
+    {
+        // engine-003 F-1: 18 of the 29 bundled db-aware-* packs map
+        // tier names verbatim onto their stock ops, and
+        // ProjectProfileDetector
+        // auto-applies them from nothing but a composer dependency —
+        // machinery that is not user intent must not switch the gate
+        // off. `db-aware-redis` maps `get => db.read` (stock); with
+        // that pack's symbols the cache-flavoured repro this step
+        // exists to kill must stay unfolded.
+        $profile = \Phpdup\Cli\ProfileRegistry::bundled()->load('db-aware-redis');
+        $methods = $profile['db_symbols']['methods'];
+        $this->assertSame('db.read', $methods['get'] ?? null,
+            'premise: the bundled redis pack re-states the stock get op');
+        $registry = new DbOpRegistry(customMethodOps: $methods);
+        $this->assertTrue($registry->requiresReceiverEvidence('get'),
+            'a verbatim pack re-statement must not exempt the tier name');
+        $tokens = $this->canonicalTokens(
+            '<?php function f($k) { return $this->store->get($k); }',
+            $registry,
+        );
+        $this->assertNotContains('Name|n:__DB_READ__', $tokens,
+            'store->get() must not fold into a DB clone under an auto-applied pack');
     }
 
     public function testBundledLaravelDbSymbolsLoadCleanly(): void

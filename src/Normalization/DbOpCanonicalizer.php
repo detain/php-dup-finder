@@ -64,17 +64,23 @@ use PhpParser\NodeVisitorAbstract;
  *
  * One exception to pure-name matching: the **generic name tier**
  * (`get` / `all` / `save` — see {@see DbOpRegistry::GENERIC_NAME_TIER})
- * is folded only when the receiver carries DB evidence. Those verbs are
- * ubiquitous on non-DB objects (a cache `store->get()` and a
- * `logger->get()` are not database reads), and name-only folding of
- * them fabricated EXACT "DB clones" of unrelated code. Evidence has two
- * sources: a structural query-builder seed in the receiver chain
- * (`DB::table('users')->…->get()`, `User::where(…)->get()`), or a
- * receiver variable/property whose name is a recognised DB word
- * ({@see DEFAULT_RECEIVER_EVIDENCE_NAMES}, extendable via the
- * constructor). Static calls skip the gate — their receiver is an
- * explicit class symbol. A tier name the user configured explicitly in
- * the registry bypasses the gate (the mapping is itself evidence).
+ * is folded only when the call carries DB evidence. Those verbs are
+ * ubiquitous on non-DB objects (a cache `store->get()`, a
+ * `logger->get()` or a `Cache::get()` facade read are not database
+ * reads), and name-only folding of them fabricated EXACT "DB clones"
+ * of unrelated code. Evidence arms: a table-literal builder seed
+ * anywhere in the receiver chain (`DB::table('users')->…->get()`,
+ * `$x->table('users')->get()`), a receiver variable/property whose
+ * name is a recognised DB word ({@see DEFAULT_RECEIVER_EVIDENCE_NAMES},
+ * extendable via the constructor), or — at a statically-rooted chain
+ * or static call — a class whose last segment is itself an evidence
+ * name (`Model::where(…)->get()`). A tier name the user re-mapped to
+ * a *different* op than the stock classification in the registry
+ * bypasses the gate; a verbatim re-statement (what bundled profiles
+ * ship) does not. Composer-backed class signals for plain domain
+ * models (`User::all()`) are owned by the registry-shape leg; until
+ * those land, such chains stay unfolded — under-folding is lossless,
+ * fabrication is not.
  */
 final class DbOpCanonicalizer extends NodeVisitorAbstract
 {
@@ -106,9 +112,12 @@ final class DbOpCanonicalizer extends NodeVisitorAbstract
     /**
      * @param list<string> $extraReceiverEvidenceNames Additional receiver
      *                                                 names treated as DB
-     *                                                 evidence (callers
-     *                                                 wiring config keys
-     *                                                 in later).
+     *                                                 evidence. Internal
+     *                                                 extension seam only:
+     *                                                 no config key admits
+     *                                                 these yet (a later leg
+     *                                                 wires them), so this
+     *                                                 is not public API.
      */
     public function __construct(
         private readonly DbOpRegistry $registry = new DbOpRegistry(),
@@ -168,6 +177,21 @@ final class DbOpCanonicalizer extends NodeVisitorAbstract
         }
         $op = $this->registry->lookupMethod($node->name->name);
         if ($op === null) {
+            return null;
+        }
+        // Receiver-evidence gate for statics (engine-003 F-2): a bare
+        // `Cache::get()` / `Config::get()` facade read carries no more
+        // DB signal than an instance `store->get()` — the tier verbs
+        // need the same proof here, with the class' last segment as
+        // the name-evidence candidate. Non-tier verbs (`User::find()`)
+        // keep folding on the registry name alone, as before. Plain
+        // model names without composer class signals (`User::all()`)
+        // stay unfolded until the registry-shape leg lands — see the
+        // class docblock.
+        if (
+            $this->registry->requiresReceiverEvidence($node->name->name)
+            && !$this->classSegmentIsEvidence($node->class)
+        ) {
             return null;
         }
         // For `DB::select("...")`, `DB::statement("...")`, surface the
@@ -416,56 +440,105 @@ final class DbOpCanonicalizer extends NodeVisitorAbstract
     }
 
     /**
-     * Walk the receiver chain of an instance call looking for DB
-     * evidence, used only for the generic name tier (see the class
-     * docblock). Two independent signal kinds satisfy the gate:
+     * Evidence oracle for the generic name tier, instance calls (see
+     * the class docblock). Three strict arms; each carries actual DB
+     * signal. Deliberately NOT the table-extraction helper: any
+     * static-rooted chain yields a non-null "entity" there (the
+     * class-name fallback is right for labelling, wrong for
+     * evidence), which let `Cache::tags('x')->get($k)` re-fold to the
+     * bug's fabricated EXACT hash (engine-003 F-3).
      *
-     *   1. **Structural seed** — the chain is a query builder started
-     *      with a table/entity seed (`DB::table('users')->…`) or a
-     *      static class seed (`User::where(…)->…`). Delegated to
-     *      {@see extractTableFromBuilderChain()}, which recognises
-     *      exactly those shapes.
-     *   2. **Receiver name** — any variable or property along the
-     *      chain (`$db`, `$this->connection`, `$userRepository` →
-     *      nope, names are whole-word, so `$repository`) is in
-     *      {@see $receiverEvidenceNames}.
+     *   1. **Seed literal** — a `table()` / `from()` / `into()` call
+     *      with a string-literal argument anywhere in the receiver
+     *      chain (`DB::table('users')->…->get()`, `$x->table('users')->get()`).
+     *   2. **Receiver name** — a variable or property hop along the
+     *      chain (`$db`, `$this->connection`, `$repository`) whose
+     *      name is in {@see $receiverEvidenceNames} — whole-word.
+     *   3. **Evidence class seed** — the chain bottoms out at a
+     *      static call whose class' last segment is itself an
+     *      evidence name (`Model::where(…)->get()`). Domain models
+     *      without composer class signals (`User::where(…)->get()`)
+     *      are the registry-shape leg's half-B gap; until then they
+     *      stay unfolded, which is the lossless direction.
      *
-     * Stops at anything that is not a plain property/method hop
+     * Stops at anything that is not a plain property/method/array hop
      * (function-call results, expressions); no hop, no evidence.
      */
     private function hasReceiverEvidence(Node\Expr $node): bool
     {
-        if ($this->extractTableFromBuilderChain($node) !== null) {
-            return true;
-        }
-        $cursor = $node->var ?? null;
+        $cursor = $node;
         for ($i = 0; $i < 10; $i++) {
-            if ($cursor instanceof Node\Expr\Variable && is_string($cursor->name)) {
-                if (isset($this->receiverEvidenceNames[strtolower($cursor->name)])) {
+            $var = $cursor->var ?? null;
+            if ($var === null) {
+                return false;
+            }
+            if ($var instanceof Node\Expr\Variable && is_string($var->name)) {
+                return isset($this->receiverEvidenceNames[strtolower($var->name)]);
+            }
+            if ($var instanceof Node\Expr\PropertyFetch || $var instanceof Node\Expr\NullsafePropertyFetch) {
+                if (
+                    $var->name instanceof Node\Identifier
+                    && isset($this->receiverEvidenceNames[strtolower($var->name->name)])
+                ) {
                     return true;
                 }
-                return false; // `$this->…` bottoms out at `this`.
-            }
-            if (
-                ($cursor instanceof Node\Expr\PropertyFetch || $cursor instanceof Node\Expr\NullsafePropertyFetch)
-                && $cursor->name instanceof Node\Identifier
-                && isset($this->receiverEvidenceNames[strtolower($cursor->name->name)])
-            ) {
-                return true;
-            }
-            if (
-                $cursor instanceof Node\Expr\MethodCall
-                || $cursor instanceof Node\Expr\NullsafeMethodCall
-                || $cursor instanceof Node\Expr\PropertyFetch
-                || $cursor instanceof Node\Expr\NullsafePropertyFetch
-                || $cursor instanceof Node\Expr\ArrayDimFetch
-            ) {
-                $cursor = $cursor->var;
+                $cursor = $var;
                 continue;
+            }
+            if ($var instanceof Node\Expr\MethodCall || $var instanceof Node\Expr\NullsafeMethodCall) {
+                if ($this->seedLiteralIn($var) !== null) {
+                    return true;
+                }
+                $cursor = $var;
+                continue;
+            }
+            if ($var instanceof Node\Expr\ArrayDimFetch) {
+                $cursor = $var;
+                continue;
+            }
+            if ($var instanceof Node\Expr\StaticCall) {
+                return $this->seedLiteralIn($var) !== null
+                    || $this->classSegmentIsEvidence($var->class);
             }
             return false;
         }
         return false;
+    }
+
+    /**
+     * The table name when $call is a builder seed — `table('users')` /
+     * `from('users')` / `into('users')` with a string-literal first
+     * argument — otherwise null. Used as the strict structural
+     * evidence arm and mirroring the seed verbs
+     * {@see extractTableFromBuilderChain()} extracts.
+     */
+    private function seedLiteralIn(
+        Node\Expr\MethodCall|Node\Expr\NullsafeMethodCall|Node\Expr\StaticCall $call
+    ): ?string {
+        if (!$call->name instanceof Node\Identifier) {
+            return null;
+        }
+        if (!in_array(strtolower($call->name->name), ['table', 'from', 'into'], true)) {
+            return null;
+        }
+        $arg0 = $call->args[0] ?? null;
+        if ($arg0 instanceof Node\Arg && $arg0->value instanceof Node\Scalar\String_) {
+            return $arg0->value->value;
+        }
+        return null;
+    }
+
+    /**
+     * Whether a static-call class is an evidence-bearing name by its
+     * last segment (`App\Models\Repository` → `repository`). Dynamic
+     * class expressions carry no name signal and are refused.
+     */
+    private function classSegmentIsEvidence(Node\Name|Node\Expr $class): bool
+    {
+        if (!$class instanceof Node\Name) {
+            return false;
+        }
+        return isset($this->receiverEvidenceNames[strtolower($this->lastSegment($class->toString()))]);
     }
 
     /**
