@@ -175,9 +175,9 @@ final class CliReporter
      * output-060: rows are collected first and appended through one
      * `Table::rows()` call. The old `$table = $table->row(...)` loop ran on
      * the immutable vendor Table, which clones and spreads ALL prior rows
-     * per call — O(R²) at `--limit 0` with thousands of clusters. One
-     * batched append is linear and renders byte-identically (pinned by
-     * CliReporterVerbosityTest).
+     * per call — O(R²) when a large `--limit` shows thousands of clusters
+     * (harmless at the default 50). One batched append is linear and
+     * renders byte-identically (pinned by CliReporterVerbosityTest).
      *
      * @param list<Cluster> $clusters
      */

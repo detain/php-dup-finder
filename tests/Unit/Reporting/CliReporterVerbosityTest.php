@@ -157,7 +157,8 @@ final class CliReporterVerbosityTest extends TestCase
      * output-060 structural pin: renderClusterList must append its rows in
      * ONE `Table::rows()` call. The vendor Table is immutable — every
      * `row()` call clones and spreads all prior rows, so a per-cluster
-     * `row()` loop is O(R²) at `--limit 0`. Reading the method source is
+     * `row()` loop is O(R²) when a large `--limit` shows thousands of
+     * clusters (harmless at the default 50). Reading the method source is
      * the only way to pin the SHAPE of the append (byte equality against
      * the row-by-row reference cannot tell the two apart).
      */
