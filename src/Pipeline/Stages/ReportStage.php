@@ -30,6 +30,7 @@ use Phpdup\Reporting\RefactorTestReporter;
 use Phpdup\Reporting\Report;
 use Phpdup\Reporting\SarifReporter;
 use Phpdup\Reporting\TimeseriesReporter;
+use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
 final class ReportStage implements StageInterface
@@ -110,7 +111,38 @@ final class ReportStage implements StageInterface
         // pinned): gates and reporters both see the filtered set, so a
         // CI --fail-on-impact/--max-clusters run with --scope measures
         // exactly the slice it reports. 'all' (default) is a no-op.
+        $preFilter = $clusters;
         $clusters = ClusterScope::filter($clusters, $config->scope);
+
+        if ($clusters === [] && $preFilter !== []
+            && !in_array($config->scope, [ClusterScope::FILTER_ALL, ClusterScope::FILTER_SINGLE, ClusterScope::FILTER_MULTI], true)) {
+            // Review m-2: an open-set scope is a free-form repo label, so a
+            // typo empties the report silently (exit 0, zero clusters). One
+            // hint line on stderr names the labels this run actually
+            // produced — friendly, no usage dump. The closed-set words
+            // single/multi can legitimately match zero clusters in a
+            // one-cohort run, so they never earn a hint.
+            $labels = [];
+            foreach ($preFilter as $c) {
+                foreach ($c->members as $m) {
+                    if ($m->repo !== '') {
+                        $labels[$m->repo] = true;
+                    }
+                }
+            }
+            ksort($labels);
+            if ($labels !== []) {
+                $hint = sprintf(
+                    'phpdup: --scope=%s matched no clusters; repo labels present in this run: %s',
+                    $config->scope,
+                    implode(', ', array_keys($labels)),
+                );
+                // True stderr on the CLI (ConsoleOutput); every other host
+                // (TUI, NullOutput tests) keeps the passed stream unchanged.
+                $target = $output instanceof ConsoleOutputInterface ? $output->getErrorOutput() : $output;
+                $target->writeln($hint);
+            }
+        }
 
         // Coherence analysis: flag outlier members (low mean pairwise
         // similarity to the rest of their cluster). Reporters surface

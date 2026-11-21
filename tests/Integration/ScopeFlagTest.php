@@ -151,6 +151,22 @@ final class ScopeFlagTest extends TestCase
         $ghost = $this->cli([...$base, $this->tmp . '/g.json', '--scope=no-such-repo']);
         $this->assertSame(0, $ghost['exit'], 'a zero-match filter is a clean ok, not an error');
         $this->assertSame(0, json_decode((string) file_get_contents($this->tmp . '/g.json'), true)['summary']['clusters']);
+
+        // Review m-2: the typo'd open-set label must earn one friendly
+        // stderr hint naming the labels this run produced — on STDERR
+        // only, exit code untouched, and with no usage-dump footer.
+        $this->assertStringContainsString('--scope=no-such-repo matched no clusters', $ghost['stderr']);
+        $this->assertStringContainsString('repoAlpha', $ghost['stderr']);
+        $this->assertStringContainsString('repoBeta', $ghost['stderr']);
+        $this->assertStringNotContainsString('matched no clusters', $ghost['stdout'], 'hint rides stderr, never the report stream');
+        $this->assertStringNotContainsString('Usage:', $ghost['combined'], 'friendly hint, not a usage dump');
+
+        // Closed-set words may legitimately match zero clusters (a
+        // single-root run has no multi cohort) — those stay silent.
+        $closedWord = $this->cli(['analyze', $this->alpha, '--json', $this->tmp . '/cw.json', '--scope=multi']);
+        $this->assertSame(0, $closedWord['exit'], $closedWord['combined']);
+        $this->assertSame(0, json_decode((string) file_get_contents($this->tmp . '/cw.json'), true)['summary']['clusters']);
+        $this->assertStringNotContainsString('matched no clusters', $closedWord['combined'], "'multi' is a known word: zero matches is honest, not a typo");
     }
 
     public function testScopeAndScoreModeAsConfigFileKeys(): void

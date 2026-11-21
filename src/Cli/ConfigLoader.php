@@ -446,6 +446,23 @@ final class ConfigLoader
                         );
                     }
 
+                    // Item 5.1 (review m-1): scope and score_mode are
+                    // report-level stances chosen once per run — like
+                    // fingerprint_id_mode, they are deliberately absent from
+                    // shapeOverrides() and refused here instead of silently
+                    // dropped. A misplaced per-directory "scope" would
+                    // otherwise pass validate(), evaporate at shaping, and
+                    // leave the user believing the subtree was scoped or
+                    // re-scored when it never was.
+                    foreach (['scope', 'score_mode'] as $stanceKey) {
+                        if (array_key_exists($stanceKey, $decoded)) {
+                            throw new \RuntimeException(
+                                $stanceKey . ' is not a per-directory key (root phpdup.json only): '
+                                . $file->getPathname()
+                            );
+                        }
+                    }
+
                     $dir = realpath($file->getPath());
                     if ($dir === false) {
                         continue;

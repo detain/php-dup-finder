@@ -113,6 +113,44 @@ final class PerDirectoryConfigTest extends TestCase
     }
 
     /**
+     * Review m-1 (item 5.1): scope/score_mode are report-level stances,
+     * root-only. Mirrors the fingerprint_id_mode precedent
+     * (FingerprintIdModeConfigTest::testPerDirectoryKeyRefusedLoudly): a
+     * VALID root key misplaced into a per-directory file must fail the
+     * load loudly with the offending path — never evaporate at shaping.
+     */
+    public static function perDirectoryStanceKeyProvider(): array
+    {
+        return [
+            'scope'      => ['scope', 'single'],
+            'score_mode' => ['score_mode', 'typed'],
+        ];
+    }
+
+    /** @param array<string,string>|string $value */
+    #[\PHPUnit\Framework\Attributes\DataProvider('perDirectoryStanceKeyProvider')]
+    public function testPerDirectoryStanceKeysRefusedLoudly(string $key, string $value): void
+    {
+        $tmp = sys_get_temp_dir() . '/phpdup-perdir-stance-' . uniqid();
+        mkdir($tmp);
+        try {
+            file_put_contents($tmp . '/.phpdup.json', (string)json_encode([$key => $value]));
+
+            try {
+                (new ConfigLoader())->load(paths: [$tmp], configFile: null);
+                $this->fail("per-directory {$key} must throw");
+            } catch (\RuntimeException $e) {
+                $this->assertStringContainsString($key, $e->getMessage());
+                $this->assertStringContainsString('not a per-directory key', $e->getMessage());
+                $this->assertStringContainsString('.phpdup.json', $e->getMessage());
+            }
+        } finally {
+            @unlink($tmp . '/.phpdup.json');
+            @rmdir($tmp);
+        }
+    }
+
+    /**
      * Review m2 pin: an unreadable subtree must be SKIPPED by the
      * discovery walk, not re-thrown. SPL's UnexpectedValueException is a
      * RuntimeException, so escaping here would have been reclassified by
