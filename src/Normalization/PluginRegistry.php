@@ -32,6 +32,12 @@ final class PluginRegistry
      * loadable + implement {@see NormalizationPlugin}; otherwise a
      * RuntimeException carries the offending entry.
      *
+     * The interface gate runs BEFORE construction: a config-chosen
+     * name that is not a plugin never reaches `new`, so arbitrary
+     * autoloadable classes cannot leak constructor side effects at
+     * validation time. Constructor failures are wrapped into a
+     * descriptive RuntimeException naming the entry.
+     *
      * @param list<string> $classNames
      */
     public static function fromClassNames(array $classNames): self
@@ -44,9 +50,25 @@ final class PluginRegistry
             if (!class_exists($fqcn)) {
                 throw new \RuntimeException("Normalization plugin class not found: $fqcn");
             }
-            $instance = new $fqcn();
-            if (!$instance instanceof NormalizationPlugin) {
+            // is_subclass_of() triggers the same autoload as class_exists()
+            // but inspects the hierarchy without instantiating: the
+            // non-plugin rejection below used to happen only AFTER
+            // `new $fqcn()`, running the whole argumentless constructor of
+            // whatever the config named.
+            if (!is_subclass_of($fqcn, NormalizationPlugin::class)) {
                 throw new \RuntimeException("Normalization plugin does not implement NormalizationPlugin: $fqcn");
+            }
+            try {
+                $instance = new $fqcn();
+            } catch (\Throwable $e) {
+                // A plugin whose constructor needs arguments (ArgumentCountError),
+                // is abstract, or throws in userland fails HERE with the config
+                // entry in the message — never as an unlabelled bare error.
+                throw new \RuntimeException(
+                    "Normalization plugin '$fqcn' could not be constructed: " . $e->getMessage(),
+                    0,
+                    $e,
+                );
             }
             $registry->add($instance);
         }
