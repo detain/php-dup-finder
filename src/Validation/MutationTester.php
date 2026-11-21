@@ -18,6 +18,11 @@ use Phpdup\Semantic\DataflowSummarizer;
  * easily replay (DB calls, file I/O, header writes). Reporters
  * surface these as a `behavioural-divergence` warning so reviewers
  * know to mutation-test the cluster manually.
+ *
+ * Probe accounting (php-dup-finder-output-031): a member whose AST
+ * was not loaded cannot be probed. The check now distinguishes
+ * probed members from unprobed ones and never lets the unprobed
+ * tail silently masquerade as a clean verdict.
  */
 final class MutationTester
 {
@@ -29,32 +34,61 @@ final class MutationTester
     /**
      * Probe a cluster for behavioural divergence between members.
      *
-     * @return list<string> Short reason strings; empty list = no
-     *                      static divergence detected.
+     * Empty list = no static divergence detected. A cluster with any
+     * unprobed member (AST not loaded — lazy-AST mode on big trees)
+     * never returns an empty list: an all-unprobed cluster yields a
+     * refusal verdict, and a partially-probed cluster carries an
+     * accounting line naming how many members the verdict covers.
+     *
+     * @return list<string> Short reason strings.
      */
     public function probe(Cluster $cluster): array
     {
         $reasons = [];
+        $probed = 0;
+        $unprobed = 0;
         $sideEffectCount = 0;
         foreach ($cluster->members as $m) {
             if ($m->ast === null) {
+                $unprobed++;
                 continue;
             }
+            $probed++;
             $summary = $this->summarizer->summarize($m->ast);
             if ($summary['sideEffects']) {
                 $sideEffectCount++;
             }
         }
-        if ($sideEffectCount > 0 && $sideEffectCount < count($cluster->members)) {
+
+        if ($unprobed > 0 && $probed === 0) {
             $reasons[] = sprintf(
-                'side-effects present in %d of %d members — abstraction may be lossy',
-                $sideEffectCount,
-                count($cluster->members),
+                'all %d members unprobed (AST not loaded) — cannot issue a clean verdict; run mutation tests manually',
+                $unprobed,
+            );
+
+            return $reasons;
+        }
+
+        if ($unprobed > 0) {
+            $reasons[] = sprintf(
+                '%d of %d probed (%d unprobed: AST not loaded)',
+                $probed,
+                $probed + $unprobed,
+                $unprobed,
             );
         }
-        if ($sideEffectCount === count($cluster->members) && $sideEffectCount > 0) {
-            $reasons[] = 'all members emit side effects — auto-replay not safe; run mutation tests manually';
+
+        if ($sideEffectCount > 0 && $sideEffectCount < $probed) {
+            $reasons[] = sprintf(
+                'side-effects present in %d of %d probed members — abstraction may be lossy',
+                $sideEffectCount,
+                $probed,
+            );
         }
+        if ($sideEffectCount > 0 && $sideEffectCount === $probed) {
+            $reasons[] = 'all probed members emit side effects — auto-replay not safe; run mutation tests manually';
+        }
+
         return $reasons;
     }
 }
