@@ -108,6 +108,7 @@ final class SarifReporterTest extends TestCase
             namespace: null,
             class: null,
             name: $name,
+            ast: new \PhpParser\Node\Stmt\Nop(),
         );
 
         $whole  = new Cluster('F0000000000000001', [$member('a')], 1.0, true);
