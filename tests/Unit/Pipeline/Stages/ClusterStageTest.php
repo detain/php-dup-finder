@@ -52,24 +52,39 @@ final class ClusterStageTest extends TestCase
     /**
      * ui-grammar: the cohort headline totals via the shared phrase —
      * a single-file cohort reads "1 file total", a two-file cohort keeps
-     * "2 files total". Both legs run the real expandToCloneCohort path on
-     * an identical-code fixture, separated only by --max-df arming.
+     * "2 files total". All legs run the real expandToCloneCohort path.
+     *
+     * Post engine-001 (df cap floors at 2) the DEFAULT max_df arms the
+     * twin leg too: a gram shared by exactly two blocks is at the cap,
+     * not above it, so the cohort no longer collapses at 0.01. The
+     * singular leg therefore moves to a corpus that genuinely has no
+     * clone twin — the only honest way to get "0 related".
      */
     public function testCohortHeadlineSingularizesAndStaysPlural(): void
     {
         $dir = $this->createTwinCloneFixture();
+        $solo = $this->createSoleFileFixture();
         try {
-            $plural = $this->cohortRender($dir, maxDocumentFrequency: 1.0);
+            $armed = $this->cohortRender($dir, maxDocumentFrequency: 1.0);
             $this->assertStringContainsString(
                 'clone cohort: 1 changed + 1 related = 2 files total',
-                $plural,
+                $armed,
             );
 
-            // Default max_df (0.01) caps postings at 1 block — the twin
-            // posting is "too common to be informative", so nothing is
-            // seeded as related and the cohort collapses to the lone
-            // changed file.
-            $singular = $this->cohortRender($dir, maxDocumentFrequency: 0.01);
+            // engine-001 fix pin: at the shipped default (0.01) the pair
+            // posting (df = 2) sits exactly at the floored cap and seeds
+            // the related file. Pre-fix the cap floored at 1 and this
+            // headline read "1 changed + 0 related = 1 file total".
+            $default = $this->cohortRender($dir, maxDocumentFrequency: 0.01);
+            $this->assertStringContainsString(
+                'clone cohort: 1 changed + 1 related = 2 files total',
+                $default,
+            );
+
+            // Singular grammar: a changed file whose code exists nowhere
+            // else shares no gram with any other block, so the cohort is
+            // the lone changed file at any df.
+            $singular = $this->cohortRender($solo, maxDocumentFrequency: 0.01);
             $this->assertStringContainsString(
                 'clone cohort: 1 changed + 0 related = 1 file total',
                 $singular,
@@ -77,6 +92,7 @@ final class ClusterStageTest extends TestCase
             $this->assertStringNotContainsString('1 files total', $singular);
         } finally {
             $this->removeDirectory($dir);
+            $this->removeDirectory($solo);
         }
     }
 
@@ -127,6 +143,26 @@ function handle($x)
 ';
         file_put_contents($dir . '/a.php', $body);
         file_put_contents($dir . '/b.php', $body);
+        return $dir;
+    }
+
+    /** One file holding the clone-sized function; no twin anywhere in the corpus. */
+    private function createSoleFileFixture(): string
+    {
+        $dir = sys_get_temp_dir() . '/phpdup_cohort_solo_' . uniqid();
+        @mkdir($dir . '/cache', 0o775, true);
+        file_put_contents($dir . '/a.php', '<?php
+function handle($x)
+{
+    if ($x > 0) {
+        return $x + 1;
+    }
+    if ($x < 0) {
+        return $x - 1;
+    }
+    return $x;
+}
+');
         return $dir;
     }
 

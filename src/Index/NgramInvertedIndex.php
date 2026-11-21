@@ -11,9 +11,17 @@ use Phpdup\Extraction\Block;
  * Used to generate the candidate-pair list for near-duplicate
  * comparison without doing all-pairs Jaccard. For each block we look
  * up all blocks sharing at least one *rare* n-gram (a gram appearing
- * in fewer than maxDocumentFrequency × N blocks). This is the
- * standard rare-gram pre-filter for large clone-detection corpora —
- * keeps candidate generation near linear in the corpus size.
+ * in at most ceil(maxDocumentFrequency × N) blocks, the cap never
+ * falling below 2). This is the standard rare-gram pre-filter for
+ * large clone-detection corpora — keeps candidate generation near
+ * linear in the corpus size.
+ *
+ * The floor of 2 is load-bearing (finding engine-001): a gram shared
+ * by two distinct blocks has posting count ≥ 2 by definition, so a
+ * cap that can drop below 2 (floor(df × N) on any corpus smaller
+ * than 1/df blocks) prunes EVERY pair seed and the whole near-dup
+ * stack goes silent. Pairs are proposed and the downstream score
+ * gates prune what is not a clone.
  */
 final class NgramInvertedIndex
 {
@@ -58,7 +66,13 @@ final class NgramInvertedIndex
         if ($block->ngramBag === null) {
             return [];
         }
-        $maxDf = max(1, (int)floor($this->blockCount * $maxDocumentFrequency));
+        // Rareness cap: ceil(df × N), floored at 2. The floor keeps the
+        // smallest informative signal — a gram shared by exactly two
+        // blocks — proposable on ANY corpus; without it, every corpus
+        // under 1/df blocks prunes all postings (df ≥ 2 there) and
+        // near-dup candidate generation is dead. What the pair actually
+        // is, the score gates decide.
+        $maxDf = max(2, (int)ceil($this->blockCount * $maxDocumentFrequency));
         $seen = [];
         foreach (array_keys($block->ngramBag) as $gram) {
             $posting = $this->postings[$gram] ?? [];

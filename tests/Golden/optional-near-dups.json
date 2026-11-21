@@ -5,9 +5,9 @@
         "files": 1,
         "blocks": 4,
         "parse_errors": 0,
-        "clusters": 0,
-        "duplicated_lines": 0,
-        "total_impact": 0,
+        "clusters": 1,
+        "duplicated_lines": 16,
+        "total_impact": 25,
         "files_scanned": 1,
         "files_reused": 0,
         "files_processed": 1,
@@ -20,6 +20,117 @@
         "tree_threshold": 0.85,
         "min_cluster_impact": 20
     },
-    "clusters": [],
+    "clusters": [
+        {
+            "id": "Fe2772827d1f79a49",
+            "kind": "if",
+            "exact": false,
+            "similarity": 0.9643,
+            "confidence": 1,
+            "safety": 0.9643,
+            "impact": 25,
+            "pattern_tags": [
+                "optional-segments"
+            ],
+            "outlier_members": [],
+            "architectural_findings": [],
+            "signature": "function extractedFunction(\n    bool $includeSomeOtherLogic = false,\n    bool $includeAndMore = false,\n): mixed",
+            "members": [
+                {
+                    "file": "tests/Fixtures/optional/Pair.php",
+                    "start": 21,
+                    "end": 27,
+                    "kind": "if",
+                    "namespace": "Fixtures\\Optional",
+                    "class": "Pair",
+                    "name": null,
+                    "size": 20,
+                    "repo": "optional",
+                    "scope": "single"
+                },
+                {
+                    "file": "tests/Fixtures/optional/Pair.php",
+                    "start": 8,
+                    "end": 16,
+                    "kind": "if",
+                    "namespace": "Fixtures\\Optional",
+                    "class": "Pair",
+                    "name": null,
+                    "size": 30,
+                    "repo": "optional",
+                    "scope": "single"
+                }
+            ],
+            "pairs": [
+                {
+                    "blockA": "95a9b512_0",
+                    "blockB": "098cd9ef_0",
+                    "matchTier": "containment",
+                    "matchScore": 0.9643
+                }
+            ],
+            "holes": [
+                {
+                    "placeholder": "__O0",
+                    "kind": "optional_block",
+                    "inferred_type": "bool",
+                    "suggested_name": "$includeSomeOtherLogic",
+                    "observed": [
+                        "<absent>",
+                        "some_other_logic($here);"
+                    ],
+                    "value_count": 2,
+                    "degraded": false,
+                    "present_in_members": [
+                        1
+                    ]
+                },
+                {
+                    "placeholder": "__O1",
+                    "kind": "optional_block",
+                    "inferred_type": "bool",
+                    "suggested_name": "$includeAndMore",
+                    "observed": [
+                        "<absent>",
+                        "and_more($f);"
+                    ],
+                    "value_count": 2,
+                    "degraded": false,
+                    "present_in_members": [
+                        1
+                    ]
+                }
+            ],
+            "scope": "single",
+            "template": {
+                "id": "098cd9ef_0",
+                "file": "tests/Fixtures/optional/Pair.php",
+                "start": 21,
+                "end": 27
+            },
+            "source": {
+                "text": "        if ($something == $somethingelse) {\n            // more logic\n            base64_encode($stuff);\n            $ret = other_stuff($blah);\n        } else {\n            return false;\n        }\n",
+                "truncated": false
+            },
+            "evidence_diff": {
+                "member": "95a9b512_0",
+                "file": "tests/Fixtures/optional/Pair.php",
+                "start": 8,
+                "end": 16,
+                "diff": "--- a/tests/Fixtures/optional/Pair.php\n+++ b/tests/Fixtures/optional/Pair.php\n@@ @@\n             // more logic\n             base64_encode($stuff);\n             $ret = other_stuff($blah);\n+            some_other_logic($here);\n+            and_more($f);\n         } else {\n             return false;\n         }\n",
+                "truncated": false
+            },
+            "hole_coverage": 0.36,
+            "re_expressed": false,
+            "hole_fragment": null,
+            "placement": {
+                "shape": "defaulted_function",
+                "rationale": "2 optional segment(s) differ in presence, not content \u2014 one function with defaulted parameters covers the family.; members already share one class, so a base-class or trait lift keeps call sites in place. Shared namespace root: Fixtures\\Optional.",
+                "same_host": true,
+                "lca_namespace": "Fixtures\\Optional",
+                "host_packages": null
+            }
+        }
+    ],
     "declared_twins": []
 }

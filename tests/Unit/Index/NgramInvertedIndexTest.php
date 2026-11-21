@@ -17,8 +17,11 @@ use Phpdup\Util\LineRange;
  * Locks the three facts the guard's design rests on:
  *   1. any single shared rare gram makes a pair (storm mechanism,
  *      improve_logic.md §3.6 item 0.5 / filing 03 §1 row 1);
- *   2. the document-frequency cap prunes grams above the cap, and the cap
- *      floors at 1 on small corpora;
+ *   2. the document-frequency cap prunes grams above ceil(df × N),
+ *      and the cap floors at 2 — a gram shared by exactly two blocks
+ *      is the smallest informative signal and must seed candidates on
+ *      any corpus (finding engine-001: a cap of 1 pruned every pair
+ *      and killed near-dup detection below 1/df blocks);
  *   3. inside a clone family the per-block candidate set grows linearly in
  *      family size while the TOTAL pair set grows quadratically — which is
  *      precisely what the Clusterer budget bounds.
@@ -104,12 +107,83 @@ final class NgramInvertedIndexTest extends TestCase
         $this->assertSame(['B'], $candidates, 'only the 2-posting gram may seed; the 4-posting gram is pruned');
     }
 
-    public function testDocumentFrequencyCapFloorsToOneOnSmallCorpora(): void
+    public function testCapFloorsAtTwoSoSharedPairsSeedCandidatesOnSmallCorpora(): void
     {
-        // maxDf = max(1, floor(N × df)) — with a default 0.01 df on 50 blocks
-        // the cap floors at 1, so ANY gram shared by two blocks is pruned.
-        // (Explains why fixture-scale corpora need an explicit df to surface
-        // near-duplicate candidates at all.)
+        // maxDf = max(2, ceil(N × df)) — with the default 0.01 df on 50
+        // blocks the cap floors at 2, so a gram shared by exactly two
+        // blocks still seeds a candidate (finding engine-001: the old
+        // max(1, floor(…)) made near-dup generation dead below 200
+        // blocks, since any shared gram has ≥ 2 postings). A gram in
+        // three blocks stays above the cap and is still pruned.
+        $blocks = [];
+        for ($i = 0; $i < 50; $i++) {
+            $blocks[] = $this->makeBlockWithNgrams(sprintf('B%02d', $i), 'hash_' . $i, ['unique_' . $i => 1]);
+        }
+        $blocks[0]->ngramBag['pair_with_1'] = 1;
+        $blocks[1]->ngramBag['pair_with_1'] = 1;
+        $blocks[0]->ngramBag['trio_with_1_2'] = 1;
+        $blocks[1]->ngramBag['trio_with_1_2'] = 1;
+        $blocks[2]->ngramBag['trio_with_1_2'] = 1;
+
+        $index = $this->buildIndex($blocks);
+        $inverted = new NgramInvertedIndex();
+        $inverted->build($index);
+
+        $candidates = $inverted->candidatesFor($blocks[0], 0.01);
+        sort($candidates);
+        $this->assertSame(
+            ['B01'],
+            $candidates,
+            'max(2, ceil(50×0.01)) = 2 ⇒ the 2-posting pair seeds; the 3-posting gram stays pruned',
+        );
+
+        // --max-df extremes: the cap never drops below the pair floor…
+        $this->assertSame(
+            ['B01'],
+            $inverted->candidatesFor($blocks[0], 0.0),
+            'df=0 still proposes pairs (cap floor 2); score gates prune the noise',
+        );
+        // …and df=1.0 keeps every gram rare (cap = N), unchanged behaviour.
+        $atOne = $inverted->candidatesFor($blocks[0], 1.0);
+        sort($atOne);
+        $this->assertSame(['B01', 'B02'], $atOne, 'df=1.0 ⇒ cap N=50, both shared grams seed');
+    }
+
+    public function testCapUsesCeilOfTheRawRatioAboveThePairFloor(): void
+    {
+        // Above the floor the cap rounds UP (ceil), never down: with 50
+        // blocks and df=0.045 the raw cap is 2.25 → 3, so a gram in
+        // exactly 3 blocks seeds (the old floor(2.25)=2 would have pruned
+        // it), while a gram in 4 blocks is strictly above the cap → pruned.
+        $blocks = [];
+        for ($i = 0; $i < 50; $i++) {
+            $blocks[] = $this->makeBlockWithNgrams(sprintf('B%02d', $i), 'hash_' . $i, ['unique_' . $i => 1]);
+        }
+        foreach ([0, 1, 2] as $k) {
+            $blocks[$k]->ngramBag['trio'] = 1;
+        }
+        foreach ([0, 10, 11, 12] as $k) {
+            $blocks[$k]->ngramBag['quad'] = 1;
+        }
+
+        $index = $this->buildIndex($blocks);
+        $inverted = new NgramInvertedIndex();
+        $inverted->build($index);
+
+        $candidates = $inverted->candidatesFor($blocks[0], 0.045);
+        sort($candidates);
+        $this->assertSame(
+            ['B01', 'B02'],
+            $candidates,
+            'ceil(50×0.045) = 3 ⇒ the 3-posting gram seeds; the 4-posting gram is pruned',
+        );
+    }
+
+    public function testIntegerProductCapBehaviorUnchangedAcrossFloorCeilBoundary(): void
+    {
+        // df=0.04 on 50 blocks puts the raw product exactly on an integer
+        // (2.0): floor and ceil agree, so behavior there is IDENTICAL to
+        // the pre-fix formula — gram at the cap seeds.
         $blocks = [];
         for ($i = 0; $i < 50; $i++) {
             $blocks[] = $this->makeBlockWithNgrams(sprintf('B%02d', $i), 'hash_' . $i, ['unique_' . $i => 1]);
@@ -121,8 +195,7 @@ final class NgramInvertedIndexTest extends TestCase
         $inverted = new NgramInvertedIndex();
         $inverted->build($index);
 
-        $this->assertSame([], $inverted->candidatesFor($blocks[0], 0.01), '2 postings > floored cap of 1');
-        $this->assertSame(['B01'], $inverted->candidatesFor($blocks[0], 0.04), 'floor(50×0.04)=2 ⇒ gram at the cap seeds');
+        $this->assertSame(['B01'], $inverted->candidatesFor($blocks[0], 0.04), 'ceil(50×0.04)=2 ⇒ gram at the cap seeds (unchanged at integer products)');
     }
 
     public function testNullNgramBagProducesNoCandidates(): void

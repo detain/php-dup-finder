@@ -737,9 +737,14 @@ final class CliSmokeTest extends TestCase
     public function testFixturesCorpusMatchesCommittedContract(): void
     {
         // Strict mirror of the CI smoke step (see .github/workflows/ci.yml).
-        // Truth at writing: 20 files, 15 clusters, 260 duplicated lines,
+        // Truth at writing: 20 files, 19 clusters, 356 duplicated lines,
         // zero parse errors — the planted clones in tests/Fixtures are a
-        // contract, so these numbers may only move with the fixtures.
+        // contract, so these numbers may only move with the fixtures (or
+        // with an engine fix that revives detection: engine-S01 lifted the
+        // df-cap floor from 1 to 2, and with 71 blocks in this corpus the
+        // old cap of 1 left the ENTIRE near-dup tier dead at the shipped
+        // default — the 4 extra clusters are planted near-dups finally
+        // being found, not noise).
         $fixtures = realpath(__DIR__ . '/../Fixtures');
         $this->assertIsString($fixtures);
 
@@ -755,8 +760,8 @@ final class CliSmokeTest extends TestCase
         $this->assertSame('1.6', $decoded['schema_version']);
         $this->assertSame(20, $s['files_scanned']);
         $this->assertSame(0, $s['parse_errors'], 'the fixture corpus must parse cleanly');
-        $this->assertSame(15, $s['clusters'], 'planted fixture clones must keep being found (re-pin only WITH fixture changes)');
-        $this->assertSame(260, $s['duplicated_lines']);
+        $this->assertSame(19, $s['clusters'], 'planted fixture clones must keep being found (re-pin only WITH fixture changes)');
+        $this->assertSame(356, $s['duplicated_lines']);
         $this->assertSame(
             $s['files_scanned'],
             $s['files_reused'] + $s['files_processed'] + $s['files_without_blocks'] + $s['parse_errors'],
