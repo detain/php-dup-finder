@@ -656,6 +656,32 @@ final class ApplicationTest extends TestCase
         return $ack === false ? '' : rtrim($ack, "\r\n");
     }
 
+    /**
+     * Same drive as {@see workerAck()} but through a worker built with an
+     * explicit shell-049 read cap, so the overflow path stays testable over
+     * a socketpair without actually pushing megabytes.
+     *
+     * @param resource $client     The worker-facing end handed to handleClient().
+     * @param resource $controller The test end carrying frame in / ack out.
+     */
+    private function workerAckCapped($client, $controller, string $frame, int $cap): string
+    {
+        fwrite($controller, $frame);
+        $handleClient = new \ReflectionMethod(AnalysisWorker::class, 'handleClient');
+        try {
+            $handleClient->invoke(new AnalysisWorker(
+                '/tmp/phpdup-worker-defence-unused.sock',
+                $this->workerResultDir,
+                null,
+                $cap
+            ), $client);
+        } catch (\Throwable $e) {
+            $this->fail('handleClient must never throw: ' . $e->getMessage());
+        }
+        $ack = fgets($controller);
+        return $ack === false ? '' : rtrim($ack, "\r\n");
+    }
+
     /** @var string results dir used by the wire tests below */
     private string $workerResultDir = '';
 
@@ -841,5 +867,100 @@ final class ApplicationTest extends TestCase
             @unlink($root . '/a.php');
             @rmdir($root);
         }
+    }
+
+    // ------------------------------------------------------------------
+    // shell-049: the RUN-frame read is bounded. An endless single line
+    // from a direct socket peer is refused at the cap without ever being
+    // buffered whole, and the worker keeps serving the next dispatch.
+    // ------------------------------------------------------------------
+
+    public function testWorkerRefusesOversizedRequestLineAtTheCap(): void
+    {
+        $cap = 64;
+        [$client, $controller] = $this->makeWorkerPair();
+        // 21-byte 'RUN <id> ' prefix + 65 payload bytes + newline: past the
+        // cap, and deliberately no delimiter inside the cap+1 window.
+        $frame = 'RUN 0123456789abcdef ' . str_repeat('x', $cap + 1) . "\n";
+        $this->assertGreaterThan($cap, strlen(rtrim($frame, "\n")));
+
+        $ack = $this->workerAckCapped($client, $controller, $frame, $cap);
+
+        $this->assertSame('FAIL 0 request line too long', $ack);
+        // The raw bytes of the endless line must never re-enter the frame:
+        // refusal carries no id and echoes nothing.
+        $this->assertStringNotContainsString('0123456789abcdef', $ack);
+        $this->assertStringNotContainsString('xxxx', $ack);
+        // A refused read never reaches the pipeline: nothing is written.
+        $this->assertSame([], glob($this->workerResultDir . '/*') ?: []);
+    }
+
+    public function testRequestCapBoundaryAcceptsExactCapAndRefusesOneByteOver(): void
+    {
+        $atCap = 'RUN 0123456789abcdef not-json'; // valid id, doomed JSON
+        $cap = strlen($atCap);
+
+        // Exactly at the cap: admitted by the read bound, so processing
+        // advances all the way to the JSON stage — the ack is the decode
+        // failure (which echoes the validated id), not the size refusal.
+        [$client, $controller] = $this->makeWorkerPair();
+        $ack = $this->workerAckCapped($client, $controller, $atCap . "\n", $cap);
+        $this->assertStringStartsWith('FAIL 0123456789abcdef invalid JSON', $ack);
+
+        // One byte over the cap: refused at the bound itself.
+        [$client2, $controller2] = $this->makeWorkerPair();
+        $ack2 = $this->workerAckCapped($client2, $controller2, $atCap . "z\n", $cap);
+        $this->assertSame('FAIL 0 request line too long', $ack2);
+    }
+
+    public function testWorkerStaysAliveAfterRefusingAnOversizedRequestLine(): void
+    {
+        // The cap protects one connection's read; it must not poison the
+        // worker. Same worker object, second dispatch: the job-id stage
+        // still answers (shell-022 regression screen riding along).
+        $cap = 64;
+        $handleClient = new \ReflectionMethod(AnalysisWorker::class, 'handleClient');
+        $worker = new AnalysisWorker(
+            '/tmp/phpdup-worker-defence-unused.sock',
+            $this->workerResultDir,
+            null,
+            $cap
+        );
+
+        [$client1, $controller1] = $this->makeWorkerPair();
+        fwrite($controller1, 'RUN 0123456789abcdef ' . str_repeat('x', $cap + 1) . "\n");
+        try {
+            $handleClient->invoke($worker, $client1);
+        } catch (\Throwable $e) {
+            $this->fail('handleClient must never throw: ' . $e->getMessage());
+        }
+        $ack1 = fgets($controller1);
+        $this->assertSame('FAIL 0 request line too long', rtrim((string)$ack1, "\r\n"));
+
+        [$client2, $controller2] = $this->makeWorkerPair();
+        fwrite($controller2, "RUN ../../evil {}\n");
+        try {
+            $handleClient->invoke($worker, $client2);
+        } catch (\Throwable $e) {
+            $this->fail('handleClient must never throw: ' . $e->getMessage());
+        }
+        $ack2 = fgets($controller2);
+        $this->assertSame('FAIL 0 invalid job id', rtrim((string)$ack2, "\r\n"));
+
+        $this->assertSame([], glob($this->workerResultDir . '/*') ?: []);
+    }
+
+    public function testWorkerCapAlignsWithTheHttpBodyCeiling(): void
+    {
+        // One source of truth: the socket read bound is the HTTP ceiling
+        // plus headroom, so an HTTP-admitted frame can never be refused
+        // by the worker's own bound (21 bytes of 'RUN <16hex> ' prefix
+        // ride inside the 1024-byte margin).
+        $this->assertSame(Application::MAX_BODY_BYTES + 1024, AnalysisWorker::MAX_REQUEST_BYTES);
+        $this->assertGreaterThan(strlen('RUN ') + 16 + 1, AnalysisWorker::MAX_REQUEST_BYTES - Application::MAX_BODY_BYTES);
+        $this->assertSame(
+            'FAIL 0 request line too long',
+            rtrim(AnalysisWorker::REQUEST_TOO_LONG_ACK, "\n")
+        );
     }
 }

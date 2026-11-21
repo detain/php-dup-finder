@@ -23,6 +23,10 @@ use Symfony\Component\Console\Output\NullOutput;
  *   - Sent on success: OK <jobId>\n
  *   - Sent on failure: FAIL <jobId> <error>\n
  *
+ * The received line is size-bounded by {@see AnalysisWorker::MAX_REQUEST_BYTES};
+ * a frame past the cap answers {@see AnalysisWorker::REQUEST_TOO_LONG_ACK}
+ * without the worker ever buffering the endless line whole.
+ *
  * The worker is spawned by ServeCommand as
  * `bin/phpdup-worker <socket> <result-dir> [<serve-root>]` and runs the full
  * analysis pipeline using the same stages as the CLI command.
@@ -50,6 +54,13 @@ use Symfony\Component\Console\Output\NullOutput;
  *   - All other keys are ignored: the worker builds its Config solely from
  *     `paths` and never consumes the raw frame array.
  *
+ * Before any of that, the read itself is bounded (shell-049): the raw
+ * socket line may not exceed {@see AnalysisWorker::MAX_REQUEST_BYTES}
+ * bytes — the {@see Application::MAX_BODY_BYTES} HTTP ceiling every
+ * admitted frame already respects, plus generous headroom for the
+ * `RUN <jobId> ` prefix — so a peer wired straight to the socket can
+ * not make the worker buffer a single endless line.
+ *
  * A poisoned frame never kills the worker: every per-client handler is
  * wrapped so the loop keeps serving the next dispatch.
  */
@@ -65,6 +76,34 @@ final class AnalysisWorker
      */
     public const JOB_ID_PATTERN = '/^[0-9a-f]{16}$/';
 
+    /**
+     * Upper bound (bytes) on one RUN frame line as read from a client
+     * (shell-049).
+     *
+     * The config JSON carried by a frame is already capped at
+     * {@see Application::MAX_BODY_BYTES} by HTTP admission; this ceiling
+     * mirrors it for the worker's own socket read, so a peer connected
+     * directly to the worker socket — bypassing the HTTP layer entirely —
+     * can never make it buffer an arbitrarily long single line. The
+     * 1024-byte headroom over the body ceiling covers the frame overhead
+     * (`RUN ` + a 16-hex-char id + the field separator = 21 bytes) many
+     * times over, so every frame the HTTP layer admits still passes the
+     * worker's read bound untouched.
+     *
+     * Public so the cap-alignment pin test and any future dispatcher-side
+     * check can tie themselves to this one source of truth; spawns that
+     * need a different bound use the constructor seam.
+     */
+    public const MAX_REQUEST_BYTES = Application::MAX_BODY_BYTES + 1024;
+
+    /**
+     * Ack answering a frame that tripped the read bound. `FAIL 0` carries
+     * no job id — at read time none is known yet, and the raw bytes of an
+     * overflowing line must never re-enter the line-based frame (the same
+     * reason shell-022 refusals echo no id).
+     */
+    public const REQUEST_TOO_LONG_ACK = "FAIL 0 request line too long\n";
+
     /** @var resource|null */
     private $socket;
 
@@ -75,19 +114,34 @@ final class AnalysisWorker
     /** Optional absolute path to which job scanning is confined. */
     private ?string $serveRoot;
 
+    /** Byte bound enforced on one RUN frame line (see {@see self::MAX_REQUEST_BYTES}). */
+    private int $maxRequestBytes;
+
     private bool $running = false;
 
     /**
-     * @param string      $socketPath Path to the Unix socket to listen on.
-     * @param string      $resultDir  Directory where result files are written.
-     * @param string|null $serveRoot  Serve root jobs are confined to; null disables
-     *                                confinement (manual/dev spawns only).
+     * @param string      $socketPath      Path to the Unix socket to listen on.
+     * @param string      $resultDir       Directory where result files are written.
+     * @param string|null $serveRoot       Serve root jobs are confined to; null disables
+     *                                     confinement (manual/dev spawns only).
+     * @param int|null    $maxRequestBytes Override for {@see self::MAX_REQUEST_BYTES};
+     *                                     null keeps the production cap. The seam exists
+     *                                     so tests can drive the overflow path over a
+     *                                     socketpair without pushing megabytes.
      */
-    public function __construct(string $socketPath, string $resultDir, ?string $serveRoot = null)
-    {
+    public function __construct(
+        string $socketPath,
+        string $resultDir,
+        ?string $serveRoot = null,
+        ?int $maxRequestBytes = null
+    ) {
+        if ($maxRequestBytes !== null && $maxRequestBytes < 1) {
+            throw new \InvalidArgumentException('maxRequestBytes must be a positive byte count');
+        }
         $this->socketPath = $socketPath;
         $this->resultDir = $resultDir;
         $this->serveRoot = $serveRoot;
+        $this->maxRequestBytes = $maxRequestBytes ?? self::MAX_REQUEST_BYTES;
     }
 
     /**
@@ -160,8 +214,19 @@ final class AnalysisWorker
     {
         $jobId = '';
         try {
-            $line = @fgets($client);
+            // shell-049: bounded read. An unbounded fgets let a peer wired
+            // straight to the worker socket push a single endless line and
+            // have it buffered whole. stream_get_line stops at
+            // maxRequestBytes+1 bytes looking for the delimiter, so a frame
+            // past the cap is refused from the bound itself — one byte of
+            // slack is all that is ever buffered beyond the cap — and the
+            // worker answers and moves on to the next dispatch.
+            $line = @stream_get_line($client, $this->maxRequestBytes + 1, "\n");
             if ($line === false || $line === '') {
+                return;
+            }
+            if (strlen($line) > $this->maxRequestBytes) {
+                @fwrite($client, self::REQUEST_TOO_LONG_ACK);
                 return;
             }
 
