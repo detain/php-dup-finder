@@ -26,6 +26,14 @@ use SplObjectStorage;
  *
  * Method/function declarations always pass the minSize filter — those
  * are top-level abstractions worth comparing even if small.
+ *
+ * Item 1.3 adds a thirteenth kind, 'script': a folded run of top-level
+ * statements (requires/includes/auth-guards/bootstrap sequences — the
+ * copy-paste shape that lives OUTSIDE any function in classic procedural
+ * PHP). 'script' is OPT-IN ONLY: it never joins the implicit
+ * accept-all list (empty allowedKinds), because top-level fold blocks
+ * must be a deliberate choice — they change what "a block" means for a
+ * file, and the apply/extraction machinery cannot relocate them yet.
  */
 final class BlockExtractor
 {
@@ -33,6 +41,9 @@ final class BlockExtractor
         'function', 'method', 'closure', 'arrow',
         'if', 'for', 'foreach', 'while', 'do',
         'try', 'switch', 'match',
+        // Item 1.3: opt-in top-level script blocks — NOT part of the
+        // implicit accept-all set (see class docblock and extract()).
+        'script',
     ];
 
     /**
@@ -62,7 +73,109 @@ final class BlockExtractor
         );
         $traverser->addVisitor($visitor);
         $traverser->traverse($stmts);
+
+        // Item 1.3: 'script' is opt-IN ONLY — the empty allow-list means
+        // "all traversable kinds", never "also fold top-level statements".
+        // Folded blocks therefore append after the visitor's blocks in a
+        // fixed, deterministic order (per-scope, first-line ordered).
+        if (in_array('script', $this->allowedKinds, true)) {
+            foreach (self::groupTopLevel($stmts) as $group) {
+                if ($group['stmts'] === []) {
+                    continue; // groupTopLevel never emits empty buckets; belt for the offset below
+                }
+                $first = $group['stmts'][0];
+                $last  = $group['stmts'][\count($group['stmts']) - 1];
+                $start = $first->getStartLine();
+                $end   = $last->getEndLine();
+                if ($start <= 0 || $end <= 0) {
+                    continue; // same line-guard the visitor applies
+                }
+                // A synthetic Block node wraps the folded statement run so
+                // the block carries a real Node as canonical/ast — the
+                // probe fact from the research filing: pipeline and caches
+                // accept Stmt\Block wrappers unchanged.
+                $wrapper = new Stmt\Block(array_values($group['stmts']), [
+                    'startLine' => $start,
+                    'endLine'   => $end,
+                ]);
+                $size = AstSerializer::nodeCount($wrapper);
+                // Uniform size posture: scripts are gated by BOTH floors —
+                // the minSize filter (they are not declarations) and the
+                // maxSize ceiling (a whole-file fold must not smuggle past
+                // the cost ceiling the traversable kinds obey).
+                if ($size < $this->minSize || $size > $this->maxSize) {
+                    continue;
+                }
+                $block = new Block(
+                    file: $file,
+                    range: new LineRange($start, $end),
+                    kind: 'script',
+                    namespace: $group['namespace'],
+                    class: null,
+                    name: null,
+                    ast: $wrapper,
+                );
+                $block->size = $size;
+                $blocks[] = $block;
+            }
+        }
+
         return $blocks;
+    }
+
+    /**
+     * The 'script' kind's fold map: bucket the DECLARATIVE-free top-level
+     * statements of a file into per-scope runs. Declarations (classes,
+     * interfaces, traits, enums, functions), namespace/use/declare
+     * bookkeeping, inline HTML and no-ops are NOT folded — they already
+     * have a traversable kind or are structure, not logic. A top-level
+     * `const` DECLARATION is excluded for the same reason; an
+     * Expression-wrapped `require`/`echo`/call is exactly what IS folded.
+     *
+     * Bracketed namespaces fold in their own scope (two namespaces never
+     * mix into one block — mirrors BlockVisitor's namespace tracking);
+     * file-root statements fold under namespace=null.
+     *
+     * @param list<Node\Stmt> $stmts
+     * @return list<array{namespace: ?string, stmts: list<Node\Stmt>}>
+     */
+    public static function groupTopLevel(array $stmts): array
+    {
+        $groups = [];
+        $foldable = static function (Node\Stmt $s): bool {
+            return !($s instanceof Stmt\ClassLike)      // class/interface/trait/enum
+                && !($s instanceof Stmt\Function_)
+                && !($s instanceof Stmt\Use_)           // covers GroupUse (extends Use_)
+                && !($s instanceof Stmt\Declare_)
+                && !($s instanceof Stmt\InlineHTML)
+                && !($s instanceof Stmt\Nop)
+                && !($s instanceof Stmt\Const_)
+                && !($s instanceof Stmt\Namespace_)     // folded via its own bucket
+                && !($s instanceof Stmt\HaltCompiler);
+        };
+
+        $root = [];
+        foreach ($stmts as $s) {
+            if ($s instanceof Stmt\Namespace_) {
+                $inner = [];
+                foreach ($s->stmts as $nsStmt) {
+                    if ($foldable($nsStmt)) {
+                        $inner[] = $nsStmt;
+                    }
+                }
+                $groups[] = ['namespace' => $s->name?->toString(), 'stmts' => $inner];
+                continue;
+            }
+            if ($foldable($s)) {
+                $root[] = $s;
+            }
+        }
+        if ($root !== []) {
+            array_unshift($groups, ['namespace' => null, 'stmts' => $root]);
+        }
+        // Empty-scope buckets (bracketed namespace with only declarations)
+        // carry nothing to fold — drop them.
+        return array_values(array_filter($groups, static fn (array $g): bool => $g['stmts'] !== []));
     }
 }
 

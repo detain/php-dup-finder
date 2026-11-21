@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Phpdup\Cli;
 
 use Phpdup\Clustering\CandidateBudgetException;
+use Phpdup\Refactor\ScriptKindApplyRefusal;
 use Phpdup\Pipeline\Pipeline;
 use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Tui\PhpdupModel;
@@ -75,7 +76,7 @@ final class Command extends SymfonyCommand
             ->addOption('optional-blocks-containment', null, InputOption::VALUE_REQUIRED, 'Containment threshold (0..1) for the type-3 fallback path. Default 0.85.')
             ->addOption('min-impact', null, InputOption::VALUE_REQUIRED, 'Minimum cluster impact to report')
             ->addOption('exact-only', null, InputOption::VALUE_NONE, 'Skip near-duplicate detection (faster)')
-            ->addOption('kinds', null, InputOption::VALUE_REQUIRED, 'Comma-separated block kinds to include (e.g. method,closure). Default: all of method|function|closure|arrow|if|for|foreach|while|do|try|switch|match')
+            ->addOption('kinds', null, InputOption::VALUE_REQUIRED, 'Comma-separated block kinds to include (e.g. method,closure). Default: all of method|function|closure|arrow|if|for|foreach|while|do|try|switch|match. The item-1.3 kind script (top-level statement folds) is NOT in that default set — it must be named explicitly, and it currently cannot combine with --apply/--refactor-patch (script clusters are refused by the AST-addressing machinery, typed exit 1; text rendering via --patch/--diff stays allowed).')
             ->addOption('auto-tune', null, InputOption::VALUE_NONE, 'Probe the corpus before analysis and pick min-block-size / max-df / min-impact based on size; --exact-only is forced on for very large trees. Picked profile is printed; explicit CLI overrides take precedence.')
             ->addOption('profile', null, InputOption::VALUE_REQUIRED, 'Apply a project profile (laravel|symfony|drupal|wordpress|generic|db-aware-laravel|db-aware-doctrine|db-aware-cake|db-aware-thinkorm|db-aware-medoo|db-aware-propel|db-aware-redbean|db-aware-cycle|db-aware-phpactiverecord|auto) to seed framework-aware excludes + tuning. db-aware-* profiles ship symbol-equivalence packs for various ORMs. "auto" sniffs the scan path for known markers. Explicit CLI flags + --config win over profile values.')
             ->addOption('min-safety', null, InputOption::VALUE_REQUIRED, 'Drop clusters whose refactor-safety score (0..1) is below this threshold. 0 = report all (default).')
@@ -645,7 +646,7 @@ HELP;
         $pipeline = $buildPipeline(null);
         try {
             $pipeline->run($state, $output);
-        } catch (CandidateBudgetException $e) {
+        } catch (CandidateBudgetException | ScriptKindApplyRefusal $e) {
             // ft-n2: the budget halt is a runtime stop, not an invalid
             // invocation — its message already names every remedy. Render
             // it as the clean `phpdup:` error line (the same posture the
@@ -653,6 +654,8 @@ HELP;
             // reach Symfony's throwable renderer with its usage-dump
             // footer. Exit 1 = runtime-halt per the docs contract
             // (0 = ok incl findings, 2 = invalid invocation, 3 = gate trip).
+            // Item 1.3: the script-kind apply refusal rides the SAME
+            // posture — a typed runtime refusal, not a crash, not exit 2.
             $output->writeln('<error>phpdup: ' . $e->getMessage() . '</error>');
             return 1;
         } finally {

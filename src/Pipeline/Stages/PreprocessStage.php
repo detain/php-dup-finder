@@ -106,6 +106,14 @@ final class PreprocessStage implements CooperativeStageInterface
             // PARSER_VERSION bump: the mode value in this key already
             // separates the two namespaces byte-exactly.
             $config->fingerprintIdMode,
+            // Item 1.3: the extraction KIND SET changes which blocks a
+            // file yields at all — 'script' folds exist only for opt-in
+            // runs. A cache written without a kind replayed to a run that
+            // requested it (or vice-versa) would silently under- or
+            // over-report; bind the per-run kind set into the key the
+            // same way the mode knobs above are bound. No PARSER_VERSION
+            // bump: distinct key values namespace the stores byte-exactly.
+            $config->allowedKinds,
         ]));
         $store = ($this->useCache && $config->incremental)
             ? new IndexStore($config->cacheDir, $configKey)

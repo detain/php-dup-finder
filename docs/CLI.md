@@ -46,7 +46,7 @@ for the full JSON-Schema-compatible spec.
 | `--fail-on-impact N`                       | `0` (off)      | CI gate: exit code 3 when total cluster impact exceeds N. 0 = disabled. |
 | `--max-clusters N`                         | `0` (off)      | CI gate: exit code 3 when cluster count exceeds N. 0 = disabled. |
 | `--exact-only`                             | off            | Skip the near-duplicate phase. Emits only canonical-hash-equal clusters (~6× faster on large corpora). |
-| `--kinds K1,K2,...`                        | all            | Comma-separated block kinds to extract. Allowed: `function`, `method`, `closure`, `arrow`, `if`, `for`, `foreach`, `while`, `do`, `try`, `switch`, `match`. |
+| `--kinds K1,K2,...`                        | all            | Comma-separated block kinds to extract. Allowed: `function`, `method`, `closure`, `arrow`, `if`, `for`, `foreach`, `while`, `do`, `try`, `switch`, `match`, plus `script` (item 1.3: top-level statement folds — OPT-IN ONLY, never part of the implicit "all"; script clusters cannot be `--apply`-ed yet). |
 | `--max-memory MB`                          | `0` (off)      | Soft RSS ceiling. When peak RSS exceeds this mid-pipeline, phpdup logs a warning and suggests `--exact-only`. |
 | `--optional-blocks on\|off`                | `on`           | Type-3 / "optional segment" detection master switch. See [Type-3 detection](../README.md#type-3--optional-segment-detection). |
 | `--optional-blocks-containment N`          | `0.85`         | Containment-fallback threshold for the type-3 path (`0..1`).                                      |
@@ -391,7 +391,7 @@ A few keys use different fallback paths:
 
 | Key | Precedence chain |
 |-----|-----------------|
-| `allowed_kinds` | CLI → config `kinds` → `BlockExtractor::ALL_KINDS` |
+| `allowed_kinds` | CLI → config `kinds` → the twelve traversable kinds (everything in `BlockExtractor::ALL_KINDS` except `script` — item 1.3's fold kind is opt-in only and never implicit) |
 | `optional_blocks.*` | CLI → config `optional_blocks` → `Config` defaults |
 | `db_aware`, `trinity_collapse` | CLI → config → `Config` defaults |
 | `exclude` | APPEND: `Config` defaults + profile globs + config-file list + programmatic CLI-dict list (deduped, in that order) — never a replacement; `"exclude_reset": true` drops the inherited layers. A `"exclude": []` in any layer is a pure no-op: an empty list adds nothing, and its mere presence wipes nothing. Per-directory `.phpdup.json` lists accumulate down the tree the same way. |
@@ -505,7 +505,7 @@ with the offending field path on the first violation.
 | `workers`                              | integer          | `0` (auto)       | `>= 0`.                                                                  |
 | `incremental`                          | boolean          | `true`           | Per-file index-snapshot reuse.                                           |
 | `lazy_ast`                             | boolean          | `true`           | Drop original ASTs after fingerprinting; reload via `BlockAstLoader`.    |
-| `kinds`                                | list of strings  | all              | Each entry one of `function`, `method`, `closure`, `arrow`, `if`, `for`, `foreach`, `while`, `do`, `try`, `switch`, `match`. |
+| `kinds`                                | list of strings  | all              | Each entry one of `function`, `method`, `closure`, `arrow`, `if`, `for`, `foreach`, `while`, `do`, `try`, `switch`, `match`, `script`. `script` (item 1.3, top-level folds) must be named explicitly — the implicit "all" is the twelve traversable kinds without it. |
 | `sort`                                 | string           | `"impact:desc"`  | `KEY[:asc\|desc]`. Keys: `impact`, `members`, `block-size`, `lines`, `similarity`, `confidence`, `name`, `file`, `id`. Aliases: `size`/`count` → `members`. |
 | `optional_blocks.enabled`              | boolean          | `true`           | Master switch for type-3 detection.                                      |
 | `optional_blocks.containment`          | number           | `0.85`           | `0.0 ≤ x ≤ 1.0`. Containment-fallback threshold.                         |

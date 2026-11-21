@@ -14,6 +14,7 @@ use Phpdup\Normalization\Normalizer;
 use Phpdup\Normalization\PluginRegistry;
 use Phpdup\Parsing\AstCache;
 use Phpdup\Parsing\AstParser;
+use Phpdup\Refactor\ScriptKindApplyRefusal;
 use Phpdup\Util\CanonicalNodePool;
 use Phpdup\Util\LineRange;
 
@@ -154,6 +155,12 @@ final class BlockAstLoader
     {
         if (!$block->isAstUnloaded()) {
             return $block->ast;
+        }
+        // Item 1.3 law: a 'script' block is a synthetic fold, not a
+        // parse-tree node — relocation is impossible BY CONSTRUCTION and
+        // must fail typed-loud here, never silent-mis-anchor (P4 law).
+        if ($block->kind === 'script') {
+            throw ScriptKindApplyRefusal::forBlock($block, 'BlockAstLoader::resolve()');
         }
         $stmts = $this->stmtsFor($block->file);
 
@@ -653,6 +660,12 @@ final class BlockAstLoader
                 if (!$member->isAstUnloaded()) {
                     continue; // live bytes — nothing to relocate
                 }
+                // Item 1.3: an unloaded script fold on a warm replay can
+                // never be re-anchored (no parse-tree counterpart) — the
+                // typed refusal beats positional guessing outright.
+                if ($member->kind === 'script') {
+                    throw ScriptKindApplyRefusal::forBlock($member, 'BlockAstLoader::rebaseClusters()');
+                }
                 if ($this->config === null || $member->structuralHash === '') {
                     continue; // nothing content-bound to rebase against
                 }
@@ -968,6 +981,12 @@ final class BlockAstLoader
             'try'       => $node instanceof Node\Stmt\TryCatch,
             'switch'    => $node instanceof Node\Stmt\Switch_,
             'match'     => $node instanceof Node\Expr\Match_,
+            // Item 1.3: deliberately NO 'script' arm. A synthetic fold
+            // must never match a positional candidate — falling through
+            // to `default => false` is the posture, and the typed
+            // refusal in resolve()/rebaseClusters() fires long before
+            // this table is consulted for a script block. Positional
+            // matching of script kinds is the silent-mis-anchor class.
             default     => false,
         };
     }

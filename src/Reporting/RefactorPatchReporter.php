@@ -6,6 +6,7 @@ namespace Phpdup\Reporting;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
 use Phpdup\Refactor\ApplyExtractor;
+use Phpdup\Refactor\ScriptKindApplyRefusal;
 
 /**
  * Emits one .patch file per cluster — a heuristic, **manual-review-required**
@@ -39,6 +40,23 @@ final class RefactorPatchReporter
      */
     public function writeTo(Report $report, string $dir, bool $apply = false, bool $dryRun = true): void
     {
+        // Item 1.3 law: refuse the whole report BEFORE writing anything if
+        // any cluster carries a 'script' member. Applies to every surface —
+        // plain .patch files, F1a dry-run, F1b real apply — because the
+        // refusal is about AST-addressability, not one code path. Loud and
+        // typed (exit 1 via the dispatch catch), never a silent per-cluster
+        // skip: a partial patch set masquerading as the full one is the
+        // misfeed class. (F1b's per-cluster catch(\Throwable)→skip-comment
+        // would otherwise swallow the ApplyExtractor guard — this pre-scan
+        // makes that moot by design.)
+        foreach ($report->clusters as $cluster) {
+            foreach ($cluster->members as $member) {
+                if ($member->kind === 'script') {
+                    throw ScriptKindApplyRefusal::forCluster($cluster, 'RefactorPatchReporter');
+                }
+            }
+        }
+
         if ($dir !== '' && !is_dir($dir)) {
             @mkdir($dir, 0o775, true);
         }

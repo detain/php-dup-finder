@@ -34,9 +34,19 @@ final class ApplyExtractor
 
     /**
      * Extract the refactored function and rewrite member call sites.
+     *
+     * Item 1.3 law: a cluster carrying any 'script' member is refused
+     * BEFORE any file is written — a synthetic fold has no parse-tree
+     * position to rewrite and no call sites to redirect; silent partial
+     * application is the failure class this prevents.
      */
     public function apply(Cluster $cluster, string $outDir): void
     {
+        foreach ($cluster->members as $member) {
+            if ($member->kind === 'script') {
+                throw ScriptKindApplyRefusal::forCluster($cluster, 'ApplyExtractor::apply()');
+            }
+        }
         if ($cluster->generalizedAst === null || $cluster->signature === null) {
             return;
         }
