@@ -150,4 +150,22 @@ final class AstSerializerTest extends TestCase
             implode(', ', array_map('strval', $counts))
         ));
     }
+
+    public function testNodeCountSurvivesPathologicalNestingDepth(): void
+    {
+        // engine-004: nodeCount() used to recurse per descendant node, so a
+        // legal-but-pathological nesting depth (the parser itself survives
+        // it) blew the worker stack mid-count. The iterative count must
+        // return the exact total without coming near the call-stack limit.
+        $levels = 2000;
+        $current = new Scalar\Int_(1);
+        $built = 1;
+        for ($i = 0; $i < $levels; ++$i) {
+            $current = new Expr\Array_([new Expr\ArrayItem($current)]);
+            $built += 2; // Array_ + ArrayItem
+        }
+        $root = new Node\Stmt\Expression($current);
+
+        self::assertSame($built + 1, AstSerializer::nodeCount($root));
+    }
 }

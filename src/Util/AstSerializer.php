@@ -30,9 +30,33 @@ final class AstSerializer
 
     public static function nodeCount(Node $node): int
     {
-        $n = 0;
-        self::countWalk($node, $n);
-        return $n;
+        // engine-004 counterparty: the count used to recurse per descendant
+        // node, and a 10k-deep array literal (legal PHP — the parser itself
+        // descends iteratively) segfaulted the worker here before the
+        // BlockExtractor size ceiling could reject the oversized node.
+        // Iterative stack walk; the count is byte-for-byte what countWalk()
+        // produced. tokens()/walk() stays recursive on purpose: it only ever
+        // runs on blocks the maxSize ceiling (800 nodes) already admitted,
+        // so its depth is bounded by construction.
+        $count = 0;
+        $stack = [$node];
+        while ($stack !== []) {
+            $current = array_pop($stack);
+            ++$count;
+            foreach ($current->getSubNodeNames() as $sub) {
+                $val = $current->$sub;
+                if ($val instanceof Node) {
+                    $stack[] = $val;
+                } elseif (is_array($val)) {
+                    foreach ($val as $v) {
+                        if ($v instanceof Node) {
+                            $stack[] = $v;
+                        }
+                    }
+                }
+            }
+        }
+        return $count;
     }
 
     /** @param list<string> $out */
@@ -75,23 +99,6 @@ final class AstSerializer
             self::walk($c, $out);
         }
         $out[] = ')';
-    }
-
-    private static function countWalk(Node $node, int &$count): void
-    {
-        $count++;
-        foreach ($node->getSubNodeNames() as $sub) {
-            $val = $node->$sub;
-            if ($val instanceof Node) {
-                self::countWalk($val, $count);
-            } elseif (is_array($val)) {
-                foreach ($val as $v) {
-                    if ($v instanceof Node) {
-                        self::countWalk($v, $count);
-                    }
-                }
-            }
-        }
     }
 
     public static function shortType(Node $node): string

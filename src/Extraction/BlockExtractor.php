@@ -7,6 +7,7 @@ use PhpParser\Node;
 use PhpParser\Node\Stmt;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
+use Phpdup\Parsing\CacheBlob;
 use Phpdup\Util\AstSerializer;
 use Phpdup\Util\LineRange;
 use SplObjectStorage;
@@ -65,6 +66,27 @@ final class BlockExtractor
      */
     public function extract(string $file, array $stmts): array
     {
+        // engine-004 (deep-AST family): php-parser's NodeTraverser recurses
+        // one frame per AST level, so a nesting depth the (iterative) parser
+        // itself survives — e.g. a 10k-deep array literal — blows the C
+        // stack here with a segfault, not a catchable Error: pre-fix, an
+        // over-deep statement killed the ENTIRE run and yielded zero
+        // blocks for the whole file. Whole top-level statements past the
+        // shared CacheBlob depth budget are pruned before traversal. The
+        // measured cost is confined to pathological input: a tiny kind
+        // node buried at thousands of levels of nesting (e.g. the
+        // innermost arrow in a 10k-deep fn-chain) stays invisible, while
+        // every other statement of the file keeps full extraction
+        // semantics — strictly more detection than the segfault baseline,
+        // and the pipeline now survives to analyse the rest of the corpus.
+        $traversable = [];
+        foreach ($stmts as $stmt) {
+            if (CacheBlob::exceedsDepth([$stmt])) {
+                continue;
+            }
+            $traversable[] = $stmt;
+        }
+
         $blocks = [];
         $traverser = new NodeTraverser();
         $visitor = new BlockVisitor(
@@ -75,7 +97,7 @@ final class BlockExtractor
             sink: function (Block $b) use (&$blocks): void { $blocks[] = $b; },
         );
         $traverser->addVisitor($visitor);
-        $traverser->traverse($stmts);
+        $traverser->traverse($traversable);
 
         // Item 1.3: 'script' is opt-IN ONLY — the empty allow-list means
         // "all traversable kinds", never "also fold top-level statements".

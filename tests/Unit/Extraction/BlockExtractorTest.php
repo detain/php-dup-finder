@@ -83,6 +83,31 @@ final class BlockExtractorTest extends TestCase
     }
 
     /** @return list<\PhpParser\Node> one node per traversable kind, incl a Stmt\Block. */
+    public function testOverDeepStatementIsPrunedButSiblingsSurvive(): void
+    {
+        // engine-004: php-parser's NodeTraverser recurses one frame per AST
+        // level, so an over-budget statement must be pruned BEFORE
+        // traversal — pre-fix it segfaulted the worker and the whole run.
+        // The 500-deep literal below yields a ~1005-node statement: under
+        // this fixture's maxSize(2000) the size ceiling alone would happily
+        // emit the block, which pins the CacheBlob depth budget itself as
+        // the load-bearing guard. Sibling statements keep full semantics.
+        $deep = str_repeat('[', 500) . '1' . str_repeat(']', 500);
+        $code = "<?php\nfunction keep(): int {\n    \$t = 0;\n"
+            . "    for (\$i = 0; \$i < 9; ++\$i) {\n        if (\$i > 3) { \$t += \$i * 2; } else { \$t -= 1; }\n    }\n"
+            . "    return \$t;\n}\n"
+            . "function runaway(): array {\n    \$d = {$deep};\n    return \$d;\n}\n";
+
+        $blocks = $this->extract($code);
+
+        $names = [];
+        foreach ($blocks as $b) {
+            $names[$b->name ?? $b->kind] = true;
+        }
+        $this->assertArrayHasKey('keep', $names);
+        $this->assertArrayNotHasKey('runaway', $names);
+    }
+
     private function specimenNodes(): array
     {
         $parser = (new ParserFactory())->createForNewestSupportedVersion();
