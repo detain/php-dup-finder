@@ -271,7 +271,12 @@ final class DbOpCanonicalizer extends NodeVisitorAbstract
      * Surface it as the entity and let the caller drop it from the
      * synthetic args.
      *
-     * @param array<int,Node\Arg|Node\VariadicPlaceholder> $args
+     * Call args are typed as php-parser 5.9 declares them — a key-
+     * unspecified array of Arg|VariadicPlaceholder|ArgPlaceholder. A
+     * placeholder is not an entity and the Arg guard below already
+     * returns null for it (and for a missing 0 key).
+     *
+     * @param array<array-key,Node\Arg|Node\VariadicPlaceholder|Node\ArgPlaceholder> $args
      */
     private function extractEntityFromFirstArg(array $args): ?string
     {
@@ -359,7 +364,12 @@ final class DbOpCanonicalizer extends NodeVisitorAbstract
      *     `'SELECT * FROM ' . $table` patterns; we recover the static
      *     prefix.
      *
-     * @param array<int,Node\Arg|Node\VariadicPlaceholder> $args
+     * The list is typed as php-parser 5.9 declares call args — key-
+     * unspecified array of Arg|VariadicPlaceholder|ArgPlaceholder. Only
+     * real Args carry a value; the `!instanceof Arg` skip below already
+     * ignores both placeholder kinds.
+     *
+     * @param array<array-key,Node\Arg|Node\VariadicPlaceholder|Node\ArgPlaceholder> $args
      */
     private function firstStringArg(array $args): ?string
     {

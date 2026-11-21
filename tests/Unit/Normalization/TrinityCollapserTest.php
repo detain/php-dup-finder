@@ -243,6 +243,23 @@ final class TrinityCollapserTest extends TestCase
             'raw SQL UPDATE must produce __DB_WRITE__');
     }
 
+    public function testPlaceholderFirstReadStillCollapsesToUpsert(): void
+    {
+        // The Doctrine-style read may carry a partial-application hole as
+        // its first argument ($em->find(?, $id)): the entity is unknown,
+        // but the placeholder must not break the read -> mutate -> save
+        // chain — the trinity still collapses.
+        $code = '<?php function f($em, $id) {
+            $user = $em->find(?, $id);
+            $user->name = "Bob";
+            $em->flush();
+        }';
+        $tokens = $this->canonicalTokens($code, trinity: true);
+        $this->assertContains('Name|n:__DB_UPSERT__', $tokens,
+            'a hole-prefixed read must still collapse to __DB_UPSERT__');
+        $this->assertNotContains('Identifier|id:find', $tokens);
+    }
+
     /** @return list<string> */
     private function canonicalTokens(
         string $code,

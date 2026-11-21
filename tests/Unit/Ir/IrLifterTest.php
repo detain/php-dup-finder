@@ -237,6 +237,23 @@ final class IrLifterTest extends TestCase
         $this->assertSame('prop', $stmt->target);
     }
 
+    public function testFirstClassAndPartialPlaceholdersLiftAsAbsentArgs(): void
+    {
+        // php-parser 5.9 hands the lifter arg lists that may contain
+        // ArgPlaceholder nodes ("?" / "name: ?" partial application) and
+        // VariadicPlaceholder ("...") next to the real Args. Both are
+        // syntax holes with no value to lift, so the IR must come out
+        // exactly as if the holes were never there.
+        $withHoles = $this->liftFunction('<?php function f($x) { foo(?, bar: ?, "lit", $x); }');
+        $withoutHoles = $this->liftFunction('<?php function f($x) { foo("lit", $x); }');
+        $printer = new IrPrinter();
+        $this->assertSame($printer->tokens($withoutHoles), $printer->tokens($withHoles));
+        $call = $withHoles->stmts[0];
+        $this->assertInstanceOf(CallIr::class, $call);
+        $this->assertSame('foo', $call->symbol);
+        $this->assertCount(2, $call->args);
+    }
+
     private function liftFunction(string $code): BlockIr
     {
         $node = $this->parseFunction($code);

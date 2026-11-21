@@ -149,6 +149,23 @@ final class DbOpCanonicalizerTest extends TestCase
         );
     }
 
+    public function testPartialApplicationHoleDoesNotDisturbSqlExtraction(): void
+    {
+        // php-parser 5.9 may hand firstStringArg() an arg list leading
+        // with an ArgPlaceholder ("?"). The scan looks for the first real
+        // string-valued Arg either way, so a hole-prefixed query must
+        // fold to the very same canonical token stream as the plain call.
+        $withHole = '<?php function f($pdo) {
+            return $pdo->query(?, "SELECT * FROM audit_log WHERE id = 1");
+        }';
+        $plain = '<?php function f($pdo) {
+            return $pdo->query("SELECT * FROM audit_log WHERE id = 1");
+        }';
+        $tokens = $this->canonicalTokens($withHole, dbAware: true);
+        $this->assertContains('Name|n:__DB_READ__', $tokens);
+        $this->assertSame($tokens, $this->canonicalTokens($plain, dbAware: true));
+    }
+
     /** @return list<string> Canonicalised token stream of the first block. */
     private function canonicalTokens(string $code, bool $dbAware): array
     {

@@ -271,8 +271,15 @@ final class IrLifter
         return new CallIr(strtolower(self::shortClass($expr)));
     }
 
-    /** @param array<int,Node\Arg|Node\VariadicPlaceholder> $args
-     *  @return list<IrNode> */
+    /**
+     * php-parser 5.9 types CallLike `$args` as a key-unspecified array of
+     * Arg|VariadicPlaceholder|ArgPlaceholder. Both placeholder kinds are
+     * syntax holes with no value to lift (first-class callables and partial
+     * application), so the Arg guard below skips them — as it already did.
+     *
+     * @param array<array-key,Node\Arg|Node\VariadicPlaceholder|Node\ArgPlaceholder> $args
+     * @return list<IrNode>
+     */
     private function liftArgs(array $args): array
     {
         $out = [];
@@ -354,7 +361,13 @@ final class IrLifter
         };
     }
 
-    /** @param array<int,Node\Arg|Node\VariadicPlaceholder> $args */
+    /**
+     * The entity is present only when the first arg is a real Arg; any
+     * placeholder (VariadicPlaceholder / php-parser 5.9 ArgPlaceholder)
+     * or a key-unspecified list with no 0 entry yields null — as before.
+     *
+     * @param array<array-key,Node\Arg|Node\VariadicPlaceholder|Node\ArgPlaceholder> $args
+     */
     private static function extractEntityFromFirstArg(array $args): ?string
     {
         $first = $args[0] ?? null;

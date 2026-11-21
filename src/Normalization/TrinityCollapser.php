@@ -345,7 +345,12 @@ final class TrinityCollapser extends NodeVisitorAbstract
     }
 
     /**
-     * @param array<int,Node\Arg|Node\VariadicPlaceholder> $args
+     * The entity is present only when the first arg is a real Arg; any
+     * placeholder (VariadicPlaceholder / php-parser 5.9 ArgPlaceholder)
+     * or a key-unspecified list with no 0 entry yields null — matching
+     * php-parser's actual `CallLike::args` shape.
+     *
+     * @param array<array-key,Node\Arg|Node\VariadicPlaceholder|Node\ArgPlaceholder> $args
      */
     private function extractEntityFromFirstArg(array $args): ?string
     {
