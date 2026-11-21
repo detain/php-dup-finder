@@ -236,6 +236,10 @@ final class PatternRecognizer
      *  - every non-default arm body has the same structural signature
      *    once literal values are abstracted (default/else arms may
      *    differ — a catch-all is not a state).
+     *
+     * Fallthrough cases (`case 1: case 2: body;`) share their successor's
+     * body and are not counted as arms, so such switches go untagged —
+     * a conservative under-claim (output-021).
      */
     private function isStateMachine(Cluster $cluster): bool
     {
