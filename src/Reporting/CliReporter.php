@@ -132,11 +132,12 @@ final class CliReporter
             return;
         }
         $notes = [];
-        if (($report->skippedFiles ?? 0) > 0) {
-            $notes[] = sprintf('%d files produced no comparable blocks', $report->skippedFiles);
+        $skipped = $report->skippedFiles ?? 0;
+        if ($skipped > 0) {
+            $notes[] = self::fileCount($skipped) . ' produced no comparable blocks';
         }
         if ($report->parseErrors > 0) {
-            $notes[] = sprintf('%d files failed to parse', $report->parseErrors);
+            $notes[] = self::fileCount($report->parseErrors) . ' failed to parse';
         }
         if ($notes !== []) {
             $out->writeln(StatusLine::warn(implode(' · ', $notes), $theme));
@@ -149,6 +150,16 @@ final class CliReporter
             $report->skippedFiles ?? 0,
             $report->parseErrors,
         ), $theme));
+    }
+
+    /**
+     * p0c-m2: prose notes are singular when the count is one — a lone
+     * offender must not render as "1 files". The labelled per-bucket
+     * counter line keeps its fixed column names untouched.
+     */
+    private static function fileCount(int $count): string
+    {
+        return sprintf('%d %s', $count, $count === 1 ? 'file' : 'files');
     }
 
     /**

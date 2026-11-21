@@ -84,9 +84,23 @@ final class CliReporterVerbosityTest extends TestCase
         $rendered = $out->fetch();
 
         $this->assertStringContainsString('files  4 scanned · 0 reused · 2 processed · 1 no blocks · 1 parse errors', $rendered);
-        $this->assertStringContainsString('1 files produced no comparable blocks', $rendered);
-        $this->assertStringContainsString('1 files failed to parse', $rendered);
+        $this->assertStringContainsString('1 file produced no comparable blocks', $rendered);
+        $this->assertStringContainsString('1 file failed to parse', $rendered);
+        $this->assertStringNotContainsString('1 files', $rendered, 'p0c-m2: singular counts must not render plural');
         $this->assertStringNotContainsString('— clean.', $rendered, 'uncomparable files must block the bare clean verdict');
+    }
+
+    /** p0c-m2 companion: plural counts keep the historical wording. */
+    public function testPluralFileCountsStayPluralInNotes(): void
+    {
+        $cfg = Config::defaults([__DIR__]);
+        $report = new Report(6, 10, 3, [], $cfg, reusedFiles: 0, processedFiles: 1, skippedFiles: 2);
+        $out = $this->buffered();
+        (new CliReporter(CliReporter::VERBOSITY_SUMMARY_ONLY))->render($report, $out);
+        $rendered = $out->fetch();
+
+        $this->assertStringContainsString('2 files produced no comparable blocks', $rendered);
+        $this->assertStringContainsString('3 files failed to parse', $rendered);
     }
 
     /** Pre-0.6 producers pass null counters: the historical surface is untouched. */
