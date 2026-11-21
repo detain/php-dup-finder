@@ -4,7 +4,6 @@ declare(strict_types=1);
 namespace Phpdup\Refactor;
 
 use PhpParser\Node;
-use PhpParser\NodeFinder;
 use Phpdup\Clustering\Cluster;
 
 /**
@@ -24,6 +23,16 @@ use Phpdup\Clustering\Cluster;
  * detectors inspect statement shape and refuse to tag members whose
  * AST was never materialised (`$m->ast === null` → no evidence → no
  * tag, exactly like the `continue`-on-null guard used elsewhere).
+ *
+ * Traversal policy (output-042): AST-based detectors do not run their
+ * own NodeFinder walks.  tag() collects each loaded member AST ONCE
+ * into a {@see MemberFacts} struct ({@see collectFacts()}), and every
+ * AST-based detector is a lookup over those structs.  The collecting
+ * walk visits nodes in the same document order the replaced NodeFinder
+ * traversals used, so verdicts — and where they short-circuit — are
+ * byte-identical to the old ~15-traversals-per-cluster code.  The
+ * structs also serve {@see \Phpdup\Architecture\Analyzers\SolidAnalyzer}
+ * (same file, one shared collector per the plan).
  *
  * Full tag inventory, matching what tag() emits:
  *
@@ -81,33 +90,40 @@ final class PatternRecognizer
 {
     public function tag(Cluster $cluster): void
     {
+        // One collecting walk per loaded member; null marks an unloaded
+        // AST (fail-closed family: AST-based detectors skip that member).
+        $facts = [];
+        foreach ($cluster->members as $i => $m) {
+            $facts[$i] = $m->ast === null ? null : self::collectFacts($m->ast);
+        }
+
         $tags = [];
-        if ($this->isConfigDriven($cluster))    $tags[] = 'config-driven';
-        if ($this->isStrategy($cluster))        $tags[] = 'strategy';
-        if ($this->isCrudHandler($cluster))     $tags[] = 'crud-handler';
-        if ($this->isValidationChain($cluster)) $tags[] = 'validation-chain';
-        if ($this->isSqlBuilder($cluster))      $tags[] = 'sql-builder';
-        if ($this->isStateMachine($cluster))    $tags[] = 'state-machine';
-        if ($this->hasOptionalSegments($cluster)) $tags[] = 'optional-segments';
+        if ($this->isConfigDriven($cluster))                    $tags[] = 'config-driven';
+        if ($this->isStrategy($cluster))                       $tags[] = 'strategy';
+        if ($this->isCrudHandler($cluster))                    $tags[] = 'crud-handler';
+        if ($this->isValidationChain($cluster, $facts))        $tags[] = 'validation-chain';
+        if ($this->isSqlBuilder($cluster, $facts))             $tags[] = 'sql-builder';
+        if ($this->isStateMachine($cluster, $facts))           $tags[] = 'state-machine';
+        if ($this->hasOptionalSegments($cluster))              $tags[] = 'optional-segments';
         // Framework-aware tags (IX.A). Inferred from qualified-name
         // patterns + member naming, so the name-based ones work even
         // when the cluster members have unloaded ASTs.
-        if ($this->isControllerAction($cluster))     $tags[] = 'controller-action';
-        if ($this->isMigration($cluster))            $tags[] = 'migration';
-        if ($this->isEloquentModel($cluster))        $tags[] = 'eloquent-model';
-        if ($this->isRepositoryMethod($cluster))     $tags[] = 'repository-method';
-        if ($this->isEventListener($cluster))        $tags[] = 'event-listener';
-        if ($this->isServiceProvider($cluster))      $tags[] = 'service-provider';
-        if ($this->isQueryBuilderChain($cluster))    $tags[] = 'query-builder-chain';
+        if ($this->isControllerAction($cluster))               $tags[] = 'controller-action';
+        if ($this->isMigration($cluster))                      $tags[] = 'migration';
+        if ($this->isEloquentModel($cluster))                  $tags[] = 'eloquent-model';
+        if ($this->isRepositoryMethod($cluster))               $tags[] = 'repository-method';
+        if ($this->isEventListener($cluster))                  $tags[] = 'event-listener';
+        if ($this->isServiceProvider($cluster))                $tags[] = 'service-provider';
+        if ($this->isQueryBuilderChain($cluster, $facts))      $tags[] = 'query-builder-chain';
         // I.A.2-7: domain-pattern tags (loop / SQL / HTTP / error / builder / DI).
-        if ($this->isLoopMap($cluster))              $tags[] = 'loop-map';
-        if ($this->isLoopFilter($cluster))           $tags[] = 'loop-filter';
-        if ($this->isSqlQuery($cluster))             $tags[] = 'sql-query';
-        if ($this->isHttpCall($cluster))             $tags[] = 'http-call';
-        if ($this->isErrorHandler($cluster))         $tags[] = 'error-handler';
-        if ($this->isBuilderChain($cluster))         $tags[] = 'builder-chain';
-        if ($this->isContainerRegistration($cluster)) $tags[] = 'container-registration';
-        if ($this->isDbOp($cluster))                 $tags[] = 'db-op';
+        if ($this->isLoopMap($cluster, $facts))                $tags[] = 'loop-map';
+        if ($this->isLoopFilter($cluster, $facts))             $tags[] = 'loop-filter';
+        if ($this->isSqlQuery($cluster, $facts))               $tags[] = 'sql-query';
+        if ($this->isHttpCall($cluster, $facts))               $tags[] = 'http-call';
+        if ($this->isErrorHandler($cluster, $facts))           $tags[] = 'error-handler';
+        if ($this->isBuilderChain($cluster, $facts))           $tags[] = 'builder-chain';
+        if ($this->isContainerRegistration($cluster, $facts))  $tags[] = 'container-registration';
+        if ($this->isDbOp($cluster, $facts))                   $tags[] = 'db-op';
         $cluster->patternTags = $tags;
     }
 
@@ -166,16 +182,14 @@ final class PatternRecognizer
         return $out;
     }
 
-    private function isValidationChain(Cluster $cluster): bool
+    /** @param array<int,?MemberFacts> $facts */
+    private function isValidationChain(Cluster $cluster, array $facts): bool
     {
-        $finder = new NodeFinder();
-        foreach ($cluster->members as $m) {
-            if ($m->ast === null) continue;
-            $ifs = $finder->findInstanceOf([$m->ast], Node\Stmt\If_::class);
-            if (count($ifs) < 2) continue;
+        foreach ($facts as $f) {
+            if ($f === null) continue;
+            if (count($f->ifs) < 2) continue;
             $allShortCircuit = true;
-            foreach ($ifs as $if) {
-                /** @var Node\Stmt\If_ $if */
+            foreach ($f->ifs as $if) {
                 $stmts = $if->stmts;
                 $last = end($stmts);
                 if (!$last) { $allShortCircuit = false; break; }
@@ -191,32 +205,37 @@ final class PatternRecognizer
         return false;
     }
 
-    private function isSqlBuilder(Cluster $cluster): bool
+    /** @param array<int,?MemberFacts> $facts */
+    private function isSqlBuilder(Cluster $cluster, array $facts): bool
     {
-        $finder = new NodeFinder();
-        foreach ($cluster->members as $m) {
-            if ($m->ast === null) continue;
-            $concats = $finder->findInstanceOf([$m->ast], Node\Expr\BinaryOp\Concat::class);
-            $calls = $finder->find([$m->ast], static function (Node $n) {
-                if ($n instanceof Node\Expr\MethodCall && $n->name instanceof Node\Identifier) {
-                    return (bool)preg_match('/(query|prepare|exec|fetch)/i', $n->name->name);
+        foreach ($facts as $f) {
+            if ($f === null) continue;
+            $hasQueryCall = false;
+            foreach ($f->methodCalls as $mc) {
+                if ($mc->name instanceof Node\Identifier
+                    && preg_match('/(query|prepare|exec|fetch)/i', $mc->name->name) === 1
+                ) {
+                    $hasQueryCall = true; break;
                 }
-                if ($n instanceof Node\Expr\FuncCall && $n->name instanceof Node\Name) {
-                    return (bool)preg_match('/(query|prepare|exec|fetch)/i', $n->name->toString());
+            }
+            if (!$hasQueryCall) {
+                foreach ($f->funcCalls as $fc) {
+                    if ($fc->name instanceof Node\Name
+                        && preg_match('/(query|prepare|exec|fetch)/i', $fc->name->toString()) === 1
+                    ) {
+                        $hasQueryCall = true; break;
+                    }
                 }
-                return false;
-            });
-            if ($concats && $calls) return true;
+            }
+            if ($f->hasConcat && $hasQueryCall) return true;
 
             // Second arm: a literal holding an actual SQL statement —
             // an uppercase verb plus a FROM/INTO <table> token. A bare
             // keyword anywhere in a string is English prose, not SQL
             // ("loaded from cache" used to qualify; output-021).
-            $strings = $finder->findInstanceOf([$m->ast], Node\Scalar\String_::class);
-            foreach ($strings as $s) {
-                /** @var Node\Scalar\String_ $s */
-                if (preg_match('/\b(SELECT|INSERT|UPDATE|DELETE)\b/', $s->value)
-                    && preg_match('/\b(FROM|INTO)\s+[A-Za-z_]\w*/', $s->value)) {
+            foreach ($f->strings as $value) {
+                if (preg_match('/\b(SELECT|INSERT|UPDATE|DELETE)\b/', $value)
+                    && preg_match('/\b(FROM|INTO)\s+[A-Za-z_]\w*/', $value)) {
                     return true;
                 }
             }
@@ -240,16 +259,15 @@ final class PatternRecognizer
      * Fallthrough cases (`case 1: case 2: body;`) share their successor's
      * body and are not counted as arms, so such switches go untagged —
      * a conservative under-claim (output-021).
+     *
+     * @param array<int,?MemberFacts> $facts
      */
-    private function isStateMachine(Cluster $cluster): bool
+    private function isStateMachine(Cluster $cluster, array $facts): bool
     {
-        $finder = new NodeFinder();
-        foreach ($cluster->members as $m) {
-            if ($m->ast === null) continue;
+        foreach ($facts as $f) {
+            if ($f === null) continue;
 
-            $switches = $finder->findInstanceOf([$m->ast], Node\Stmt\Switch_::class);
-            foreach ($switches as $sw) {
-                /** @var Node\Stmt\Switch_ $sw */
+            foreach ($f->switches as $sw) {
                 $arms = [];
                 foreach ($sw->cases as $case) {
                     if ($case->cond === null) continue; // default arm: not a state
@@ -259,9 +277,7 @@ final class PatternRecognizer
                 if (count($arms) >= 2 && count(array_unique($arms)) === 1) return true;
             }
 
-            $matches = $finder->findInstanceOf([$m->ast], Node\Expr\Match_::class);
-            foreach ($matches as $mt) {
-                /** @var Node\Expr\Match_ $mt */
+            foreach ($f->matches as $mt) {
                 $arms = [];
                 foreach ($mt->arms as $arm) {
                     // v5 MatchArm: default arm has conds === null; empty array
@@ -448,18 +464,12 @@ final class PatternRecognizer
         return false;
     }
 
-    /**
-     * Loop-map: foreach (...) { $acc[] = ...; } — accumulator-style
-     * loop body that's expressible as `array_map`.
-     */
-    private function isLoopMap(Cluster $cluster): bool
+    /** @param array<int,?MemberFacts> $facts */
+    private function isLoopMap(Cluster $cluster, array $facts): bool
     {
-        $finder = new NodeFinder();
-        foreach ($cluster->members as $m) {
-            if ($m->ast === null) continue;
-            $foreaches = $finder->findInstanceOf([$m->ast], Node\Stmt\Foreach_::class);
-            foreach ($foreaches as $foreach) {
-                if (!$foreach instanceof Node\Stmt\Foreach_) continue;
+        foreach ($facts as $f) {
+            if ($f === null) continue;
+            foreach ($f->foreaches as $foreach) {
                 foreach ($foreach->stmts as $s) {
                     if ($s instanceof Node\Stmt\Expression
                         && $s->expr instanceof Node\Expr\Assign
@@ -473,18 +483,13 @@ final class PatternRecognizer
         return false;
     }
 
-    /**
-     * Loop-filter: foreach (...) { if (!cond) continue; ... }
-     */
-    private function isLoopFilter(Cluster $cluster): bool
+    /** @param array<int,?MemberFacts> $facts */
+    private function isLoopFilter(Cluster $cluster, array $facts): bool
     {
-        $finder = new NodeFinder();
-        foreach ($cluster->members as $m) {
-            if ($m->ast === null) continue;
-            $foreaches = $finder->findInstanceOf([$m->ast], Node\Stmt\Foreach_::class);
-            foreach ($foreaches as $f) {
-                /** @var Node\Stmt\Foreach_ $f */
-                $first = $f->stmts[0] ?? null;
+        foreach ($facts as $f) {
+            if ($f === null) continue;
+            foreach ($f->foreaches as $foreach) {
+                $first = $foreach->stmts[0] ?? null;
                 if ($first instanceof Node\Stmt\If_) {
                     foreach ($first->stmts as $s) {
                         if ($s instanceof Node\Stmt\Continue_) {
@@ -500,16 +505,15 @@ final class PatternRecognizer
     /**
      * SQL query: any string literal in the body that looks like SQL.
      * (Stronger than isSqlBuilder; doesn't require concat or prepare.)
+     *
+     * @param array<int,?MemberFacts> $facts
      */
-    private function isSqlQuery(Cluster $cluster): bool
+    private function isSqlQuery(Cluster $cluster, array $facts): bool
     {
-        $finder = new NodeFinder();
-        foreach ($cluster->members as $m) {
-            if ($m->ast === null) continue;
-            $strings = $finder->findInstanceOf([$m->ast], Node\Scalar\String_::class);
-            foreach ($strings as $s) {
-                /** @var Node\Scalar\String_ $s */
-                if (preg_match('/^\s*(SELECT|INSERT|UPDATE|DELETE|REPLACE)\b/i', $s->value)) {
+        foreach ($facts as $f) {
+            if ($f === null) continue;
+            foreach ($f->strings as $value) {
+                if (preg_match('/^\s*(SELECT|INSERT|UPDATE|DELETE|REPLACE)\b/i', $value)) {
                     return true;
                 }
             }
@@ -524,36 +528,46 @@ final class PatternRecognizer
      * A URL string floating anywhere in the body (config defaults
      * carrying example URLs) is not evidence of an HTTP call
      * (output-021).
+     *
+     * @param array<int,?MemberFacts> $facts
      */
-    private function isHttpCall(Cluster $cluster): bool
+    private function isHttpCall(Cluster $cluster, array $facts): bool
     {
         static $verbs = ['get', 'post', 'put', 'patch', 'delete', 'request', 'send'];
-        $finder = new NodeFinder();
-        foreach ($cluster->members as $m) {
-            if ($m->ast === null) continue;
-            $hits = $finder->find([$m->ast], static function (Node $n) use ($verbs): bool {
-                if ($n instanceof Node\Expr\MethodCall && $n->name instanceof Node\Identifier) {
-                    return in_array(strtolower($n->name->name), $verbs, true)
-                        && $n->args !== []  // pure verb names with args look like HTTP
-                        ;
-                }
-                if ($n instanceof Node\Expr\FuncCall && $n->name instanceof Node\Name) {
-                    $name = strtolower($n->name->toString());
-                    return str_starts_with($name, 'curl_')
-                        || str_starts_with($name, 'wp_remote_')
-                        || $name === 'file_get_contents';
-                }
-                return false;
-            });
-            foreach ($hits as $hit) {
-                if (!$hit instanceof Node\Expr\MethodCall && !$hit instanceof Node\Expr\FuncCall) {
+        foreach ($facts as $f) {
+            if ($f === null) continue;
+            foreach ($f->methodCalls as $mc) {
+                if (!$mc->name instanceof Node\Identifier) continue;
+                if (!in_array(strtolower($mc->name->name), $verbs, true)) continue;
+                if ($mc->args === []) continue; // verb names without args are not HTTP calls
+                if (self::argsCarryUrl($mc->args)) return true;
+            }
+            foreach ($f->funcCalls as $fc) {
+                if (!$fc->name instanceof Node\Name) continue;
+                $name = strtolower($fc->name->toString());
+                if (!(str_starts_with($name, 'curl_')
+                    || str_starts_with($name, 'wp_remote_')
+                    || $name === 'file_get_contents')) {
                     continue;
                 }
-                foreach ($hit->args as $arg) {
-                    if ($arg instanceof Node\Arg && self::looksLikeUrl($arg->value)) {
-                        return true;
-                    }
-                }
+                if (self::argsCarryUrl($fc->args)) return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Does any argument of one HTTP-shaped call carry a URL? Both the
+     * MethodCall and FuncCall shapes land here — the two node kinds
+     * share the Arg list type (output-042 consolidation).
+     *
+     * @param array<Node\Arg|Node\VariadicPlaceholder> $args
+     */
+    private static function argsCarryUrl(array $args): bool
+    {
+        foreach ($args as $arg) {
+            if ($arg instanceof Node\Arg && self::looksLikeUrl($arg->value)) {
+                return true;
             }
         }
         return false;
@@ -587,15 +601,14 @@ final class PatternRecognizer
     /**
      * Error-handler: try { ... } catch (...) { ... } where the catch
      * body is a logger call, rethrow, or single return.
+     *
+     * @param array<int,?MemberFacts> $facts
      */
-    private function isErrorHandler(Cluster $cluster): bool
+    private function isErrorHandler(Cluster $cluster, array $facts): bool
     {
-        $finder = new NodeFinder();
-        foreach ($cluster->members as $m) {
-            if ($m->ast === null) continue;
-            $tries = $finder->findInstanceOf([$m->ast], Node\Stmt\TryCatch::class);
-            foreach ($tries as $tryStmt) {
-                if (!$tryStmt instanceof Node\Stmt\TryCatch) continue;
+        foreach ($facts as $f) {
+            if ($f === null) continue;
+            foreach ($f->tries as $tryStmt) {
                 foreach ($tryStmt->catches as $catch) {
                     foreach ($catch->stmts as $s) {
                         if ($s instanceof Node\Stmt\Return_)  return true;
@@ -604,7 +617,7 @@ final class PatternRecognizer
                                 || ($s->expr instanceof Node\Expr\MethodCall
                                     && $s->expr->name instanceof Node\Identifier
                                     && preg_match('/^(log|error|warn|info|debug)$/i', $s->expr->name->name))
-                            )
+                                )
                         ) {
                             return true;
                         }
@@ -615,17 +628,12 @@ final class PatternRecognizer
         return false;
     }
 
-    /**
-     * Builder-chain: $x->...->...->...  with ≥3 method calls in a row
-     * on the same chain head.
-     */
-    private function isBuilderChain(Cluster $cluster): bool
+    /** @param array<int,?MemberFacts> $facts */
+    private function isBuilderChain(Cluster $cluster, array $facts): bool
     {
-        $finder = new NodeFinder();
-        foreach ($cluster->members as $m) {
-            if ($m->ast === null) continue;
-            $methodCalls = $finder->findInstanceOf([$m->ast], Node\Expr\MethodCall::class);
-            foreach ($methodCalls as $mc) {
+        foreach ($facts as $f) {
+            if ($f === null) continue;
+            foreach ($f->methodCalls as $mc) {
                 $depth = 0;
                 $cursor = $mc;
                 while ($cursor instanceof Node\Expr\MethodCall) {
@@ -644,19 +652,20 @@ final class PatternRecognizer
      * actually calls `->bind(...)` / `->set(...)` / `->register(...)`
      * etc.  An unloaded AST gives no evidence — fail closed like the
      * other AST-based detectors (output-021: it used to auto-yes).
+     *
+     * @param array<int,?MemberFacts> $facts
      */
-    private function isContainerRegistration(Cluster $cluster): bool
+    private function isContainerRegistration(Cluster $cluster, array $facts): bool
     {
         static $verbs = ['bind', 'set', 'register', 'singleton', 'instance', 'extend', 'autowire'];
-        foreach ($cluster->members as $m) {
+        foreach ($cluster->members as $i => $m) {
             $name = strtolower((string)$m->name);
             if (!preg_match('/^(register|boot|configure)/', $name)) {
                 continue;
             }
-            if ($m->ast === null) continue; // no evidence, no tag
-            $finder = new NodeFinder();
-            $calls  = $finder->findInstanceOf([$m->ast], Node\Expr\MethodCall::class);
-            foreach ($calls as $mc) {
+            $f = $facts[$i];
+            if ($f === null) continue; // no evidence, no tag
+            foreach ($f->methodCalls as $mc) {
                 if ($mc->name instanceof Node\Identifier
                     && in_array(strtolower($mc->name->name), $verbs, true)
                 ) {
@@ -667,30 +676,25 @@ final class PatternRecognizer
         return false;
     }
 
-    /**
-     * Query-builder chain: the body contains a method-call chain whose
-     * head is recognised as a Doctrine / Eloquent / DBAL builder
-     * entrypoint (`createQueryBuilder`, `DB::table`, `Model::query`).
-     */
-    private function isQueryBuilderChain(Cluster $cluster): bool
+    /** @param array<int,?MemberFacts> $facts */
+    private function isQueryBuilderChain(Cluster $cluster, array $facts): bool
     {
-        $finder = new NodeFinder();
-        foreach ($cluster->members as $m) {
-            if ($m->ast === null) continue;
-            $hits = $finder->find([$m->ast], static function (Node $n) {
-                if ($n instanceof Node\Expr\MethodCall && $n->name instanceof Node\Identifier
-                    && in_array($n->name->name, ['createQueryBuilder', 'getQueryBuilder'], true)
+        foreach ($facts as $f) {
+            if ($f === null) continue;
+            foreach ($f->methodCalls as $mc) {
+                if ($mc->name instanceof Node\Identifier
+                    && in_array($mc->name->name, ['createQueryBuilder', 'getQueryBuilder'], true)
                 ) {
                     return true;
                 }
-                if ($n instanceof Node\Expr\StaticCall && $n->name instanceof Node\Identifier
-                    && in_array($n->name->name, ['table', 'query'], true)
+            }
+            foreach ($f->staticCalls as $sc) {
+                if ($sc->name instanceof Node\Identifier
+                    && in_array($sc->name->name, ['table', 'query'], true)
                 ) {
                     return true;
                 }
-                return false;
-            });
-            if (!empty($hits)) return true;
+            }
         }
         return false;
     }
@@ -699,15 +703,14 @@ final class PatternRecognizer
      * Database-operation tag: cluster contains __DB_READ__, __DB_WRITE__,
      * __DB_UPSERT__ or similar synthetic function calls produced by the
      * DbOpCanonicalizer during --db-aware normalization.
+     *
+     * @param array<int,?MemberFacts> $facts
      */
-    private function isDbOp(Cluster $cluster): bool
+    private function isDbOp(Cluster $cluster, array $facts): bool
     {
-        $finder = new NodeFinder();
-        foreach ($cluster->members as $m) {
-            if ($m->ast === null) continue;
-            $funcCalls = $finder->findInstanceOf([$m->ast], Node\Expr\FuncCall::class);
-            foreach ($funcCalls as $call) {
-                if (!$call instanceof Node\Expr\FuncCall) continue;
+        foreach ($facts as $f) {
+            if ($f === null) continue;
+            foreach ($f->funcCalls as $call) {
                 if ($call->name instanceof Node\Name) {
                     $name = $call->name->toString();
                     if (str_starts_with($name, '__DB_') && str_ends_with($name, '__')) {
@@ -716,11 +719,130 @@ final class PatternRecognizer
                 }
             }
             // Also check for phpdup.dbOp attribute on any node
-            $hits = $finder->find([$m->ast], static function (Node $n): bool {
-                return $n->hasAttribute('phpdup.dbOp');
-            });
-            if (!empty($hits)) return true;
+            if ($f->hasDbOpAttribute) return true;
         }
         return false;
+    }
+
+    /**
+     * The single collecting walk (output-042): one pre-order descent of
+     * the member AST gathering every node family the AST-based detectors
+     * (here and in SolidAnalyzer) query.  Document order matches the
+     * NodeFinder traversals this replaced, so every per-bucket scan sees
+     * the same sequence it used to.
+     */
+    public static function collectFacts(Node $memberAst): MemberFacts
+    {
+        $nodes = [];
+        self::gather($memberAst, $nodes);
+
+        $ifs = []; $switches = []; $matches = []; $foreaches = []; $tries = [];
+        $methodCalls = []; $funcCalls = []; $staticCalls = []; $strings = [];
+        $hasConcat = false; $hasDbOpAttribute = false;
+
+        foreach ($nodes as $n) {
+            if (!$hasDbOpAttribute && $n->hasAttribute('phpdup.dbOp')) $hasDbOpAttribute = true;
+            if ($n instanceof Node\Stmt\If_)            $ifs[] = $n;
+            elseif ($n instanceof Node\Stmt\Switch_)    $switches[] = $n;
+            elseif ($n instanceof Node\Expr\Match_)     $matches[] = $n;
+            elseif ($n instanceof Node\Stmt\Foreach_)   $foreaches[] = $n;
+            elseif ($n instanceof Node\Stmt\TryCatch)   $tries[] = $n;
+            elseif ($n instanceof Node\Expr\MethodCall) $methodCalls[] = $n;
+            elseif ($n instanceof Node\Expr\FuncCall)   $funcCalls[] = $n;
+            elseif ($n instanceof Node\Expr\StaticCall) $staticCalls[] = $n;
+            elseif ($n instanceof Node\Scalar\String_)  $strings[] = $n->value;
+            elseif ($n instanceof Node\Expr\BinaryOp\Concat) $hasConcat = true;
+        }
+
+        return new MemberFacts(
+            $ifs, $switches, $matches, $foreaches, $tries,
+            $methodCalls, $funcCalls, $staticCalls, $strings,
+            $hasConcat, $hasDbOpAttribute,
+        );
+    }
+
+    /**
+     * Pre-order node enumeration following getSubNodeNames() order —
+     * exactly the order PhpParser's NodeTraverser (and therefore
+     * NodeFinder) visits nodes in.
+     *
+     * @param list<Node> $out
+     */
+    private static function gather(Node $n, array &$out): void
+    {
+        $out[] = $n;
+        foreach ($n->getSubNodeNames() as $name) {
+            $sub = $n->{$name};
+            if ($sub instanceof Node) { self::gather($sub, $out); continue; }
+            if (is_array($sub)) {
+                foreach ($sub as $item) {
+                    if ($item instanceof Node) self::gather($item, $out);
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Facts gathered about ONE member AST by a single collecting walk
+ * (output-042) — the shared substrate PatternRecognizer's AST-based
+ * detectors and {@see \Phpdup\Architecture\Analyzers\SolidAnalyzer}
+ * query instead of each running its own full traversal.
+ *
+ * Deliberately declared in PatternRecognizer.php: the plan sanctions a
+ * "private struct" over a new public file, and the PSR-4 contract is
+ * honored because consumers only ever obtain instances through
+ * {@see PatternRecognizer::collectFacts()} — which loads this file, and
+ * therefore both classes, via the autoloader. A bare `new MemberFacts`
+ * from a cold autoloader would not resolve and must not be attempted.
+ *
+ * Every bucket keeps document order; node lists hold references into
+ * the member AST (never copies), so signature recomputation inside the
+ * detectors sees exactly what the old findInstanceOf() results saw.
+ */
+final class MemberFacts
+{
+    /**
+     * @param list<Node\Stmt\If_>        $ifs
+     * @param list<Node\Stmt\Switch_>    $switches
+     * @param list<Node\Expr\Match_>     $matches
+     * @param list<Node\Stmt\Foreach_>   $foreaches
+     * @param list<Node\Stmt\TryCatch>   $tries
+     * @param list<Node\Expr\MethodCall> $methodCalls
+     * @param list<Node\Expr\FuncCall>   $funcCalls
+     * @param list<Node\Expr\StaticCall> $staticCalls
+     * @param list<string>               $strings  String_ literal values (interpolation parts are
+     *                                              Node\InterpolatedStringPart in v5, NOT String_ —
+     *                                              same exclusion the old findInstanceOf had)
+     */
+    public function __construct(
+        public readonly array $ifs = [],
+        public readonly array $switches = [],
+        public readonly array $matches = [],
+        public readonly array $foreaches = [],
+        public readonly array $tries = [],
+        public readonly array $methodCalls = [],
+        public readonly array $funcCalls = [],
+        public readonly array $staticCalls = [],
+        public readonly array $strings = [],
+        public readonly bool $hasConcat = false,
+        public readonly bool $hasDbOpAttribute = false,
+    ) {
+    }
+
+    /**
+     * Lower-cased names of every Identifier-named method call, in
+     * document order — the name list SolidAnalyzer's SRP scan consumed
+     * from a hand-rolled collect-then-scan traversal before output-042.
+     *
+     * @return list<string>
+     */
+    public function methodNames(): array
+    {
+        $names = [];
+        foreach ($this->methodCalls as $mc) {
+            if ($mc->name instanceof Node\Identifier) $names[] = strtolower($mc->name->name);
+        }
+        return $names;
     }
 }

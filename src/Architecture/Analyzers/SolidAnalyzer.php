@@ -3,11 +3,10 @@ declare(strict_types=1);
 
 namespace Phpdup\Architecture\Analyzers;
 
-use PhpParser\Node;
-use PhpParser\NodeFinder;
 use Phpdup\Architecture\ArchitecturalAnalyzer;
 use Phpdup\Architecture\Finding;
 use Phpdup\Clustering\Cluster;
+use Phpdup\Refactor\PatternRecognizer;
 
 /**
  * Best-effort SOLID-violation detection.
@@ -19,6 +18,11 @@ use Phpdup\Clustering\Cluster;
  *   - DIP (Dependency Inversion): a hole's inferredType is a
  *     concrete class-string (rather than an interface-shaped name)
  *     and the hole kind is structural (subtree/name).
+ *
+ * The SRP name scan rides the shared one-pass collector
+ * ({@see PatternRecognizer::collectFacts()}, output-042) instead of a
+ * private NodeFinder traversal: call names arrive in the same document
+ * order the old collect-then-scan produced, so findings are unchanged.
  */
 final class SolidAnalyzer implements ArchitecturalAnalyzer
 {
@@ -55,21 +59,12 @@ final class SolidAnalyzer implements ArchitecturalAnalyzer
     {
         $persistence = ['query', 'prepare', 'execute', 'save', 'insert', 'update', 'delete', 'find'];
         $sideEffects = ['send', 'dispatch', 'fire', 'emit', 'publish', 'log', 'notify'];
-        $finder = new NodeFinder();
         foreach ($cluster->members as $m) {
             if ($m->ast === null) continue;
-            $names = $finder->find([$m->ast], static function (Node $n) {
-                if ($n instanceof Node\Expr\MethodCall && $n->name instanceof Node\Identifier) {
-                    return true;
-                }
-                return false;
-            });
+            $facts = PatternRecognizer::collectFacts($m->ast);
             $hasPersist = false;
             $hasEffect  = false;
-            foreach ($names as $call) {
-                if (!$call instanceof Node\Expr\MethodCall) continue;
-                if (!$call->name instanceof Node\Identifier) continue;
-                $n = strtolower($call->name->name);
+            foreach ($facts->methodNames() as $n) {
                 foreach ($persistence as $p) {
                     if (str_contains($n, $p)) { $hasPersist = true; break; }
                 }
