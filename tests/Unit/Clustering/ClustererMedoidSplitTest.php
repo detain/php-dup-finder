@@ -522,7 +522,7 @@ final class ClustererMedoidSplitTest extends TestCase
         $first = $this->clusterer()->cluster($this->index($blocks), $edges);
         $second = $this->clusterer()->cluster($this->index($blocks), array_reverse($edges));
 
-        $this->assertMatchesRegularExpression('/^C[0-9a-f]{8}$/', $first[0]->id);
+        $this->assertMatchesRegularExpression('/^F[0-9a-f]{16}$/', $first[0]->id);
         $this->assertSame($first[0]->id, $second[0]->id, 'id = f(sorted member content), never arrival order');
     }
 

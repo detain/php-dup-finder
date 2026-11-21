@@ -160,9 +160,9 @@ final class ClusterStageConvergenceTest extends TestCase
         $serial = $this->runStage(workers: 1);
         foreach ($serial['clusters'] as $c) {
             $this->assertMatchesRegularExpression(
-                '/^(X|C)[0-9a-f]{8}$/',
+                '/^F[0-9a-f]{16}$/',
                 $c->id,
-                'phase-1 buckets keep X-hash ids; every near-dup cluster id is the §5e content derivation',
+                'item 4.4: every cluster id — phase-1 bucket or near-dup component — is the canonical content-derived FindingId',
             );
         }
     }

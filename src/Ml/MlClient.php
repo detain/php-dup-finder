@@ -15,7 +15,7 @@ use Phpdup\Clustering\Cluster;
  *
  *   POST /score
  *   {
- *     "cluster_id": "X53edd72b",
+ *     "cluster_id": "F6173f8e7fbff89aa",
  *     "similarity": 0.93,
  *     "members": <int>,
  *     "holes": <int>,

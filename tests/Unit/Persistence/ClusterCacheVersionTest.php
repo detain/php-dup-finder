@@ -10,13 +10,18 @@ use Phpdup\Persistence\ClusterCache;
 use Phpdup\Util\LineRange;
 
 /**
- * Item 1.4 cache re-pin (ruling §5b, plan §8.4 "ClusterCache v1→v2"):
- * pre-split blobs store single-linkage cluster sets with md5(root) ids
- * and must never be served by a split-aware run. These tests exercise
- * the version GATE itself — a stale-v1 payload that matches the current
- * config key and corpus hash byte-for-byte must still be refused, and
- * the same payload stamped v2 must load. A version constant with no
- * gate would fail the first assertion.
+ * Cache version-gate semantics.
+ *
+ * cluster-cache-v2 (item 1.4, ruling §5b): pre-split v1 blobs store
+ * single-linkage cluster sets with md5(root) ids and must never be
+ * served by a split-aware run. cluster-cache-v3 (item 4.4, hazard-4):
+ * v2's corpus hash baked the scan-index block id into every token, so
+ * the tokens are now file|structuralHash only — v2 blobs must likewise
+ * never be served. These tests exercise the version GATE itself — a
+ * stale payload that matches the current config key and corpus hash
+ * byte-for-byte must still be refused, and the same payload stamped
+ * with the live version must load. A version constant with no gate
+ * would fail the first assertion.
  */
 final class ClusterCacheVersionTest extends TestCase
 {
@@ -56,9 +61,9 @@ final class ClusterCacheVersionTest extends TestCase
     }
 
     /**
-     * Mirror of ClusterCache::hashCorpus — the gate must be proven while
-     * corpus_hash and config_key MATCH, isolating parser_version as the
-     * only discriminator.
+     * Mirror of ClusterCache::hashCorpus (v3: structural member set, no
+     * block ids) — the gate must be proven while corpus_hash and
+     * config_key MATCH, isolating parser_version as the only discriminator.
      *
      * @param list<Block> $blocks
      */
@@ -66,7 +71,7 @@ final class ClusterCacheVersionTest extends TestCase
     {
         $tokens = [];
         foreach ($blocks as $b) {
-            $tokens[] = $b->id . '|' . $b->file . '|' . $b->structuralHash;
+            $tokens[] = $b->file . '|' . $b->structuralHash;
         }
         sort($tokens);
         return sha1(implode("\n", $tokens));
@@ -103,18 +108,52 @@ final class ClusterCacheVersionTest extends TestCase
             'a v1 (pre-split, md5-root-id) snapshot must never be served, even with matching keys');
     }
 
+    public function testStaleV2PayloadIsRefusedByTheVersionGateAlone(): void
+    {
+        $blocks = [$this->block('a', 'h1'), $this->block('b', 'h2')];
+        $cluster = new Cluster('F0123456789abcdef', $blocks, 0.80, false);
+
+        // Corpus hash computed with the LIVE v3 mirror; ONLY the version
+        // stamp is stale. v2 tokens carried block ids — a v2-era writer and
+        // a v3-era writer disagree on corpus_hash for any renumbered scan,
+        // so v2 blobs are refused wholesale, not renegotiated.
+        $this->forgePayload('cluster-cache-v2', 'cfg-current', $blocks, [$cluster]);
+
+        $cache = new ClusterCache($this->tmp, 'cfg-current');
+        $this->assertNull($cache->load($blocks),
+            'a v2 (id-baked corpus hash) snapshot must never be served, even with matching keys');
+    }
+
     public function testSamePayloadLoadsUnderCurrentVersion(): void
     {
         $blocks = [$this->block('a', 'h1'), $this->block('b', 'h2')];
         $cluster = new Cluster('Ccafe1234', $blocks, 0.90, false);
 
-        $this->forgePayload('cluster-cache-v2', 'cfg-current', $blocks, [$cluster]);
+        $this->forgePayload('cluster-cache-v3', 'cfg-current', $blocks, [$cluster]);
 
         $cache = new ClusterCache($this->tmp, 'cfg-current');
         $loaded = $cache->load($blocks);
-        $this->assertNotNull($loaded, 'the only difference is the version stamp — v2 is the live contract');
+        $this->assertNotNull($loaded, 'the only difference is the version stamp — v3 is the live contract');
         $this->assertCount(1, $loaded);
         $this->assertSame('Ccafe1234', $loaded[0]->id);
+    }
+
+    /**
+     * Hazard-4 at the cache boundary: the corpus key is the structural
+     * member set. Renumbering block ids (a re-scan that finds files in a
+     * different order) must NOT invalidate a v3 snapshot.
+     */
+    public function testBlockIdRenumberingDoesNotInvalidateCache(): void
+    {
+        $blocks = [$this->block('b001', 'h1'), $this->block('b002', 'h2')];
+        $cache = new ClusterCache($this->tmp, 'cfg');
+        $cache->save($blocks, [new Cluster('F0123456789abcdef', $blocks, 1.0, true)]);
+
+        $renumbered = [$this->block('b900', 'h1'), $this->block('b901', 'h2')];
+        $loaded = $cache->load($renumbered);
+
+        $this->assertNotNull($loaded, 'corpus key must ignore scan-index block ids');
+        $this->assertSame('F0123456789abcdef', $loaded[0]->id);
     }
 
     public function testSaveWritesTheBumpedVersionMarker(): void
@@ -127,8 +166,8 @@ final class ClusterCacheVersionTest extends TestCase
             (string) file_get_contents($this->tmp . '/clusters.idx'),
             ['allowed_classes' => \Phpdup\Persistence\SerializedClassAllowList::blockCacheClasses()],
         );
-        $this->assertSame('cluster-cache-v2', $payload['parser_version'],
-            'item 1.4 re-pin: fresh snapshots must carry the v2 marker');
+        $this->assertSame('cluster-cache-v3', $payload['parser_version'],
+            'item 4.4 re-pin: fresh snapshots must carry the v3 (id-free corpus) marker');
     }
 
     public function testRoundTripPreservesMedoidIdAcrossTheCacheBoundary(): void

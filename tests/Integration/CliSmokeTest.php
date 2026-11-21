@@ -349,8 +349,14 @@ final class CliSmokeTest extends TestCase
         $this->assertSame(
             $this->normalizeClusters($js['clusters']),
             $this->normalizeClusters($jf['clusters']),
-            'fork vs serial must agree on every cluster and every member',
+            'fork vs serial must agree on every cluster, id and member',
         );
+        foreach ($js['clusters'] as $c) {
+            $this->assertMatchesRegularExpression(
+                '/^F[0-9a-f]{16}$/', (string) $c['id'],
+                'external cluster identity is the canonical FindingId stream (item 4.4)',
+            );
+        }
     }
 
     // ------------------------------------------------------ repo corpora
@@ -527,7 +533,12 @@ final class CliSmokeTest extends TestCase
                 $c['members'] ?? [],
             );
             sort($members);
+            // Item 4.4: cluster ids are content-derived FindingIds — the
+            // same canonical set in any run order. Folding the id into the
+            // comparison key means every existing fork-vs-serial and
+            // warm-cache leg now pins id equality, not just membership.
             $keys[] = implode('|', [
+                (string) $c['id'],
                 $c['exact'] ? 'exact' : 'near',
                 round((float) $c['similarity'], 4),
                 (int) $c['impact'],

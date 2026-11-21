@@ -58,6 +58,9 @@ final class BaselineStoreTest extends TestCase
 
         $this->assertFileExists($path);
 
+        $raw = json_decode((string) file_get_contents($path), true);
+        $this->assertSame(2, $raw['version'], 'content-hashed member_hashes ride baseline v2');
+
         $entries = $store->readBaseline($path);
 
         $this->assertCount(2, $entries);
@@ -297,22 +300,54 @@ final class BaselineStoreTest extends TestCase
             name: 'bar',
             ast: new Node\Stmt\Nop(),
         );
+        $block1->structuralHash = 'alpha-content';
 
         $block2 = new Block(
             file: 'src/Foo.php',
-            range: new LineRange(30, 40), // different range
+            range: new LineRange(10, 20), // same position, different content
             kind: 'method',
             namespace: null,
             class: null,
             name: 'bar',
             ast: new Node\Stmt\Nop(),
         );
+        $block2->structuralHash = 'beta-content';
 
         $store = new BaselineStore();
         $hash1 = $store->computeBlockHash($block1);
         $hash2 = $store->computeBlockHash($block2);
 
         $this->assertNotSame($hash1, $hash2);
+    }
+
+    /**
+     * §5e / item 4.4: the hash is CONTENT, never position — an unrelated
+     * edit above a block shifts its lines but must not churn its entry
+     * (v1's file.start.end formula failed exactly this).
+     */
+    public function testComputeBlockHashSurvivesLineShifts(): void
+    {
+        $mk = function (int $start, int $end): Block {
+            $b = new Block(
+                file: 'src/Foo.php',
+                range: new LineRange($start, $end),
+                kind: 'method',
+                namespace: null,
+                class: null,
+                name: 'bar',
+                ast: new Node\Stmt\Nop(),
+            );
+            $b->structuralHash = 'same-content';
+            return $b;
+        };
+
+        $store = new BaselineStore();
+
+        $this->assertSame(
+            $store->computeBlockHash($mk(10, 20)),
+            $store->computeBlockHash($mk(105, 115)),
+            'line shift must not move a baseline member hash',
+        );
     }
 
     /**

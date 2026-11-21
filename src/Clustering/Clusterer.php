@@ -8,6 +8,7 @@ use Phpdup\Extraction\Block;
 use Phpdup\Index\BlockIndex;
 use Phpdup\Index\NgramInvertedIndex;
 use Phpdup\Ml\PairScorer;
+use Phpdup\Reporting\FindingId;
 use Phpdup\Similarity\ContainmentSimilarity;
 use Phpdup\Similarity\JaccardSimilarity;
 use Phpdup\Similarity\TreeEditDistance;
@@ -249,7 +250,10 @@ final class Clusterer
         foreach ($index->hashBuckets() as $hash => $blocks) {
             if (count($blocks) < 2) continue;
             $cluster = new Cluster(
-                id: 'X' . substr($hash, 0, 8),
+                // Item 4.4: the canonical FindingId recipe replaces the old
+                // 'X' + bucket-hash-prefix stream — external identity is one
+                // content derivation everywhere, mint sites included.
+                id: FindingId::forMembers($blocks),
                 members: $blocks,
                 similarity: 1.0,
                 exact: true,
@@ -347,13 +351,11 @@ final class Clusterer
             // re-scanning all member pairs — O(1) instead of O(k²).
             $minSim = $componentMinSim[$root] ?? 1.0;
             $component = new Cluster(
-                // Item 1.4 (ruling §5e, in-lane stopgap for 4.4): ids derive
-                // from the SORTED member content tokens (file|structuralHash,
-                // the element of §5e's sha256(file|structuralHash) direction),
-                // never from the union-find root — the root is edge-arrival-
-                // order dependent, so md5(root) gave identical clusters
-                // different ids between serial and parallel runs.
-                id: self::contentClusterId($members),
+                // Item 4.4: canonical FindingId (was the item-1.4
+                // contentClusterId stopgap — same sorted-content basis,
+                // now the single F… stream; never the union-find root,
+                // which is edge-arrival-order dependent).
+                id: FindingId::forMembers($members),
                 members: $members,
                 similarity: $allIdenticalHash ? 1.0 : $minSim,
                 exact: $allIdenticalHash,
@@ -388,31 +390,9 @@ final class Clusterer
         return $finalClusters;
     }
 
-    /**
-     * Content-derived cluster id (item 1.4 in-lane stopgap for 4.4, per
-     * the §5e ruling): 'C' + a digest of the SORTED member content tokens
-     * (file|structuralHash per §5e's element derivation). Two runs that
-     * formed the same cluster from different edge-arrival orders now get
-     * the same id — unlike the previous md5(union-find-root), whose root
-     * depended on arrival order and swapped between serial and parallel.
-     *
-     * Known limitation inherited from §5e's own formula: two clusters of
-     * equal (file|structuralHash) multisets collide — possible only when
-     * identical-hash blocks are kept apart by df-pruning. 4.4's FindingId
-     * pass replaces this derivation wholesale; the sorted-content-element
-     * shape is what stays.
-     *
-     * @param list<Block> $members
-     */
-    private static function contentClusterId(array $members): string
-    {
-        $tokens = [];
-        foreach ($members as $m) {
-            $tokens[] = $m->file . '|' . $m->structuralHash;
-        }
-        sort($tokens);
-        return 'C' . substr(md5(implode("\x1f", $tokens)), 0, 8);
-    }
+    // (Item 1.4's contentClusterId() stopgap was minted here; item 4.4
+    // replaced it wholesale with Reporting\FindingId — the sorted-content
+    // element shape survived, the md5/C… stream did not.)
 
     /**
      * Greedy medoid-ball split of one union-find component (item 1.4,
@@ -585,7 +565,7 @@ final class Clusterer
             }
 
             $cluster          = new Cluster(
-                id:         self::contentClusterId($members),
+                id:         FindingId::forMembers($members),
                 members:    $members,
                 similarity: $similarity,
                 exact:      $allIdenticalHash,

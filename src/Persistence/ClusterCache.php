@@ -9,7 +9,7 @@ use Phpdup\Clustering\Cluster;
  * On-disk cache of the final cluster set for a given corpus shape.
  *
  * Cache hit policy is intentionally conservative: a snapshot is reused
- * iff the **complete sorted list of block ids + their structural hashes**
+ * iff the **complete sorted set of member file paths + structural hashes**
  * is bit-identical to the previous run's. That covers the common
  * incremental case (re-running phpdup on an unchanged corpus) without
  * the bookkeeping cost of partial edge invalidation.
@@ -23,7 +23,7 @@ use Phpdup\Clustering\Cluster;
  *   [
  *     'parser_version' => string,
  *     'config_key'     => sha1(serialize(relevant_fields)),
- *     'corpus_hash'    => sha1(sort(block_id . '|' . structuralHash)),
+ *     'corpus_hash'    => sha1(sort(file . '|' . structuralHash)),
  *     'clusters'       => Cluster[],   // serialized; AST nodes detached
  *   ]
  *
@@ -34,11 +34,13 @@ use Phpdup\Clustering\Cluster;
  */
 final class ClusterCache
 {
-    // cluster-cache-v2 (item 1.4, ruling §5b): v1 blobs carry pre-split
-    // single-linkage cluster sets with md5(union-find-root) ids — those
-    // must never be served by a split-aware run. Wholesale invalidation;
-    // the config_key now also binds the split knobs.
-    private const PARSER_VERSION = 'cluster-cache-v2';
+    // cluster-cache-v3 (item 4.4, hazard-4): v2 corpus hashes baked the
+    // scan-index block id into every token, so an unchanged corpus
+    // re-scanned in a different order invalidated the cache for nothing.
+    // Tokens are now file|structuralHash only — v2 blobs (and the older
+    // pre-split v1 sets) must never be served by an id-agnostic run.
+    // Wholesale invalidation; the config_key still binds the split knobs.
+    private const PARSER_VERSION = 'cluster-cache-v3';
 
     public function __construct(
         private readonly string $cacheDir,
@@ -129,10 +131,11 @@ final class ClusterCache
     {
         $tokens = [];
         foreach ($blocks as $b) {
-            // Include file path so renamed/moved files invalidate the cache.
-            // Block ids and structural hashes can be identical across renames
-            // (same content, single-file run, or unchanged sorted order).
-            $tokens[] = $b->id . '|' . $b->file . '|' . $b->structuralHash;
+            // Structural member set only (item 4.4 / hazard-4): the block
+            // id embeds the scan index, so baking it into the corpus hash
+            // made cache hits arrival-order dependent. File path still
+            // keys renames/moves; structuralHash keys content.
+            $tokens[] = $b->file . '|' . $b->structuralHash;
         }
         sort($tokens);
         return sha1(implode("\n", $tokens));

@@ -26,12 +26,19 @@ use Phpdup\Extraction\Block;
  * }
  *
  * member_hashes are sorted SHA-256 fingerprints of each block's
- * content identity: sha256($block->file . $block->range->start . $block->range->end).
- * They are NOT dependent on cluster IDs which may change between runs.
+ * content identity: sha256($block->file . '|' . $block->structuralHash).
+ * Item 4.4 (ruling §5e) replaced v1's positional formula
+ * (file . start . end), which churned every baseline entry whenever an
+ * unrelated edit shifted lines above a block. They are NOT dependent on
+ * cluster IDs nor on where a block sits in its file.
  */
 final class BaselineStore
 {
-    private const CURRENT_VERSION = 1;
+    // Baseline v2 (item 4.4): member_hashes are content-derived. v1 files
+    // keyed positions, so the same accepted cluster could silently miss
+    // under a shifted listing — readBaseline() refuses them loudly and
+    // the operator re-accepts once, never silently re-baselined.
+    private const CURRENT_VERSION = 2;
 
     /**
      * Write a baseline snapshot of the current clusters to a JSON file.
@@ -210,12 +217,14 @@ final class BaselineStore
     }
 
     /**
-     * Compute a SHA-256 content hash for a block.
-     * Uses file path + start line + end line as the content identity.
+     * Compute a SHA-256 content hash for a block: file path + the
+     * normalized structural fingerprint. Content-keyed on purpose
+     * (item 4.4 / §5e) — line shifts elsewhere in the file must not
+     * move the hash, while a real body edit must.
      */
     public function computeBlockHash(Block $block): string
     {
-        $content = $block->file . $block->range->start . $block->range->end;
+        $content = $block->file . '|' . $block->structuralHash;
         return 'sha256:' . hash('sha256', $content);
     }
 
