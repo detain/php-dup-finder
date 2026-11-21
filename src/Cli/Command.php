@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Phpdup\Cli;
 
+use Phpdup\Clustering\CandidateBudgetException;
 use Phpdup\Pipeline\Pipeline;
 use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Tui\PhpdupModel;
@@ -617,6 +618,16 @@ HELP;
         $pipeline = $buildPipeline(null);
         try {
             $pipeline->run($state, $output);
+        } catch (CandidateBudgetException $e) {
+            // ft-n2: the budget halt is a runtime stop, not an invalid
+            // invocation — its message already names every remedy. Render
+            // it as the clean `phpdup:` error line (the same posture the
+            // config boundary uses at load time) instead of letting it
+            // reach Symfony's throwable renderer with its usage-dump
+            // footer. Exit 1 = runtime-halt per the docs contract
+            // (0 = ok incl findings, 2 = invalid invocation, 3 = gate trip).
+            $output->writeln('<error>phpdup: ' . $e->getMessage() . '</error>');
+            return 1;
         } finally {
             SignalHandler::uninstall();
         }

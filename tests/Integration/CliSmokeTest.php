@@ -232,6 +232,32 @@ final class CliSmokeTest extends TestCase
         $this->assertSame(3, $run['exit'], $run['combined']);
     }
 
+    public function testCandidateBudgetHaltRendersCleanErrorExit1(): void
+    {
+        // ft-n2: the generation-guard halt must surface as the clean
+        // `phpdup:` error line naming its remedies — never Symfony's
+        // throwable render with its usage-dump footer. The exit code
+        // stays 1 (runtime-halt per docs/CLI.md: 0 = ok incl findings,
+        // 2 = invalid invocation, 3 = gate trip).
+        // The corpus + cfg mirror the unit-pinned armed guard
+        // (CandidateBudgetFlagTest::makeChainCorpus): three blocks over
+        // a one-pair budget halt in Phase 2 candidate generation.
+        $corpus = $this->makeNearDupCorpus(3);
+        $run = $this->cli(['analyze', $corpus], [
+            'min_block_size'   => 2,
+            'max_df'           => 1.0,
+            'workers'          => 1,
+            'lazy_ast'         => false,
+            'candidate_budget' => 1,
+        ]);
+
+        $this->assertSame(1, $run['exit'], $run['combined']);
+        $this->assertStringContainsString('phpdup: Candidate generation exceeded', $run['combined']);
+        $this->assertStringContainsString('--candidate-budget', $run['combined'], 'the halt must name the live knob');
+        $this->assertStringNotContainsString('Usage:', $run['combined'], 'no Symfony usage dump may ride the halt render');
+        $this->assertStringNotContainsString('Stack trace', $run['combined']);
+    }
+
     // ------------------------------------------------- accounting surfaces
 
     public function testUncomparableFilesCannotHideBehindCleanVerdict(): void
@@ -553,6 +579,23 @@ final class CliSmokeTest extends TestCase
                     return round($sum, 2);
                 }
                 PHP);
+        }
+        return $dir;
+    }
+
+    /**
+     * Mirror of the unit-pinned armed-guard corpus (CandidateBudgetFlagTest
+     * ::makeChainCorpus): n copies of one small function, byte-identical so
+     * Phase 2 candidate generation crosses any pair budget below the full
+     * pair count — used where a test needs the budget halt, not clusters.
+     */
+    private function makeNearDupCorpus(int $n): string
+    {
+        $dir = $this->tmp . '/chain';
+        mkdir($dir, 0o775, true);
+        $body = "<?php\nfunction probe_%d(\$x) {\n    \$y = \$x + 1;\n    return \$y;\n}\n";
+        for ($i = 0; $i < $n; $i++) {
+            file_put_contents($dir . "/f$i.php", sprintf($body, 0));
         }
         return $dir;
     }
