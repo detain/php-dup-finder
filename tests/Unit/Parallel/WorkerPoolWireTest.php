@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use Phpdup\Extraction\Block;
 use Phpdup\Extraction\BlockExtractor;
 use Phpdup\Parallel\WorkerPool;
+use Phpdup\Persistence\SerializedClassAllowList;
 use Phpdup\Parsing\AstParser;
 
 /**
@@ -130,6 +131,58 @@ final class WorkerPoolWireTest extends TestCase
             $i++;
             $this->assertSame(['a-00' . $i, 'b-00' . $i, 0.75, 'jaccard'], $row);
         }
+    }
+
+    /**
+     * Reviewer M1 regression pins: a frame whose bytes cannot deserialize
+     * (truncated or mangled from a OTHERWISE-VALID serialized row) must
+     * throw at the decode seam the stream loop uses — never yield `false`.
+     * Driven via reflection because writeRecord owns the encode side, so a
+     * task closure cannot legally emit corrupt bytes; the fork round-trip
+     * tests above keep the seam wired into real streaming.
+     */
+    public function testCorruptMidStreamFrameFailsLoudInsteadOfYieldingFalse(): void
+    {
+        $decode    = new \ReflectionMethod(WorkerPool::class, 'decodeFrame');
+        $decode->setAccessible(true);
+        $allowList = SerializedClassAllowList::blockCacheClasses();
+
+        $valid = serialize(['type' => 'block', 'file' => 'x.php', 'block' => $this->makeRealBlock()]);
+
+        foreach ([
+            'truncated row' => substr($valid, 0, -8),
+            'mangled row'   => str_replace('s:5:"x.php"', 's:5:"x', $valid),
+            'foreign bytes' => 'NOT-A-SERIALIZED-FRAME',
+            'literal false' => 'b:0;',
+        ] as $label => $payload) {
+            try {
+                $decode->invoke(null, 3, $payload, $allowList);
+                $this->fail("a $label payload must not decode silently");
+            } catch (\RuntimeException $e) {
+                $this->assertStringContainsString('failed to decode', $e->getMessage(), $label);
+                $this->assertStringContainsString('Worker 3', $e->getMessage(), $label);
+                $this->assertStringContainsString('Refusing to continue with corrupt data.', $e->getMessage(), $label);
+            }
+        }
+    }
+
+    public function testDecodeFrameReturnsSentinelsAndValidRecordsUntouched(): void
+    {
+        $decode    = new \ReflectionMethod(WorkerPool::class, 'decodeFrame');
+        $decode->setAccessible(true);
+        $allowList = SerializedClassAllowList::blockCacheClasses();
+
+        // Sentinel precedence: well-formed control frames pass through for
+        // the caller's own checks, exactly as before the extraction.
+        $this->assertSame(['__done' => true], $decode->invoke(null, 0, serialize(['__done' => true]), $allowList));
+        $this->assertSame(['__error' => 'boom'], $decode->invoke(null, 0, serialize(['__error' => 'boom']), $allowList));
+
+        $block = $this->makeRealBlock();
+        $row   = ['type' => 'block', 'file' => 'x.php', 'block' => $block];
+        $out   = $decode->invoke(null, 0, serialize($row), $allowList);
+        $this->assertSame('block', $out['type']);
+        $this->assertInstanceOf(Block::class, $out['block']);
+        $this->assertSame($row['file'], $out['file']);
     }
 
     /** A real parsed + extracted Block, mirroring PreprocessWorker rows. */

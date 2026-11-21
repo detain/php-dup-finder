@@ -201,25 +201,13 @@ final class WorkerPool
                         $payload = substr($buffers[$idx], self::FRAME_HEADER, $len);
                         $buffers[$idx] = substr($buffers[$idx], self::FRAME_HEADER + $len);
 
-                        $record = @unserialize($payload, ['allowed_classes' => $allowList]);
+                        $record = self::decodeFrame($idx, $payload, $allowList);
                         if (is_array($record) && isset($record['__error'])) {
                             throw new \RuntimeException("Worker $idx failed: " . $record['__error']);
                         }
                         if (is_array($record) && isset($record['__done'])) {
                             $closeAfter = true;
                             break;
-                        }
-                        // Fail loud instead of yielding silently-corrupt data:
-                        // an incomplete class here means the worker channel now
-                        // ships a class that is missing from the allow-list
-                        // (a new wire type whose author forgot to extend it).
-                        $blocked = self::findBlockedClassName($record);
-                        if ($blocked !== null) {
-                            throw new \RuntimeException(
-                                "Worker $idx returned an object of class '$blocked', which is missing from the " .
-                                "unserialize allow-list (SerializedClassAllowList::blockCacheClasses()) — " .
-                                'extend the allow-list for the new wire class. Refusing to continue with corrupt data.'
-                            );
                         }
                         yield $record;
                     }
@@ -250,6 +238,51 @@ final class WorkerPool
     }
 
     /**
+     * Decode one framed worker record, failing loud on anything the stream
+     * contract forbids, and return the decoded value otherwise.
+     *
+     * Two reject classes, both previously silent corruption:
+     *  - @unserialize() returning false on a non-decodable payload. A valid
+     *    record can never serialize to an invalid payload (writeRecord owns
+     *    the encoder), so false here means a broken/truncated frame — the
+     *    old code yielded that false straight into the results stream.
+     *  - an object whose class is missing from the allow-list arriving as
+     *    __PHP_Incomplete_Class (a new wire type whose author forgot to
+     *    extend the list).
+     *
+     * Sentinel precedence is unaffected: __error/__done frames are plain
+     * arrays of string/bool (the child writes only those shapes), so the
+     * malformed and blocked-class guards can never fire on a well-formed
+     * control frame before the caller inspects them.
+     *
+     * @param list<class-string> $allowList
+     */
+    private static function decodeFrame(int $idx, string $payload, array $allowList): mixed
+    {
+        $record = @unserialize($payload, ['allowed_classes' => $allowList]);
+        if ($record === false) {
+            $preview = addcslashes(substr($payload, 0, 32), "\0..\37\177..\377");
+            throw new \RuntimeException(
+                "Worker $idx sent a frame that failed to decode: unserialize() returned false for " .
+                strlen($payload) . " bytes (payload starts: \"$preview\"). " .
+                'Refusing to continue with corrupt data.'
+            );
+        }
+        // Fail loud instead of yielding silently-corrupt data: an incomplete
+        // class here means the worker channel now ships a class that is
+        // missing from the allow-list (see SerializedClassAllowList).
+        $blocked = self::findBlockedClassName($record);
+        if ($blocked !== null) {
+            throw new \RuntimeException(
+                "Worker $idx returned an object of class '$blocked', which is missing from the " .
+                "unserialize allow-list (SerializedClassAllowList::blockCacheClasses()) — " .
+                'extend the allow-list for the new wire class. Refusing to continue with corrupt data.'
+            );
+        }
+        return $record;
+    }
+
+    /**
      * Recursively scan a decoded record for blocked classes.
      *
      * unserialize() converts every instance whose class is absent from the
@@ -258,7 +291,11 @@ final class WorkerPool
      * guard retires). The scan walks array values and object properties —
      * every class legitimately shipped over the worker wire (Block, LineRange,
      * Hole, Cluster and all PhpParser nodes) keeps its state in public
-     * properties, which get_object_vars() sees from this scope.
+     * properties, which get_object_vars() sees from this scope. Node
+     * PROTECTED $attributes are deliberately not traversed: in the pipeline's
+     * payloads they hold only string-keyed scalars (parser line/token
+     * positions plus the string ATTR_OP markers — AstParser runs no
+     * NameResolver), never a class instance the allow-list could miss.
      *
      * Object ids are visited once: DAG-shaped payloads (the same node shared
      * by many holes) cost a single pass, and a pathological cycle cannot hang
