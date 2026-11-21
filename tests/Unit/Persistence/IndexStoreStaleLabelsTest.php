@@ -8,7 +8,9 @@ use Phpdup\Extraction\Block;
 use Phpdup\Extraction\BlockExtractor;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Parsing\AstParser;
+use Phpdup\Parsing\CacheBlob;
 use Phpdup\Persistence\IndexStore;
+use Phpdup\Persistence\SerializedClassAllowList;
 use Phpdup\Scanning\RepoLabels;
 
 /**
@@ -57,13 +59,30 @@ final class IndexStoreStaleLabelsTest extends TestCase
         $store->save($this->sourceFile, $blocks);
 
         // Surgery: rewrite the on-disk blob with the repo/scope pair
-        // REMOVED from every Block object — the exact byte-level shape
+        // REMOVED from every Block object — the exact value-object shape
         // a pre-5.1 writer produced (declared properties absent from a
         // serialization simply do not appear; PHP restores class
         // defaults). public unset() gives us that shape honestly.
+        // Since shell-S18 the production writer frames the payload
+        // behind a plain-text header, so the surgery splices header
+        // from framed tail, unframes to reach the payload, and
+        // re-frames on the way back: the header bytes ride through
+        // verbatim because only the Block objects are stale-labelled —
+        // the CONTAINER is the current shape, exactly what a post-S18
+        // pre-5.1-blocks blob would look like on disk.
         $cacheFile = $this->cacheDir . '/' . sha1($this->sourceFile) . '.idx';
         $this->assertFileExists($cacheFile);
-        $payload = unserialize((string) file_get_contents($cacheFile));
+        $bytes = (string) file_get_contents($cacheFile);
+        $this->assertStringStartsWith('PHPDUP-IDX1' . "\n", $bytes,
+            'pin the framed shape the surgery reads: header bytes survive verbatim');
+        $sep = strpos($bytes, "\n\n");
+        $this->assertNotFalse($sep, 'the production header must terminate for the splice');
+        $header = substr($bytes, 0, $sep + 2);
+        $blob = CacheBlob::unframe(substr($bytes, $sep + 2));
+        $this->assertNotNull($blob, 'the production payload is exactly length-framed');
+        $payload = unserialize($blob, [
+            'allowed_classes' => SerializedClassAllowList::blockCacheClasses(),
+        ]);
         $this->assertIsArray($payload);
         $pre51 = [];
         foreach ($payload['blocks'] as $block) {
@@ -73,7 +92,9 @@ final class IndexStoreStaleLabelsTest extends TestCase
             $pre51[] = $block;
         }
         $payload['blocks'] = $pre51;
-        file_put_contents($cacheFile, serialize($payload));
+        file_put_contents($cacheFile, $header . CacheBlob::frame(serialize($payload)));
+        $this->assertStringStartsWith($header, (string) file_get_contents($cacheFile),
+            'the rewritten blob keeps the original header bytes untouched');
 
         // Refusal would be WRONG here: the payload shape is otherwise
         // current, and labels are recomputed anyway — the load must
