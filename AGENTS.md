@@ -40,7 +40,7 @@ php -d phar.readonly=0 build-phar.php                       # build phpdup.phar 
 
 **Stages** (`src/Pipeline/Stages/`): `ScanningStage.php` → `PreprocessStage.php` → `ClusterStage.php` → `RefactorStage.php` → `ReportStage.php`. All implement `src/Pipeline/StageInterface.php`; cooperative ones implement `src/Pipeline/CooperativeStageInterface.php`. Mutable state: `src/Pipeline/PipelineState.php`. Enum: `src/Pipeline/Stage.php`. Progress: `src/Pipeline/ProgressListener.php` + `NullProgressListener.php`.
 
-**Scan**: `src/Scanning/FileScanner.php` honors `Config::$exclude` globs; defaults in `src/Scanning/DefaultExcludes.php`.
+**Scan**: `src/Scanning/FileScanner.php` honors `Config::$exclude` globs; defaults in `Config::defaults()` (`src/Cli/Config.php`).
 
 **Preprocess**: `src/Parsing/AstParser.php` + `src/Parsing/AstCache.php` + `src/Parsing/TokenCache.php` → `src/Extraction/BlockExtractor.php` (kinds in `BlockExtractor::ALL_KINDS`) → `src/Normalization/Normalizer.php` (modes: `strict`/`default`/`aggressive`) → `src/Fingerprint/SubtreeHasher.php` + `src/Fingerprint/NgramFingerprint.php`. ORM/DB pre-passes: `src/Normalization/DbOpCanonicalizer.php` + `src/Normalization/DbOpRegistry.php` (gated by `--db-aware`); `src/Normalization/TrinityCollapser.php` (gated by `--trinity-collapse`). Per-file cache: `src/Persistence/IndexStore.php`.
 
