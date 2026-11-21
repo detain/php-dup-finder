@@ -120,10 +120,11 @@ jobs:
           tools: composer:v2
       - run: composer install --no-interaction --no-progress --prefer-dist
       - name: Lint PHP files
-        # 2026-11-21: tests/Fixtures is scanner corpus, not code — it
-        # contains deliberately parse-fatal files by design (the crash#3
-        # regression pin switch_bare_return.php and friends), mirroring
-        # the phpstan/psalm src-only scoping precedent.
+        # 2026-11-21: tests/Fixtures is scanner corpus, not code — the
+        # crash#3 regression pin switch_bare_return.php is parse-fatal by
+        # design (exactly one of the 20 corpus files is); the rest is
+        # fixture data not intended for lint, mirroring the phpstan/psalm
+        # src-only scoping precedent.
         run: |
           find src tests -name "*.php" -not -path "tests/Fixtures/*" -print0 | xargs -0 -n1 -P4 php -l > /dev/null
       - name: PHPStan (level 6)
