@@ -1,0 +1,155 @@
+# bench/corpus-pins.txt — pinned snapshots for the acceptance benchmark (improve_logic.md §6.1).
+#
+# Contains ONLY paths, commit ids, counts and sha256 digests of file LISTS.
+# No source content, no report excerpts (privacy law: see bench/audit-truth/README.md).
+#
+# Corpora law: READ-ONLY. Materialize a pinned tree with
+#     git -C <repo> archive <commit> <subdir> | tar -x -C <tmpdir-outside-repo>
+# NEVER `git worktree add`, NEVER `git checkout` inside these corpora.
+#
+# Capture date: 2026-11-21 (WAVE-1 BENCH lane). Re-verify recipe: §"verification" lines per block.
+
+[reports]
+# Ground-truth source documents. Extraction adapters parse EXACTLY these bytes.
+home-my-refactor      = /home/my/refactor.md                    425580 B  sha256:8d1a98f6e7f2af4cba262469f8d717c49aa2499cfa17951b2753ce09bf0b193f
+phlix-refactor        = /home/sites/phlix/refactor.md           271795 B  sha256:c15c23e0e23c56ec20335ea57b77e1621486c4f932989cf8866e1c130d207529
+
+[phlix-server]
+repo                = /home/sites/phlix/phlix-server
+scan-commit         = 375f79924367c826836ec9eaa347c87c1c369fed   # doc §6.1 pin; present locally, verified via cat-file -t commit
+src-php-files       = 796                                        # doc §3.2/Appendix A claim: 796 — EXACT MATCH
+src-filelist-sha256 = 86f6c4eec096bb6ee8a3a6cf2e18580438326b7fc839d48163d901356bf04d5f   # sorted `git ls-tree -r --name-only <pin> -- src`
+# verification: git -C /home/sites/phlix/phlix-server ls-tree -r --name-only 375f7992 -- src | sort | sha256sum
+
+[phlix-hub]
+repo                = /home/sites/phlix/phlix-hub
+scan-commit         = ba1ae3b8b66030db419fccd63f148ff3c2b718c1   # doc §6.1 pin; present locally
+src-php-files       = 234                                         # doc §3.2 claim: 234 — EXACT MATCH
+src-filelist-sha256 = c84288b3f7f7ff03afb208cfe9add2634dfd1fc06bf8fd7c31a9207ede677544
+# verification: git -C /home/sites/phlix/phlix-hub ls-tree -r --name-only ba1ae3b8 -- src | sort | sha256sum
+
+[phlix-twin-files]
+# Same relative path in BOTH pinned src/ trees — the doc §6 spot-check row "phlix same-path twins 24/26".
+count               = 37      # doc Appendix A claims 39 — measured 37 AT THE PINS (f15 §1 recorded this ±2; 37 governs)
+pairing-rule        = path identity; text-similarity ≥ 0.5 screen is nightly-side (doc Appendix A recipe)
+# verification: comm -12 <(server ls-tree names|sort) <(hub ls-tree names|sort) — see both [phlix-*] blocks
+
+[home-my]
+repo                = /home/my
+branch              = master
+scan-pin            = ad58b221c5266775415f854aec9d8dc1d2d05977   # HEAD when /home/my/refactor.md was scanned (report dated 2026-11-20, f15 §1 capture)
+drift-note          = HEAD observed 004b67d9976d1859d6f82224e259f6eab3d69c96 at 2026-11-21 capture (+5 commits, still contains the pin: merge-base --is-ancestor OK). The tree IS MOVING: nightly jobs MUST git-archive the scan-pin, never trust the working tree.
+corpus-roots        = include/Api, include/ajax
+api-ajax-php-files  = 689                                        # doc §3.2 claim: 689 at include/{Api,ajax} — EXACT MATCH at the scan-pin
+api-ajax-filelist-sha256 = 36a9440dca86db115680822f5490f830c84782d79162c3218f27ac78981e2e74
+# verification: git -C /home/my ls-tree -r --name-only ad58b221c5 -- include/Api include/ajax | sort | sha256sum
+
+[home-my-vendor-detain]
+# 97 packages under /home/my/vendor/detain/, of which 96 are git checkouts (phpsysinfo has no .git — the count gap is real and by-design here).
+# Format: package HEAD branch   (captured at the same moment as [home-my]; these are MOVING — re-pin per nightly)
+cisco_parser ae5cf7e24b8ce92975311d94a3bbd01200d698db master
+cloudlinux-licensing 66873bdb0a571d80438eb944c0e181ca278f7117 master
+coinbase-commerce 3f17d3e6f1dbcc33e56a681a73ff4d14b987b225 master
+cpanel-licensing 8f83ec6e0c5f70739a829f21bee2694a4a4c4607 master
+crud 31c3d9b87a4f66899632bcd68951ef71c8e004d3 adminlte
+db_abstraction b5b2b0fd73f76d5e87cdd1ce07544326a5126008 detached
+dbrel-data-php 34cdd57ee329a8153e00299b4a53b02ce72f87ae master
+dep-sec-patcher 2dcfb485c695e255e005ef39a868c575a6b27eac master
+fantastico-licensing 1c67c94e0fd314311f938c52c68241fe380590f7 master
+ip_vlan_manager e93ec9d78c642bb6e57bc919f1d30c030feeb4f5 master
+kayako-php-api-library 80d27344e62f7e222f3f4f7bfcd9d28660c536e2 master
+litespeed-licensing d74486e3a9632684128999b3c8057514b62a6f88 master
+monolog-mydb ea2f44ba6b66f6075394118cbf998a393f35bb4b development
+myadmin-abuse-plugin 43c4f7c52279336f97d21705943428c618f0c529 master
+myadmin-amazon-payments 0932e4721f532a9919eea175f5a44319d42e5cff master
+myadmin-authorizenet-payments 27ab2502fa8cca89f70f22473ab09836ea5cc06f master
+myadmin-backups-module 615567735efb1e92235deeb30c50890a542fca4a master
+myadmin-cloudlinux-licensing 555dd25033a594c4e352c3a6e45b9ab24b20203d master
+myadmin-contracts 10f28870970ac57bf23811103a9873e3f2a781e6 master
+myadmin-cpanel-licensing 1e41d2fe99381fb75add88c7a3aeb360a0b54fb1 master
+myadmin-cpanel-vps-addon 91906f0a5001b96a29ca051f66f24f6ba1c85122 master
+myadmin-cpanel-webhosting b47ba6fb824ae4b62e7b8b4b672fde7d28e299e2 master
+myadmin-directadmin-licensing 361e891f11ea0fe03b2acef8dd5bbd3bbd22e371 master
+myadmin-directadmin-storage ddd3e23f2a41516e421f6634a407193f93df583a master
+myadmin-directadmin-vps-addon c41d9791488e1c9f3cb0a031fbd02e401f0af540 master
+myadmin-directadmin-webhosting 3a64632336b8c4649eb2490850864ad82bc08fb1 master
+myadmin-docker-vps 90beade3c7d831aad42e282bfb49ddd0ec3f9f6e master
+myadmin-domains-module 2d1694c46f08ac076c001caafb4935a112dfd148 master
+myadmin-drbl-backups dafda417c661113dcc2e46e6b2b3ecf10976f77c master
+myadmin-fantastico-licensing 1d27d2269335977fc15298fa5b9fba69a652b5dc master
+myadmin-fantastico-vps-addon a4cdbcaf28d87cd4fe9c2246fcb4073d6580d9fd master
+myadmin-floating-ips-module 50d6cf92f04fb16f8d6072deba2b2cd672ad42ab master
+myadmin-fraudrecord-plugin 4594172e94a28320946d04a687a1fdbbbb36e7d4 master
+myadmin-globalsign-ssl 76f91e6733d1d87558d760eaf51c24da5b321296 master
+myadmin-gluster-backups 9528008e299dd201fb56e394c4852025f7f419ff master
+myadmin-google-analytics 9187188f92a6e0ce56702cc9a7cc22403dcc314c master
+myadmin-googlecheckout-payments 9e18c89f76d93ae9317fc5d6860fd8e07a46fdcc master
+myadmin-googlewallet-payments 1ab17b21975ff02613d65ed1dbb6e168f0e63ad4 master
+myadmin-hd-vps-addon a6e57a89e95c681dbaba92ef27a24a17776b568d master
+myadmin-hotjar-analytics 59c03a61d5995a7ea60ca415a570c56e3c3cd904 master
+myadmin-hyperv-vps 2949942e4ad24625ff0013e40ed2d5d95b194329 master
+myadmin-icontact-mailinglist ebac32141846dbac8dbe7d28e001c94f0f084b11 master
+myadmin-ips-vps-addon b16a54ba2e9542ebb686856dbc458b56b66c9a62 master
+myadmin-ip-webhosting-addon f052af5d1f4d2ce7cdec48f41a2e7759c67e1e89 master
+myadmin-kayako-chat e546f4e94830682e62847478b8c4ed5740a932ab master
+myadmin-kayako-support 170988f58134f51eae2f40603443d520ea30ec33 master
+myadmin-ksplice-licensing f4ec964c6f5c03e939a40aca8dead42d8ee754b4 master
+myadmin-kvm-vps 246272a3ace8857ece2d209bc82b997e70136725 master
+myadmin-licenses-module 2f32fd1961cbd25658835e303afd5eacab464ea9 master
+myadmin-litespeed-licensing 3a0dd96d19d2acacdc999069cace292559d7b9e9 master
+myadmin-lxc-vps b4c7bc0a4b56df9ff90a5cb258fa084f78edbe2a master
+myadmin-mail-module 39dea1c7490a679705751b2e5e719b8bac227e00 master
+myadmin-maxmind-plugin fbf74566808c3cd6f39f4284c87727d42394a19b master
+myadmin-modernbill-plugin 496a249f7500041745c51be6641e254a41235237 master
+myadmin-monitoring-plugin ca22a8b8ff0c822282aec815caf93068d6efad75 master
+myadmin-novnc-plugin 96645852c7a85565984b9c26e736b3100af9c45b master
+myadmin-opensrs-domains fc53fe799b18681300fd5e7960ec6f6c6403ec29 master
+myadmin-openvz-vps 88b68530c0a842b2fe40706142a646397a0e6084 master
+myadmin-parallels-licensing cae48641578e0fb512a990c90207df9d6fbd030a master
+myadmin-patchman-licensing 7ce32228bf1fb67921cb7778c49f862f89875a76 master
+myadmin-paypal-payments ac2f0e45ee3c19bfee02241473244785d61b2845 master
+myadmin-payum-payments 1c45644d0bc90108c6b6c28ca770117fd9576d66 master
+myadmin-payza-payments d725c37c81b36927a3bf3e20f090b410a07b3c44 master
+myadmin-piwik-analytics 75aa2786631699be890e71feefa3625e1bad6e17 master
+myadmin-pleskautomation-webhosting 52cbffc15374ed76a11933e27c0ccc55d8f57cd9 master
+myadmin-plesk-webhosting 9fd11765a03239e8f3df23fcf654611f4dc52e02 master
+myadmin-plugin-installer 384c792c258bb3a5c46fb194f6d3366fa3352652 master
+myadmin-powerdns 1525b1209217f7bf9b099b2cb03bd55b4ac82b5f master
+myadmin-quickservers-module 77cbb9bae4d3bbe7c21f0d691368a5381dce1c6d master
+myadmin-raid-backups ee4eef1d6f8f2f8e89e3d9c63eccc7ac365c399a master
+myadmin-sendy-mailinglist 382ba2658530f24be714541ea62ea0fcc4d7dd3a master
+myadmin-servers-module 3c20467a4fca0e5f03e0703659250d14b92a537c master
+myadmin-slack-chat b388e5bdfc35a70b01216b43fb7829d879babdcd master
+myadmin-softaculous-licensing 96388b453a9e615197e6630b6c9825fbd9317784 master
+myadmin-softaculous-vps-addon b955049fb18cf5ddb03f8588a334edf3913801d3 master
+myadmin-ssl-module 32be94828acd97fcd2edbde78ae4a8f10ad9e8cf master
+myadmin-swift-backups 8e84806fec86bd5e72b07e9b9ee44912da64b82e master
+myadmin-virtuozzo-vps a6d93aa161a3b45b6e67753085f3c8c8cfa5f988 master
+myadmin-vps-module 94fb292c3618291c7b870407bb2db3d5451a1e27 master
+myadmin-webhosting-module 49d0dddafc997131840d4e579e88e50d7132bbb5 master
+myadmin-webuzo-vps 2673b592d1322370182cec4c07c18b38b6e4f538 master
+myadmin-whmsonic-licensing 938a2f73527bbcda4aa6c3af3f46caf9c9299037 master
+myadmin-xen-vps 29b26bbbe26f0735e82547ccce16afe353684906 master
+myadmin-zonemta-mail eea1ff07587ab46b0049e39933ed2adb29c753eb master
+mycrud c183187d7f3fa9378f446fbc3c2881ee422a42f8 master
+nusoap d6d9604371a7577f495f771ee554c4587e7f8eff master
+oauth2-server-mydb-storage 4a23a01167436f8a556852078eb6c81c323eb2e9 master
+osrs-toolkit-php ff935781d8afa8a018591b07cfbf738152b63747 master
+parallels-licensing 950a934517f7e7e13280ad828cf3b59abaf470a9 master
+php-pretty-datetime 59bd23841df09f1f96cf0e140a52d80393b73a98 master
+rate-limit e139779a357dba996e7134667d3a400a7baeb06f master
+session-samurai 16ee43b08566d326a543c547c8d8640565d9f1a9 master
+sshpool fa8d2714091fefedcd1a9bc8f799ecce039357ee master
+sshwitch 37171fd943b06fa65be2421a38db17fcf4d1799f master
+tracy-monolog-adapter e0de1736a6baea57e905a1500dc7a4978adfd152 master
+zip-zapper 191e0ca6d9078d76da9902046247faac137d4f66 master
+
+[home-my-vendor-ganesh]
+# Doc Appendix A also scans vendor/ganesh; 3 git checkouts.
+litespeed-licensing fd09e93600a691572b96ac39a1a73cd1a4d3e36d master
+myadmin-payssion-payments 46712ef2c7a30d71bc467383a461f4ffc9c727ad master
+myadmin-scrub-ips-module 3dda67c0dc7332928b1f09c16d475d6dad2793aa master
+
+[note-my-shaped]
+"/home/my-shaped" (as fleet prose uses it, improve_logic_info.md:235) is an ADJECTIVE ("shaped like /home/my"),
+NOT a corpus path — no such directory exists on this host. Erratum so no lane ever chases it.
