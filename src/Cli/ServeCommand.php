@@ -45,6 +45,12 @@ use Symfony\Component\Console\Output\OutputInterface;
  * - Request handling is crash-proof: an unexpected throw inside the
  *   application fails the single request with 500 and the daemon keeps
  *   serving (verified: /healthz stays up after a poisoned /analyze body).
+ * - The results directory (`/tmp/phpdup-results-<pid>`) is created 0700 at
+ *   startup and never adopted from a foreign owner: a pre-existing
+ *   directory of that name owned by another user refuses the whole
+ *   `serve` startup with exit 1 (runtime posture) instead of silently
+ *   writing job results into an attacker-visible tree. The shutdown
+ *   handler sweeps the directory so results never outlive the process.
  */
 final class ServeCommand extends SymfonyCommand
 {
@@ -65,6 +71,21 @@ final class ServeCommand extends SymfonyCommand
 
     /** Path to the worker Unix socket. */
     private string $workerSocket = '';
+
+    /** Private results directory prepared at startup ('' = refused or already swept). */
+    private string $resultDir = '';
+
+    /**
+     * Test seam for the ownership check on a pre-existing results directory
+     * (tests cannot chown without root). Null uses the real `fileowner()`
+     * check; a probe returning an error string forces startup refusal.
+     *
+     * @var (callable(string): ?string)|null
+     */
+    public $ownershipProbe = null;
+
+    /** Why the last {@see prepareResultsDir()} refused startup ('' = none). */
+    private string $resultsDirRefusal = '';
 
     /** HTTP/1.1 reason phrases by status code. */
     private const HTTP_REASON = [
@@ -149,6 +170,24 @@ final class ServeCommand extends SymfonyCommand
             return 1;
         }
 
+        // Prepare the private results directory before the worker can spawn
+        // or any bind happens: a foreign-owned path of the same name is a
+        // hard startup refusal (exit 1, runtime posture) — never a silent
+        // adoption that would expose job results to another user.
+        $prepared = $this->prepareResultsDir();
+        if ($prepared === null) {
+            $output->writeln('<error>phpdup serve: ' . $this->resultsDirRefusal . '</error>');
+            return 1;
+        }
+        $this->resultDir = $prepared;
+
+        // Register shutdown handler to clean up worker process, socket and
+        // results directory. Registered before the spawn so every early
+        // return path (bind failure, …) still sweeps what we created.
+        register_shutdown_function(function (): void {
+            $this->cleanupWorker();
+        });
+
         // Spawn background worker for async job processing. The serve root is
         // handed to the worker as a spawn argument so it can independently
         // re-validate dispatched job paths (defence in depth).
@@ -167,14 +206,9 @@ final class ServeCommand extends SymfonyCommand
                 $serveRoot !== '' ? $serveRoot : null,
                 $token ?: null,
                 $this->workerSocket,
-                $this->getResultDir()
+                $this->resultDir
             );
         }
-
-        // Register shutdown handler to clean up worker process
-        register_shutdown_function(function (): void {
-            $this->cleanupWorker();
-        });
 
         $address = "tcp://{$host}:{$port}";
 
@@ -409,11 +443,14 @@ final class ServeCommand extends SymfonyCommand
             return null;
         }
 
-        $resultDir = $this->getResultDir();
-        if (!is_dir($resultDir) && !@mkdir($resultDir, 0755, true)) {
-            $output->writeln('<comment>result dir not writable, running in sync mode</comment>');
+        if ($this->resultDir === '') {
+            // Invariant of execute(): the results dir is prepared (or startup
+            // was refused) before any spawn attempt. A direct call without it
+            // must not produce a worker with nowhere to write.
+            $output->writeln('<comment>result dir not prepared, running in sync mode</comment>');
             return null;
         }
+        $resultDir = $this->resultDir;
 
         $this->workerSocket = sys_get_temp_dir() . '/phpdup-worker-' . getmypid() . '.sock';
         $command = $this->workerCommand($workerBin, $this->workerSocket, $resultDir, $serveRoot);
@@ -470,7 +507,7 @@ final class ServeCommand extends SymfonyCommand
     }
 
     /**
-     * Clean up the worker process and socket.
+     * Clean up the worker process, socket and results directory.
      */
     private function cleanupWorker(): void
     {
@@ -484,17 +521,128 @@ final class ServeCommand extends SymfonyCommand
             @unlink($this->workerSocket);
             $this->workerSocket = '';
         }
+
+        $this->sweepResultDir();
     }
 
     /**
-     * Get the result directory path for worker output.
+     * Remove the results directory and everything the worker wrote into it,
+     * so job results never outlive the serve process. Bounded to the
+     * pid-nonce directory this process owns — a second belt behind the
+     * startup ownership check; foreign or unexpected paths are left alone.
      */
-    private function getResultDir(): string
+    private function sweepResultDir(): void
     {
-        $dir = sys_get_temp_dir() . '/phpdup-results-' . getmypid();
-        if (!is_dir($dir)) {
-            @mkdir($dir, 0755, true);
+        $dir = $this->resultDir;
+        $this->resultDir = '';
+
+        if ($dir === '' || $dir !== self::resultDirPath() || is_link($dir) || !is_dir($dir)) {
+            return;
         }
+
+        $entries = @scandir($dir);
+        if ($entries !== false) {
+            foreach ($entries as $entry) {
+                if ($entry === '.' || $entry === '..') {
+                    continue;
+                }
+                $path = $dir . '/' . $entry;
+                // The worker only ever writes plain `<jobid>.json` files
+                // here (job ids are format-validated); a stray subdirectory
+                // is never ours to delete — leaving it also fails the rmdir
+                // below, which is the honest outcome.
+                if (!is_dir($path) || is_link($path)) {
+                    @unlink($path);
+                }
+            }
+        }
+        @rmdir($dir);
+    }
+
+    /**
+     * The pid-nonce results directory shared with the worker child.
+     */
+    public static function resultDirPath(): string
+    {
+        return sys_get_temp_dir() . '/phpdup-results-' . getmypid();
+    }
+
+    /**
+     * Resolve the per-process results directory, enforcing private mode.
+     *
+     * Posture (shell-021):
+     * - missing            → created with mode 0700 (chmod defeats the umask);
+     * - ours, pre-existing → adopted and tightened to 0700 (an old 0755
+     *                        leftover from a crashed run never stays world-readable);
+     * - foreign-owned      → startup refusal ({@see resultsDirRefusal()});
+     * - not a directory / unfixable → refusal too (fail-closed).
+     *
+     * Returns the usable directory path, or null when startup must be refused.
+     */
+    public function prepareResultsDir(): ?string
+    {
+        $this->resultsDirRefusal = '';
+        $dir = self::resultDirPath();
+
+        if (is_link($dir)) {
+            // Never write results through a symlink we did not create.
+            $this->resultsDirRefusal = "results path {$dir} is a symlink; refusing to use it";
+            return null;
+        }
+
+        if (is_dir($dir)) {
+            $probe = $this->ownershipProbe;
+            $error = $probe !== null
+                ? ($probe)($dir)
+                : $this->defaultOwnershipCheck($dir);
+            if ($error !== null && $error !== '') {
+                $this->resultsDirRefusal = $error;
+                return null;
+            }
+        } elseif (!@mkdir($dir, 0700) && !is_dir($dir)) {
+            $this->resultsDirRefusal = "cannot create results directory {$dir}";
+            return null;
+        }
+
+        // mkdir()'s mode argument is masked by the process umask; chmod makes
+        // the 0700 intent absolute — then verify, refusing on any doubt.
+        if (!@chmod($dir, 0700)) {
+            $this->resultsDirRefusal = "cannot enforce mode 0700 on results directory {$dir}";
+            return null;
+        }
+        clearstatcache(true, $dir);
+        $mode = @fileperms($dir);
+        if ($mode === false || ($mode & 0777) !== 0700) {
+            $this->resultsDirRefusal = "results directory {$dir} is not private (mode 0700)";
+            return null;
+        }
+
         return $dir;
+    }
+
+    /**
+     * Reason the last {@see prepareResultsDir()} returned null ('' if none).
+     */
+    public function resultsDirRefusal(): string
+    {
+        return $this->resultsDirRefusal;
+    }
+
+    /**
+     * Real ownership check: an existing results directory must belong to
+     * this process's own user or startup is refused. Fail-closed: an
+     * unreadable owner counts as foreign.
+     */
+    private function defaultOwnershipCheck(string $dir): ?string
+    {
+        $owner = @fileowner($dir);
+        if ($owner === false) {
+            return "cannot stat the owner of results directory {$dir}";
+        }
+        if ($owner !== getmyuid()) {
+            return "results directory {$dir} is owned by uid {$owner}, not this process (uid "
+                . getmyuid() . '); refusing to adopt a foreign directory';
+        }
+        return null;
     }
 }

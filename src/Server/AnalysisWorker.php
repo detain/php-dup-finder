@@ -28,6 +28,15 @@ use Symfony\Component\Console\Output\NullOutput;
  * analysis pipeline using the same stages as the CLI command.
  *
  * RUN-frame admission (enumerated — the frame accepts exactly these fields):
+ *   - `<jobId>` (frame token): must match {@see AnalysisWorker::JOB_ID_PATTERN},
+ *     the queue's own mint shape (`JobQueue::enqueue()` produces
+ *     `bin2hex(random_bytes(8))` — 16 lowercase hex chars). The id names the
+ *     result file inside the results directory, so a non-conforming id
+ *     (`../..` traversal, NULs, slashes) is refused with an error ack before
+ *     anything is written or run — a hand-fed frame can never escape the
+ *     results directory. The raw id is never echoed back into the ack either;
+ *     refusals answer `FAIL 0 invalid job id` so a crafted id can never split
+ *     the line-based wire protocol.
  *   - `paths` (required): non-empty list of relative paths, re-validated by
  *     the worker against its spawn-time serve root via
  *     {@see Application::scanPathsError()} — defence in depth: even a frame
@@ -46,6 +55,16 @@ use Symfony\Component\Console\Output\NullOutput;
  */
 final class AnalysisWorker
 {
+    /**
+     * Mint shape of a job id: exactly what {@see JobQueue::enqueue()}
+     * produces (`bin2hex(random_bytes(8))` — 16 lowercase hex chars).
+     * The worker validates every RUN frame against this before touching
+     * the filesystem, so result-file names can never traverse out of
+     * the results directory. Public: the queue-mint pin test and any
+     * future dispatcher-side validation share this one source of truth.
+     */
+    public const JOB_ID_PATTERN = '/^[0-9a-f]{16}$/';
+
     /** @var resource|null */
     private $socket;
 
@@ -160,6 +179,15 @@ final class AnalysisWorker
 
             $jobId = substr($rest, 0, $spacePos);
             $configJson = substr($rest, $spacePos + 1);
+
+            // shell-022: the id names `<result-dir>/<id>.json`, so it is
+            // checked against the queue's mint shape BEFORE any write or
+            // pipeline work. `FAIL 0` answers without echoing the raw id —
+            // an unvalidated token must not re-enter the line-based frame.
+            if (preg_match(self::JOB_ID_PATTERN, $jobId) !== 1) {
+                @fwrite($client, "FAIL 0 invalid job id\n");
+                return;
+            }
 
             try {
                 $configData = json_decode($configJson, true, 32, JSON_THROW_ON_ERROR);

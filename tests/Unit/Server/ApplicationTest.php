@@ -623,4 +623,221 @@ final class ApplicationTest extends TestCase
             @rmdir($root);
         }
     }
+
+    // ------------------------------------------------------------------
+    // shell-S02 (shell-022): job-id hardening on the RUN frame. The id
+    // names `<result-dir>/<id>.json`, so only the queue's own mint shape
+    // reaches the filesystem; anything else is refused with an error ack
+    // and writes nothing — no path escape, and the worker stays alive
+    // for the next dispatch.
+    // ------------------------------------------------------------------
+
+    /**
+     * Drive one RUN frame through the worker's line handler over a
+     * socketpair and return the ack line ('' when the worker stayed silent).
+     *
+     * @param resource $client     The worker-facing end handed to handleClient().
+     * @param resource $controller The test end carrying frame in / ack out.
+     */
+    private function workerAck($client, $controller, string $frame): string
+    {
+        fwrite($controller, $frame);
+        $handleClient = new \ReflectionMethod(AnalysisWorker::class, 'handleClient');
+        try {
+            $handleClient->invoke(new AnalysisWorker(
+                '/tmp/phpdup-worker-defence-unused.sock',
+                $this->workerResultDir,
+                null
+            ), $client);
+        } catch (\Throwable $e) {
+            $this->fail('handleClient must never throw: ' . $e->getMessage());
+        }
+        $ack = fgets($controller);
+        return $ack === false ? '' : rtrim($ack, "\r\n");
+    }
+
+    /** @var string results dir used by the wire tests below */
+    private string $workerResultDir = '';
+
+    /** @var list<resource> streams to close after each wire test */
+    private array $workerStreams = [];
+
+    protected function setUp(): void
+    {
+        $this->workerResultDir = sys_get_temp_dir() . '/phpdup-s02-' . uniqid() . '-results';
+        mkdir($this->workerResultDir, 0700);
+    }
+
+    protected function tearDown(): void
+    {
+        foreach ($this->workerStreams as $stream) {
+            @fclose($stream);
+        }
+        $this->workerStreams = [];
+        if ($this->workerResultDir !== '' && is_dir($this->workerResultDir)) {
+            foreach (glob($this->workerResultDir . '/*') ?: [] as $file) {
+                @unlink($file);
+            }
+            @rmdir($this->workerResultDir);
+        }
+    }
+
+    /**
+     * @return array{0: resource, 1: resource} worker-facing, test-facing ends
+     */
+    private function makeWorkerPair(): array
+    {
+        $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        $this->assertIsArray($pair);
+        stream_set_timeout($pair[1], 5);
+        foreach ($pair as $stream) {
+            $this->workerStreams[] = $stream;
+        }
+        return $pair;
+    }
+
+    public function testJobIdPatternMatchesTheQueueMintShape(): void
+    {
+        // The mirror-relationship pin: every id JobQueue mints must pass the
+        // worker's admission regex, so validated dispatches are never refused.
+        $queue = new JobQueue();
+        for ($i = 0; $i < 25; $i++) {
+            $id = $queue->enqueue(['paths' => ['src']]);
+            $this->assertMatchesRegularExpression(AnalysisWorker::JOB_ID_PATTERN, $id);
+        }
+    }
+
+    public function testWorkerRefusesPathTraversalJobIdAndWritesNothing(): void
+    {
+        $escape = 'phpdup-s02-escaped-' . uniqid();
+        // `resultDir/../../<escape>.json` resolves to sys_get_temp_dir() —
+        // pre-fix the unvalidated id escaped two levels up.
+        $evilId = '../../' . $escape;
+
+        [$client, $controller] = $this->makeWorkerPair();
+        $ack = $this->workerAck($client, $controller, "RUN {$evilId} {\"paths\":[\"a.php\"]}\n");
+
+        $this->assertStringStartsWith('FAIL 0', $ack);
+        $this->assertStringContainsString('invalid job id', $ack);
+        $this->assertStringNotContainsString('OK', $ack);
+
+        // Nothing outside the results dir… and nothing inside it either.
+        $this->assertFileDoesNotExist(sys_get_temp_dir() . '/' . $escape . '.json');
+        $this->assertFileDoesNotExist(dirname($this->workerResultDir) . '/' . $escape . '.json');
+        $this->assertSame([], array_values(array_filter(
+            scandir($this->workerResultDir),
+            static fn (string $e): bool => $e !== '.' && $e !== '..'
+        )));
+    }
+
+    public function testWorkerRefusesOversizedJobIdWithoutEchoingIt(): void
+    {
+        // A hand-cranked id of the right alphabet but the wrong length must
+        // not land on disk under any name, and the raw token must never be
+        // echoed back into the line-based frame.
+        [$client, $controller] = $this->makeWorkerPair();
+        $ack = $this->workerAck($client, $controller, "RUN abcdef {}\n");
+
+        $this->assertSame('FAIL 0 invalid job id', $ack);
+        $this->assertStringNotContainsString('abcdef', $ack);
+        $this->assertSame([], array_values(array_filter(
+            scandir($this->workerResultDir),
+            static fn (string $e): bool => $e !== '.' && $e !== '..'
+        )));
+    }
+
+    public function testWorkerStaysAliveAfterRefusingABadJobId(): void
+    {
+        // Same worker object across two connections — the loop posture: the
+        // refusal returns cleanly, the next dispatch is still answered.
+        $worker = new AnalysisWorker(
+            '/tmp/phpdup-worker-defence-unused.sock',
+            $this->workerResultDir,
+            null
+        );
+        $handleClient = new \ReflectionMethod(AnalysisWorker::class, 'handleClient');
+
+        [$client1, $controller1] = $this->makeWorkerPair();
+        fwrite($controller1, "RUN ../../evil {}\n");
+        $handleClient->invoke($worker, $client1);
+        $ack1 = fgets($controller1);
+        $this->assertIsString($ack1);
+        $this->assertStringStartsWith('FAIL 0 invalid job id', rtrim($ack1, "\r\n"));
+
+        // Connection 2: valid id, poisoned JSON — proves the worker advanced
+        // to normal RUN-frame admission instead of dying on the refusal.
+        [$client2, $controller2] = $this->makeWorkerPair();
+        fwrite($controller2, "RUN 0123456789abcdef not-json\n");
+        $handleClient->invoke($worker, $client2);
+        $ack2 = fgets($controller2);
+        $this->assertIsString($ack2);
+        $this->assertStringStartsWith('FAIL 0123456789abcdef invalid JSON', rtrim($ack2, "\r\n"));
+    }
+
+    public function testWorkerWritesResultUnderValidatedIdAndAcksOk(): void
+    {
+        // Happy-path pin for the gate: a mint-shaped id runs the job and the
+        // result lands exactly at `<result-dir>/<id>.json`.
+        $root = sys_get_temp_dir() . '/phpdup-s02-job-' . uniqid();
+        mkdir($root);
+        file_put_contents($root . '/a.php', '<?php echo 1;');
+        $cwd = getcwd();
+        chdir($root);
+
+        try {
+            [$client, $controller] = $this->makeWorkerPair();
+            $handleClient = new \ReflectionMethod(AnalysisWorker::class, 'handleClient');
+            fwrite($controller, "RUN 0123456789abcdef {\"paths\":[\"a.php\"]}\n");
+            $handleClient->invoke(new AnalysisWorker(
+                '/tmp/phpdup-worker-defence-unused.sock',
+                $this->workerResultDir,
+                $root
+            ), $client);
+            $ack = fgets($controller);
+
+            $this->assertSame('OK 0123456789abcdef', $ack === false ? '' : rtrim($ack, "\r\n"));
+            $this->assertFileExists($this->workerResultDir . '/0123456789abcdef.json');
+            $decoded = json_decode((string)file_get_contents($this->workerResultDir . '/0123456789abcdef.json'), true);
+            $this->assertIsArray($decoded);
+        } finally {
+            chdir($cwd);
+            @unlink($root . '/a.php');
+            @rmdir($root);
+        }
+    }
+
+    public function testWorkerAcksFailureNotOkWhenResultWriteFails(): void
+    {
+        // shell-022 second leg: an unwritable results dir (analysis succeeds,
+        // the write fails) must answer FAIL — never a false "OK" for a result
+        // that does not exist.
+        $root = sys_get_temp_dir() . '/phpdup-s02-nowrite-' . uniqid();
+        mkdir($root);
+        file_put_contents($root . '/a.php', '<?php echo 1;');
+        chmod($this->workerResultDir, 0500); // owner without write bit: file_put_contents fails
+        $cwd = getcwd();
+        chdir($root);
+
+        try {
+            [$client, $controller] = $this->makeWorkerPair();
+            $handleClient = new \ReflectionMethod(AnalysisWorker::class, 'handleClient');
+            fwrite($controller, "RUN fedcba9876543210 {\"paths\":[\"a.php\"]}\n");
+            $handleClient->invoke(new AnalysisWorker(
+                '/tmp/phpdup-worker-defence-unused.sock',
+                $this->workerResultDir,
+                $root
+            ), $client);
+            $ack = fgets($controller);
+
+            $this->assertIsString($ack);
+            $this->assertStringStartsWith('FAIL fedcba9876543210', rtrim($ack, "\r\n"));
+            $this->assertStringContainsString('failed to write result file', (string)$ack);
+            $this->assertStringNotContainsString('OK', (string)$ack);
+        } finally {
+            chmod($this->workerResultDir, 0700);
+            chdir($cwd);
+            @unlink($root . '/a.php');
+            @rmdir($root);
+        }
+    }
 }
