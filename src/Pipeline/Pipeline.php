@@ -48,6 +48,14 @@ final class Pipeline
      */
     public function iter(PipelineState $state, OutputInterface $output): \Generator
     {
+        // once-S59: mark the wall-clock origin of this run the moment the
+        // pump starts (generator bodies run on first tick, so this lands
+        // before any stage work). ??= keeps the earliest stamp if a driver
+        // ever rewinds the same state. ReportStage reads this to give the
+        // Report an honest ScanWindow; a state that never enters a
+        // Pipeline stays window-less and its reports omit timestamps.
+        $state->runStartedAt ??= microtime(true);
+
         foreach ($this->stages as $stage) {
             // Soft-cancel checkpoint: if the user pressed ^C since the
             // last stage finished, jump straight to the Reporting stage

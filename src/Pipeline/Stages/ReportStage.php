@@ -30,6 +30,7 @@ use Phpdup\Reporting\RefactorPatchReporter;
 use Phpdup\Reporting\RefactorTestReporter;
 use Phpdup\Reporting\Report;
 use Phpdup\Reporting\SarifReporter;
+use Phpdup\Reporting\ScanWindow;
 use Phpdup\Reporting\TimeseriesReporter;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -190,6 +191,17 @@ final class ReportStage implements StageInterface
         // PipelineState lifecycle law and the class docblock).
         (new FunctionNameRegistry())->resolve($clusters);
 
+        // once-S59: carry the run's real wall-clock window on the Report.
+        // A state driven by Pipeline::iter() knows when the scan began; a
+        // hand-driven stage run (library-style callers) does not, and then
+        // the Report honestly carries no window instead of a fabricated one.
+        $scanWindow = $state->runStartedAt !== null
+            ? new ScanWindow(
+                startedAt: $state->runStartedAt,
+                endedAt:   microtime(true),
+            )
+            : null;
+
         $report = new Report(
             files: count($state->files),
             blocks: count($state->blocks),
@@ -200,6 +212,7 @@ final class ReportStage implements StageInterface
             processedFiles: $state->processedFiles,
             skippedFiles: $state->skippedFiles,
             declaredTwins: $declaredTwins,
+            scanWindow: $scanWindow,
         );
         $state->report   = $report;
         $state->clusters = $clusters;

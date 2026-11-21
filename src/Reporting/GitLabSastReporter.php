@@ -29,32 +29,72 @@ final class GitLabSastReporter
     /** @return array<string, mixed> */
     public function build(Report $report): array
     {
-        return [
-            'version' => self::SCHEMA_VERSION,
-            'scan'    => [
-                'scanner' => [
-                    'id'      => 'phpdup',
-                    'name'    => 'phpdup',
-                    'version' => '0.2.0',
-                    'vendor'  => ['name' => 'php-dup-finder'],
-                    'url'     => 'https://github.com/detain/php-dup-finder',
-                ],
-                'analyzer' => [
-                    'id'      => 'phpdup',
-                    'name'    => 'phpdup',
-                    'version' => '0.2.0',
-                    'vendor'  => ['name' => 'php-dup-finder'],
-                ],
-                'type'      => 'sast',
-                'status'    => 'success',
-                // RFC3339 UTC with the explicit 'Z' designator: naive
-                // 'gmdate(...)' output reads like UTC but strict date-time
-                // validators reject a timestamp without an offset.
-                'start_time' => gmdate('Y-m-d\TH:i:s\Z'),
-                'end_time'   => gmdate('Y-m-d\TH:i:s\Z'),
+        $scan = [
+            'scanner' => [
+                'id'      => 'phpdup',
+                'name'    => 'phpdup',
+                'version' => '0.2.0',
+                'vendor'  => ['name' => 'php-dup-finder'],
+                'url'     => 'https://github.com/detain/php-dup-finder',
             ],
-            'vulnerabilities' => $this->buildVulnerabilities($report),
+            'analyzer' => [
+                'id'      => 'phpdup',
+                'name'    => 'phpdup',
+                'version' => '0.2.0',
+                'vendor'  => ['name' => 'php-dup-finder'],
+            ],
+            'type'      => 'sast',
+            'status'    => 'success',
         ];
+
+        // once-S59: the timestamps are the scan's own measured metadata
+        // (recorded by the pipeline, never read here). Two builds over the
+        // same Report are byte-identical, and a real run always shows
+        // end_time > start_time — microseconds survive formatting, so the
+        // two are equal only for a truly zero-duration window. A Report
+        // without pipeline metadata (library API, hand-built) carries no
+        // window: the fields are then omitted honestly, not fabricated
+        // from a build-time clock.
+        //
+        // RFC3339 UTC with the explicit 'Z' designator (output-S04): naive
+        // 'gmdate(...)' output reads like UTC but strict date-time
+        // validators reject a timestamp without an offset.
+        $window = $report->scanWindow;
+        if ($window !== null) {
+            $scan['start_time'] = self::formatTimestamp($window->startedAt);
+            $scan['end_time']   = self::formatTimestamp($window->endedAt);
+        }
+
+        return [
+            'version'           => self::SCHEMA_VERSION,
+            'scan'              => $scan,
+            'vulnerabilities'   => $this->buildVulnerabilities($report),
+        ];
+    }
+
+    /**
+     * Epoch seconds (UTC, float) → RFC3339 'Z' timestamp using the shortest
+     * fractional form that keeps the instant exact (whole seconds print with
+     * no fraction at all). Microsecond resolution is what preserves the
+     * once-S59 guarantee that start == end only for a genuinely zero-length
+     * window.
+     */
+    private static function formatTimestamp(float $epoch): string
+    {
+        $secs  = (int) floor($epoch);
+        $micro = (int) round(($epoch - $secs) * 1_000_000);
+        if ($micro >= 1_000_000) { // 0.9999996-type float edges round up
+            $secs++;
+            $micro = 0;
+        }
+
+        $clock = gmdate('Y-m-d\TH:i:s\Z', $secs);
+        if ($micro === 0) {
+            return $clock;
+        }
+
+        // 'Z' sits after the fraction per RFC3339: strip it, splice.
+        return substr($clock, 0, -1) . rtrim(sprintf('.%06d', $micro), '0') . 'Z';
     }
 
     /** @return list<array<string, mixed>> */

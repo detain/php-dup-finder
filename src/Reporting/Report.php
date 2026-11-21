@@ -35,6 +35,13 @@ final class Report
         // not run" for library/worker producers, so the §5f rule that
         // payload lists ride trailing params holds zero-cost.
         public readonly array $declaredTwins = [],
+        // once-S59: wall-clock scan window from pipeline metadata
+        // (PipelineState::$runStartedAt → report-build instant, stamped by
+        // ReportStage). Null = "this producer never measured a run" (library
+        // API, server workers, hand-built reports); timestamp-emitting
+        // reporters then omit their fields honestly rather than fabricating
+        // a build-time clock read. Not part of the JSON payload shape.
+        public readonly ?ScanWindow $scanWindow = null,
     ) {
     }
 

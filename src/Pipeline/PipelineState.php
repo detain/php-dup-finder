@@ -95,6 +95,16 @@ final class PipelineState
     public float $stageStartTime = 0.0;
 
     /**
+     * Epoch seconds (microtime(true)) stamped by Pipeline::iter() when a
+     * run first starts pumping this state; null for a state no Pipeline
+     * has ever driven. ReportStage turns (runStartedAt, build instant)
+     * into the Report's ScanWindow — the once-S59 metadata source that
+     * lets reporters emit real run timestamps without reading the clock
+     * themselves.
+     */
+    public ?float $runStartedAt = null;
+
+    /**
      * Error message set by ScanningStage when git diff --diff-base fails.
      * When non-null, dispatch() in Command.php returns exit code 2.
      */
