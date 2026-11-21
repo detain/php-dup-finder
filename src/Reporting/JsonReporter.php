@@ -5,6 +5,7 @@ namespace Phpdup\Reporting;
 
 use Phpdup\Clustering\Cluster;
 use Phpdup\Refactor\Hole;
+use Phpdup\Util\Num;
 
 /**
  * Machine-readable JSON dump.
@@ -49,8 +50,8 @@ final class JsonReporter
                 'paths'                => $report->config->paths,
                 'min_block_size'       => $report->config->minBlockSize,
                 'normalization_mode'   => $report->config->normalizationMode,
-                'similarity_threshold' => $report->config->similarityThreshold,
-                'tree_threshold'       => $report->config->treeThreshold,
+                'similarity_threshold' => Num::json($report->config->similarityThreshold),
+                'tree_threshold'       => Num::json($report->config->treeThreshold),
                 'min_cluster_impact'   => $report->config->minClusterImpact,
             ],
             'clusters' => array_map([$this, 'clusterPayload'], $report->clusters),
@@ -69,9 +70,9 @@ final class JsonReporter
             'id'           => $c->id,
             'kind'         => $c->members[0]->kind ?? null,
             'exact'        => $c->exact,
-            'similarity'   => round($c->similarity, 4),
-            'confidence'   => round($c->confidence, 4),
-            'safety'       => round($c->safety, 4),
+            'similarity'   => Num::json($c->similarity),
+            'confidence'   => Num::json($c->confidence),
+            'safety'       => Num::json($c->safety),
             'impact'       => $c->impact,
             'pattern_tags' => $c->patternTags,
             'outlier_members' => $c->outlierMemberIds,
@@ -97,7 +98,7 @@ final class JsonReporter
                 'blockA'     => $p['blockA'],
                 'blockB'     => $p['blockB'],
                 'matchTier'  => $p['matchTier'],
-                'matchScore' => round($p['matchScore'], 4),
+                'matchScore' => Num::json($p['matchScore']),
             ], $c->pairs),
             'holes' => array_map(static function (Hole $h) {
                 $base = [

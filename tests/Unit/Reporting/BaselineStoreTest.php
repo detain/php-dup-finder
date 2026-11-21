@@ -59,7 +59,7 @@ final class BaselineStoreTest extends TestCase
         $this->assertFileExists($path);
 
         $raw = json_decode((string) file_get_contents($path), true);
-        $this->assertSame(2, $raw['version'], 'content-hashed member_hashes ride baseline v2');
+        $this->assertSame(3, $raw['version'], 'baseline v3 rides the scan-root-relative member paths (phpver-fix); member_hashes stay content-hashed');
 
         $entries = $store->readBaseline($path);
 
@@ -355,6 +355,45 @@ final class BaselineStoreTest extends TestCase
      *
      * @param list<array{file: string, start: int, end: int}> $memberSpecs
      */
+    public function testMemberHashesAreMachinePortableWithScanRoots(): void
+    {
+        // phpver-fix: CI baselines written on a laptop must match on the
+        // runner — block hashes canonicalize member paths under the roots.
+        $block = new \Phpdup\Extraction\Block(
+            file: '/home/runner/work/proj/proj/src/Util/a.php',
+            range: new \Phpdup\Util\LineRange(1, 5),
+            kind: 'function',
+            namespace: null,
+            class: null,
+            name: 'a',
+            ast: new \PhpParser\Node\Stmt\Nop(),
+        );
+        $block->structuralHash = 'deadbeef';
+        $laptopCopy = new \Phpdup\Extraction\Block(
+            file: '/home/sites/proj/src/Util/a.php',
+            range: new \Phpdup\Util\LineRange(1, 5),
+            kind: 'function',
+            namespace: null,
+            class: null,
+            name: 'a',
+            ast: new \PhpParser\Node\Stmt\Nop(),
+        );
+        $laptopCopy->structuralHash = 'deadbeef';
+
+        $runnerStore = new BaselineStore(['/home/runner/work/proj/proj']);
+        $laptopStore = new BaselineStore(['/home/sites/proj']);
+
+        $this->assertSame(
+            $runnerStore->computeBlockHash($block),
+            $laptopStore->computeBlockHash($laptopCopy),
+        );
+        // The pre-fix absolute-path coupling is exactly what got removed.
+        $this->assertNotSame(
+            (new BaselineStore())->computeBlockHash($block),
+            (new BaselineStore())->computeBlockHash($laptopCopy),
+        );
+    }
+
     private function cluster(string $id, array $memberSpecs, int $impact): Cluster
     {
         $blocks = [];

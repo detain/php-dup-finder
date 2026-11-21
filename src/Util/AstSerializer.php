@@ -115,7 +115,10 @@ final class AstSerializer
         // Scalar literals
         if ($node instanceof Node\Scalar\String_)        return 's:' . $node->value;
         if ($node instanceof Node\Scalar\Int_)           return 'i:' . $node->value;
-        if ($node instanceof Node\Scalar\Float_)         return 'f:' . $node->value;
+        // Floats must never ride the ini-driven decimal rendering
+        // (precision / serialize_precision differ across PHP builds and
+        // minor versions) — they enter the stream as IEEE-754 bytes.
+        if ($node instanceof Node\Scalar\Float_)         return 'f:' . self::floatBytes($node->value);
         if ($node instanceof Node\Scalar\InterpolatedString) {
             $parts = '';
             foreach ($node->parts as $p) {
@@ -151,7 +154,26 @@ final class AstSerializer
         if (is_bool($v))   return $v ? 'true' : 'false';
         if (is_null($v))   return 'null';
         if (is_int($v))    return (string)$v;
-        if (is_float($v))  return (string)$v;
+        if (is_float($v))  return self::floatBytes($v);
         return (string)$v;
+    }
+
+    /**
+     * Canonical float identity: the 16 hex digits of the big-endian
+     * IEEE-754 double (NaN normalized to a single fixed pattern because
+     * payload bits are platform-dependent), then an F-prefix for stable
+     * decimals and infinite values. Byte-stable across PHP versions,
+     * inis and libc by construction (unlike any decimal rendering).
+     */
+    private static function floatBytes(float $v): string
+    {
+        if (is_nan($v)) {
+            return 'xnan';
+        }
+        if (is_infinite($v)) {
+            return $v > 0 ? 'FINF' : 'F-INF';
+        }
+        $packed = pack('E', $v);
+        return 'F' . strtoupper(bin2hex($packed));
     }
 }

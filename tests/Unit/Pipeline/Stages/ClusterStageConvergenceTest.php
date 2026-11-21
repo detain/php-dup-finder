@@ -147,6 +147,10 @@ final class ClusterStageConvergenceTest extends TestCase
             similarityThreshold: 0.80,
             treeThreshold: 0.85,
             maxDocumentFrequency: 0.5,
+            // phpver-fix: the same scan roots ClusterStage threads via
+            // Config — finding ids are canonicalised under them, so the
+            // driver vocabularies only converge when all three share roots.
+            scanRoots: [$this->corpus],
         );
         $this->assertSame(
             $this->signatures($serial['clusters']),

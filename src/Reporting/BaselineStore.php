@@ -5,6 +5,7 @@ namespace Phpdup\Reporting;
 
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
+use Phpdup\Util\PathCanonical;
 
 /**
  * Persists and compares duplication baselines for CI gate workflows.
@@ -38,7 +39,20 @@ final class BaselineStore
     // keyed positions, so the same accepted cluster could silently miss
     // under a shifted listing — readBaseline() refuses them loudly and
     // the operator re-accepts once, never silently re-baselined.
-    private const CURRENT_VERSION = 2;
+    // v3 (phpver-fix): member_hashes canonicalize the member path under
+    // the configured scan roots, and finding ids moved with the recipe;
+    // v2 files (absolute paths / old ids) mismatch on any other machine,
+    // so they fail the same loud refusal — re-accept once.
+    private const CURRENT_VERSION = 3;
+
+    /**
+     * @param list<string> $scanRoots configured scan roots, threaded from
+     *                          Command so keys match the runner-agnostic
+     *                      FindingId recipe (golden/baseline portability).
+     */
+    public function __construct(private readonly array $scanRoots = [])
+    {
+    }
 
     /**
      * Write a baseline snapshot of the current clusters to a JSON file.
@@ -224,7 +238,7 @@ final class BaselineStore
      */
     public function computeBlockHash(Block $block): string
     {
-        $content = $block->file . '|' . $block->structuralHash;
+        $content = PathCanonical::underRoots($block->file, $this->scanRoots) . '|' . $block->structuralHash;
         return 'sha256:' . hash('sha256', $content);
     }
 

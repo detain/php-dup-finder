@@ -43,7 +43,11 @@ final class IndexStore
         }
     }
 
-    private const PARSER_VERSION = 'parser-v5-apted';
+    // 'floatbytes': AstSerializer renders float literals as IEEE-754
+    // bytes instead of the ini-dependent decimal cast, moving every
+    // structuralHash that covers a float literal. Snapshots written by
+    // the previous serializer must not serve stale hashes.
+    private const PARSER_VERSION = 'parser-v5-floatbytes';
 
     public function isEnabled(): bool
     {

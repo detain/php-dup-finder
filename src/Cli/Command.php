@@ -51,6 +51,7 @@ use Symfony\Component\Console\Output\OutputInterface;
  */
 final class Command extends SymfonyCommand
 {
+    #[\Override]
     protected function configure(): void
     {
         $this->setName('analyze')
@@ -180,6 +181,7 @@ Run <info>phpdup --help</info> for full descriptions of each option.
 HELP;
     }
 
+    #[\Override]
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         if ($input->getOption('validate-config')) {
@@ -658,7 +660,7 @@ HELP;
 
         // Baseline gating: --baseline-out (write) and --baseline (compare / first-run)
         if ($config->baselineOutFile !== null || $config->baselineFile !== null) {
-            $baselineStore = new BaselineStore();
+            $baselineStore = new BaselineStore(scanRoots: $config->paths);
 
             // Build current entries in baseline format
             $currentEntries = [];

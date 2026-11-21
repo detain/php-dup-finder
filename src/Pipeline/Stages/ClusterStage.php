@@ -66,11 +66,13 @@ final class ClusterStage implements CooperativeStageInterface
         $this->listener = $listener ?? new NullProgressListener();
     }
 
+    #[\Override]
     public function name(): Stage
     {
         return Stage::Clustering;
     }
 
+    #[\Override]
     public function run(PipelineState $state, OutputInterface $output): void
     {
         foreach ($this->iter($state, $output) as $_) {
@@ -78,6 +80,7 @@ final class ClusterStage implements CooperativeStageInterface
         }
     }
 
+    #[\Override]
     public function iter(PipelineState $state, OutputInterface $output): \Generator
     {
         if (!$state->blocks) {
@@ -204,6 +207,9 @@ final class ClusterStage implements CooperativeStageInterface
             // config-key binds on, one source of truth.
             splitClusters:            Clusterer::DEFAULT_SPLIT_CLUSTERS,
             minSplitSize:             Clusterer::DEFAULT_MIN_SPLIT_SIZE,
+            // phpver-fix: ids are minted scan-relatively; the roots come
+            // straight from the run's configured paths.
+            scanRoots:                $config->paths,
         );
     }
 

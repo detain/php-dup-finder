@@ -133,4 +133,34 @@ final class FindingIdTest extends TestCase
 
         $this->assertSame(FindingId::forMembers($members), FindingId::for($cluster));
     }
+
+    public function testScanRootsMakeIdsMachinePortable(): void
+    {
+        // phpver-fix: the same cluster seen through two checkout prefixes
+        // must mint ONE id once the scan roots are threaded — and the old
+        // host binding must be exactly what the roots remove.
+        $laptop = [
+            $this->block('/home/sites/proj/src/Util/a.php', 'h1'),
+            $this->block('/home/sites/proj/src/Util/b.php', 'h2'),
+        ];
+        $runner = [
+            $this->block('/home/runner/work/proj/proj/src/Util/a.php', 'h1'),
+            $this->block('/home/runner/work/proj/proj/src/Util/b.php', 'h2'),
+        ];
+
+        $this->assertNotSame(
+            FindingId::forMembers($laptop),
+            FindingId::forMembers($runner),
+            'without roots the pre-fix host binding persists (guard against silent fallback)',
+        );
+        $this->assertSame(
+            FindingId::forMembers($laptop, ['/home/sites/proj']),
+            FindingId::forMembers($runner, ['/home/runner/work/proj/proj']),
+        );
+        // Root-order independence (longest match wins) must not move ids.
+        $this->assertSame(
+            FindingId::forMembers($laptop, ['/home/sites/proj']),
+            FindingId::forMembers($laptop, ['/other', '/home/sites/proj']),
+        );
+    }
 }

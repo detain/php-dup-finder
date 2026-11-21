@@ -76,6 +76,33 @@ final class AstSerializerTest extends TestCase
         return $nodes;
     }
 
+    public function testFloatLiteralsSerializeAsCanonicalIeeeBytes(): void
+    {
+        // phpver-fix: float literals used to ride the ini- and version-
+        // dependent decimal cast ('f:1.5', and 'f:1' vs 'f:1.0' style
+        // drift), moving every structuralHash that covered a float. The
+        // token is now the big-endian IEEE-754 hex — permanently pinned
+        // so any future re-decimalization fails loudly.
+        $stmts = self::$parser->parseCode('<?php function f() { return 1.5; }');
+        $this->assertNotNull($stmts);
+        $floatTokens = array_values(array_filter(
+            AstSerializer::tokens($stmts[0]),
+            static fn(string $t): bool => str_contains($t, 'f:F'),
+        ));
+        $this->assertSame(['Scalar_Float_|f:F3FF8000000000000'], $floatTokens);
+
+        // Whole-valued floats lose their decimal entirely: 1.0 is byte 3FF0…
+        $whole = self::$parser->parseCode('<?php function g() { return 1.0; }');
+        $this->assertNotNull($whole);
+        $this->assertSame(
+            ['Scalar_Float_|f:F3FF0000000000000'],
+            array_values(array_filter(
+                AstSerializer::tokens($whole[0]),
+                static fn(string $t): bool => str_contains($t, 'f:F'),
+            )),
+        );
+    }
+
     public function testNodeCountInvariant(): void
     {
         // Parse a small but non-trivial PHP snippet containing:

@@ -40,7 +40,10 @@ final class ClusterCache
     // Tokens are now file|structuralHash only — v2 blobs (and the older
     // pre-split v1 sets) must never be served by an id-agnostic run.
     // Wholesale invalidation; the config_key still binds the split knobs.
-    private const PARSER_VERSION = 'cluster-cache-v3';
+    // 'v4' (phpver-fix): finding ids are minted from scan-root-relative
+    // paths, so cached clusters from v3-era runs carry ids the live
+    // recipe would never produce. Stale ids must never be served.
+    private const PARSER_VERSION = 'cluster-cache-v4';
 
     public function __construct(
         private readonly string $cacheDir,

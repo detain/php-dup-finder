@@ -36,6 +36,9 @@ final class Clusterer
 {
     private readonly ContainmentSimilarity $containment;
 
+    /**
+     * @param list<string> $scanRoots configured scan roots for id minting (ClusterStage passes Config::$paths)
+     */
     public function __construct(
         private readonly JaccardSimilarity $similarity,
         private readonly TreeEditDistance $tree,
@@ -78,6 +81,11 @@ final class Clusterer
         // materialized edges — zero new pair scoring.
         private readonly bool $splitClusters = self::DEFAULT_SPLIT_CLUSTERS,
         private readonly int $minSplitSize = self::DEFAULT_MIN_SPLIT_SIZE,
+        // phpver-fix: configured scan roots, threaded to every FindingId
+        // mint so member paths enter the hash in scan-relative canonical
+        // form — the property that keeps ids portable across machines
+        // (golden snapshots are regenerated on runners, not laptops).
+        private readonly array $scanRoots = [],
     ) {
         if ($this->minSplitSize < 2) {
             throw new \InvalidArgumentException(sprintf(
@@ -253,7 +261,7 @@ final class Clusterer
                 // Item 4.4: the canonical FindingId recipe replaces the old
                 // 'X' + bucket-hash-prefix stream — external identity is one
                 // content derivation everywhere, mint sites included.
-                id: FindingId::forMembers($blocks),
+                id: FindingId::forMembers($blocks, $this->scanRoots),
                 members: $blocks,
                 similarity: 1.0,
                 exact: true,
@@ -355,7 +363,7 @@ final class Clusterer
                 // contentClusterId stopgap — same sorted-content basis,
                 // now the single F… stream; never the union-find root,
                 // which is edge-arrival-order dependent).
-                id: FindingId::forMembers($members),
+                id: FindingId::forMembers($members, $this->scanRoots),
                 members: $members,
                 similarity: $allIdenticalHash ? 1.0 : $minSim,
                 exact: $allIdenticalHash,
@@ -565,7 +573,7 @@ final class Clusterer
             }
 
             $cluster          = new Cluster(
-                id:         FindingId::forMembers($members),
+                id:         FindingId::forMembers($members, $this->scanRoots),
                 members:    $members,
                 similarity: $similarity,
                 exact:      $allIdenticalHash,

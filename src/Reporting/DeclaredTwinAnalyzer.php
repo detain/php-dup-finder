@@ -12,6 +12,7 @@ use Phpdup\Parsing\AstParser;
 use PhpParser\Node\Stmt;
 use PhpParser\Node\Stmt\Namespace_;
 use Phpdup\Similarity\JaccardSimilarity;
+use Phpdup\Util\Num;
 
 /**
  * Item 4.3 — the declared-twin checker ([f11]§4.3-design).
@@ -304,7 +305,7 @@ final class DeclaredTwinAnalyzer
         $row['target_blocks'] = count($fileBlocks[$targetFile]);
 
         [$similarity, $verdict] = $this->measure($fileBlocks[$claim['file']], $fileBlocks[$targetFile]);
-        $row['similarity'] = $similarity;
+        $row['similarity'] = is_float($similarity) ? Num::json($similarity) : null;
         $row['verdict'] = $verdict;
         return $row;
     }

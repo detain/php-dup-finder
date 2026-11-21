@@ -17,7 +17,9 @@ use Phpdup\Util\LineRange;
  * served by a split-aware run. cluster-cache-v3 (item 4.4, hazard-4):
  * v2's corpus hash baked the scan-index block id into every token, so
  * the tokens are now file|structuralHash only — v2 blobs must likewise
- * never be served. These tests exercise the version GATE itself — a
+ * never be served. cluster-cache-v4 (phpver-fix): finding ids moved to
+ * scan-root-relative member paths, so v3 blobs holding absolute-path-era
+ * ids must never be served. These tests exercise the version GATE itself — a
  * stale payload that matches the current config key and corpus hash
  * byte-for-byte must still be refused, and the same payload stamped
  * with the live version must load. A version constant with no gate
@@ -129,11 +131,11 @@ final class ClusterCacheVersionTest extends TestCase
         $blocks = [$this->block('a', 'h1'), $this->block('b', 'h2')];
         $cluster = new Cluster('Ccafe1234', $blocks, 0.90, false);
 
-        $this->forgePayload('cluster-cache-v3', 'cfg-current', $blocks, [$cluster]);
+        $this->forgePayload('cluster-cache-v4', 'cfg-current', $blocks, [$cluster]);
 
         $cache = new ClusterCache($this->tmp, 'cfg-current');
         $loaded = $cache->load($blocks);
-        $this->assertNotNull($loaded, 'the only difference is the version stamp — v3 is the live contract');
+        $this->assertNotNull($loaded, 'the only difference is the version stamp — v4 is the live contract');
         $this->assertCount(1, $loaded);
         $this->assertSame('Ccafe1234', $loaded[0]->id);
     }
@@ -141,7 +143,7 @@ final class ClusterCacheVersionTest extends TestCase
     /**
      * Hazard-4 at the cache boundary: the corpus key is the structural
      * member set. Renumbering block ids (a re-scan that finds files in a
-     * different order) must NOT invalidate a v3 snapshot.
+     * different order) must NOT invalidate a v4 snapshot.
      */
     public function testBlockIdRenumberingDoesNotInvalidateCache(): void
     {
@@ -166,8 +168,8 @@ final class ClusterCacheVersionTest extends TestCase
             (string) file_get_contents($this->tmp . '/clusters.idx'),
             ['allowed_classes' => \Phpdup\Persistence\SerializedClassAllowList::blockCacheClasses()],
         );
-        $this->assertSame('cluster-cache-v3', $payload['parser_version'],
-            'item 4.4 re-pin: fresh snapshots must carry the v3 (id-free corpus) marker');
+        $this->assertSame('cluster-cache-v4', $payload['parser_version'],
+            'item 4.4 / phpver-fix re-pin: fresh snapshots must carry the v4 (id-free corpus) marker');
     }
 
     public function testRoundTripPreservesMedoidIdAcrossTheCacheBoundary(): void

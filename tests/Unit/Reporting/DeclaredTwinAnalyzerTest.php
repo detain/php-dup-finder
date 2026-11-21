@@ -131,7 +131,9 @@ final class DeclaredTwinAnalyzerTest extends TestCase
         $row = $this->rowFor($rows, 'theta.php');
 
         $this->assertNotNull($row);
-        $this->assertSame(1.0, $row['similarity']);
+        // Num::json collapses whole values to int bytes (version-invariant
+        // rendering): an exact twin reports similarity as int 1, not float 1.0.
+        $this->assertSame(1, $row['similarity']);
         $this->assertSame('holds', $row['verdict'], 'structuralHash equality is the byte-identical truth');
     }
 
