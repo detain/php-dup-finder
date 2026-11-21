@@ -112,6 +112,16 @@ final class ScanningStageTest extends TestCase
         $this->assertStringNotContainsString('changed file(s)', $combined);
         $this->assertStringNotContainsString('block kinds', $combined);
         $this->assertStringNotContainsString('clusters', $combined);
+        // M-1 (fix round 1): the abandoned-generator half of shell-040 is
+        // observable only in the line the pump-break mutant emits — the
+        // report tail's zero-work summary ("(0 reused · 0 processed ...)").
+        // Without the scanError break in Command's pump the run still exits
+        // 2 with the right message, so this is the sole discriminator.
+        $this->assertStringNotContainsString(
+            'reused',
+            $combined,
+            'downstream stages must never run once scanError aborts the pump',
+        );
         clearstatcache();
         $this->assertFileDoesNotExist($repo . '/PWNED');
     }
@@ -123,6 +133,16 @@ final class ScanningStageTest extends TestCase
         // succeeding (exit 0). The old `2>&1` merged that line into the
         // filename list; now stderr is kept separate end-to-end.
         $repo = $this->makeRepo([['amb1.php', "<?php\nfunction amb1() { return 1; }\n"]], ambiguousRef: 'amb');
+
+        // M-2 (fix round 1): plant a real UNTRACKED file named exactly the
+        // line git prints on stderr (verified byte-for-byte on git 2.43).
+        // The pre-fix posture merged stderr into the parsed stdout stream,
+        // where the only guard against warning-poisoning was the
+        // file_exists($root.'/'.$line) gate — and here that gate would
+        // PASS. Real code never parses stderr at all, so the decoy must
+        // stay out of the collected list.
+        $decoyPath = $repo . "/warning: refname 'amb' is ambiguous.";
+        $this->assertNotFalse(file_put_contents($decoyPath, ''), 'decoy filename must be creatable');
 
         $config = Config::defaults([$repo])->withOverrides(['diff_base' => 'amb']);
         $state  = new PipelineState($config);
@@ -137,6 +157,14 @@ final class ScanningStageTest extends TestCase
         }
         // The changed file of the HEAD commit must still be collected.
         $this->assertContains(realpath($repo . '/amb1.php'), $state->diffBaseFiles);
+        clearstatcache();
+        $decoyReal = realpath($decoyPath);
+        $this->assertNotFalse($decoyReal);
+        $this->assertNotContains(
+            $decoyReal,
+            $state->diffBaseFiles,
+            'a stderr warning line must never enter the filename list, even when a file of that exact name exists',
+        );
     }
 
     public function testPerRootProbesEachNamedRepository(): void
@@ -163,6 +191,13 @@ final class ScanningStageTest extends TestCase
     public function testNonRepositoryRootFailsHonestly(): void
     {
         $dir = $this->scratchDir('nonrepo'); // plain dir — no git init
+
+        // L-1 (fix round 1): populate the dir so this test can witness
+        // walk-before-abort. With the probe postponed behind discovery
+        // (the pre-shell-S23 posture) the scan would find this file first
+        // and the assertSame([], $state->files) below flips red — on an
+        // empty dir that pin was blind (files genuinely empty either way).
+        file_put_contents($dir . '/seen.php', "<?php\nfunction seen() { return 1; }\n");
 
         $config = Config::defaults([$dir])->withOverrides(['diff_base' => 'HEAD~1']);
         $state  = new PipelineState($config);
