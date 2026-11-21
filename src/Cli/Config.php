@@ -236,6 +236,16 @@ final class Config
         // byte-identical. Lowering it trades structural certainty for wall time
         // and memory on huge-function corpora (the 161s/1.2GB cost site).
         public readonly int $maxTedSize = 800,
+        // Item 5.4: coverage ceiling above which a cluster's signature is
+        // marked `re_expressed` and a hole-free `hole_fragment` is surfaced
+        // (config-file key `max_hole_coverage`, CLI --max-hole-coverage,
+        // root-only — a threshold is a stance about the ONE final report).
+        // Default 1.0 = the rule never fires: today's effective behavior,
+        // every report byte-identical until the operator asks for it. The
+        // old plan draft said ">40% holes → drop the cluster"; dropping
+        // evidence silently is the failure mode this whole item exists to
+        // kill, so exceeding the threshold marks-and-annotates instead.
+        public readonly float $maxHoleCoverage = 1.0,
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -294,6 +304,9 @@ final class Config
         }
         if ($maxTedSize < 1) {
             throw new \InvalidArgumentException("max_ted_size must be >= 1 (0 or negative would gate every pair)");
+        }
+        if ($maxHoleCoverage < 0 || $maxHoleCoverage > 1) {
+            throw new \InvalidArgumentException("max_hole_coverage must be within 0..1 (got $maxHoleCoverage)");
         }
         if ($mlPairUrl !== '' && !\Phpdup\Ml\MlClient::isAllowedUrl(rtrim($mlPairUrl, '/') . '/score-pair')) {
             throw new \InvalidArgumentException("ml_pair_url failed validation: $mlPairUrl");
@@ -488,6 +501,10 @@ final class Config
             // a per-dir cap is ambiguous — same silent-misfeed class as
             // fingerprint_id_mode). Copied, never replaced.
             maxTedSize:                      $this->maxTedSize,
+            // Item 5.4: root-only, copied — never replaced — per-directory
+            // (same silent-misfeed class as max_ted_size; refused at
+            // discovery in ConfigLoader::discoverPerDirectoryOverrides()).
+            maxHoleCoverage:                 $this->maxHoleCoverage,
         );
     }
 

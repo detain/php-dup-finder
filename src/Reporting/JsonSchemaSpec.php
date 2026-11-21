@@ -23,6 +23,22 @@ namespace Phpdup\Reporting;
 final class JsonSchemaSpec
 {
     /**
+     * 1.5 (minor, additive): item 5.4 extraction-quality evidence. Every
+     * cluster grows six TRAILING keys — `template` (canonical template
+     * identity: the medoid when recorded, else members[0]), `source`
+     * (capped template text + truncation flag), `evidence_diff` (capped
+     * unified diff template↔median-scored peer, null when there is no
+     * peer/difference), `hole_coverage` (0..1 fraction of the template
+     * inside holes, null without an AST), `re_expressed` (bool: the
+     * operator's `max_hole_coverage` stance is exceeded) and
+     * `hole_fragment` (the longest hole-free statement run, set only when
+     * re_expressed). Every hole object gains a trailing `degraded` bool,
+     * and entries in `holes[].observed` may now be null — a structural gap
+     * ("member had no node here") is JSON null, not the old `<missing>`
+     * impostor string. All 1.4 fields keep name, type and position, so 1.4
+     * consumers parse 1.5 payloads untouched; a consumer that stringified
+     * `observed` unfiltered was already rendering junk.
+     *
      * 1.4 (minor, additive): item 5.1 repo/scope surfacing — trailing
      * `scope` key on every cluster ('single' | 'multi', computed from
      * the members' repo labels) plus trailing `repo` and `scope` keys
@@ -48,7 +64,7 @@ final class JsonSchemaSpec
      * files_without_blocks). Every 1.1 field keeps its name and type, so
      * 1.1 consumers parse 1.2 payloads untouched.
      */
-    public const SCHEMA_VERSION = '1.4';
+    public const SCHEMA_VERSION = '1.5';
 
     /**
      * Top-level shape of {@see JsonReporter::build()} output. This is
@@ -158,8 +174,38 @@ final class JsonSchemaSpec
             'signature'              => 'string|null',
             'members'                => 'list<object>  // trailing repo/scope keys since 1.4 (item 5.1); see JsonReporter::clusterPayload()',
             'pairs'                  => 'list<object>',
-            'holes'                  => 'list<object>',
+            'holes'                  => 'list<object>  // trailing `degraded` bool since 1.5; `observed` entries may be null (structural gap) — see holeShape()',
             'scope'                  => "string  // 'single' | 'multi' — item 5.1, trailing (1.4)",
+            'template'               => "?object  // {id,file,start,end} canonical template — item 5.4, trailing (1.5)",
+            'source'                 => "object  // {text:string|null,truncated:bool} capped template source (200 lines / 8 KiB) — trailing (1.5)",
+            'evidence_diff'          => "?object  // {member,file,start,end,diff,truncated} capped (120 lines / 6 KiB) diff vs median peer; null = no peer, no pair evidence, or identical text — trailing (1.5)",
+            'hole_coverage'          => 'float|null  // 0..1 fraction of template AST inside hole subtrees — trailing (1.5)',
+            're_expressed'           => 'bool  // hole_coverage > config max_hole_coverage (default 1.0: never) — trailing (1.5)',
+            'hole_fragment'          => "?object  // {stmt_start,stmt_length,code,truncated} longest hole-free stmt run, set only when re_expressed — trailing (1.5)",
+        ];
+    }
+
+    /**
+     * Shape of one `holes[]` entry (item 5.4). `observed` is the deduped
+     * value set; a null entry means the member had NO node at the hole
+     * path (structural gap — shorter block), and `degraded` is then true.
+     * The legacy printable sentinels `<absent>` (optional_block presence)
+     * and pre-1.5 cache-resident `<missing>` keep their semantics; the
+     * latter is normalized to null on emission.
+     *
+     * @return array<string, string>
+     */
+    public static function holeShape(): array
+    {
+        return [
+            'placeholder'        => 'string',
+            'kind'               => 'string',
+            'inferred_type'      => 'string',
+            'suggested_name'     => 'string',
+            'observed'           => 'list<string|null>',
+            'value_count'        => 'int',
+            'degraded'           => 'bool  // trailing (1.5)',
+            'present_in_members' => 'list<int>  // optional_block only',
         ];
     }
 }

@@ -87,6 +87,13 @@
             "default": 800,
             "description": "Node-count cap for APTED tree-edit judgment (item 1.2). A candidate pair whose LARGER member exceeds this cap skips the TED call entirely: it is accepted on Jaccard alone with edge tier 'jaccard-unverified' (weight = the Jaccard score), or falls through to the containment/IR/ML tiers unchanged — APTED is the O(n^2)-space quadratic cost site (161s / 1.2GB on a 1000-node pair). Default 800 equals the max_block_size extraction ceiling, so no real block can exceed it and the gate is inert out of the box: every existing verdict, cache and golden stays byte-identical. Lower it (e.g. 200-400) on giant-clone corpora to trade exactness for wall time. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load — a pair spans two directories, so a per-directory cap would be ambiguous. No CLI flag in v1. The cap rides the cluster-cache config key and is applied identically by the serial Clusterer and the parallel PairScoreWorker."
         },
+        "max_hole_coverage": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 1.0,
+            "description": "Hole-coverage ceiling for extraction honesty (item 5.4). Every cluster's generalized template is measured (hole_coverage = fraction of its AST units inside hole subtrees); a cluster whose coverage is STRICTLY ABOVE this threshold is marked re_expressed in the JSON and CLI reports, and its longest hole-free top-level statement run is surfaced as hole_fragment — the part actually worth extracting. Default 1.0 disables the rule (coverage can never exceed it), so every existing report and golden stays byte-identical. Lower it (e.g. 0.4, the plan's original draft figure) to flag hole-riddled abstractions — annotation never deletion: phpdup does not drop evidence based on a threshold. CLI: --max-hole-coverage. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load — a cluster spans directories, and the threshold is a stance about the one final report."
+        },
         "cache_dir": {
             "type": "string",
             "default": ".phpdup-cache",

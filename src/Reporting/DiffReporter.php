@@ -5,11 +5,14 @@ namespace Phpdup\Reporting;
 
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
+use Phpdup\Refactor\HoleCoverage;
 use SebastianBergmann\Diff\Differ;
 use SebastianBergmann\Diff\Output\UnifiedDiffOutputBuilder;
 
 /**
- * Per-cluster unified diffs showing how members differ from cluster member[0].
+ * Per-cluster unified diffs showing how members differ from the cluster's
+ * canonical template ({@see HoleCoverage::canonicalTemplate()} — the medoid
+ * when recorded, else member[0]).
  *
  * Helps reviewers see the duplication at a glance, then judge whether the
  * suggested abstraction (shown at the top of each diff as a comment header)
@@ -50,20 +53,30 @@ final class DiffReporter
 
     private function buildClusterDiff(Cluster $cluster): string
     {
-        $base       = $cluster->members[0];
-        $baseSource = $this->blockSource($base);
+        // Item 5.4: the anchor is the canonical template — the cluster's
+        // medoid center when one was recorded (SCORE-1), not the accidental
+        // members[0] of ranker order. (The medoid is the cluster's
+        // representative; AntiUnifier's own seed may differ — seed identity
+        // is deliberately not persisted.) Diffing against the representative
+        // is what makes the "suggested abstraction" header honest.
+        $base       = HoleCoverage::canonicalTemplate($cluster) ?? $cluster->members[0];
+        $baseSource = self::sourceOf($base);
         $differ     = new Differ(new UnifiedDiffOutputBuilder("--- a/{$base->file}\n+++ b/{$base->file}\n", false));
 
         $header = "# phpdup cluster {$cluster->id}\n"
                 . sprintf("#   members: %d, similarity: %.2f, impact: %d\n", count($cluster->members), $cluster->similarity, $cluster->impact)
                 . "#\n# Suggested abstraction:\n"
                 . $this->indent((string)$cluster->signature, '#   ')
-                . "\n#\n# Anchor (member[0]): {$base->file}:{$base->range->start}-{$base->range->end}\n\n";
+                . "\n#\n# Anchor ("
+                . ($cluster->medoidId !== null && $base->id === $cluster->medoidId ? 'medoid' : 'members[0] fallback')
+                . "): {$base->file}:{$base->range->start}-{$base->range->end}\n\n";
 
         $diffs = [];
-        for ($i = 1; $i < count($cluster->members); $i++) {
-            $other       = $cluster->members[$i];
-            $otherSource = $this->blockSource($other);
+        foreach ($cluster->members as $i => $other) {
+            if ($other === $base) {
+                continue;
+            }
+            $otherSource = self::sourceOf($other);
             $diff        = $differ->diff($baseSource, $otherSource);
             $diffs[] = sprintf(
                 "## member[%d]: %s:%d-%d\n%s",
@@ -74,7 +87,12 @@ final class DiffReporter
         return $header . implode("\n", $diffs);
     }
 
-    private function blockSource(Block $block): string
+    /**
+     * Read a block's source lines verbatim. Public static so the JSON
+     * reporter's evidence keys render the exact same bytes this diff does
+     * (one reader, no drift between report surfaces).
+     */
+    public static function sourceOf(Block $block): string
     {
         if (!is_file($block->file)) {
             return "<source unavailable: {$block->file}>";

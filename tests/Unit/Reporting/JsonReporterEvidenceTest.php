@@ -1,0 +1,232 @@
+<?php
+declare(strict_types=1);
+
+namespace Phpdup\Tests\Unit\Reporting;
+
+use PHPUnit\Framework\TestCase;
+use Phpdup\Cli\Config;
+use Phpdup\Clustering\Cluster;
+use Phpdup\Extraction\Block;
+use Phpdup\Extraction\BlockExtractor;
+use Phpdup\Parsing\AstParser;
+use Phpdup\Refactor\AntiUnifier;
+use Phpdup\Refactor\Hole;
+use Phpdup\Reporting\JsonReporter;
+use Phpdup\Reporting\JsonSchemaSpec;
+use Phpdup\Reporting\Report;
+
+/**
+ * Item 5.4(e): the trailing-additive evidence keys on every cluster —
+ * template identity, capped source text, evidence diff, hole coverage,
+ * re-expression posture — and the degraded/null hole-value belt.
+ */
+final class JsonReporterEvidenceTest extends TestCase
+{
+    private string $tmp;
+
+    protected function setUp(): void
+    {
+        $this->tmp = (string)sys_get_temp_dir() . '/phpdup-ev-' . uniqid('', true);
+        mkdir($this->tmp, 0o775, true);
+    }
+
+    protected function tearDown(): void
+    {
+        foreach (glob($this->tmp . '/*') ?: [] as $f) {
+            @unlink($f);
+        }
+        @rmdir($this->tmp);
+    }
+
+    public function testClusterKeysStayTrailingAdditiveAfterScope(): void
+    {
+        $payload = $this->payloadFor($this->pairCluster(), 1.0);
+        $keys    = array_keys($payload['clusters'][0]);
+
+        // Everything through `scope` must keep its exact 1.4 position, and
+        // the six 1.5 keys append after it.
+        $this->assertSame('scope', $keys[14], '1.4 shape occupies indices 0..14');
+        $this->assertSame(
+            ['template', 'source', 'evidence_diff', 'hole_coverage', 're_expressed', 'hole_fragment'],
+            array_slice($keys, 15),
+        );
+        $this->assertSame(JsonSchemaSpec::SCHEMA_VERSION, $payload['schema_version']);
+    }
+
+    public function testTemplateResolvesToTheMedoidNotMembersZero(): void
+    {
+        $cluster = $this->pairCluster();
+        $cluster->medoidId = $cluster->members[1]->id;
+
+        $payload = $this->payloadFor($cluster, 1.0);
+        $t = $payload['clusters'][0]['template'];
+
+        $this->assertSame($cluster->members[1]->id, $t['id']);
+        $this->assertSame($cluster->members[1]->file, $t['file']);
+        $this->assertSame($cluster->members[1]->range->start, $t['start']);
+    }
+
+    public function testSourceCarriesRealTextAndEvidenceDiffAgainstPeer(): void
+    {
+        $cluster = $this->pairCluster();
+        $payload = $this->payloadFor($cluster, 1.0);
+        $c       = $payload['clusters'][0];
+
+        $this->assertStringContainsString('if ($s > 1)', (string)$c['source']['text']);
+        $this->assertFalse($c['source']['truncated']);
+
+        $ev = $c['evidence_diff'];
+        $this->assertNotNull($ev, 'members differ textually — evidence must show it');
+        $this->assertSame($cluster->members[1]->id, $ev['member']);
+        $this->assertStringContainsString('@@', (string)$ev['diff']);
+        $this->assertFalse($ev['truncated']);
+    }
+
+    public function testEvidenceDiffNullWhenSourcesIdentical(): void
+    {
+        // Same text in two files: zero-hole pair, identical sources → no
+        // textual evidence exists; emit null rather than an empty-diff blob.
+        $cluster = $this->pairCluster('if ($s > 1) { x(); }', 'if ($s > 1) { x(); }');
+        $payload = $this->payloadFor($cluster, 1.0);
+
+        $this->assertNull($payload['clusters'][0]['evidence_diff']);
+        $this->assertEqualsWithDelta(0.0, (float)$payload['clusters'][0]['hole_coverage'], 0.0001);
+        $this->assertFalse($payload['clusters'][0]['re_expressed']);
+    }
+
+    public function testDegradedHoleSerializesGapsAsNullWithFlag(): void
+    {
+        $cluster = $this->pairCluster();
+        // Hand-made degraded hole (the shape (b) produces for xor-null paths)
+        // plus a legacy-cache hole carrying the old impostor string.
+        $cluster->holes = [
+            new Hole('__P0', 'literal', ['', "'x'"], true),
+            new Hole('__P1', 'literal', ['<missing>', "'y'"], false),
+        ];
+
+        $holes = $this->payloadFor($cluster, 1.0)['clusters'][0]['holes'];
+        $this->assertSame([null, "'x'"], $holes[0]['observed']);
+        $this->assertTrue($holes[0]['degraded']);
+        // Legacy belt: a pre-5.4 cache value is normalized AND flagged —
+        // a reader must never see the impostor string.
+        $this->assertSame([null, "'y'"], $holes[1]['observed']);
+        $this->assertTrue($holes[1]['degraded'], 'legacy <missing> normalizes with degraded=true');
+    }
+
+    public function testDefaultThresholdNeverFiresEvenOnFullCoverage(): void
+    {
+        $cluster = $this->pairCluster();
+        $cluster->holePaths = ['__P0' => []];   // whole-template hole → coverage 1.0
+
+        $c = $this->payloadFor($cluster, 1.0)['clusters'][0];
+        $this->assertEqualsWithDelta(1.0, (float)$c['hole_coverage'], 0.0001);
+        $this->assertFalse($c['re_expressed'], 'strict > posture: default 1.0 stays byte-identical');
+        $this->assertNull($c['hole_fragment']);
+    }
+
+    public function testFiredThresholdMarksAndAnnotatesWithoutDropping(): void
+    {
+        $cluster = $this->pairCluster();
+        $cluster->holePaths = ['__P0' => []];
+
+        $c = $this->payloadFor($cluster, 0.5)['clusters'][0];
+        $this->assertTrue($c['re_expressed']);
+        $this->assertNull($c['hole_fragment'], 'no hole-free run in a fully-holed template');
+        $this->assertArrayHasKey('holes', $c, 'evidence annotated, never dropped');
+    }
+
+    public function testFragmentSurfacesTheHoleFreeRunWhenThresholdFires(): void
+    {
+        $cluster = $this->threeStmtClusterWithFirstStmtHole();
+
+        $c = $this->payloadFor($cluster, 0.01)['clusters'][0];
+        $this->assertTrue($c['re_expressed']);
+        $frag = $c['hole_fragment'];
+        $this->assertNotNull($frag);
+        $this->assertSame(1, $frag['stmt_start']);
+        $this->assertSame(2, $frag['stmt_length']);
+        $this->assertStringContainsString('y();', (string)$frag['code']);
+        $this->assertStringContainsString('z();', (string)$frag['code']);
+        $this->assertFalse($frag['truncated']);
+    }
+
+    public function testSourceTruncationIsMarkedHonestly(): void
+    {
+        $file = $this->tmp . '/huge.php';
+        $body = "<?php\nfunction huge() {\n";
+        for ($i = 0; $i < 300; $i++) {
+            $body .= "    echo {$i};\n";
+        }
+        $body .= "}\n";
+        file_put_contents($file, $body);
+
+        $block = $this->extract($file)[0];
+        $block->id = 'HUGE';
+        $cluster = new Cluster('HG', [$block], 1.0, false);
+
+        $c = $this->payloadFor($cluster, 1.0)['clusters'][0];
+        $this->assertTrue($c['source']['truncated']);
+        $this->assertStringContainsString('truncated: showing', (string)$c['source']['text']);
+        // Cap holds with slack for the marker line (200 lines / 8 KiB caps
+        // live as private consts; the marker is ~60 bytes).
+        $this->assertLessThanOrEqual(8400, strlen((string)$c['source']['text']));
+    }
+
+    // ── fixtures ────────────────────────────────────────────────────────────
+
+    /** @return array<string,mixed> */
+    private function payloadFor(Cluster $cluster, float $threshold): array
+    {
+        $config = new Config(paths: [$this->tmp], exclude: [], maxHoleCoverage: $threshold);
+        $report = new Report(
+            files: 2, blocks: 2, parseErrors: 0, clusters: [$cluster], config: $config,
+        );
+        return (new JsonReporter())->build($report);
+    }
+
+    private function pairCluster(
+        string $a = 'if ($s > 1) { send($u); }',
+        string $b = 'if ($s > 2) { send($v); }',
+    ): Cluster {
+        $blocks = [];
+        foreach ([$a, $b] as $i => $code) {
+            $file  = $this->tmp . "/m{$i}.php";
+            file_put_contents($file, "<?php\n" . $code . "\n");
+            $block     = $this->extract($file)[0];
+            $block->id = "BLK{$i}";
+            $blocks[]  = $block;
+        }
+        $cluster        = new Cluster('PAIR', $blocks, 0.9, false);
+        $cluster->pairs = [[
+            'blockA' => 'BLK0', 'blockB' => 'BLK1', 'matchTier' => 'jaccard', 'matchScore' => 0.9,
+        ]];
+        (new AntiUnifier())->unify($cluster);
+        return $cluster;
+    }
+
+    private function threeStmtClusterWithFirstStmtHole(): Cluster
+    {
+        // Function_ root so the fragment operates on the BODY statement
+        // list: stmts/0 carries the literal hole, y()/z() stay hole-free.
+        $blocks = [];
+        foreach (['function t($s) { if ($s > 1) { q(); } y(); z(); }', 'function t($s) { if ($s > 2) { q(); } y(); z(); }'] as $i => $code) {
+            $file  = $this->tmp . "/t{$i}.php";
+            file_put_contents($file, "<?php\n" . $code . "\n");
+            $block     = $this->extract($file)[0];
+            $block->id = "BLK{$i}";
+            $blocks[]  = $block;
+        }
+        $cluster = new Cluster('FRAG', $blocks, 0.9, false);
+        (new AntiUnifier())->unify($cluster);
+        return $cluster;
+    }
+
+    /** @return list<Block> */
+    private function extract(string $file): array
+    {
+        $stmts     = (new AstParser())->parseCode((string)file_get_contents($file));
+        $extracted = (new BlockExtractor(minSize: 1))->extract($file, $stmts);
+        $this->assertNotEmpty($extracted, "no block extracted from {$file}");
+        return $extracted;
+    }
+}

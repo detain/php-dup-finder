@@ -1,6 +1,6 @@
 {
     "phpdup_version": "0.1.0",
-    "schema_version": "1.4",
+    "schema_version": "1.5",
     "summary": {
         "files": 1,
         "blocks": 3,
@@ -88,10 +88,32 @@
                         "'SELECT * FROM products WHERE id = ?'",
                         "'SELECT * FROM orders WHERE id = ?'"
                     ],
-                    "value_count": 3
+                    "value_count": 3,
+                    "degraded": false
                 }
             ],
-            "scope": "single"
+            "scope": "single",
+            "template": {
+                "id": "aeb0e34a_0",
+                "file": "tests/Fixtures/sql/Repos.php",
+                "start": 6,
+                "end": 12
+            },
+            "source": {
+                "text": "    public function findById(\\PDO $db, int $id): ?array\n    {\n        $sql = \"SELECT * FROM users WHERE id = ?\";\n        $stmt = $db->prepare($sql);\n        $stmt->execute([$id]);\n        return $stmt->fetch() ?: null;\n    }\n",
+                "truncated": false
+            },
+            "evidence_diff": {
+                "member": "aeb0e34a_1",
+                "file": "tests/Fixtures/sql/Repos.php",
+                "start": 17,
+                "end": 23,
+                "diff": "--- a/tests/Fixtures/sql/Repos.php\n+++ b/tests/Fixtures/sql/Repos.php\n@@ @@\n     public function findById(\\PDO $db, int $id): ?array\n     {\n-        $sql = \"SELECT * FROM users WHERE id = ?\";\n+        $sql = \"SELECT * FROM products WHERE id = ?\";\n         $stmt = $db->prepare($sql);\n         $stmt->execute([$id]);\n         return $stmt->fetch() ?: null;\n",
+                "truncated": false
+            },
+            "hole_coverage": 0.029,
+            "re_expressed": false,
+            "hole_fragment": null
         }
     ],
     "declared_twins": []

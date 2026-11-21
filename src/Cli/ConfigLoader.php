@@ -39,6 +39,7 @@ final class ConfigLoader
             'fingerprint_id_mode',
             'scope', 'score_mode',
             'max_ted_size',
+            'max_hole_coverage',
             'ir_threshold', 'ml_pair_threshold', 'debug_log',
             'low_memory', 'fail_on_impact', 'max_clusters',
             'baseline', 'baseline_out', 'diff_base', 'apply',
@@ -66,6 +67,7 @@ final class ConfigLoader
             'scope' => $base->scope,
             'score_mode' => $base->scoreMode,
             'max_ted_size' => $base->maxTedSize,
+            'max_hole_coverage' => $base->maxHoleCoverage,
             'ir_threshold' => $base->irThreshold,
             'ml_pair_threshold' => $base->mlPairThreshold,
             'debug_log' => $base->debugLog,
@@ -157,6 +159,7 @@ final class ConfigLoader
             scope:                         $flat['scope'],
             scoreMode:                     $flat['score_mode'],
             maxTedSize:                    $flat['max_ted_size'],
+            maxHoleCoverage:               $flat['max_hole_coverage'],
         );
     }
 
@@ -180,6 +183,7 @@ final class ConfigLoader
         'max_clusters'         => ['int',   0,    null],
         'candidate_budget'     => ['int',   0,    null],
         'max_ted_size'         => ['int',   1,    null],
+        'max_hole_coverage'    => ['float', 0.0,  1.0],
         'similarity_threshold' => ['float', 0.0,  1.0],
         'tree_threshold'       => ['float', 0.0,  1.0],
         'max_df'               => ['float', 0.0,  1.0],
@@ -483,6 +487,17 @@ final class ConfigLoader
                         );
                     }
 
+                    // Item 5.4: max_hole_coverage rides the same root-only
+                    // posture — a cluster spans members from many dirs, and
+                    // the re-expression threshold is a stance about the ONE
+                    // final report, not about a subtree.
+                    if (array_key_exists('max_hole_coverage', $decoded)) {
+                        throw new \RuntimeException(
+                            'max_hole_coverage is not a per-directory key (root phpdup.json only): '
+                            . $file->getPathname()
+                        );
+                    }
+
                     $dir = realpath($file->getPath());
                     if ($dir === false) {
                         continue;
@@ -593,6 +608,7 @@ final class ConfigLoader
             'max_clusters',
             'candidate_budget',
             'max_ted_size',
+            'max_hole_coverage',
             'baseline',
             'baseline_out',
             'diff_base', 'apply',
@@ -711,6 +727,9 @@ final class ConfigLoader
         }
         if (array_key_exists('max_ted_size', $data)) {
             $assertInt($data['max_ted_size'], 'max_ted_size', 1);
+        }
+        if (array_key_exists('max_hole_coverage', $data)) {
+            $assertFloat01($data['max_hole_coverage'], 'max_hole_coverage');
         }
         foreach (['incremental', 'lazy_ast'] as $boolKey) {
             if (array_key_exists($boolKey, $data) && !is_bool($data[$boolKey])) {

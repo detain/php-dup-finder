@@ -236,7 +236,7 @@ final class AntiUnifier
     {
         $key = self::pathKey($path);
         if (isset($ctx->holesByPath[$key])) {
-            $ctx->holesByPath[$key]->appendObserved($this->repr($member));
+            $this->observe($ctx->holesByPath[$key], $member);
             return;
         }
 
@@ -359,7 +359,7 @@ final class AntiUnifier
                 if (isset($ctx->holesByPath[$childKey])) {
                     // A prior member created an optional hole here; this member
                     // has the segment, so record the present marker.
-                    $ctx->holesByPath[$childKey]->appendObserved($this->repr($tStmt));
+                    $this->observe($ctx->holesByPath[$childKey], $tStmt instanceof Node ? $tStmt : null);
                 } else {
                     $this->walk($tStmt, $mList[$j], $memberIdx, $ctx, $childPath);
                 }
@@ -437,9 +437,8 @@ final class AntiUnifier
         }
         $holeId = '__O' . ($ctx->holeCounter++);
         $hole   = new Hole($holeId, 'optional_block');
-        $tRepr  = $this->repr($tStmt);
         for ($i = 0; $i < $memberIdx; $i++) {
-            $hole->appendObserved($tRepr);
+            $this->observe($hole, $tStmt);
         }
         $hole->appendObserved('<absent>');
         $ctx->holes[$holeId]      = $hole;
@@ -454,16 +453,15 @@ final class AntiUnifier
     {
         $key = self::pathKey($path);
         if (isset($ctx->holesByPath[$key])) {
-            $ctx->holesByPath[$key]->appendObserved($this->repr($mNode));
+            $this->observe($ctx->holesByPath[$key], $mNode);
             return;
         }
         $holeId = '__P' . ($ctx->holeCounter++);
         $hole   = new Hole($holeId, $kind);
-        $tRepr  = $this->repr($tNode);
         for ($i = 0; $i < $memberIdx; $i++) {
-            $hole->appendObserved($tRepr);
+            $this->observe($hole, $tNode);
         }
-        $hole->appendObserved($this->repr($mNode));
+        $this->observe($hole, $mNode);
         $ctx->holes[$holeId]      = $hole;
         $ctx->holesByPath[$key]   = $hole;
         $ctx->holePaths[$holeId] = $path;
@@ -503,9 +501,24 @@ final class AntiUnifier
         return implode('/', array_map('strval', $path));
     }
 
-    private function repr(?Node $node): string
+    /**
+     * Record one member's observation on a hole. Item 5.4: a null node
+     * (the member had nothing at this path) becomes a structural GAP —
+     * {@see Hole::MISSING} plus `degraded` — instead of the old `<missing>`
+     * string, which masqueraded as a PHP fragment in signatures, reports
+     * and parameter-type inference.
+     */
+    private function observe(Hole $hole, ?Node $node): void
     {
-        if ($node === null) return '<missing>';
+        if ($node === null) {
+            $hole->appendMissing();
+            return;
+        }
+        $hole->appendObserved($this->repr($node));
+    }
+
+    private function repr(Node $node): string
+    {
         if ($node instanceof Node\Scalar\String_)     return var_export($node->value, true);
         if ($node instanceof Node\Scalar\Int_)        return (string)$node->value;
         if ($node instanceof Node\Scalar\Float_)      return (string)$node->value;

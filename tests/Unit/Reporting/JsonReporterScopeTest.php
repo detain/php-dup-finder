@@ -42,10 +42,14 @@ final class JsonReporterScopeTest extends TestCase
         $this->assertSame('r2', $cluster['members'][1]['repo']);
 
         // Cluster 'scope' trails 'holes' — every legacy key in place.
+        // (Updated by item 5.4: the scope-era tail stays untouched and the
+        // 1.5 evidence keys append AFTER it — see JsonReporterEvidenceTest
+        // for the tail-order contract.)
         $this->assertSame(
             ['id', 'kind', 'exact', 'similarity', 'confidence', 'safety', 'impact',
              'pattern_tags', 'outlier_members', 'architectural_findings', 'signature',
-             'members', 'pairs', 'holes', 'scope'],
+             'members', 'pairs', 'holes', 'scope',
+             'template', 'source', 'evidence_diff', 'hole_coverage', 're_expressed', 'hole_fragment'],
             array_keys($cluster),
         );
         $this->assertSame(ClusterScope::MULTI, $cluster['scope']);

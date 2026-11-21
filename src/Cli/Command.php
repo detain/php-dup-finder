@@ -81,6 +81,7 @@ final class Command extends SymfonyCommand
             ->addOption('profile', null, InputOption::VALUE_REQUIRED, 'Apply a project profile (laravel|symfony|drupal|wordpress|generic|db-aware-laravel|db-aware-doctrine|db-aware-cake|db-aware-thinkorm|db-aware-medoo|db-aware-propel|db-aware-redbean|db-aware-cycle|db-aware-phpactiverecord|auto) to seed framework-aware excludes + tuning. db-aware-* profiles ship symbol-equivalence packs for various ORMs. "auto" sniffs the scan path for known markers. Explicit CLI flags + --config win over profile values.')
             ->addOption('min-safety', null, InputOption::VALUE_REQUIRED, 'Drop clusters whose refactor-safety score (0..1) is below this threshold. 0 = report all (default).')
             ->addOption('score-mode', null, InputOption::VALUE_REQUIRED, 'Scoring stance for cross-repo clones: global|per-repo|typed (item 5.1, default global). global = legacy math, byte-identical to every stored baseline. per-repo = the >3-namespaces penalty in confidence/safety is evaluated on the namespace spread within the densest member repo, so a subsystem mirrored across packages is no longer double-penalized for its mirroring. typed = audit posture: cross-repo clusters skip that penalty and gain the inverse bonus (a cross-repo clone is the strongest dedup signal: one shared helper erases N repo-local copies). Only clusters with >=2 distinct member repo labels behave differently; everything else scores as before. Equivalently: config key score_mode.')
+            ->addOption('max-hole-coverage', null, InputOption::VALUE_REQUIRED, 'Extraction-quality stance (item 5.4): fraction 0..1 (default 1.0 = rule never fires, today\'s behavior byte-identical). When a cluster\'s generalized template is MORE than this fraction hole, the report marks it re_expressed and surfaces its longest hole-free statement run (hole_fragment) instead of dressing the wreck up as a clean function. Evidence is annotated, never dropped. Equivalently: config key max_hole_coverage (root-only).')
             ->addOption('ted-weights', null, InputOption::VALUE_REQUIRED, 'Tree-edit cost model: default|semantic. semantic weights method calls / control flow heavier than literals.')
             ->addOption('db-aware', null, InputOption::VALUE_NONE, 'ORM-/DB-aware semantic dedup: rewrite recognised database calls (Eloquent, Doctrine, PDO, mysqli, pg_*, raw SQL) to canonical __DB_<OP>__ tokens during normalisation so equivalent ORM and raw-SQL variants cluster together. Off by default — opt-in for ORM-heavy codebases. See docs/plans/orm-db-semantic-dedup.md.')
             ->addOption('trinity-collapse', null, InputOption::VALUE_NONE, 'Detect the canonical CRUD trinity (read → mutate → save) and rewrite the three-statement sequence as a single __DB_UPSERT__("entity") synthetic call so ORM upserts cluster with raw UPDATE queries. Composes with --db-aware. Off by default. See option 2 of docs/plans/orm-db-semantic-dedup.md.')
@@ -156,7 +157,7 @@ Options grouped by category:
     --min-block-size, --mode, --similarity, --max-df, --candidate-budget,
     --optional-blocks, --optional-blocks-containment,
     --min-impact, --min-safety, --fail-on-impact, --max-clusters,
-    --score-mode,
+    --score-mode, --max-hole-coverage,
     --exact-only, --kinds, --auto-tune,
     --ted-weights, --db-aware, --trinity-collapse,
     --scorer, --ir-threshold,
@@ -261,6 +262,7 @@ HELP;
             'workers'                     => $input->getOption('workers'),
             'max_df'                      => $input->getOption('max-df'),
             'candidate_budget'            => $input->getOption('candidate-budget'),
+            'max_hole_coverage'           => $input->getOption('max-hole-coverage'),
             'optional_blocks_containment' => $input->getOption('optional-blocks-containment'),
             'sort'                        => $input->getOption('sort'),
             'ted_weights'                 => $input->getOption('ted-weights'),

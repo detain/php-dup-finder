@@ -131,6 +131,21 @@ final class GoldenTest extends TestCase
                     }
                 }
                 unset($member);
+                // Item 5.4: the evidence tail carries the same absolute
+                // paths the production report shows (template identity,
+                // diff peer + its ---/+++ headers). Relativize on the same
+                // rule so snapshots stay portable across checkouts.
+                if ($base !== '') {
+                    foreach (['template', 'evidence_diff'] as $key) {
+                        if (isset($cluster[$key]['file']) && is_string($cluster[$key]['file'])
+                            && str_starts_with($cluster[$key]['file'], $base)) {
+                            $cluster[$key]['file'] = substr($cluster[$key]['file'], strlen($base));
+                        }
+                        if (isset($cluster[$key]['diff']) && is_string($cluster[$key]['diff'])) {
+                            $cluster[$key]['diff'] = str_replace($base, '', $cluster[$key]['diff']);
+                        }
+                    }
+                }
             }
             unset($cluster);
         }

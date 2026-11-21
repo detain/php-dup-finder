@@ -4,7 +4,9 @@ declare(strict_types=1);
 namespace Phpdup\Reporting;
 
 use Phpdup\Clustering\Cluster;
+use Phpdup\Cli\Config;
 use Phpdup\Refactor\Hole;
+use Phpdup\Refactor\HoleCoverage;
 use Phpdup\Util\CountPhrase;
 use SugarCraft\Core\Util\Color;
 use SugarCraft\Cli\Banner;
@@ -95,7 +97,7 @@ final class CliReporter
         }
 
         for ($i = 0; $i < $shown; $i++) {
-            $this->renderCluster($i + 1, $clusters[$i], $theme, $width, $decorated, $out);
+            $this->renderCluster($i + 1, $clusters[$i], $report->config, $theme, $width, $decorated, $out);
         }
 
         $this->renderTrailer($report, $clusters, $theme, $out);
@@ -181,7 +183,7 @@ final class CliReporter
         $out->writeln($table->render());
     }
 
-    private function renderCluster(int $num, Cluster $c, Theme $theme, int $width, bool $decorated, OutputInterface $out): void
+    private function renderCluster(int $num, Cluster $c, Config $config, Theme $theme, int $width, bool $decorated, OutputInterface $out): void
     {
         $out->writeln('');
         $headLabel = sprintf(
@@ -229,6 +231,35 @@ final class CliReporter
                 );
             }
             $out->writeln($holesTable->render());
+
+            // Item 5.4 honesty notes — silent unless there is evidence to
+            // report: a hole whose value set contains a structural gap, and
+            // a template whose hole fraction exceeds the operator's stance.
+            $gapped = 0;
+            foreach ($c->holes as $h) {
+                if ($h->degraded) {
+                    $gapped++;
+                }
+            }
+            if ($gapped > 0) {
+                $note = sprintf(
+                    '%d hole(s) had members with no node at the hole path — shown as (gap); the signature rests on partial evidence.',
+                    $gapped,
+                );
+                $out->writeln('  ' . ($decorated ? $theme->muted->render($note) : $note));
+            }
+            $coverage = HoleCoverage::coverage($c);
+            if ($coverage !== null && $coverage > $config->maxHoleCoverage) {
+                $span = HoleCoverage::fragmentSpan($c);
+                $out->writeln(sprintf(
+                    '  re-expressed: %.0f%% of the generalized template is holes (> --max-hole-coverage %.2f).%s',
+                    $coverage * 100,
+                    $config->maxHoleCoverage,
+                    $span !== null
+                        ? sprintf(' Extractable: top-level statements %d-%d of the body.', $span['start'] + 1, $span['start'] + $span['length'])
+                        : ' No hole-free top-level statement run remains.',
+                ));
+            }
         }
 
         if ($c->patternTags) {
@@ -284,7 +315,10 @@ final class CliReporter
     private function summarizeObserved(array $values, int $maxLen): string
     {
         $unique = array_values(array_unique($values));
-        $shown = array_slice($unique, 0, 5);
+        $shown  = array_map(
+            static fn(string $v) => ($v === Hole::MISSING || $v === '<missing>') ? '(gap)' : $v,
+            array_slice($unique, 0, 5),
+        );
         $rendered = array_map(fn($v) => mb_strlen($v) > 40 ? mb_substr($v, 0, 37) . '...' : $v, $shown);
         $extra = count($unique) > 5 ? sprintf(' (+%d more)', count($unique) - 5) : '';
         $out = implode(', ', $rendered) . $extra;

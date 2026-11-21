@@ -3,16 +3,40 @@ declare(strict_types=1);
 
 namespace Phpdup\Reporting;
 
+use Phpdup\Cli\Config;
 use Phpdup\Clustering\Cluster;
+use Phpdup\Extraction\Block;
 use Phpdup\Refactor\Hole;
+use Phpdup\Refactor\HoleCoverage;
 use Phpdup\Util\Num;
+use PhpParser\Node;
+use PhpParser\PrettyPrinter\Standard as PrettyPrinter;
 
 /**
  * Machine-readable JSON dump.
+ *
+ * Item 5.4 grows the cluster payload with honest extraction evidence, all
+ * of it TRAILING-ADDITIVE (schema '1.4' → '1.5'): which member is the
+ * canonical `template`, its capped `source` text, a capped `evidence_diff`
+ * against the median-scored peer, the measured `hole_coverage`, and — only
+ * when the operator's `max_hole_coverage` stance is exceeded — the
+ * `re_expressed` mark plus the longest hole-free `hole_fragment`. Hole
+ * objects additionally carry `degraded`, and structural gaps in `observed`
+ * are JSON null, never the old `<missing>` string.
  */
 final class JsonReporter
 {
     use WritesReportFile;
+
+    /** Size caps for the item-5.4 evidence keys — reports stay bounded, truncation is marked. */
+    private const SOURCE_MAX_LINES   = 200;
+    private const SOURCE_MAX_BYTES   = 8000;
+    private const DIFF_MAX_LINES     = 120;
+    private const DIFF_MAX_BYTES     = 6000;
+    private const FRAGMENT_MAX_LINES = 80;
+    private const FRAGMENT_MAX_BYTES = 4000;
+
+    private ?PrettyPrinter $printer = null;
 
     public function writeTo(Report $report, string $file): void
     {
@@ -54,7 +78,7 @@ final class JsonReporter
                 'tree_threshold'       => Num::json($report->config->treeThreshold),
                 'min_cluster_impact'   => $report->config->minClusterImpact,
             ],
-            'clusters' => array_map([$this, 'clusterPayload'], $report->clusters),
+            'clusters' => array_map(fn(Cluster $c) => $this->clusterPayload($c, $report->config), $report->clusters),
             // Item 4.3: the declared-twin claim-vs-reality table —
             // trailing-additive key, schema '1.2' → '1.3'. Producers
             // without the analyzer pass emit [] (the key is always
@@ -64,8 +88,13 @@ final class JsonReporter
     }
 
     /** @return array<string, mixed> */
-    private function clusterPayload(Cluster $c): array
+    private function clusterPayload(Cluster $c, Config $config): array
     {
+        // One coverage measurement per cluster, reused by the three keys
+        // that depend on it (item 5.4 walking an AST twice would only
+        // disagree with itself).
+        $coverage    = HoleCoverage::coverage($c);
+        $reExpressed = $coverage !== null && $coverage > $config->maxHoleCoverage;
         return [
             'id'           => $c->id,
             'kind'         => $c->members[0]->kind ?? null,
@@ -106,13 +135,28 @@ final class JsonReporter
                 'matchScore' => Num::json($p['matchScore']),
             ], $c->pairs),
             'holes' => array_map(static function (Hole $h) {
+                // Item 5.4: structural gaps serialize as JSON null (both the
+                // new Hole::MISSING '' and the legacy '<missing>' string that
+                // pre-5.4 cluster caches still carry), and every hole now
+                // states whether its value set is degraded evidence.
+                $observed = [];
+                $degraded = $h->degraded;
+                foreach (array_unique($h->observedValues) as $v) {
+                    if ($v === '<missing>') {
+                        // Pre-5.4 cache payload: the impostor string IS a
+                        // gap — normalize it and lift the flag honestly.
+                        $degraded = true;
+                    }
+                    $observed[] = ($v === Hole::MISSING || $v === '<missing>') ? null : $v;
+                }
                 $base = [
                     'placeholder'    => $h->placeholder,
                     'kind'           => $h->kind,
                     'inferred_type'  => $h->inferredType,
                     'suggested_name' => $h->suggestedName,
-                    'observed'       => array_values(array_unique($h->observedValues)),
+                    'observed'       => $observed,
                     'value_count'    => $h->uniqueValueCount(),
+                    'degraded'       => $degraded,
                 ];
                 if ($h->kind === 'optional_block') {
                     $present = [];
@@ -128,6 +172,179 @@ final class JsonReporter
             // otherwise. Computed from the members' own labels; never
             // persisted on Cluster, so it cannot drift from its evidence.
             'scope' => ClusterScope::of($c),
+            // ── Item 5.4 trailing-additive extraction evidence ─────────────
+            'template'      => self::templatePayload($c),
+            'source'        => self::sourcePayload($c),
+            'evidence_diff' => self::evidencePayload($c),
+            'hole_coverage' => $coverage === null ? null : Num::json($coverage),
+            're_expressed'  => $reExpressed,
+            'hole_fragment' => $reExpressed ? $this->fragmentPayload($c) : null,
         ];
+    }
+
+    /**
+     * The canonical template identity (item 5.4a): the cluster's medoid
+     * representative when recorded, else members[0] — see
+     * {@see HoleCoverage::canonicalTemplate()} for what this is NOT
+     * (AntiUnifier's internal seed, which is not persisted).
+     *
+     * @return array{id:string|null,file:string|null,start:int|null,end:int|null}|null
+     */
+    private static function templatePayload(Cluster $c): ?array
+    {
+        $t = HoleCoverage::canonicalTemplate($c);
+        if ($t === null) {
+            return null;
+        }
+        return [
+            'id'    => $t->id,
+            'file'  => $t->file,
+            'start' => $t->range->start,
+            'end'   => $t->range->end,
+        ];
+    }
+
+    /**
+     * Template source text, size-capped with an explicit truncation marker
+     * line (caps: SOURCE_MAX_LINES / SOURCE_MAX_BYTES).
+     *
+     * @return array{text:string|null,truncated:bool}
+     */
+    private function sourcePayload(Cluster $c): array
+    {
+        $t = HoleCoverage::canonicalTemplate($c);
+        if ($t === null) {
+            return ['text' => null, 'truncated' => false];
+        }
+        [$text, $truncated] = self::cap(DiffReporter::sourceOf($t), self::SOURCE_MAX_LINES, self::SOURCE_MAX_BYTES);
+        return ['text' => $text, 'truncated' => $truncated];
+    }
+
+    /**
+     * Unified diff between the template and its most REPRESENTATIVE peer:
+     * among pairs touching the template, the member sitting at the median
+     * match score (the middle of the cluster's variation, not its fringe).
+     * Null when there is no peer, no pair evidence, or the texts are
+     * byte-identical (an empty diff would be noise masquerading as proof).
+     *
+     * @return null|array{member:string,file:string,start:int,end:int,diff:string,truncated:bool}
+     */
+    private function evidencePayload(Cluster $c): ?array
+    {
+        $t = HoleCoverage::canonicalTemplate($c);
+        if ($t === null || count($c->members) < 2) {
+            return null;
+        }
+        $rep = self::representativePeer($c, $t);
+        if ($rep === null) {
+            return null;
+        }
+        $srcT = DiffReporter::sourceOf($t);
+        $srcR = DiffReporter::sourceOf($rep);
+        if ($srcT === $srcR) {
+            // Byte-identical sources: an empty diff is noise masquerading
+            // as proof — say "no evidence" instead of showing a header.
+            return null;
+        }
+        $differ = new \SebastianBergmann\Diff\Differ(
+            new \SebastianBergmann\Diff\Output\UnifiedDiffOutputBuilder("--- a/{$t->file}\n+++ b/{$rep->file}\n", false),
+        );
+        [$diff, $truncated] = self::cap($differ->diff($srcT, $srcR), self::DIFF_MAX_LINES, self::DIFF_MAX_BYTES);
+        return [
+            'member'    => $rep->id,
+            'file'      => $rep->file,
+            'start'     => $rep->range->start,
+            'end'       => $rep->range->end,
+            'diff'      => $diff,
+            'truncated' => $truncated,
+        ];
+    }
+
+    private static function representativePeer(Cluster $c, Block $t): ?Block
+    {
+        $byId = [];
+        foreach ($c->members as $m) {
+            $byId[$m->id] = $m;
+        }
+        $scores = [];
+        foreach ($c->pairs as $p) {
+            $other = null;
+            if (($p['blockA'] ?? null) === $t->id) {
+                $other = $p['blockB'] ?? null;
+            } elseif (($p['blockB'] ?? null) === $t->id) {
+                $other = $p['blockA'] ?? null;
+            }
+            if ($other !== null && $other !== $t->id && isset($byId[$other])) {
+                $scores[] = [(float)$p['matchScore'], $other];
+            }
+        }
+        if ($scores === []) {
+            // No pair touches the template (residue clusters). Take the
+            // first member that is not the template itself.
+            foreach ($c->members as $m) {
+                if ($m !== $t) {
+                    return $m;
+                }
+            }
+            return null;
+        }
+        usort($scores, static fn(array $a, array $b) => $a[0] <=> $b[0]);
+        $median = $scores[(int)(count($scores) / 2)][1];
+        return $byId[$median] ?? null;
+    }
+
+    /**
+     * The longest hole-free top-level statement run, pretty-printed and
+     * capped — the re-expression target the operator can actually extract.
+     * Only reached once the caller's coverage stance has fired.
+     *
+     * @return null|array{stmt_start:int,stmt_length:int,code:string,truncated:bool}
+     */
+    private function fragmentPayload(Cluster $c): ?array
+    {
+        $span = HoleCoverage::fragmentSpan($c);
+        if ($span === null) {
+            return null;
+        }
+        $stmts = HoleCoverage::rootStmts($c);
+        $slice = array_slice($stmts, $span['start'], $span['length']);
+        if ($slice === []) {
+            return null;
+        }
+        $printer = $this->printer ?? new PrettyPrinter();
+        $this->printer = $printer;
+        $code = $printer->prettyPrint(array_values(array_filter($slice, static fn($s) => $s instanceof Node)));
+        [$code, $truncated] = self::cap($code, self::FRAGMENT_MAX_LINES, self::FRAGMENT_MAX_BYTES);
+        return [
+            'stmt_start'  => $span['start'],
+            'stmt_length' => $span['length'],
+            'code'        => $code,
+            'truncated'   => $truncated,
+        ];
+    }
+
+    /**
+     * Cap text to $maxLines lines AND $maxBytes bytes, appending an honest
+     * marker line when anything was cut. Returns [cappedText, truncated].
+     *
+     * @return array{string,bool}
+     */
+    private static function cap(string $text, int $maxLines, int $maxBytes): array
+    {
+        $lines = explode("\n", rtrim($text, "\n"));
+        $total = count($lines);
+        $bytes = strlen($text);
+        if ($total <= $maxLines && $bytes <= $maxBytes) {
+            return [$text, false];
+        }
+        $kept   = array_slice($lines, 0, $maxLines);
+        $joined = implode("\n", $kept);
+        if (strlen($joined) > $maxBytes) {
+            $joined = substr($joined, 0, $maxBytes);
+        }
+        $shownBytes = strlen($joined);
+        $shownLines = count(explode("\n", $joined));
+        $joined .= "\n# … truncated: showing {$shownLines} of {$total} lines, {$shownBytes} of {$bytes} bytes …";
+        return [$joined, true];
     }
 }

@@ -207,4 +207,158 @@ final class AntiUnifierTest extends TestCase
         $this->assertNotEmpty($cluster->holePaths, 'cluster.holePaths should be populated');
         $this->assertSame($paths, $cluster->holePaths);
     }
+
+    // ── item 5.4(b): structural gaps are Hole::MISSING + degraded, not text ──
+
+    public function testWholeArrayFallbackHoleRecordsGapsNotMissingStrings(): void
+    {
+        // Differing statement-count with optional-block detection OFF: the
+        // legacy fallback makes one subtree hole over the whole `stmts`
+        // array, passing null for BOTH template and member nodes. Pre-5.4
+        // that emitted the string '<missing>' as each member's "observed
+        // value"; now the values are structural gaps and the hole says so.
+        $cluster = $this->clusterFor([
+            'function long()  { a(); b(); c(); d(); e(); }',
+            'function long()  { a(); b(); c(); }',
+        ]);
+
+        (new AntiUnifier(optionalBlocksEnabled: false))->unify($cluster);
+
+        $this->assertNotEmpty($cluster->holes);
+        foreach ($cluster->holes as $h) {
+            $this->assertNotContains(
+                '<missing>',
+                $h->observedValues,
+                "hole {$h->placeholder} leaked the legacy impostor string",
+            );
+            $this->assertTrue($h->degraded, "hole {$h->placeholder} should be degraded");
+            $this->assertSame(['', ''], $h->observedValues);
+        }
+    }
+
+    public function testXorNullSubnodeHoleIsDegradedGapEvidence(): void
+    {
+        // Same statement class on both sides, but one member's `expr`
+        // subnode is null (bare return) → the xor-null path creates a hole
+        // without ever observing the template node.
+        $cluster = $this->clusterFor([
+            'function f($x) { return $x + 1; }',
+            'function f($x) { return; }',
+        ]);
+
+        (new AntiUnifier())->unify($cluster);
+
+        $gapped = array_values(array_filter($cluster->holes, static fn($h) => $h->degraded));
+        $this->assertNotEmpty($gapped, 'the missing expr slot must produce degraded evidence');
+        foreach ($gapped as $h) {
+            $this->assertNotContains('<missing>', $h->observedValues);
+        }
+    }
+
+    public function testCompleteAgreementHolesAreNotDegraded(): void
+    {
+        // The plain literal-hole fixture: every member was truly observed,
+        // so degraded stays false and no gap markers appear anywhere.
+        $cluster = $this->clusterFor([
+            'function notifyHigh($u, $s) { if ($s > 10) { send("admin", $u); } }',
+            'function notifyMid($u, $s) { if ($s > 20) { send("moderator", $u); } }',
+        ]);
+
+        (new AntiUnifier())->unify($cluster);
+
+        $this->assertNotEmpty($cluster->holes);
+        foreach ($cluster->holes as $h) {
+            $this->assertFalse($h->degraded);
+            $this->assertNotContains('', $h->observedValues);
+        }
+    }
+
+    // ── item 5.4(d): mined function names for unnamed template bodies ────────
+
+    public function testMinedNameFromHoleFreeBodyStatements(): void
+    {
+        // Two anonymous `if` blocks: the ONLY member-name pool is empty, so
+        // pre-5.4 the signature was forced to extractedFunction. The call
+        // graph outside the holes (the threshold literal differs) says
+        // "send" — and with a lone property read, its subject "limit".
+        $cluster = $this->ifClusterFor([
+            'if ($s > 1) { $m->notify($s, $m->limit); }',
+            'if ($s > 2) { $m->notify($s, $m->limit); }',
+        ]);
+
+        (new AntiUnifier())->unify($cluster);
+        (new ParameterSynthesizer())->synthesize($cluster);
+        (new SignatureBuilder())->buildSignature($cluster);
+
+        $this->assertStringContainsString('function notifyLimit(', (string)$cluster->signature);
+    }
+
+    public function testMinedNameStaysSilentOnAmbiguousCallees(): void
+    {
+        // Two callees with equal weight → no strict winner → honest fallback,
+        // never a coin flip.
+        $cluster = $this->ifClusterFor([
+            'if ($s > 1) { send($s); page($s); }',
+            'if ($s > 2) { send($s); page($s); }',
+        ]);
+
+        (new AntiUnifier())->unify($cluster);
+        (new ParameterSynthesizer())->synthesize($cluster);
+        (new SignatureBuilder())->buildSignature($cluster);
+
+        $this->assertStringContainsString('extractedFunction', (string)$cluster->signature);
+    }
+
+    public function testCalleeNameInsideAHoleNeverLeaksIntoTheMining(): void
+    {
+        // The only call site differs between members (validate vs compile),
+        // so its Identifier is a hole — the mined pool must come up EMPTY
+        // (using the seed's callee would bake one member's data into the
+        // shared name) and the signature falls back.
+        $cluster = $this->ifClusterFor([
+            'if ($x) { $m->validate($x); }',
+            'if ($x) { $m->compile($x); }',
+        ]);
+
+        (new AntiUnifier())->unify($cluster);
+        (new ParameterSynthesizer())->synthesize($cluster);
+        (new SignatureBuilder())->buildSignature($cluster);
+
+        $this->assertStringContainsString('extractedFunction', (string)$cluster->signature);
+        $this->assertStringNotContainsString('validate', (string)$cluster->signature);
+        $this->assertStringNotContainsString('compile', (string)$cluster->signature);
+    }
+
+    public function testNamedMembersNeverTakeTheMiningPath(): void
+    {
+        // Regression lock for the byte-identity claim: clusters WITH member
+        // names keep the historical longest-prefix suggestion untouched.
+        $cluster = $this->clusterFor([
+            'function notifyHigh($u, $s) { if ($s > 10) { send("admin", $u); logAudit($u); } }',
+            'function notifyMid($u, $s) { if ($s > 20) { send("moderator", $u); logAudit($u); } }',
+        ]);
+
+        (new AntiUnifier())->unify($cluster);
+        (new ParameterSynthesizer())->synthesize($cluster);
+        (new SignatureBuilder())->buildSignature($cluster);
+
+        $this->assertStringContainsString('notifyBy', (string)$cluster->signature);
+    }
+
+    /** @param list<string> $codes each an `if` statement body source */
+    private function ifClusterFor(array $codes): Cluster
+    {
+        $parser    = new AstParser();
+        $extractor = new BlockExtractor(minSize: 1);
+        $blocks    = [];
+        foreach ($codes as $i => $code) {
+            $stmts     = $parser->parseCode('<?php ' . $code);
+            $extracted = $extractor->extract("if{$i}.php", $stmts);
+            $this->assertNotEmpty($extracted, "expected an if-kind block for: {$code}");
+            $block = $extracted[0];
+            $this->assertSame('', (string)$block->name, 'precondition: if-blocks carry no name to suggest from');
+            $blocks[] = $block;
+        }
+        return new Cluster('IFTEST', $blocks, 1.0, false);
+    }
 }
