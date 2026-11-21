@@ -50,8 +50,14 @@ use SplFileInfo;
  * The watcher maintains an internal snapshot of known files and their mtimes:
  * - Call {@see resync()} after each pipeline run to rebase the snapshot on
  *   the watcher's own enumeration (what a flush would diff against anyway).
- * - {@see syncFromFileList()} remains for callers that DO hold an authoritative
- *   list to seed with (the TUI watch leg).
+ * - {@see syncFromFileList()} remains for callers that seed from an external
+ *   list (the TUI watch leg). Such a list is only consistent with this
+ *   watcher when it matches the watcher's own no-excludes walk — an
+ *   exclude-shaped pipeline list leaves files out of the snapshot and the
+ *   next flush manufactures a phantom Created/Deleted batch from the
+ *   mismatch. The TUI leg currently carries exactly that mismatch; its cure
+ *   (exclude-honoring in both backends, or a Command-leg flip to resync())
+ *   rides once-S47.
  * - Call {@see detectNewFiles()}, {@see detectModifiedFiles()}, and
  *   {@see detectDeletedFiles()} to diff a given file list against the
  *   snapshot and return the respective change sets.
@@ -222,8 +228,14 @@ final class FileWatcher
     /**
      * Sync the internal file snapshot from a caller-supplied file list.
      *
-     * Used when the caller genuinely holds the authoritative list (the
-     * TUI watch leg seeds from the model's state). WatchRunner uses
+     * Consistency note (why this is NOT generally "just seed the list"):
+     * flush() diffs against this watcher's OWN no-excludes enumeration, so
+     * a caller-supplied list shaped by different rules (the pipeline's
+     * exclude-shaped file list the TUI watch leg currently seeds with)
+     * leaves excluded files out of the snapshot and the next flush
+     * dispatches them as a phantom Created batch. The TUI leg's cure
+     * (exclude-honoring in both backends, or flipping the leg to
+     * {@see resync()}) rides once-S47. WatchRunner already uses
      * {@see resync()} instead so enumeration and diffing share one
      * predicate.
      *
@@ -348,8 +360,12 @@ final class FileWatcher
     /**
      * Authoritative pass: re-enumerate watchable files, diff against the
      * snapshot, and dispatch the consumer once with the coalesced batch.
-     * A batch that is empty (a .txt touch, a file behind an out-of-root
-     * symlink, an editor re-writing identical bytes) stays silent.
+     * An empty batch (a .txt touch, a file behind an out-of-root symlink)
+     * stays silent. The diff is mtime-keyed, so a re-write that bumps the
+     * mtime — even an editor re-writing identical bytes — classifies as
+     * Modified and DOES dispatch; only a re-touch within the same second
+     * stays silent on mtime resolution. Size-aware content suppression is
+     * once-S47's poll-key leg.
      */
     private function flush(): void
     {

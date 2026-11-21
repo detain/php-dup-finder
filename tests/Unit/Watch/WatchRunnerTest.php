@@ -131,6 +131,38 @@ final class WatchRunnerTest extends TestCase
     }
 
     /**
+     * shell-S33 fix r1 (M-2): the survival contract is ANY Throwable, not
+     * just Exception. Every other pin throws Exception subclasses, which is
+     * why the review's catch-NARROWING mutation (Throwable → Exception —
+     * the exact half-regression the step title forbids) measured GREEN.
+     * A bare \Error (realistic: a stage hitting a type error) must render
+     * through the same clean posture AND count toward the streak; under a
+     * catch (\Exception) arm this throwable escapes and kills the loop, so
+     * this test flips red on that mutation.
+     */
+    public function testErrorCrashAlsoKeepsWatcherAlive(): void
+    {
+        $stage = new WatchScriptedStage();
+        $stage->script = [new \Error('poisoned span'), null];
+        $output = new BufferedOutput();
+        $runner = $this->runnerWithStage($stage, $output);
+
+        $runner->handleChange('a.php', FileChangeType::Modified); // must NOT throw
+
+        $first = $output->fetch();
+        $this->assertSame(1, $stage->runs);
+        $this->assertStringContainsString('phpdup: watch pass failed (Error): poisoned span', $first);
+        $this->assertStringNotContainsString('Usage:', $first);
+        $this->assertStringNotContainsString('Stack trace:', $first);
+
+        $runner->handleChange('b.php', FileChangeType::Created);
+
+        $second = $output->fetch();
+        $this->assertSame(2, $stage->runs, 'an Error crash must not end the loop for the next event');
+        $this->assertStringContainsString('change detected (created: b.php) — reload #2', $second);
+    }
+
+    /**
      * Back-off posture (pinned choice: simple skip-note): after
      * MAX_CONSECUTIVE_PASS_FAILURES crashing passes the loop no longer
      * re-runs the pipeline per event; a single pause notice is rendered,

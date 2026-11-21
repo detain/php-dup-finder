@@ -583,6 +583,93 @@ final class FileWatcherTest extends TestCase
         $this->assertGreaterThanOrEqual(0.15, FileWatcher::DEBOUNCE_SECONDS);
         $this->assertLessThanOrEqual(0.5, FileWatcher::DEBOUNCE_SECONDS);
     }
+
+    // ─── shell-S33 fix r1: mask membership + arm-once window pins (L-1, N-1) ──
+
+    /**
+     * L-1: INOTIFY_MASK membership must be behaviorally pinned, not ride on
+     * phpstan's orphaned-const lint (the 77cd9a2 regression — IN_DELETE
+     * dropping out of the mask — measured GREEN in the review battery).
+     * ext-inotify is not loadable in this environment, so the pin covers
+     * the two environment-independent halves of the contract: (1) the
+     * class-local wake bits hold their canonical Linux inotify values and
+     * the mask admits every one of them (a missing bit means that event
+     * class can never wake the debounce), with a live-extension
+     * cross-check when one happens to be loaded; (2) the hint an
+     * IN_DELETE wake would feed produces — through the same hint → flush →
+     * diff chain the inotify backend runs — a Deleted classification.
+     */
+    public function testInotifyMaskWakesOnDeleteAndFlushClassifiesDeleted(): void
+    {
+        $ref = new \ReflectionClass(FileWatcher::class);
+        $mask = $ref->getReflectionConstant('INOTIFY_MASK')->getValue();
+        $this->assertIsInt($mask);
+
+        $canonical = [
+            'IN_MODIFY' => 2,
+            'IN_MOVED_TO' => 64,
+            'IN_MOVED_FROM' => 128,
+            'IN_CREATE' => 256,
+            'IN_DELETE' => 512,
+        ];
+        foreach ($canonical as $name => $value) {
+            $bit = $ref->getReflectionConstant($name)->getValue();
+            $this->assertSame($value, $bit, "FileWatcher::{$name} must hold the canonical inotify bit");
+            $this->assertNotSame(0, $mask & $bit, "INOTIFY_MASK must admit {$name} or that event class never wakes the watcher");
+            if (defined($name)) {
+                $this->assertSame(constant($name), $bit, "class-local {$name} drifted from the loaded inotify extension");
+            }
+        }
+
+        // Behavioural half: an rm of a watched PHP file, hinted exactly as
+        // an IN_DELETE wake would hint, classifies as Deleted at flush.
+        $this->createFile('a.php');
+        $this->createFile('gone.php');
+
+        $dispatches = [];
+        [, $loop] = $this->pollWatcher($dispatches);
+        $loop->firePeriodic();
+        $loop->fireTimers(); // seed snapshot with both files
+
+        unlink($this->tmpDir . '/gone.php');
+        $loop->firePeriodic(); // the hint an IN_DELETE wake produces
+        $loop->fireTimers();   // flush decides the truth
+
+        $this->assertCount(2, $dispatches);
+        $batch = $dispatches[1][2];
+        $this->assertSame([$this->tmpDir . '/gone.php'], array_keys($batch));
+        $this->assertSame(FileChangeType::Deleted, $batch[$this->tmpDir . '/gone.php']);
+    }
+
+    /**
+     * N-1: the debounce window is ONE armed one-shot per burst. The
+     * production cost guarantee ("thousands of events → one walk per
+     * window, not one per event") rests on noteChangeHint()'s
+     * flushTimer-exists short-circuit; before this pin, a dispatch-at-hint
+     * mutation tripped only testStopCancelsArmedFlush incidentally. No test
+     * fired 2+ hints before firing timers — now one does, and asserts the
+     * pending-timer count directly.
+     */
+    public function testSecondHintInsideWindowDoesNotArmSecondTimer(): void
+    {
+        $dispatches = [];
+        [, $loop] = $this->pollWatcher($dispatches);
+
+        $this->createFile('a.php');
+        $loop->firePeriodic(); // arms the window
+        $loop->firePeriodic(); // merges into the open window …
+        $loop->firePeriodic(); // … however many hints arrive
+
+        $this->assertSame(1, $loop->countPendingOneShots(), 'hints inside an open window must not stack timers');
+
+        $loop->fireTimers();
+        $this->assertCount(1, $dispatches, 'one window = one dispatch');
+        $this->assertSame(0, $loop->countPendingOneShots());
+
+        // After expiry the window is re-armable, still singly.
+        $loop->firePeriodic();
+        $this->assertSame(1, $loop->countPendingOneShots());
+    }
 }
 
 /**
@@ -646,6 +733,12 @@ final class WatchTestLoop implements LoopInterface
                 ($timer->getCallback())();
             }
         }
+    }
+
+    /** One-shot timers currently armed (not yet fired, not cancelled). */
+    public function countPendingOneShots(): int
+    {
+        return count($this->oneShot);
     }
 
     public function addTimer($interval, $callback): TimerInterface
