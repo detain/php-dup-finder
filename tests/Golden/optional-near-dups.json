@@ -22,7 +22,7 @@
     },
     "clusters": [
         {
-            "id": "Fe2772827d1f79a49",
+            "id": "Febb1d08b65e85222",
             "kind": "if",
             "exact": false,
             "similarity": 0.9643,
@@ -38,18 +38,6 @@
             "members": [
                 {
                     "file": "tests/Fixtures/optional/Pair.php",
-                    "start": 21,
-                    "end": 27,
-                    "kind": "if",
-                    "namespace": "Fixtures\\Optional",
-                    "class": "Pair",
-                    "name": null,
-                    "size": 20,
-                    "repo": "optional",
-                    "scope": "single"
-                },
-                {
-                    "file": "tests/Fixtures/optional/Pair.php",
                     "start": 8,
                     "end": 16,
                     "kind": "if",
@@ -59,12 +47,24 @@
                     "size": 30,
                     "repo": "optional",
                     "scope": "single"
+                },
+                {
+                    "file": "tests/Fixtures/optional/Pair.php",
+                    "start": 21,
+                    "end": 27,
+                    "kind": "if",
+                    "namespace": "Fixtures\\Optional",
+                    "class": "Pair",
+                    "name": null,
+                    "size": 20,
+                    "repo": "optional",
+                    "scope": "single"
                 }
             ],
             "pairs": [
                 {
-                    "blockA": "95a9b512_0",
-                    "blockB": "098cd9ef_0",
+                    "blockA": "60d6a596_0",
+                    "blockB": "72eb6957_0",
                     "matchTier": "containment",
                     "matchScore": 0.9643
                 }
@@ -76,13 +76,13 @@
                     "inferred_type": "bool",
                     "suggested_name": "$includeSomeOtherLogic",
                     "observed": [
-                        "<absent>",
-                        "some_other_logic($here);"
+                        "some_other_logic($here);",
+                        "<absent>"
                     ],
                     "value_count": 2,
                     "degraded": false,
                     "present_in_members": [
-                        1
+                        0
                     ]
                 },
                 {
@@ -91,33 +91,33 @@
                     "inferred_type": "bool",
                     "suggested_name": "$includeAndMore",
                     "observed": [
-                        "<absent>",
-                        "and_more($f);"
+                        "and_more($f);",
+                        "<absent>"
                     ],
                     "value_count": 2,
                     "degraded": false,
                     "present_in_members": [
-                        1
+                        0
                     ]
                 }
             ],
             "scope": "single",
             "template": {
-                "id": "098cd9ef_0",
+                "id": "60d6a596_0",
                 "file": "tests/Fixtures/optional/Pair.php",
-                "start": 21,
-                "end": 27
+                "start": 8,
+                "end": 16
             },
             "source": {
-                "text": "        if ($something == $somethingelse) {\n            // more logic\n            base64_encode($stuff);\n            $ret = other_stuff($blah);\n        } else {\n            return false;\n        }\n",
+                "text": "        if ($something == $somethingelse) {\n            // more logic\n            base64_encode($stuff);\n            $ret = other_stuff($blah);\n            some_other_logic($here);\n            and_more($f);\n        } else {\n            return false;\n        }\n",
                 "truncated": false
             },
             "evidence_diff": {
-                "member": "95a9b512_0",
+                "member": "72eb6957_0",
                 "file": "tests/Fixtures/optional/Pair.php",
-                "start": 8,
-                "end": 16,
-                "diff": "--- a/tests/Fixtures/optional/Pair.php\n+++ b/tests/Fixtures/optional/Pair.php\n@@ @@\n             // more logic\n             base64_encode($stuff);\n             $ret = other_stuff($blah);\n+            some_other_logic($here);\n+            and_more($f);\n         } else {\n             return false;\n         }\n",
+                "start": 21,
+                "end": 27,
+                "diff": "--- a/tests/Fixtures/optional/Pair.php\n+++ b/tests/Fixtures/optional/Pair.php\n@@ @@\n             // more logic\n             base64_encode($stuff);\n             $ret = other_stuff($blah);\n-            some_other_logic($here);\n-            and_more($f);\n         } else {\n             return false;\n         }\n",
                 "truncated": false
             },
             "hole_coverage": 0.36,

@@ -22,7 +22,7 @@
     },
     "clusters": [
         {
-            "id": "F6c24a1498c83473c",
+            "id": "F5b5e22874702dfec",
             "kind": "method",
             "exact": true,
             "similarity": 1,
@@ -94,7 +94,7 @@
             ],
             "scope": "single",
             "template": {
-                "id": "aeb0e34a_0",
+                "id": "bbbcd429_0",
                 "file": "tests/Fixtures/sql/Repos.php",
                 "start": 6,
                 "end": 12
@@ -104,7 +104,7 @@
                 "truncated": false
             },
             "evidence_diff": {
-                "member": "aeb0e34a_1",
+                "member": "bbbcd429_1",
                 "file": "tests/Fixtures/sql/Repos.php",
                 "start": 17,
                 "end": 23,

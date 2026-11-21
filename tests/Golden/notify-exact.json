@@ -22,7 +22,7 @@
     },
     "clusters": [
         {
-            "id": "F8ded38c39be8d945",
+            "id": "F99a325a8c51a5106",
             "kind": "method",
             "exact": true,
             "similarity": 1,
@@ -104,7 +104,7 @@
             ],
             "scope": "single",
             "template": {
-                "id": "53edd72b_0",
+                "id": "1b2cbde2_0",
                 "file": "tests/Fixtures/notify/Notify.php",
                 "start": 10,
                 "end": 15
@@ -114,7 +114,7 @@
                 "truncated": false
             },
             "evidence_diff": {
-                "member": "53edd72b_1",
+                "member": "1b2cbde2_1",
                 "file": "tests/Fixtures/notify/Notify.php",
                 "start": 17,
                 "end": 22,
@@ -133,7 +133,7 @@
             }
         },
         {
-            "id": "F8e9955bb195e8015",
+            "id": "F8d6c8dcdd95c20a2",
             "kind": "if",
             "exact": true,
             "similarity": 1,
@@ -215,7 +215,7 @@
             ],
             "scope": "single",
             "template": {
-                "id": "e02c914f_0",
+                "id": "8d50a6f2_0",
                 "file": "tests/Fixtures/notify/Notify.php",
                 "start": 12,
                 "end": 14
@@ -225,7 +225,7 @@
                 "truncated": false
             },
             "evidence_diff": {
-                "member": "e02c914f_1",
+                "member": "8d50a6f2_1",
                 "file": "tests/Fixtures/notify/Notify.php",
                 "start": 19,
                 "end": 21,
