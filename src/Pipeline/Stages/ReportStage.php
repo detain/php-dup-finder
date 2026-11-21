@@ -11,6 +11,7 @@ use Phpdup\Parallel\WorkerPool;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\Stage;
 use Phpdup\Pipeline\StageInterface;
+use Phpdup\Refactor\FunctionNameRegistry;
 use Phpdup\Reporting\CheckstyleReporter;
 use Phpdup\Reporting\CliReporter;
 use Phpdup\Reporting\ClusterScope;
@@ -179,6 +180,15 @@ final class ReportStage implements StageInterface
             $declaredTwins = $twinAnalyzer->analyze($clusters);
             $twinAnalyzer->annotateClusters($clusters, $declaredTwins);
         }
+
+        // W4-B fix (M3): cross-cluster name uniqueness. Runs here — the
+        // merge point after ranking and the single post-worker name-decision
+        // point — because SignatureBuilder produces names inside forked
+        // workers with no shared state. The fresh per-run() instance keeps
+        // claims within this report payload only; NEVER make it static
+        // (Watch/Server re-run the pipeline in-process; see the P4
+        // PipelineState lifecycle law and the class docblock).
+        (new FunctionNameRegistry())->resolve($clusters);
 
         $report = new Report(
             files: count($state->files),

@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Phpdup\Reporting;
 
 use Phpdup\Clustering\Cluster;
+use Phpdup\Refactor\Hole;
 use SebastianBergmann\Diff\Differ;
 use SebastianBergmann\Diff\Output\StrictUnifiedDiffOutputBuilder;
 
@@ -193,6 +194,11 @@ final class HtmlReporter
           $first = false;
           if ($v === '<absent>') {
               echo '<span class="absent">&lt;absent&gt;</span>';
+          } elseif ($v === Hole::MISSING || $v === '<missing>') {
+              // M1 parity: a degraded hole carries '' in memory — render the
+              // same honest marker JSON (null+degraded) and CLI ((gap)) show,
+              // never an empty cell that reads like a real empty value.
+              echo '<span class="gap">(gap)</span>';
           } else {
               echo htmlspecialchars($v);
           }
@@ -530,6 +536,7 @@ th.sorted-desc::after { content: ' ▼'; font-size: 10px; }
 .hole-optional_block { background: #fffbeb; }
 .hole-optional_block td { border-bottom-color: #fde68a; }
 .absent { color: #d97706; font-style: italic; }
+.gap { color: #9ca3af; font-style: italic; }
 .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; margin-left: 6px; }
 .badge.optional { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
 a { color: var(--accent); text-decoration: none; }

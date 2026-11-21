@@ -130,6 +130,64 @@ final class RefactorTestReporterTest extends TestCase
         }
     }
 
+    public function testDegradedGapRendersAnnotatedNullNeverSilentEmptyString(): void
+    {
+        // M2 (review r1): degraded holes carry '' in memory — the old null
+        // arm never fired for them and the quote fallback shipped a silent
+        // '' provider row where JSON says degraded:true. The fix renders an
+        // annotated null: parseable AND honest.
+        $cluster = $this->clusterWithNoHoles();
+        $cluster->holes = [new Hole('__P0', 'literal', ['10', Hole::MISSING], true)];
+        $skeleton = (new RefactorTestReporter())->buildTest($cluster);
+
+        $this->assertStringContainsString(
+            'null /* degraded: observed value was a structural gap */',
+            $skeleton,
+        );
+
+        // The gapped MEMBER's row shows the marker; its value list must not
+        // contain a bare '' entry anywhere.
+        $rows = preg_split('/\r?\n/', $skeleton);
+        $gapRow = null;
+        $cleanRow = null;
+        foreach ($rows as $line) {
+            if (str_contains($line, 'member_1_')) {
+                $gapRow = $line;
+            } elseif (str_contains($line, 'member_0_')) {
+                $cleanRow = $line;
+            }
+        }
+        $this->assertNotNull($gapRow, 'provider must carry a row per member');
+        $this->assertStringContainsString('degraded', (string) $gapRow);
+        preg_match("/'member_1_[^']*'\s*=>\s*\[([^\]]*)\]/", (string) $gapRow, $m);
+        $this->assertArrayHasKey(1, $m, 'row values parseable');
+        $this->assertStringNotContainsString("''", $m[1], 'no silent empty-string provider value');
+        $this->assertStringNotContainsString('degraded', (string) $cleanRow, 'clean slots stay plain');
+        $this->assertStringContainsString('10', (string) $cleanRow);
+
+        // And the artifact still lints.
+        $tmpFile = sys_get_temp_dir() . '/phpdup_test_' . uniqid() . '.php';
+        try {
+            file_put_contents($tmpFile, $skeleton);
+            $result = shell_exec('php -l ' . escapeshellarg($tmpFile));
+            $this->assertStringContainsString('No syntax errors', $result ?? '');
+        } finally {
+            @unlink($tmpFile);
+        }
+    }
+
+    public function testLegacyMissingStringTakesTheSameAnnotatedNullArm(): void
+    {
+        // Belt parity with JsonReporter: pre-5.4 cached holes may still
+        // carry the '<missing>' impostor string — never ship it as data.
+        $cluster = $this->clusterWithNoHoles();
+        $cluster->holes = [new Hole('__P0', 'literal', ['<missing>', "'kept'"], true)];
+        $skeleton = (new RefactorTestReporter())->buildTest($cluster);
+
+        $this->assertStringContainsString('null /* degraded', $skeleton);
+        $this->assertStringNotContainsString('<missing>', $skeleton);
+    }
+
     private function clusterWithThreeHoles(): Cluster
     {
         $blocks = [$this->blk('test1.php'), $this->blk('test2.php')];

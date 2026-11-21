@@ -133,6 +133,15 @@ PHP;
         if ($v === null || $v === '<absent>') {
             return $h->kind === 'optional_block' ? 'false' : 'null';
         }
+        if ($v === Hole::MISSING || $v === '<missing>') {
+            // M2 fix: a degraded gap CARRIES '' (Hole::appendMissing) — the
+            // null arm above never fires for it, and the quote fallback used
+            // to ship a silent '' provider row where JSON says degraded:true.
+            // An annotated null keeps the generated skeleton parseable AND
+            // honest: the human editing it sees this slot is placeholder
+            // evidence, not an observed empty string.
+            return 'null /* degraded: observed value was a structural gap */';
+        }
         // Numeric → bare; bool/null keywords → bare; otherwise quoted string.
         if (preg_match('/^-?\d+(\.\d+)?$/', $v) === 1) {
             return $v;

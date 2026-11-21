@@ -6,6 +6,7 @@ namespace Phpdup\Reporting;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
 use Phpdup\Refactor\ApplyExtractor;
+use Phpdup\Refactor\FunctionNameRegistry;
 use Phpdup\Refactor\ScriptKindApplyRefusal;
 
 /**
@@ -173,8 +174,14 @@ final class RefactorPatchReporter
                . "+}\n";
 
         // Per-member edit hints — replace body with a single call comment.
+        // M4 fix: hint names the function the patch ACTUALLY declares (the
+        // registry-resolved signature name), never a `f_{clusterId}` ghost
+        // a human could not call. Fallback keeps the old text for
+        // unparseable signatures, where ApplyExtractor has no real name
+        // either — nothing to point at.
+        $declName = FunctionNameRegistry::nameOf((string) $cluster->signature);
         foreach ($cluster->members as $i => $member) {
-            $patch .= $this->memberHint($member, $cluster->id, $i);
+            $patch .= $this->memberHint($member, $declName ?? ('f_' . $cluster->id), $i);
         }
         return $patch;
     }
@@ -208,12 +215,16 @@ final class RefactorPatchReporter
 
     /**
      * Render a unified-diff hint pointing at one cluster member.
+     *
+     * @param string $funcName the declared abstraction's name for THIS
+     *                         cluster, resolved from the same signature
+     *                         the patch body emits (M4 parity).
      */
-    private function memberHint(Block $member, string $clusterId, int $idx): string
+    private function memberHint(Block $member, string $funcName, int $idx): string
     {
         $loc = "{$member->file}:{$member->range->start}-{$member->range->end}";
         return "\n# member[{$idx}] @ {$loc}\n"
-             . "#   replace body with: return \\Refactored\\f_{$clusterId}(...);\n";
+             . "#   replace body with: return \\Refactored\\{$funcName}(...);\n";
     }
 
     /**
