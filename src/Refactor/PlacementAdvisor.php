@@ -4,7 +4,6 @@ declare(strict_types=1);
 namespace Phpdup\Refactor;
 
 use Phpdup\Clustering\Cluster;
-use Phpdup\Cli\Config;
 
 /**
  * Item 5.3 — placement advisor: WHERE the extraction should live.
@@ -42,7 +41,7 @@ final class PlacementAdvisor
     /** @var array<string, list<string>|false> root => package list, false = unreadable */
     private array $manifestCache = [];
 
-    /** @param list<string> $roots Config::paths as given to the run. */
+    /** @param list<string> $roots the run's scan paths (one or more directories or single PHP files) as given. */
     public function __construct(private readonly array $roots = [])
     {
     }
@@ -232,10 +231,20 @@ final class PlacementAdvisor
         return $pkgs;
     }
 
+    /**
+     * Match a member path to the configured root it was scanned under.
+     * Directory roots win by path prefix; a single-FILE root is legal
+     * input (FileScanner::scan() yields the given root verbatim for it),
+     * so an exact string match — modulo the trailing slash the scanner
+     * itself trims — also resolves. Without that arm, `analyze foo.php`
+     * made every member of its own root look like a stray and the advice
+     * claimed it "does not resolve under any configured scan root".
+     */
     private function rootFor(string $file): ?string
     {
         foreach ($this->roots as $root) {
-            if (str_starts_with($file, rtrim($root, '/') . '/')) {
+            $base = rtrim($root, '/');
+            if ($file === $base || str_starts_with($file, $base . '/')) {
                 return $root;
             }
         }

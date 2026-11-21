@@ -196,6 +196,51 @@ final class PlacementAdvisorTest extends TestCase
         $this->assertStringContainsString('does not resolve under any configured scan root', $advice['rationale']);
     }
 
+    public function testLoneFileRootResolvesItsOwnMembersInSilence(): void
+    {
+        // item 051 regression: `analyze foo.php` is legal input (FileScanner
+        // yields the root verbatim for a file root). The member IS its root,
+        // so the advisor must say nothing — not blame it for "not resolving".
+        $dir = $this->tmpDir();
+        $fileRoot = $dir . '/loose.php';
+        file_put_contents($fileRoot, "<?php\n");
+
+        $cluster = $this->cluster(
+            $this->member($fileRoot, 'Acme\\X', 'Alpha'),
+            $this->member($fileRoot, 'Acme\\X', 'Beta'),
+        );
+        $advice = (new PlacementAdvisor([$fileRoot]))->advise($cluster);
+
+        $this->assertNull($advice['host_packages']);
+        $this->assertStringNotContainsString('does not resolve under any configured scan root', $advice['rationale']);
+        $this->assertStringNotContainsString('Host-package advice', $advice['rationale']);
+    }
+
+    public function testFileRootAlongsideDirRootNeverClaimsUnresolvableMembers(): void
+    {
+        // Multi-root run `analyze pkg/ loose.php`: the file-root member must
+        // resolve to its own root. With two roots there is an intersection to
+        // attempt, and the honest outcome is the manifest-degradation note —
+        // never the "does not resolve" complaint (the file has no composer.json;
+        // being scanned as itself is not a resolution failure).
+        $dir = $this->tmpDir();
+        $dirRoot = $dir . '/pkg';
+        mkdir($dirRoot . '/src', 0777, true);
+        file_put_contents($dirRoot . '/composer.json', '{"require":{"acme/shared":"^1"}}');
+        $fileRoot = $dir . '/loose.php';
+        file_put_contents($fileRoot, "<?php\n");
+
+        $cluster = $this->cluster(
+            $this->member($dirRoot . '/src/A.php', 'Acme\\X', 'Alpha'),
+            $this->member($fileRoot, 'Acme\\X', 'Beta'),
+        );
+        $advice = (new PlacementAdvisor([$dirRoot, $fileRoot]))->advise($cluster);
+
+        $this->assertNull($advice['host_packages']);
+        $this->assertStringNotContainsString('does not resolve under any configured scan root', $advice['rationale']);
+        $this->assertStringContainsString('no parseable composer.json (conservative mode, item 5.3)', $advice['rationale']);
+    }
+
     public function testUnparseableManifestDegradesHonestlyWithConservativeModeNote(): void
     {
         [$root1, $root2] = $this->twoRoots('{"require":{}}', '{not json');
