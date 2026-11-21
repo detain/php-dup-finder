@@ -15,6 +15,15 @@ namespace Phpdup\Scanning;
  * run. This mirrors the walk-hard-die cure f326b06 applied to
  * ConfigLoader's per-directory discovery: config errors stay loud,
  * environment errors stay non-fatal — but here they stay INFORMATIVE too.
+ *
+ * Symlink containment (shell-006): the walk follows symlinks, but never out
+ * of the tree. Every symlinked entry is canonicalized (realpath) and
+ * compared against the real scan root; a link whose target resolves
+ * outside the root, re-enters it (self-loop), or does not resolve at all
+ * is pruned with a skip note instead of being traversed or yielded. Links
+ * to in-root targets keep working. This complements — not replaces — the
+ * serve-root confinement in {@see \Phpdup\Server\Application}: belt AND
+ * braces.
  */
 final class FileScanner
 {
@@ -36,8 +45,8 @@ final class FileScanner
     }
 
     /**
-     * Paths (and reasons) the last scan(s) had to skip for permission
-     * reasons, in encounter order.
+     * Paths (and reasons) the last scan(s) had to skip — permission
+     * problems and symlink-containment refusals — in encounter order.
      *
      * @return list<string>
      */
@@ -69,10 +78,18 @@ final class FileScanner
             return;
         }
 
+        // shell-006: canonical form of the scan root. is_dir() above proved
+        // the path resolves, so realpath() only fails on exotic races; in
+        // that case the literal root is the best available yard-stick.
+        $rootReal = realpath($root);
+        if ($rootReal === false) {
+            $rootReal = $root;
+        }
+
         $iter = new \RecursiveIteratorIterator(
             new \RecursiveCallbackFilterIterator(
                 $dirIterator,
-                function (\RecursiveDirectoryIterator|\SplFileInfo|string $current) use ($root): bool {
+                function (\RecursiveDirectoryIterator|\SplFileInfo|string $current) use ($root, $rootReal): bool {
                     // Psalm models every value the inner iterator may hand a
                     // RecursiveCallbackFilterIterator callback; only
                     // SplFileInfo carries paths/permissions, anything else
@@ -84,6 +101,11 @@ final class FileScanner
                     $rel = $this->relpath($current->getPathname(), $root);
                     if ($rel === '') {
                         return true;
+                    }
+                    $escape = $this->escapeReason($current, $rootReal);
+                    if ($escape !== null) {
+                        $this->noteSkipSymlink($current->getPathname(), $escape);
+                        return false;
                     }
                     if ($current->isDir()) {
                         if ($this->isExcluded($rel . '/')) {
@@ -127,11 +149,47 @@ final class FileScanner
 
     private function noteSkip(string $path, string $reason): void
     {
-        $note = "skipped unreadable path {$path} ({$reason})";
+        $this->addSkipNote("skipped unreadable path {$path} ({$reason})");
+    }
+
+    private function noteSkipSymlink(string $path, string $reason): void
+    {
+        $this->addSkipNote("skipped symlinked path {$path} ({$reason})");
+    }
+
+    private function addSkipNote(string $note): void
+    {
         $this->skipNotes[] = $note;
         if ($this->warnOnSkip) {
             fwrite(STDERR, "phpdup: warning: {$note}\n");
         }
+    }
+
+    /**
+     * Why a symlinked entry must be dropped from the walk (shell-006), or
+     * null when it may be traversed/yielded. Only links are canonicalized:
+     * a non-link entry's literal path cannot leave $root, and every link on
+     * the ancestor chain already passed this exact gate on the way down
+     * (a link that resolves outside the root is pruned as a directory BEFORE
+     * the iterator descends into it, so out-of-root subtrees are never
+     * walked and symlink loops terminate).
+     */
+    private function escapeReason(\SplFileInfo $entry, string $rootReal): ?string
+    {
+        if (!$entry->isLink()) {
+            return null;
+        }
+        $real = realpath($entry->getPathname());
+        if ($real === false) {
+            return 'target does not resolve';
+        }
+        if ($real === $rootReal) {
+            return 'target re-enters the scan root';
+        }
+        if (!str_starts_with($real, $rootReal . '/')) {
+            return 'target escapes the scan root';
+        }
+        return null;
     }
 
     private function looksLikePhp(string $path): bool
