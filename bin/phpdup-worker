@@ -9,11 +9,17 @@ declare(strict_types=1);
  * processes analysis requests asynchronously.
  *
  * Usage:
- *   php bin/phpdup-worker <socket-path> <result-dir>
+ *   php bin/phpdup-worker <socket-path> <result-dir> [<serve-root>]
  *
  * Wire protocol:
  *   Receives: RUN <jobId> <configJson>
  *   Responds:  OK <jobId>  or  FAIL <jobId> <error>
+ *
+ * The optional <serve-root> token re-declares the confinement boundary
+ * inside the worker process itself: dispatched jobs are re-validated
+ * against it before the pipeline runs (defence in depth). Omitting it
+ * disables worker-side confinement (manual/dev spawns only — ServeCommand
+ * always passes it).
  */
 
 $autoloads = [
@@ -37,18 +43,24 @@ array_shift($argv);
 $scriptName = array_shift($argv);
 
 if ($scriptName === null || $scriptName === '--help' || $scriptName === '-h') {
-    echo "Usage: phpdup-worker <socket-path> <result-dir>\n";
+    echo "Usage: phpdup-worker <socket-path> <result-dir> [<serve-root>]\n";
     echo "\n";
     echo "Background worker that processes phpdup analysis jobs.\n";
     echo "\n";
     echo "Arguments:\n";
     echo "  socket-path  Path to the Unix domain socket for receiving jobs\n";
     echo "  result-dir   Directory where result files are stored\n";
+    echo "  serve-root   Optional confinement root; dispatched job paths are\n";
+    echo "               re-validated against it (ServeCommand always passes it)\n";
     exit($scriptName === null ? 0 : 1);
 }
 
 $socketPath = $scriptName;
 $resultDir = array_shift($argv);
+$serveRoot = array_shift($argv);
+if ($serveRoot === '') {
+    $serveRoot = null;
+}
 
 if ($socketPath === null || $socketPath === '') {
     fwrite(STDERR, "phpdup-worker: socket-path is required\n");
@@ -64,8 +76,13 @@ if (!is_dir($resultDir) || !is_writable($resultDir)) {
     exit(1);
 }
 
+if ($serveRoot !== null && !is_dir($serveRoot)) {
+    fwrite(STDERR, "phpdup-worker: serve-root is not a directory: {$serveRoot}\n");
+    exit(1);
+}
+
 try {
-    $worker = new \Phpdup\Server\AnalysisWorker($socketPath, $resultDir);
+    $worker = new \Phpdup\Server\AnalysisWorker($socketPath, $resultDir, $serveRoot);
     $worker->run();
 } catch (\Throwable $e) {
     fwrite(STDERR, "phpdup-worker: fatal error: {$e->getMessage()}\n");

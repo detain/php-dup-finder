@@ -23,11 +23,30 @@ use Symfony\Component\Console\Output\NullOutput;
  *   - Sent on success: OK <jobId>\n
  *   - Sent on failure: FAIL <jobId> <error>\n
  *
- * The worker is spawned by ServeCommand and runs the full analysis pipeline
- * using the same stages as the CLI command.
+ * The worker is spawned by ServeCommand as
+ * `bin/phpdup-worker <socket> <result-dir> [<serve-root>]` and runs the full
+ * analysis pipeline using the same stages as the CLI command.
+ *
+ * RUN-frame admission (enumerated — the frame accepts exactly these fields):
+ *   - `paths` (required): non-empty list of relative paths, re-validated by
+ *     the worker against its spawn-time serve root via
+ *     {@see Application::scanPathsError()} — defence in depth: even a frame
+ *     that bypassed HTTP admission cannot scan outside the root.
+ *   - `ml_pair_url` (refused): explicit {@see self::FRAME_REFUSED_KEYS} gate.
+ *     An ML pair-scoring endpoint must never be pointed at a remote by a job
+ *     payload; ML-URL admission stays on the CLI/config path behind
+ *     MlClient::isAllowedUrl()'s fail-closed validation gate.
+ *   - All other keys are ignored: the worker builds its Config solely from
+ *     `paths` and never consumes the raw frame array.
+ *
+ * A poisoned frame never kills the worker: every per-client handler is
+ * wrapped so the loop keeps serving the next dispatch.
  */
 final class AnalysisWorker
 {
+    /** Config fields that must never arrive through a RUN frame. */
+    private const FRAME_REFUSED_KEYS = ['ml_pair_url'];
+
     /** @var resource|null */
     private $socket;
 
@@ -35,16 +54,22 @@ final class AnalysisWorker
 
     private string $resultDir;
 
+    /** Optional absolute path to which job scanning is confined. */
+    private ?string $serveRoot;
+
     private bool $running = false;
 
     /**
-     * @param string $socketPath Path to the Unix socket to listen on.
-     * @param string $resultDir  Directory where result files are written.
+     * @param string      $socketPath Path to the Unix socket to listen on.
+     * @param string      $resultDir  Directory where result files are written.
+     * @param string|null $serveRoot  Serve root jobs are confined to; null disables
+     *                                confinement (manual/dev spawns only).
      */
-    public function __construct(string $socketPath, string $resultDir)
+    public function __construct(string $socketPath, string $resultDir, ?string $serveRoot = null)
     {
         $this->socketPath = $socketPath;
         $this->resultDir = $resultDir;
+        $this->serveRoot = $serveRoot;
     }
 
     /**
@@ -64,6 +89,9 @@ final class AnalysisWorker
             }
             try {
                 $this->handleClient($client);
+            } catch (\Throwable) {
+                // Belt-and-braces: handleClient is self-contained, but a
+                // transport-level failure must never take the loop down.
             } finally {
                 @fclose($client);
             }
@@ -104,46 +132,80 @@ final class AnalysisWorker
     /**
      * Handle a connected client, processing one job request.
      *
+     * Never throws: any failure is answered with a FAIL frame so the
+     * dispatching application (and any future client) gets a deterministic
+     * line instead of a dead worker.
+     *
      * @param resource $client
      */
     private function handleClient($client): void
     {
-        $line = @fgets($client);
-        if ($line === false || $line === '') {
-            return;
-        }
-
-        $line = rtrim($line, "\r\n");
-        if (!str_starts_with($line, 'RUN ')) {
-            return;
-        }
-
-        $rest = substr($line, 4);
-        $spacePos = strpos($rest, ' ');
-        if ($spacePos === false) {
-            @fwrite($client, "FAIL 0 malformed request\n");
-            return;
-        }
-
-        $jobId = substr($rest, 0, $spacePos);
-        $configJson = substr($rest, $spacePos + 1);
-
+        $jobId = '';
         try {
-            $configData = json_decode($configJson, true, 32, JSON_THROW_ON_ERROR);
-        } catch (JsonException $e) {
-            @fwrite($client, "FAIL {$jobId} invalid JSON: {$e->getMessage()}\n");
-            return;
-        }
+            $line = @fgets($client);
+            if ($line === false || $line === '') {
+                return;
+            }
 
-        $result = $this->processJob($configData);
-        if ($result['status'] === 200) {
-            // Write result file
-            $resultFile = $this->resultDir . '/' . $jobId . '.json';
-            file_put_contents($resultFile, json_encode($result['body'], JSON_THROW_ON_ERROR));
-            @fwrite($client, "OK {$jobId}\n");
-        } else {
-            @fwrite($client, "FAIL {$jobId} {$result['error']}\n");
+            $line = rtrim($line, "\r\n");
+            if (!str_starts_with($line, 'RUN ')) {
+                return;
+            }
+
+            $rest = substr($line, 4);
+            $spacePos = strpos($rest, ' ');
+            if ($spacePos === false) {
+                @fwrite($client, "FAIL 0 malformed request\n");
+                return;
+            }
+
+            $jobId = substr($rest, 0, $spacePos);
+            $configJson = substr($rest, $spacePos + 1);
+
+            try {
+                $configData = json_decode($configJson, true, 32, JSON_THROW_ON_ERROR);
+            } catch (JsonException $e) {
+                $this->writeFail($client, $jobId, 'invalid JSON: ' . $e->getMessage());
+                return;
+            }
+            if (!is_array($configData)) {
+                // Scalars and null decode fine but are not job frames — reject
+                // here instead of letting processJob's array parameter raise a
+                // TypeError through the wire.
+                $this->writeFail($client, $jobId, 'config JSON must decode to an object');
+                return;
+            }
+
+            /** @var array<string,mixed> $configData */
+            $result = $this->processJob($configData);
+            if ($result['status'] === 200) {
+                $encoded = json_encode($result['body'], JSON_THROW_ON_ERROR);
+                $resultFile = $this->resultDir . '/' . $jobId . '.json';
+                if (@file_put_contents($resultFile, $encoded) === false) {
+                    $this->writeFail($client, $jobId, 'failed to write result file');
+                    return;
+                }
+                @fwrite($client, "OK {$jobId}\n");
+            } else {
+                $this->writeFail($client, $jobId, $result['error'] ?? 'job failed');
+            }
+        } catch (\Throwable $e) {
+            // Crash-proof dispatch: a poisoned frame or an unexpected
+            // pipeline error fails this job only — the worker stays alive.
+            $this->writeFail($client, $jobId, 'worker error: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Write a single-line FAIL frame. The error text is stripped of line
+     * breaks so a job error can never split the line-based wire protocol.
+     *
+     * @param resource $client
+     */
+    private function writeFail($client, string $jobId, string $error): void
+    {
+        $error = str_replace(["\r", "\n"], ' ', $error);
+        @fwrite($client, "FAIL {$jobId} {$error}\n");
     }
 
     /**
@@ -155,11 +217,24 @@ final class AnalysisWorker
     private function processJob(array $configData): array
     {
         try {
-            $paths = $configData['paths'] ?? null;
-            if (!is_array($paths) || $paths === []) {
-                return ['status' => 400, 'error' => 'paths must be a non-empty array'];
+            // Defence in depth (once-001): the worker re-validates the paths
+            // against its spawn-time serve root, so a job that bypassed HTTP
+            // admission (or an operator feeding the socket by hand) still
+            // cannot scan outside the confinement boundary.
+            $violation = Application::scanPathsError($this->serveRoot, $configData['paths'] ?? null);
+            if ($violation !== null) {
+                return ['status' => $violation['status'], 'error' => $violation['error']];
             }
 
+            // RUN-frame admission: refuse config fields that must never enter
+            // through the wire (see class docblock for the full enumeration).
+            $refused = self::refusedFrameKeys($configData);
+            if ($refused !== []) {
+                return ['status' => 400, 'error' => 'RUN frame must not set: ' . implode(', ', $refused)];
+            }
+
+            /** @var list<string> $paths */
+            $paths = $configData['paths'];
             $config = Config::defaults($paths);
             $state = new PipelineState($config);
             $out = new NullOutput();
@@ -182,5 +257,27 @@ final class AnalysisWorker
         } catch (\Throwable $e) {
             return ['status' => 500, 'error' => $e->getMessage()];
         }
+    }
+
+    /**
+     * Enumerate which refused RUN-frame config fields the frame actually set.
+     *
+     * The frame's accepted fields are listed in the class docblock; anything
+     * in {@see self::FRAME_REFUSED_KEYS} fails the job loudly (fail fast,
+     * fail loud) rather than being silently dropped, so the wire contract
+     * stays auditable if the pipeline ever starts consuming more fields.
+     *
+     * @param array<string,mixed> $configData
+     * @return list<string>
+     */
+    private static function refusedFrameKeys(array $configData): array
+    {
+        $refused = [];
+        foreach (self::FRAME_REFUSED_KEYS as $key) {
+            if (array_key_exists($key, $configData)) {
+                $refused[] = $key;
+            }
+        }
+        return $refused;
     }
 }

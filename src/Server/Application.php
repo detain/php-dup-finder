@@ -48,8 +48,12 @@ use Symfony\Component\Console\Output\NullOutput;
  *   `Authorization: Bearer <token>` header. Missing or mismatched
  *   tokens result in a 401 response.
  * - Scanned paths are confined to within {@see $serveRoot} via
- *   realpath canonicalization. Absolute paths and paths containing
- *   `..` are rejected with a 400 response.
+ *   realpath canonicalization, for BOTH `POST /analyze` and
+ *   `POST /jobs`: payload paths that are non-strings, absolute, contain
+ *   `..`, or resolve outside the root are rejected with a 400 response
+ *   before any job is minted. In async mode the worker independently
+ *   re-runs the same check ({@see AnalysisWorker}) using the serve root
+ *   handed to it as a spawn argument — defence in depth.
  */
 final class Application
 {
@@ -144,14 +148,12 @@ final class Application
      */
     private function runAnalyze(array $payload): array
     {
-        $paths = $payload['paths'] ?? null;
-        if (!is_array($paths) || $paths === []) {
-            return $this->json(400, ['error' => 'paths must be a non-empty array']);
-        }
-        // Validate paths are within serveRoot before scanning.
-        if (($violation = $this->validatePaths($paths)) !== null) {
+        // Validate payload shape and serve-root confinement before scanning.
+        if (($violation = $this->pathViolation($payload['paths'] ?? null)) !== null) {
             return $violation;
         }
+        /** @var list<string> $paths */
+        $paths = $payload['paths'];
         try {
             $config = Config::defaults($paths);
             $state = new PipelineState($config);
@@ -198,6 +200,9 @@ final class Application
     /**
      * Enqueue a new analysis job and dispatch to worker if available.
      *
+     * Payload paths are validated against the serve root *before* a job is
+     * minted, so a rejected request leaves the queue untouched.
+     *
      * When a worker socket is configured, the job is dispatched to the
      * background worker and this returns immediately (202 Accepted).
      * When no worker is configured, runs synchronously (sync/demo mode).
@@ -207,11 +212,23 @@ final class Application
      */
     private function enqueueJob(array $payload): array
     {
-        $id = $this->queue->enqueue($payload);
+        if (($violation = $this->pathViolation($payload['paths'] ?? null)) !== null) {
+            return $violation;
+        }
 
         if ($this->workerSocket !== null && $this->resultDir !== null) {
-            // Async mode: dispatch to background worker
-            $dispatched = $this->dispatchToWorker($id, $payload);
+            // Async mode: encode the dispatch frame first, so a payload that
+            // cannot survive wire encoding fails without minting a job.
+            // Socketpair Law: the frame carries scalars only — the payload
+            // crosses as a JSON string inside `RUN <jobId> <configJson>`.
+            try {
+                $configJson = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            } catch (JsonException $e) {
+                return $this->json(400, ['error' => 'job payload is not wire-encodable: ' . $e->getMessage()]);
+            }
+
+            $id = $this->queue->enqueue($payload);
+            $dispatched = $this->dispatchToWorker($id, $configJson);
             if (!$dispatched) {
                 $this->queue->markFailed($id, 'failed to dispatch to worker');
                 return $this->json(500, ['error' => 'failed to dispatch job to worker']);
@@ -220,6 +237,7 @@ final class Application
         }
 
         // Sync mode (no worker): run analysis inline
+        $id = $this->queue->enqueue($payload);
         $this->queue->markRunning($id);
         $result = $this->runAnalyze($payload);
         if ($result['status'] === 200) {
@@ -242,10 +260,10 @@ final class Application
      * Wire protocol: RUN <jobId> <configJson>\n
      *
      * @param string               $jobId
-     * @param array<string,mixed>  $payload
+     * @param string               $configJson Pre-encoded payload frame (JSON string).
      * @return bool True if successfully dispatched.
      */
-    private function dispatchToWorker(string $jobId, array $payload): bool
+    private function dispatchToWorker(string $jobId, string $configJson): bool
     {
         if ($this->workerSocket === null) {
             return false;
@@ -257,7 +275,6 @@ final class Application
         }
 
         try {
-            $configJson = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
             $message = "RUN {$jobId} {$configJson}\n";
             $written = @fwrite($socket, $message);
             if ($written === false || $written !== strlen($message)) {
@@ -393,40 +410,78 @@ final class Application
     }
 
     /**
-     * Validate that all paths in the request are inside serveRoot.
+     * Validate request paths, mapping any admission failure onto an HTTP response.
      *
-     * @param list<string> $paths
+     * @param mixed $paths Raw `paths` value from a decoded request payload.
      * @return array{status:int, headers: array<string,string>, body: string}|null
      */
-    private function validatePaths(array $paths): ?array
+    private function pathViolation(mixed $paths): ?array
     {
-        if ($this->serveRoot === null) {
+        $error = self::scanPathsError($this->serveRoot, $paths);
+        if ($error === null) {
             return null;
         }
-        $serveRootResolved = realpath($this->serveRoot);
+        return $this->json($error['status'], ['error' => $error['error']]);
+    }
+
+    /**
+     * Shared path-admission check for every analysis entry point.
+     *
+     * The HTTP layer runs it for both `POST /analyze` and `POST /jobs`;
+     * {@see AnalysisWorker} independently re-runs it on dispatched frames
+     * with the serve root it was handed at spawn time, so a job that
+     * reached the worker through any other route still cannot scan outside
+     * the root (defence in depth).
+     *
+     * Rules: `paths` must be a non-empty array of strings. When a serve root
+     * is configured, absolute paths and paths containing `..` are rejected,
+     * and every path must resolve via realpath() inside the serve root.
+     *
+     * @return array{status:int, error:string}|null Null when all paths are admissible.
+     */
+    public static function scanPathsError(?string $serveRoot, mixed $paths): ?array
+    {
+        if (!is_array($paths) || $paths === []) {
+            return ['status' => 400, 'error' => 'paths must be a non-empty array'];
+        }
+
+        // Parse don't validate: one pass turns the raw list into trusted strings.
+        $checked = [];
+        foreach ($paths as $path) {
+            if (!is_string($path)) {
+                return ['status' => 400, 'error' => 'paths must contain only strings'];
+            }
+            $checked[] = $path;
+        }
+
+        if ($serveRoot === null) {
+            return null;
+        }
+
+        $serveRootResolved = realpath($serveRoot);
         if ($serveRootResolved === false) {
-            return $this->json(500, ['error' => 'serve-root does not exist']);
+            return ['status' => 500, 'error' => 'serve-root does not exist'];
         }
         // Ensure serveRoot ends with DIRECTORY_SEPARATOR for prefix matching.
         $serveRootResolved .= DIRECTORY_SEPARATOR;
 
-        foreach ($paths as $path) {
+        foreach ($checked as $path) {
             // Reject absolute paths.
             if (str_starts_with($path, '/')) {
-                return $this->json(400, ['error' => 'absolute paths are not allowed: ' . $path]);
+                return ['status' => 400, 'error' => 'absolute paths are not allowed: ' . $path];
             }
             // Reject paths containing traversal sequences.
             if (str_contains($path, '..')) {
-                return $this->json(400, ['error' => 'path traversal is not allowed: ' . $path]);
+                return ['status' => 400, 'error' => 'path traversal is not allowed: ' . $path];
             }
             $resolved = realpath($path);
             if ($resolved === false) {
                 // File does not exist; still check containment to avoid bypassing
                 // via symlinks outside serveRoot.
-                return $this->json(400, ['error' => 'path not found: ' . $path]);
+                return ['status' => 400, 'error' => 'path not found: ' . $path];
             }
             if (!str_starts_with($resolved . DIRECTORY_SEPARATOR, $serveRootResolved)) {
-                return $this->json(400, ['error' => 'path is outside serve-root: ' . $path]);
+                return ['status' => 400, 'error' => 'path is outside serve-root: ' . $path];
             }
         }
         return null;

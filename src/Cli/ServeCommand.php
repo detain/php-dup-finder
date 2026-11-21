@@ -22,7 +22,8 @@ use Symfony\Component\Console\Output\OutputInterface;
  *
  *   GET  /healthz       → liveness check
  *   POST /analyze       → synchronous analysis, JSON report response
- *   POST /jobs          → enqueue an analysis (synchronous demo impl)
+ *   POST /jobs          → enqueue an analysis (async via the worker when it
+ *                         spawned, else synchronous demo mode)
  *   GET  /jobs/{id}     → poll job status / result
  *
  * Security notes
@@ -36,8 +37,14 @@ use Symfony\Component\Console\Output\OutputInterface;
  * - The method+path pair is matched against an allow-list before the
  *   body is read, so unknown routes do not consume request bytes.
  * - When a token is set, all requests require `Authorization: Bearer <token>`.
- * - Scanned paths are confined to `--serve-root` via realpath canonicalization;
- *   absolute paths and `..` sequences are rejected with 400.
+ * - Scanned paths are confined to `--serve-root` via realpath canonicalization
+ *   on BOTH `/analyze` and `/jobs`: absolute paths, `..` sequences and
+ *   non-string elements are rejected with 400 before any job is minted. The
+ *   spawned worker re-validates every dispatched job against the same root
+ *   (handed over as an escapeshellarg'd third argv token) — defence in depth.
+ * - Request handling is crash-proof: an unexpected throw inside the
+ *   application fails the single request with 500 and the daemon keeps
+ *   serving (verified: /healthz stays up after a poisoned /analyze body).
  */
 final class ServeCommand extends SymfonyCommand
 {
@@ -142,8 +149,10 @@ final class ServeCommand extends SymfonyCommand
             return 1;
         }
 
-        // Spawn background worker for async job processing
-        $workerPid = $this->spawnWorker($output);
+        // Spawn background worker for async job processing. The serve root is
+        // handed to the worker as a spawn argument so it can independently
+        // re-validate dispatched job paths (defence in depth).
+        $workerPid = $this->spawnWorker($output, $serveRoot);
         if ($workerPid === null) {
             $output->writeln('<info>phpdup serve</info> running in sync mode (no worker)');
             $app = new Application(
@@ -189,6 +198,10 @@ final class ServeCommand extends SymfonyCommand
             }
             try {
                 $this->handleClient($client, $app);
+            } catch (\Throwable) {
+                // Belt-and-braces around the transport layer itself: even a
+                // failure while reading/writing this connection is contained,
+                // the socket is closed and the loop accepts the next client.
             } finally {
                 @fclose($client);
             }
@@ -268,7 +281,11 @@ final class ServeCommand extends SymfonyCommand
         // case-insensitive lookup (required for Authorization).
         $headers = $this->extractHeaders($raw);
 
-        $response = $app->handle($method, $path, $body, $headers);
+        // respond() is crash-proof by contract (see its docblock): a throw
+        // inside the application fails this request with 500 only.
+        $response = $this->respond(
+            fn(): array => $app->handle($method, $path, $body, $headers)
+        );
         $reason = self::HTTP_REASON[$response['status']] ?? 'Unknown';
         $payload  = "HTTP/1.1 {$response['status']} {$reason}\r\n";
         foreach ($response['headers'] as $h => $v) {
@@ -278,6 +295,41 @@ final class ServeCommand extends SymfonyCommand
         $payload .= "Connection: close\r\n\r\n";
         $payload .= $response['body'];
         @fwrite($client, $payload);
+    }
+
+    /**
+     * Run one request handler crash-proof.
+     *
+     * Never throws: whatever the handler raises is converted into a 500
+     * response so a single poisoned request can never take the daemon down.
+     *
+     * @param callable():array{status:int, headers: array<string,string>, body: string} $handler
+     * @return array{status:int, headers: array<string,string>, body: string}
+     */
+    private function respond(callable $handler): array
+    {
+        try {
+            return $handler();
+        } catch (\Throwable $e) {
+            return [
+                'status'  => 500,
+                'headers' => ['Content-Type' => 'application/json'],
+                'body'    => $this->safeErrorBody($e),
+            ];
+        }
+    }
+
+    /**
+     * Encode a Throwable into a JSON error body that can never fail to
+     * encode (invalid UTF-8 in exception messages is substituted).
+     */
+    private function safeErrorBody(\Throwable $e): string
+    {
+        $body = json_encode(
+            ['error' => 'internal server error: ' . $e->getMessage()],
+            JSON_INVALID_UTF8_SUBSTITUTE
+        );
+        return $body === false ? '{"error":"internal server error"}' : $body;
     }
 
     /**
@@ -349,7 +401,7 @@ final class ServeCommand extends SymfonyCommand
      * not available or failed to start). The worker socket path is
      * stored in {@see $this->workerSocket}.
      */
-    private function spawnWorker(OutputInterface $output): ?int
+    private function spawnWorker(OutputInterface $output, string $serveRoot): ?int
     {
         $workerBin = __DIR__ . '/../../bin/phpdup-worker';
         if (!is_file($workerBin) || !is_executable($workerBin)) {
@@ -364,7 +416,7 @@ final class ServeCommand extends SymfonyCommand
         }
 
         $this->workerSocket = sys_get_temp_dir() . '/phpdup-worker-' . getmypid() . '.sock';
-        $command = "{$workerBin} {$this->workerSocket} {$resultDir}";
+        $command = $this->workerCommand($workerBin, $this->workerSocket, $resultDir, $serveRoot);
 
         $descriptors = [
             0 => ['pipe', 'r'],  // stdin
@@ -398,6 +450,23 @@ final class ServeCommand extends SymfonyCommand
         $this->cleanupWorker();
         $output->writeln('<comment>worker socket timeout, running in sync mode</comment>');
         return null;
+    }
+
+    /**
+     * Build the worker spawn command line.
+     *
+     * Protocol: `bin/phpdup-worker <socket> <result-dir> [<serve-root>]`.
+     * Every token is escapeshellarg'd, and the serve root travels as the
+     * third argv token — never as serialized state — so the worker can
+     * independently re-run path confinement on dispatched jobs.
+     */
+    private function workerCommand(string $workerBin, string $socket, string $resultDir, string $serveRoot): string
+    {
+        $tokens = [$workerBin, $socket, $resultDir];
+        if ($serveRoot !== '') {
+            $tokens[] = $serveRoot;
+        }
+        return implode(' ', array_map('escapeshellarg', $tokens));
     }
 
     /**
