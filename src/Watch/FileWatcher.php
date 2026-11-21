@@ -85,7 +85,7 @@ final class FileWatcher
     private const IN_MOVED_TO   = 64;    // IN_MOVED_TO
 
     /** Mask combining all events the watcher cares about. */
-    private const INOTIFY_MASK = self::IN_MODIFY | self::IN_CREATE | self::IN_MOVED_FROM | self::IN_MOVED_TO;
+    private const INOTIFY_MASK = self::IN_MODIFY | self::IN_CREATE | self::IN_DELETE | self::IN_MOVED_FROM | self::IN_MOVED_TO;
 
     /** @var array<string,int> path -> mtime snapshot of known files */
     private array $snapshot = [];
