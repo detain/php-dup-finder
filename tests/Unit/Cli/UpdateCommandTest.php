@@ -196,6 +196,25 @@ final class UpdateCommandTest extends TestCase
         $this->assertStringContainsString('/ 131,072', $messages);
     }
 
+    public function testFlushFailureFailsDownload(): void
+    {
+        // Destination sink whose stream_flush returns false while every
+        // fwrite succeeds — the deferred write-error shape the final
+        // flush/close guard exists to catch. (The fclose half of that
+        // guard is seam-unreachable by PHP wrapper semantics: fclose()
+        // reports true even when stream_close fails; see the best-effort
+        // note on the guard in UpdateCommand::pipeStream.)
+        $in = $this->tempStream(str_repeat('d', 500));
+        $out = self::openWriteWrapper('s36-failing-flush://out.bin');
+        $io = $this->style($buffer);
+
+        $result = (new TestUpdateCommand(TestUpdateCommand::MODE_S36))->pipe($in, $out, null, $io);
+        fclose($in); // $out was closed by pipeStream itself — never fclose twice
+
+        $this->assertFalse($result, 'a failing flush must fail the download');
+        $this->assertStringContainsString('could not flush the downloaded file to disk', $buffer->fetch());
+    }
+
     public function testTornDownloadRefusesSignatureAndHotSwap(): void
     {
         $command = $this->s36Command(failPharDownload: true);
@@ -345,6 +364,24 @@ final class UpdateCommandTest extends TestCase
         }
         return $h;
     }
+
+    /**
+     * Write-mode counterpart of openWrapper() for sinks that steer the
+     * destination handle itself (the failing-flush seam).
+     *
+     * @return resource
+     */
+    private static function openWriteWrapper(string $url)
+    {
+        if (!in_array('s36-failing-flush', stream_get_wrappers(), true)) {
+            stream_wrapper_register('s36-failing-flush', S36FailingFlushStream::class);
+        }
+        $h = fopen($url, 'wb');
+        if ($h === false) {
+            throw new \RuntimeException('cannot open test write wrapper ' . $url);
+        }
+        return $h;
+    }
 }
 
 class TestUpdateCommand extends UpdateCommand
@@ -489,6 +526,13 @@ class TestUpdateCommand extends UpdateCommand
     {
         if ($this->mode === self::MODE_S36) {
             if ($this->failPharDownload && $url === $this->pharUrl) {
+                // A torn transfer leaves partial bytes at $dest and the
+                // caller owns cleanup (@unlink at UpdateCommand.php:237).
+                // Writing real bytes makes the test's '*.tmp.*' glob
+                // pin load-bearing: dropping that unlink surfaces the
+                // residue and turns the assertion red (symmetry with the
+                // sig-leg test, whose tmp phar carries real bytes).
+                file_put_contents($dest, 'TORN-PARTIAL');
                 return false;
             }
             if ($this->failSigDownload && $url === $this->sigUrl) {
@@ -570,5 +614,44 @@ class S36StalledReadStream
     public function stream_stat()
     {
         return false;
+    }
+}
+
+/**
+ * User-space write-only sink (shell-S36 fix round, issue 1): every
+ * stream_write is fully accepted, but stream_flush reports failure. This
+ * makes fflush($handle) return false in userland — the only reachable
+ * seam for the flush/close guard in pipeStream, whose fclose arm is not
+ * provable (fclose returns true on a wrapper stream even when
+ * stream_close fails).
+ */
+class S36FailingFlushStream
+{
+    /** @var mixed */
+    public $context;
+
+    /** Write-mode wrappers require a public data property; unused sink. @var string */
+    public $data = '';
+
+    public function stream_open($path, $mode, $options, &$opened_path)
+    {
+        $this->data = '';
+        return true;
+    }
+
+    public function stream_write($data)
+    {
+        $this->data .= $data;
+        return strlen($data); // full acceptance: the failure is flush-time
+    }
+
+    public function stream_flush()
+    {
+        return false; // -> fflush() === false
+    }
+
+    public function stream_close()
+    {
+        // Best-effort cleanup; its return value does not reach fclose().
     }
 }

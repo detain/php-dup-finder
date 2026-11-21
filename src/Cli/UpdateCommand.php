@@ -469,6 +469,8 @@ HELP
      *   - fread returns false, or stalls at '' without EOF, mid-stream;
      *   - fwrite accepts fewer bytes than given (or fails outright) —
      *     the pinned lane choice is refusal, not a resume loop;
+     *   - flushing or closing the destination stream fails (a deferred
+     *     write error surfacing on the file at the end of the transfer);
      *   - $expectedBytes (a known Content-Length) does not match the
      *     number of bytes actually written.
      *
@@ -528,6 +530,14 @@ HELP
             }
         }
 
+        // The fclose arm catches deferred write errors that surface at
+        // close(2) on a regular destination file (e.g. ENOSPC on delayed
+        // allocation). It stays as best-effort defence: PHP reports
+        // fclose() true on a userland wrapper stream even when the
+        // wrapper's stream_close fails, so no seam can flip that arm —
+        // the regression test pins the fflush arm, which makes the
+        // whole guard load-bearing; this note keeps the promise honest
+        // about the seam-unreachable half.
         $flushed = fflush($outHandle);
         $closed  = fclose($outHandle);
         if ($flushed === false || $closed === false) {
