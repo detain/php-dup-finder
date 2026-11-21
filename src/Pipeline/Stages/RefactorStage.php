@@ -61,7 +61,7 @@ final class RefactorStage implements CooperativeStageInterface
 
         $tRefactor = microtime(true);
         $loader = $config->lazyAst
-            ? new BlockAstLoader(new AstCache($this->useCache ? $config->cacheDir : ''), new AstParser())
+            ? new BlockAstLoader(new AstCache($this->useCache ? $config->cacheDir : ''), new AstParser(), $config)
             : null;
 
         $total = count($state->clusters);
@@ -76,6 +76,22 @@ final class RefactorStage implements CooperativeStageInterface
         $useParallel = $total >= self::PARALLEL_MIN_CLUSTERS
             && $workers > 1
             && WorkerPool::isAvailable();
+
+        // [M-2] rebase once, up front, whenever the lazy loader exists.
+        // A warm cluster-cache replay hands back member blocks whose line
+        // ranges predate any comment/blank drift in the file (structuralHash
+        // is comment-invariant, so the cache hit itself is correct by
+        // design). The sweep re-anchors every unloaded, content-bound member
+        // with the same content-binding + order-preserving law the per-block
+        // path enforces — on the PARENT, BEFORE FORKING. Serial and every
+        // worker count therefore share ONE deterministic assignment
+        // (fork-vs-serial parity by construction), children inherit fresh
+        // ranges (their own resolves degrade to no-op strict hits), and the
+        // parent never has to trust a child's private positional guess —
+        // the wire is scalar-only and the ledger is per-process. A starved
+        // content twin throws HERE: before any report render and before
+        // --apply writes, so the loud spine still means zero side effects.
+        $loader?->rebaseClusters($state->clusters);
 
         if ($useParallel) {
             yield from $this->iterParallel($state, $loader, $workers, $total);
@@ -192,5 +208,9 @@ final class RefactorStage implements CooperativeStageInterface
                 yield Stage::Refactoring;
             }
         }
+        // No post-merge rebasing here: the [M-2] sweep already ran on the
+        // parent BEFORE forking (see iter()), so both children and parent
+        // started from identical fresh ranges and the merged scalars need
+        // no positional repair.
     }
 }

@@ -9,6 +9,13 @@ use Phpdup\Extraction\Block;
 use Phpdup\Extraction\BlockAstLoader;
 use Phpdup\Parsing\AstCache;
 use Phpdup\Parsing\AstParser;
+use Phpdup\Normalization\Normalizer;
+use Phpdup\Normalization\DbOpRegistry;
+use Phpdup\Fingerprint\SubtreeHasher;
+use Phpdup\Clustering\Cluster;
+use Phpdup\Cli\Config;
+use PhpParser\Node\Scalar\LNumber;
+use PhpParser\Node\Expr\BinaryOp\Greater;
 use Phpdup\Util\LineRange;
 use PHPUnit\Framework\TestCase;
 
@@ -304,12 +311,312 @@ final class BlockAstLoaderTest extends TestCase
         $this->loader()->resolve($block);
     }
 
+    // ------------------------------------------- round-4 content binding
+
+    /**
+     * Review round-3 [M-1]: with a threaded Config, re-anchoring is
+     * CONTENT-BOUND — a candidate may only serve a member whose stored
+     * structuralHash it reproduces through the same normalization
+     * pipeline. Same-kind decoys (sub-threshold echo-ifs that were never
+     * cluster members) can no longer win on positional score at all.
+     */
+    public function testDistinctContentTwinsAnchorOrderFree(): void
+    {
+        // The crown property: members with MUTUALLY DISTINCT content each
+        // have exactly one live twin, so every stale hint re-anchors to
+        // ITS OWN node in every resolution order. r3's deletion-drift
+        // forward leg died loud here (the upper member greedily took the
+        // lower node); under content binding that greed cannot happen.
+        $file = $this->write('r4a.php', self::distinctContentTwins());
+        $pair = $this->ifPairBlocks($file, unload: false); // [23,25] + [30,32], bodies +=1 / min()
+        $this->mintHashes($file, $pair[0], $pair[1]);
+        $pair[0]->unloadAst();
+        $pair[1]->unloadAst();
+        self::assertNotSame('', $pair[0]->structuralHash);
+        self::assertNotSame($pair[0]->structuralHash, $pair[1]->structuralHash,
+            'the fixtures\' twins are deliberately different content');
+
+        $this->deleteFileLines($file, 8, 15);       // truths [8,10] + [15,17]
+
+        foreach (['forward', 'reverse'] as $label) {
+            [$m1, $m2] = $this->ifPairBlocks($file, [[23, 25], [30, 32]], unload: false);
+            $this->mintHashes($file, $m1, $m2);
+            $m1->unloadAst();
+            $m2->unloadAst();
+            $loader = $this->loaderWithConfig($file);
+            if ($label === 'reverse') {
+                $loader->resolve($m2);
+                $loader->resolve($m1);
+            } else {
+                $loader->resolve($m1);              // forward — r3 was LOUD here
+                $loader->resolve($m2);
+            }
+            self::assertSame([8, 10], [$m1->range->start, $m1->range->end], "$label leg: m1 own twin");
+            self::assertSame([15, 17], [$m2->range->start, $m2->range->end], "$label leg: m2 own twin");
+        }
+    }
+
+    public function testDecoyPoolNeverServesStrangersToMembers(): void
+    {
+        // Reviewer fork5 shape: two 4-line list-assign members with
+        // IDENTICAL content (one class) and 4-line echo decoys wedged
+        // between them — the decoys score nearer to the stale hints than
+        // either twin and won silently under r3\'s positional law.
+        $file = $this->write('r4b.php', self::decoyGeometry());
+        $probe = $this->decoyMembers($file);        // live [16,19] + [24,27]
+        $this->mintHashes($file, $probe[0], $probe[1]);
+        self::assertSame($probe[0]->structuralHash, $probe[1]->structuralHash);
+        self::assertSame([[16, 19], [20, 23], [24, 27], [28, 31]], $this->ifRanges($file),
+            'fixture geometry sanity: m1, d1, m2, d2');
+
+        $this->deleteFileLines($file, 6, 10);       // truths m1 [6,9] m2 [14,17]
+
+        // Forward per-block order: the upper hint\'s nearest twin is
+        // m2\'s physical node; the lower member must then either pair
+        // honestly or starve LOUD. What may NEVER happen is a decoy span
+        // ([10,13]/[18,21]) landing in a member.
+        [$m1, $m2] = $this->decoyMembers($file, [[16, 19], [24, 27]]);
+        $this->mintHashes($file, $m1, $m2);
+        $m1->unloadAst();
+        $m2->unloadAst();
+        $loud = null;
+        try {
+            $loader = $this->loaderWithConfig($file);
+            $loader->resolve($m1);
+            $loader->resolve($m2);
+        } catch (\RuntimeException $e) {
+            $loud = $e->getMessage();
+        }
+        if ($loud !== null) {
+            self::assertStringContainsString('could not relocate', $loud);
+            self::assertStringContainsString('kind if', $loud);
+        }
+        foreach ([[$m1->range->start, $m1->range->end], [$m2->range->start, $m2->range->end]] as $s) {
+            self::assertNotSame([10, 13], $s, 'decoy d1 must never be served into a member slot');
+            self::assertNotSame([18, 21], $s, 'decoy d2 must never be served into a member slot');
+        }
+
+        // Hint-descending order lands the honest pairing (monotone window
+        // + content twins): loud-or-correct holds at this strength.
+        [$n1, $n2] = $this->decoyMembers($file, [[16, 19], [24, 27]]);
+        $this->mintHashes($file, $n1, $n2);
+        $n1->unloadAst();
+        $n2->unloadAst();
+        $loader = $this->loaderWithConfig($file);
+        $loader->resolve($n2);
+        $loader->resolve($n1);
+        self::assertSame([14, 17], [$n2->range->start, $n2->range->end]);
+        self::assertSame([6, 9], [$n1->range->start, $n1->range->end]);
+    }
+
+    public function testUniqueContentTwinAnchorsEvenWhenStrangersScoreBetter(): void
+    {
+        // POSITIVE CONTROL [M-1]: a lone member whose stale hint scores a
+        // same-span decoy strictly better than its content twin (distance
+        // 4 vs 4, insertion bias on the decoy) — content binding must
+        // still land it on a twin, never on the decoy.
+        $file = $this->write('r4c.php', self::decoyGeometry());
+        $probe = $this->decoyMembers($file);
+        $this->mintHashes($file, $probe[0], $probe[1]);
+
+        $this->deleteFileLines($file, 6, 10);       // truths [6,9] + [14,17]
+
+        [$member] = $this->decoyMembers($file, [[16, 19]]);
+        $this->mintHashes($file, $member);
+        $member->unloadAst();
+        $this->loaderWithConfig($file)->resolve($member);
+        self::assertSame([14, 17], [$member->range->start, $member->range->end],
+            'nearest content twin wins over the nearer-scored decoy');
+
+        // And the pure-stranger door: a hint whose content has been
+        // deleted outright starves loudly.
+        file_put_contents($file, "<?php\nnamespace F1Land;\nfunction gone(int \$x): int {\n    return \$x;\n}\n");
+        [$ghost] = $this->decoyMembersFreshNoParse($file, [[16, 19]]);
+        $ghost->structuralHash = $probe[0]->structuralHash;
+        $ghost->unloadAst();
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/could not relocate/');
+        $this->loaderWithConfig($file)->resolve($ghost);
+    }
+
+    /**
+     * Vector-2 geometry with REAL hashes: an 8-line comment deletion
+     * moves the different-content sibling exactly onto the stale hint.
+     * r3 refused the steal only via claim bookkeeping (order-dependent);
+     * the strict-side content gate refuses it unconditionally, so BOTH
+     * member orders now anchor correctly and quietly.
+     */
+    public function testImposterOnStaleHintRefusedByStrictContentGate(): void
+    {
+        $file = $this->write('r4d.php', self::imposterGeometry());
+        $pair = $this->ifPairBlocks($file, unload: false); // A [16,18] +=1, B [24,26] min()
+        $this->mintHashes($file, $pair[0], $pair[1]);
+        self::assertNotSame($pair[0]->structuralHash, $pair[1]->structuralHash);
+
+        $this->deleteFileLines($file, 8, 8);        // A truth [8,10]; B lands on [16,18]
+
+        foreach ([[0, 1], [1, 0]] as $label => $swap) {
+            [$a, $b] = $this->ifPairBlocks($file, [[16, 18], [24, 26]], unload: false);
+            $this->mintHashes($file, $a, $b);
+            $a->unloadAst();
+            $b->unloadAst();
+            $loader = $this->loaderWithConfig($file);
+            if ($swap) {
+                $loader->resolve($b);
+                $loader->resolve($a);
+            } else {
+                $loader->resolve($a);               // r3: this order stayed loud
+                $loader->resolve($b);
+            }
+            self::assertSame([8, 10], [$a->range->start, $a->range->end], "A-first leg $label");
+            self::assertSame([16, 18], [$b->range->start, $b->range->end], "B leg $label");
+        }
+    }
+
+    // -------------------------------------------------------- sweep level
+
+    public function testRebaseSweepPairsMembersToTheirContentTwins(): void
+    {
+        // The batch law the per-block greedy cannot reach: two
+        // identical-content members + decoys — the DP sweep pairs them to
+        // the live twins in order, no matter what the greedy would have
+        // done. Ranges refresh while the lazy profile holds (no ast).
+        $file = $this->write('r4e.php', self::decoyGeometry());
+        $pair = $this->decoyMembers($file);         // live [16,19] + [24,27]
+        $this->mintHashes($file, $pair[0], $pair[1]);
+        [$m1, $m2] = $pair;
+        $m1->unloadAst();
+        $m2->unloadAst();
+
+        $this->deleteFileLines($file, 6, 10);       // live truths [6,9] + [14,17]
+
+        $cluster = new Cluster('Fdeadbeefdeadbeef', [$m1, $m2], 1.0, true);
+        $this->loaderWithConfig($file)->rebaseClusters([$cluster]);
+
+        self::assertSame([6, 9], [$m1->range->start, $m1->range->end]);
+        self::assertSame([14, 17], [$m2->range->start, $m2->range->end]);
+        self::assertTrue($m1->isAstUnloaded(), 'the sweep refreshes ranges only — lazy profile kept');
+        self::assertTrue($m2->isAstUnloaded());
+    }
+
+    public function testRebaseSweepStarvedThirdMemberFailsLoud(): void
+    {
+        $file = $this->write('r4f.php', self::decoyGeometry());
+        $pair = $this->decoyMembers($file);
+        $this->mintHashes($file, $pair[0], $pair[1]);
+        $ghost = clone $pair[1];                    // third member, same class, no live twin
+        foreach ([$pair[0], $pair[1], $ghost] as $b) {
+            $b->unloadAst();                        // the sweep collects unloaded members only
+        }
+
+        $this->deleteFileLines($file, 6, 10);
+
+        $cluster = new Cluster('Ffeedfacefeedface1', [$pair[0], $pair[1], $ghost], 1.0, true);
+        try {
+            $this->loaderWithConfig($file)->rebaseClusters([$cluster]);
+            self::fail('count law: three members, two content twins — must go loud');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('could not relocate', $e->getMessage());
+            self::assertStringContainsString('kind if', $e->getMessage());
+        }
+    }
+
     // ---------------------------------------------------------------- glue
 
     private function loader(): BlockAstLoader
     {
         return new BlockAstLoader(new AstCache($this->dir . '/astcache'), $this->parser);
     }
+
+    /**
+     * The two list-assign members of decoyGeometry (identified by their
+     * `$x > 4` condition), with optional stale hint overrides.
+     *
+     * @param list<array{0:int,1:int}>|null $hints
+     * @return list<Block>
+     */
+    private function decoyMembers(string $file, ?array $hints = null): array
+    {
+        $stmts = $this->parser->parseFile($file) ?? [];
+        $ns    = $stmts[0] instanceof Node\Stmt\Namespace_ ? $stmts[0]->name?->toString() : null;
+        $ifs   = (new NodeFinder())->find(
+            $stmts,
+            static fn (Node $n): bool => $n instanceof Node\Stmt\If_
+                && $n->cond instanceof Greater
+                && $n->cond->right instanceof LNumber
+                && $n->cond->right->value === 4
+        );
+        self::assertGreaterThanOrEqual(1, count($ifs));
+        $out = [];
+        foreach ($ifs as $i => $node) {
+            $hint = $hints[$i] ?? [$node->getStartLine(), $node->getEndLine()];
+            $out[] = new Block($file, new LineRange($hint[0], $hint[1]),
+                'if', $ns, null, null, $node);
+        }
+        return $out;
+    }
+
+    /**
+     * Member-block shells for a file whose live bytes no longer contain
+     * them (ghost leg): hints only, carrier is a throwaway Nop.
+     *
+     * @param list<array{0:int,1:int}> $hints
+     * @return list<Block>
+     */
+    private function decoyMembersFreshNoParse(string $file, array $hints): array
+    {
+        $out = [];
+        foreach ($hints as [$s, $e]) {
+            $out[] = new Block($file, new LineRange($s, $e), 'if', 'F1Land', null, null, new Node\Stmt\Nop());
+        }
+        return $out;
+    }
+
+    private function loaderWithConfig(string $file): BlockAstLoader
+    {
+        return new BlockAstLoader(
+            new AstCache($this->dir . '/astcache'),
+            $this->parser,
+            Config::defaults([$file]),
+        );
+    }
+
+    /**
+     * Mint real structuralHashes through the SAME public recipe the
+     * preprocessor uses (SSOT: PreprocessWorker.php:88-193) so the
+     * loader's content gate binds against genuine values.
+     *
+     * @param Block ...$blocks blocks whose AST is still loaded
+     */
+    private function mintHashes(string $file, Block ...$blocks): void
+    {
+        $cfg  = Config::defaults([$file])->effectiveFor($file);
+        $dbRegistry = ($cfg->dbSymbolsMethods === [] && $cfg->dbSymbolsFunctions === [])
+            ? null
+            : new DbOpRegistry(
+                customMethodOps: $cfg->dbSymbolsMethods,
+                customFunctionOps: $cfg->dbSymbolsFunctions,
+            );
+        $norm   = new Normalizer(
+            mode: $cfg->normalizationMode,
+            plugins: null,
+            dbAware: $cfg->dbAware,
+            dbOpRegistry: $dbRegistry,
+            trinityCollapse: $cfg->trinityCollapse,
+            lowMemory: false,
+            nodePool: null,
+        );
+        $hasher = new SubtreeHasher();
+        foreach ($blocks as $b) {
+            $probe = new Block(
+                $b->file, $b->range, $b->kind, $b->namespace, $b->class, $b->name,
+                $b->ast ?? new Node\Stmt\Nop(),
+            );
+            $norm->normalize($probe);
+            $b->structuralHash = $hasher->hash($probe->canonical);
+        }
+    }
+
 
     private function write(string $name, string $src): string
     {
@@ -402,13 +709,24 @@ final class BlockAstLoaderTest extends TestCase
      */
     private function freshIfPair(string $file, ?array $hints = null): array
     {
+        return $this->ifPairBlocks($file, $hints, unload: true);
+    }
+
+    /**
+     * @param list<array{0:int,1:int}>|null $hints
+     * @return array{0:Block,1:Block}
+     */
+    private function ifPairBlocks(string $file, ?array $hints = null, bool $unload = true): array
+    {
         [$a, $b] = $this->ifBlocks($file);
         $out = [];
         foreach ([$a, $b] as $i => $block) {
             $hint = $hints[$i] ?? [$block->range->start, $block->range->end];
             $fresh = new Block($file, new LineRange($hint[0], $hint[1]),
                 'if', $block->namespace, $block->class, null, $block->ast ?? new Node\Stmt\Nop());
-            $fresh->unloadAst();
+            if ($unload) {
+                $fresh->unloadAst();
+            }
             $out[] = $fresh;
         }
         /** @var array{0:Block,1:Block} $out */
@@ -615,5 +933,72 @@ final class BlockAstLoaderTest extends TestCase
             . $gap
             . "        if (\$x > 2) {\n            \$x += 2;\n        }\n"
             . "        return \$x;\n    }\n}\n";
+    }
+
+    /**
+     * twinIfsWithTopFillers geometry whose second body is a CALL, not an
+     * increment — aggressive normalization folds literals but never
+     * statement kinds, so these twins are genuinely different content
+     * (asserted in-test).
+     */
+    private static function distinctContentTwins(): string
+    {
+        $fillers = '';
+        for ($i = 1; $i <= 15; $i++) {
+            $fillers .= sprintf("        // f%02d\n", $i);
+        }
+        $gap = '';
+        for ($i = 1; $i <= 4; $i++) {
+            $gap .= sprintf("            // g%02d\n", $i);
+        }
+        return "<?php\n\nnamespace TwinLand;\n\nclass TwinHost\n{\n"
+            . "    public function gate(int \$x): int {\n"
+            . $fillers
+            . "        if (\$x > 1) {\n            \$x += 1;\n        }\n"
+            . $gap
+            . "        if (\$x > 1) {\n            \$x = min(\$x, 1);\n        }\n"
+            . "        return \$x;\n    }\n}\n";
+    }
+
+    /** vector2Geometry with a structure-different stranger body. */
+    private static function imposterGeometry(): string
+    {
+        $deleteme = '';
+        for ($i = 1; $i <= 8; $i++) {
+            $deleteme .= sprintf("        // dm%02d\n", $i);
+        }
+        $gap = '';
+        for ($i = 1; $i <= 5; $i++) {
+            $gap .= sprintf("            // gp%02d\n", $i);
+        }
+        return "<?php\n\nnamespace TwinLand;\n\nclass TwinHost\n{\n"
+            . "    public function gate(int \$x): int {\n"
+            . $deleteme
+            . "        if (\$x > 1) {\n            \$x += 1;\n        }\n"
+            . $gap
+            . "        if (\$x > 1) {\n            \$x = min(\$x, 1);\n        }\n"
+            . "        return \$x;\n    }\n}\n";
+    }
+
+    /**
+     * Reviewer fork5 shape in function scope: two identical 4-line
+     * list-assign members (class = one content value) with 4-line
+     * echo decoys interleaved (lines 20-23 and 28-31) — same kind, same
+     * scope, different content. Member geometry: 16-19 and 24-27.
+     */
+    private static function decoyGeometry(): string
+    {
+        $fillers = '';
+        for ($i = 1; $i <= 10; $i++) {
+            $fillers .= sprintf("    // f%02d\n", $i);
+        }
+        $member = "    if (\$x > 4) {\n        \$a = \$x * 2;\n        \$b = [\$a, \$x + 1];\n    }\n";
+        return "<?php\n\nnamespace F1Land;\n\nfunction twin_gate(int \$x): int {\n"
+            . $fillers
+            . $member
+            . "    if (\$x > 5) {\n        echo 'd1';\n        \$junk = 1;\n    }\n"
+            . $member
+            . "    if (\$x > 6) {\n        echo 'd2';\n        \$junk = 2;\n    }\n"
+            . "    return \$x;\n}\n";
     }
 }

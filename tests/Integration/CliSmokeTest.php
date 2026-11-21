@@ -567,6 +567,171 @@ final class CliSmokeTest extends TestCase
         }
     }
 
+    public function testForkWarmDeletionDriftMatchesSerialAfterContentBinding(): void
+    {
+        // Review round-4 [M-2] parity pin (+ [M-1] cure at pipeline level):
+        // on a corpus with enough clusters that RefactorStage genuinely
+        // forks (PARALLEL_MIN_CLUSTERS=8), a warm deletion-drift replay
+        // must produce BYTE-IDENTICAL member rows at workers=1 and
+        // workers=2. Pre-r4 the fork path reported the COLD (stale) lines
+        // for relocated members while serial re-anchored — the parent
+        // never merged children's range refreshes. The fix: one
+        // deterministic parent-side rebase sweep BEFORE the fork/serial
+        // split, so every worker count shares the same assignment and
+        // children's re-entries are strict no-ops. Truth geometry after
+        // deleting the 15 filler lines above the first twin clone:
+        // the two fam_1t foreach members land on [5,7] and [12,14].
+        if (!WorkerPool::isAvailable()) {
+            $this->markTestSkipped('pcntl unavailable: fork zone cannot be exercised on this box');
+        }
+        $corpus = $this->makeForkReadyTwinCorpus();
+        $cache  = $this->tmp . '/fork-parity';
+
+        $cold = $this->cli(
+            ['analyze', $corpus, '--workers=1', '--json', $this->tmp . '/fp-cold.json'],
+            cacheDir: $cache,
+        );
+        $this->assertSame(0, $cold['exit'], $cold['combined']);
+        $jc = json_decode((string) file_get_contents($this->tmp . '/fp-cold.json'), true);
+        $this->assertIsArray($jc);
+        $this->assertGreaterThanOrEqual(
+            8, $jc['summary']['clusters'],
+            'the corpus must clear PARALLEL_MIN_CLUSTERS so the -j2 leg really forks',
+        );
+
+        $this->deleteTopFillers($corpus . '/fam_1t.php', '/^\/\/ f\d\d$/');
+
+        $w1 = $this->cli(
+            ['analyze', $corpus, '--workers=1', '--json', $this->tmp . '/fp-w1.json'],
+            cacheDir: $cache,
+        );
+        $this->assertSame(0, $w1['exit'], $w1['combined']);
+        $this->assertStringContainsString('clusters from cache', $w1['combined']);
+
+        $w2 = $this->cli(
+            ['analyze', $corpus, '--workers=2', '--stats', '--json', $this->tmp . '/fp-w2.json'],
+            cacheDir: $cache,
+        );
+        $this->assertSame(0, $w2['exit'], $w2['combined']);
+        $this->assertStringContainsString('workers: 2 (pcntl available)', $w2['combined'],
+            'the fork path must actually dispatch');
+        $this->assertStringContainsString('clusters from cache', $w2['combined']);
+
+        $j1 = json_decode((string) file_get_contents($this->tmp . '/fp-w1.json'), true);
+        $j2 = json_decode((string) file_get_contents($this->tmp . '/fp-w2.json'), true);
+        $this->assertIsArray($j1);
+        $this->assertIsArray($j2);
+
+        $this->assertSame(
+            $this->memberRows($j1),
+            $this->memberRows($j2),
+            'PARITY: forked and serial warm replays must agree on every member line',
+        );
+
+        $twinRows = static function (array $rows): array {
+            $out = [];
+            foreach ($rows as $list) {
+                foreach ($list as [$file, $start, $end]) {
+                    if (basename($file) === 'fam_1t.php') {
+                        $out[] = [$start, $end];
+                    }
+                }
+            }
+            sort($out);
+            return $out;
+        };
+        $this->assertSame([[5, 7], [12, 14]], $twinRows($this->memberRows($j1)),
+            'serial replay must carry the live (post-deletion) truth lines');
+        $this->assertSame([[5, 7], [12, 14]], $twinRows($this->memberRows($j2)),
+            'fork replay must carry the same live truth lines');
+
+        $ids = static function (array $j): array {
+            $out = array_map(static fn (array $c): string => (string) $c['id'], $j['clusters']);
+            sort($out);
+            return $out;
+        };
+        $this->assertSame($ids($jc), $ids($j1), 'deletion drift must not move finding ids');
+        $this->assertSame($ids($jc), $ids($j2), 'worker count must not move finding ids');
+
+        // And ONLY the twin file's two rows moved between cold and warm.
+        $strip = static function (array $rows): array {
+            $out = [];
+            foreach ($rows as $id => $list) {
+                foreach ($list as [$file, $start, $end]) {
+                    if (basename($file) !== 'fam_1t.php') {
+                        $out[$id][] = [$file, $start, $end];
+                }
+                }
+            }
+            return $out;
+        };
+        $this->assertSame($strip($this->memberRows($jc)), $strip($this->memberRows($j1)),
+            'untouched files must keep their rows exactly');
+    }
+
+    public function testWarmDeletionDriftApplyForkWritesAtLivePositions(): void
+    {
+        // Review round-4 [M-2] --apply posture pin on the reviewer's
+        // cross-hint (fork5) geometry: two same-scope if-twins whose cold
+        // hints [26,29]/[30,33] stop existing after the 15 filler lines
+        // above them are deleted (truth [11,14]/[15,18]), with three
+        // decoy echo-ifs of DIFFERENT content in the same group — the
+        // exact corpus where r3 spread-mis-anchored at w=1 and served
+        // silently stale lines at w>=2. --apply rides the same loader,
+        // so after the r4 cure the patch must annotate LIVE positions (or
+        // die loud with zero writes — tolerated symmetrically).
+        if (!WorkerPool::isAvailable()) {
+            $this->markTestSkipped('pcntl unavailable: fork zone cannot be exercised on this box');
+        }
+        $corpus = $this->makeCrossHintFork5Corpus();
+        $cache  = $this->tmp . '/fork5-apply';
+
+        $cold = $this->cli(
+            ['analyze', $corpus, '--workers=1', '--json', $this->tmp . '/f5-cold.json'],
+            cacheDir: $cache,
+        );
+        $this->assertSame(0, $cold['exit'], $cold['combined']);
+
+        $this->deleteTopFillers($corpus . '/t0.php', '/^\/\/ filler \d\d$/');
+
+        $before = [];
+        foreach (glob($corpus . '/*.php') ?: [] as $f) {
+            $before[basename($f)] = sha1((string) file_get_contents($f));
+        }
+
+        $apply = $this->cli(
+            ['analyze', $corpus, '--workers=2', '--apply', '--json', $this->tmp . '/f5-af.json'],
+            cacheDir: $cache,
+        );
+
+        $after = [];
+        foreach (glob($corpus . '/*.php') ?: [] as $f) {
+            $after[basename($f)] = sha1((string) file_get_contents($f));
+        }
+        $this->assertSame($before, $after, 'the analyze path must never mutate corpus bytes');
+
+        if ($apply['exit'] !== 0) {
+            // Loud branch: the fail-loud spine must precede every write.
+            $this->assertStringContainsString('could not relocate', $apply['combined']);
+            $this->assertFileDoesNotExist($this->tmp . '/f5-af.json');
+            $this->assertFileDoesNotExist($this->tmp . '/refactored/apply.diff');
+            return;
+        }
+
+        $this->assertStringContainsString('clusters from cache', $apply['combined']);
+        $patch = $this->tmp . '/refactored/apply.diff';
+        $this->assertFileExists($patch, '--apply dry-run must emit the refactor patch');
+        $diff = (string) file_get_contents($patch);
+        $this->assertStringContainsString('t0.php:11-14', $diff,
+            'member[0] must be annotated at its LIVE post-deletion span');
+        $this->assertStringContainsString('t0.php:15-18', $diff,
+            'member[1] must be annotated at its LIVE post-deletion span');
+        $this->assertStringNotContainsString('t0.php:26-29', $diff,
+            'the stale cold hint must be gone (r3 fork served it silently)');
+        $this->assertStringNotContainsString('t0.php:30-33', $diff,
+            'the stale cold hint must be gone');
+    }
+
     // ------------------------------------------------------ repo corpora
 
     public function testFixturesCorpusMatchesCommittedContract(): void
@@ -825,6 +990,107 @@ final class CliSmokeTest extends TestCase
                 }
             PHP);
         return $dir;
+    }
+
+    /**
+     * Fork-ready twin corpus (r4 parity pin): ten DISTINCT statement-kind
+     * families (aggressive normalization folds numeric literals, so the
+     * KIND of statement is what separates structural hashes) × two
+     * byte-identical files, plus a twin file carrying family 1's foreach
+     * clone twice under 15 unindented '// fNN' filler lines. Cold run
+     * yields 10 rendered clusters (> PARALLEL_MIN_CLUSTERS=8 ⇒ -j2 really
+     * forks) and a 13-member foreach bucket including the twin's pair at
+     * [20,22]/[27,29].
+     */
+    private function makeForkReadyTwinCorpus(): string
+    {
+        $dir = $this->tmp . '/forkfam';
+        mkdir($dir, 0o775, true);
+        $bodies = [
+            1  => "    \$acc = \$acc + \$row['amount'];\n",
+            2  => "    \$acc .= (string) \$row['amount'];\n",
+            3  => "    if (isset(\$row['amount'])) {\n        \$seen = true;\n    }\n",
+            4  => "    for (\$i = 0; \$i < 2; \$i++) {\n        \$acc += \$i;\n    }\n",
+            5  => "    while (false) {\n        break;\n    }\n",
+            6  => "    try {\n        \$acc += 1;\n    } catch (Exception \$e) {\n        \$acc -= 1;\n    }\n",
+            7  => "    \$acc = match (true) {\n        default => \$acc,\n    };\n",
+            8  => "    \$acc = array_map('intval', \$rows);\n",
+            9  => "    switch (\$row['kind']) {\n        case 'a': break;\n    }\n",
+            10 => "    do {\n        \$acc[] = 1;\n    } while (false);\n",
+        ];
+        foreach ($bodies as $n => $inner) {
+            $src = "<?php\nfunction report_{$n}(array \$rows): array\n{\n    \$acc = [];\n"
+                . "    foreach (\$rows as \$row) {\n" . $inner . "    }\n"
+                . "    return \$acc;\n}\n";
+            file_put_contents(sprintf($dir . '/fam_%da.php', $n), $src);
+            file_put_contents(sprintf($dir . '/fam_%db.php', $n), $src);
+        }
+        $fillers = '';
+        for ($k = 1; $k <= 15; $k++) {
+            $fillers .= sprintf("// f%02d\n", $k);
+        }
+        $oneClone = "    foreach (\$rows as \$row) {\n" . $bodies[1] . "    }\n";
+        $twin = "<?php\nfunction report_twin1(array \$rows): array\n{\n    \$acc = [];\n"
+            . $fillers . $oneClone
+            . "// g1\n// g2\n// g3\n// g4\n"
+            . $oneClone
+            . "    return \$acc;\n}\n";
+        file_put_contents($dir . '/fam_1t.php', $twin);
+        return $dir;
+    }
+
+    /**
+     * Cross-hint decoy corpus (r4 apply-fork pin; ported verbatim from the
+     * reviewer's fork-cross.sh recipe): t0.php holds two list-assign
+     * if-twins (cold [26,29]/[30,33]) and three echo-if decoys in the same
+     * top-level scope, under 15 '// filler NN' lines; eight decoy twin
+     * function files keep the cold cluster count at/above the fork gate.
+     */
+    private function makeCrossHintFork5Corpus(): string
+    {
+        $dir = $this->tmp . '/crosshint';
+        mkdir($dir, 0o775, true);
+        $t0 = "<?php\nnamespace CL;\n";
+        for ($i = 1; $i <= 15; $i++) {
+            $t0 .= sprintf("// filler %02d\n", $i);
+        }
+        $t0 .= implode('', [
+            "if (\$x > 1) {\n    echo 'x';\n}\n",
+            "// c1\n// c2\n",
+            "if (\$x > 2) {\n    echo 'x';\n}\n",
+            "if (\$x > 3) {\n    list(\$q, \$w) = [1, 2];\n    \$w += 1;\n}\n",
+            "if (\$x > 4) {\n    list(\$q, \$w) = [1, 2];\n    \$w += 1;\n}\n",
+            "// c3\n// c4\n",
+            "if (\$x > 5) {\n    echo 'x';\n}\n",
+        ]);
+        file_put_contents($dir . '/t0.php', $t0);
+        foreach ([3, 5, 7, 9, 11, 13, 15, 17] as $n) {
+            $stmts = str_repeat("        \$sum += \$r['a'] * \$r['b'];\n", $n);
+            $fn = static fn (string $name): string => "function {$name}(array \$rows): float\n{\n    \$sum = 0.0;\n"
+                . $stmts . "    return round(\$sum, 2);\n}\n";
+            file_put_contents($dir . sprintf('/g%d.php', $n), "<?php\nnamespace CL;\n" . $fn('g' . $n) . $fn('h' . $n));
+        }
+        return $dir;
+    }
+
+    /**
+     * Delete every line matching $pattern from $file, asserting exactly 15
+     * went away (the content-preserving drift protocol shared by both r4
+     * pins — comment lines only, so structuralHash and the cache stay hot).
+     */
+    private function deleteTopFillers(string $file, string $pattern): void
+    {
+        $lines = explode("\n", (string) file_get_contents($file));
+        $kept  = [];
+        foreach ($lines as $line) {
+            if (preg_match($pattern, $line) === 1) {
+                continue;
+            }
+            $kept[] = $line;
+        }
+        $removed = count($lines) - count($kept);
+        $this->assertSame(15, $removed, "drift protocol on $file must remove exactly 15 filler lines");
+        file_put_contents($file, implode("\n", $kept));
     }
 
     /** Delete the 15 '// fNN' filler lines from the twin file (content-preserving). */
