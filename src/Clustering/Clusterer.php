@@ -104,11 +104,23 @@ final class Clusterer
         // the mode is 'numbered'.
         private readonly bool $unnumberedCandidateGuard = false,
         private readonly int $candidateGuardNgramSize = 5,
+        // Item 1.2: node-count cap for the APTED/TED pass. A jaccard-tier
+        // pair whose LARGER member exceeds it skips tree judgment entirely
+        // and rides on bag similarity alone, stamped MatchTier::JaccardUnverified.
+        // Default equals the extraction ceiling, so nothing gates out of the
+        // box — every historical score stays byte-identical.
+        private readonly int $maxTedSize = self::DEFAULT_MAX_TED_SIZE,
     ) {
         if ($this->minSplitSize < 2) {
             throw new \InvalidArgumentException(sprintf(
                 'minSplitSize must be >= 2 (a medoid ball needs a medoid plus at least one member); got %d.',
                 $this->minSplitSize,
+            ));
+        }
+        if ($this->maxTedSize < 1) {
+            throw new \InvalidArgumentException(sprintf(
+                'maxTedSize must be >= 1 (0 or negative would gate every TED pair); got %d.',
+                $this->maxTedSize,
             ));
         }
         $this->containment = new ContainmentSimilarity();
@@ -132,6 +144,17 @@ final class Clusterer
      * members.
      */
     public const DEFAULT_MIN_SPLIT_SIZE = 2;
+
+    /**
+     * Item 1.2: default node-count cap for the APTED/TED pass. 800 is the
+     * extraction ceiling (Config::$maxBlockSize default), so NO block can
+     * exceed it and the gate is inert at the default — pairs are judged
+     * exactly as before, goldens byte-identical. Lowering the cap trades
+     * structural certainty for wall time and memory on huge-function
+     * corpora (the 161s/1.2GB APTED cost site). A pinned unit test keeps
+     * this value equal to the Config default (candidate-budget precedent).
+     */
+    public const DEFAULT_MAX_TED_SIZE = 800;
 
     /**
      * Safety budget on total candidate-pair output of
@@ -686,6 +709,17 @@ final class Clusterer
             $bagB = $b->ngramBag ?? [];
             $jac = $this->similarity->similarity($bagA, $bagB);
             if ($jac >= $this->similarityThreshold) {
+                // Item 1.2: TED cost gate. When the pair's LARGER member
+                // exceeds max_ted_size, the APTED matrix would dominate the
+                // run (161s / 1.2GB on huge functions) — so the pair rides
+                // on the jaccard verdict alone, honestly stamped as
+                // structurally UNVERIFIED instead of silently dropped or
+                // pretending TED judged it. Mirrored byte-for-byte in
+                // PairScoreWorker::score() (dual-engine parity pin).
+                if (max($a->size, $b->size) > $this->maxTedSize) {
+                    $edges[] = [$aId, $bId, $jac, MatchTier::JaccardUnverified->value];
+                    continue;
+                }
                 $tedSim = $this->tree->similarity($a->canonical, $b->canonical, $this->treeThreshold);
                 if ($tedSim < $this->treeThreshold) continue;
                 $edges[] = [$aId, $bId, min($jac, $tedSim), MatchTier::Jaccard->value];

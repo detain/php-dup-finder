@@ -81,6 +81,12 @@
             "default": "numbered",
             "description": "Identifier-numbering form of the similarity fingerprints (item 1.1, plan §5a). 'numbered' = legacy: the aggressive Normalizer's first-occurrence counters (__V3, __CALL12, __PROP0, __CLASS7) ride into the n-gram bag and the tree-edit labels, so one inserted guard renumbers every later identifier and breaks the fingerprint for the rest of the block. 'un-numbered' = strip the counters from bag tokens AND TED labels in lockstep (Phpdup\\Util\\IdentifierIds); multiset Jaccard, containment and TED similarity are monotone under this coarsening, so no edge accepted today is lost and guard-drift clones finally link. Structural hashes, anti-unification and ML pair features keep numbered input either way. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (mixed modes would poison the shared candidate index and warm caches). No CLI flag in v1. The mode value rides the worker tooling key, the per-file index cache key and the cluster-cache config key; 'numbered' keeps every cache and golden byte-identical."
         },
+        "max_ted_size": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 800,
+            "description": "Node-count cap for APTED tree-edit judgment (item 1.2). A candidate pair whose LARGER member exceeds this cap skips the TED call entirely: it is accepted on Jaccard alone with edge tier 'jaccard-unverified' (weight = the Jaccard score), or falls through to the containment/IR/ML tiers unchanged — APTED is the O(n^2)-space quadratic cost site (161s / 1.2GB on a 1000-node pair). Default 800 equals the max_block_size extraction ceiling, so no real block can exceed it and the gate is inert out of the box: every existing verdict, cache and golden stays byte-identical. Lower it (e.g. 200-400) on giant-clone corpora to trade exactness for wall time. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load — a pair spans two directories, so a per-directory cap would be ambiguous. No CLI flag in v1. The cap rides the cluster-cache config key and is applied identically by the serial Clusterer and the parallel PairScoreWorker."
+        },
         "cache_dir": {
             "type": "string",
             "default": ".phpdup-cache",

@@ -384,6 +384,8 @@ never hard-count it here, the list grows with each flag): `min_block_size`,
 `workers`, `incremental`, `lazy_ast`, `sort`, `ted_weights`, `scorer`,
 `fingerprint_id_mode`, `scope`, `score_mode`,
 `ir_threshold`, `ml_pair_threshold`, `debug_log`, and `low_memory`.
+`max_ted_size` joins this list at item 1.2 but has no CLI flag (config
+file only — it sits alongside `fingerprint_id_mode` as a root-only key).
 
 A few keys use different fallback paths:
 
@@ -497,6 +499,7 @@ with the offending field path on the first violation.
 | `candidate_budget`                     | integer          | `60000000`       | `>= 0`; `0` = unlimited pair generation (guard opted out).               |
 | `ngram_size`                           | integer          | `5`              | `2 ≤ n ≤ 10`.                                                            |
 | `fingerprint_id_mode`                  | string           | `"numbered"`     | One of `numbered`, `un-numbered` (item 1.1, plan §5a). Root config only — per-directory `.phpdup.json` files carrying this key fail the load; no CLI flag in v1. `un-numbered` strips the `__V`/`__CALL`/`__PROP`/`__CLASS` occurrence counters from the n-gram bag AND the tree-edit labels together; Jaccard/containment/TED are monotone under the coarsening (no today-accepted edge is lost). |
+| `max_ted_size`                         | integer          | `800`            | `>= 1` (item 1.2). Node-count cap for APTED judgment: a pair whose LARGER member exceeds it skips the TED call — accepted on Jaccard alone with edge tier `jaccard-unverified` (weight = Jaccard score), else falls through to containment/IR/ML unchanged. Default equals the `max_block_size` extraction ceiling, so the gate is inert out of the box and every golden stays byte-identical. Root config only — per-directory `.phpdup.json` files carrying this key fail the load (a pair spans two directories); no CLI flag in v1. |
 | `cache_dir`                            | string           | `".phpdup-cache"`| Any path; created on first use.                                          |
 | `parallelism`                          | string           | `"auto"`         | One of `auto`, `off`, `manual`.                                          |
 | `workers`                              | integer          | `0` (auto)       | `>= 0`.                                                                  |

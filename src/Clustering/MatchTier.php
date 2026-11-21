@@ -15,6 +15,12 @@ enum MatchTier: string
 {
     case ExactHash = 'exact-hash';
     case Jaccard = 'jaccard';
+    // Item 1.2: the pair passed the jaccard tier but its combined size
+    // exceeds max_ted_size, so APTED/TED never judged it — the match is
+    // bag-similarity only and is labelled as structurally UNVERIFIED.
+    // Mirrored byte-for-byte by PairScoreWorker::TIER_JACCARD_UNVERIFIED
+    // (dual-vocabulary drift trap — pinned by equality in tests).
+    case JaccardUnverified = 'jaccard-unverified';
     case Ted = 'ted';
     case Containment = 'containment';
     case Ir = 'ir';

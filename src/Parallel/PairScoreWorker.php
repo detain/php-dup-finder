@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Phpdup\Parallel;
 
+use Phpdup\Clustering\Clusterer;
 use Phpdup\Index\BlockIndex;
 use Phpdup\Ml\MlPairClient;
 use Phpdup\Similarity\ContainmentSimilarity;
@@ -25,6 +26,10 @@ final class PairScoreWorker
 {
     public const TIER_EXACT_HASH = 'exact-hash';
     public const TIER_JACCARD = 'jaccard';
+    // Item 1.2: paired with the jaccard gate below. Spelled IDENTICALLY to
+    // \Phpdup\Clustering\MatchTier::JaccardUnverified->value — the two
+    // vocabularies drift-trap tests must pin equal (they do, by pin).
+    public const TIER_JACCARD_UNVERIFIED = 'jaccard-unverified';
     public const TIER_TED = 'ted';
     public const TIER_CONTAINMENT = 'containment';
     public const TIER_IR = 'ir';
@@ -56,7 +61,18 @@ final class PairScoreWorker
         // half this constructor carries). Plain bool → safe under the
         // Socketpair Law (no non-scalar ever crosses to the worker).
         private readonly bool $unnumbered = false,
+        // Item 1.2: TED cost gate — MUST mirror the serial Clusterer's
+        // max_ted_size wiring exactly (dual-engine parity; ClusterStage
+        // threads the same Config value into both). Plain int → safe under
+        // the Socketpair Law (no non-scalar ever crosses to the worker).
+        private readonly int $maxTedSize = Clusterer::DEFAULT_MAX_TED_SIZE,
     ) {
+        if ($this->maxTedSize < 1) {
+            throw new \InvalidArgumentException(sprintf(
+                'maxTedSize must be >= 1 (0 or negative would gate every TED pair); got %d.',
+                $this->maxTedSize,
+            ));
+        }
     }
 
     /**
@@ -92,6 +108,14 @@ final class PairScoreWorker
             $bagB = $b->ngramBag ?? [];
             $jac  = $jaccard->similarity($bagA, $bagB);
             if ($jac >= $this->similarityThreshold) {
+                // Item 1.2: TED cost gate — byte-for-byte the same shape as
+                // Clusterer::scorePairsSerially(). Over-cap pairs never build
+                // an APTED matrix; they ride the jaccard verdict alone,
+                // stamped jaccard-unverified.
+                if (max($a->size, $b->size) > $this->maxTedSize) {
+                    $edges[] = [$aId, $bId, $jac, self::TIER_JACCARD_UNVERIFIED];
+                    continue;
+                }
                 $tedSim = $ted->similarity($a->canonical, $b->canonical, $this->treeThreshold);
                 if ($tedSim < $this->treeThreshold) continue;
                 $edges[] = [$aId, $bId, min($jac, $tedSim), self::TIER_JACCARD];

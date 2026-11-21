@@ -226,6 +226,16 @@ final class Config
         // that carry ≥2 distinct member repo labels. Config-file key
         // `score_mode`; CLI --score-mode.
         public readonly string $scoreMode = self::SCORE_MODE_GLOBAL,
+        // Item 1.2: node-count ceiling for APTED/TED judgment (config-file key
+        // `max_ted_size`, JSON int; deliberately NO CLI flag). A candidate pair
+        // whose LARGER member exceeds this cap skips the tree-edit pass in both
+        // scoring engines and is accepted/rejected on jaccard/containment alone,
+        // stamped tier `jaccard-unverified`. Default 800 equals the extraction
+        // ceiling (max_block_size default) — no block can exceed it, so at the
+        // default NOTHING new is compared and every historical score stays
+        // byte-identical. Lowering it trades structural certainty for wall time
+        // and memory on huge-function corpora (the 161s/1.2GB cost site).
+        public readonly int $maxTedSize = 800,
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -281,6 +291,9 @@ final class Config
         }
         if ($scope === '') {
             throw new \InvalidArgumentException("scope must be a non-empty string (use 'all' to disable filtering)");
+        }
+        if ($maxTedSize < 1) {
+            throw new \InvalidArgumentException("max_ted_size must be >= 1 (0 or negative would gate every pair)");
         }
         if ($mlPairUrl !== '' && !\Phpdup\Ml\MlClient::isAllowedUrl(rtrim($mlPairUrl, '/') . '/score-pair')) {
             throw new \InvalidArgumentException("ml_pair_url failed validation: $mlPairUrl");
@@ -470,6 +483,11 @@ final class Config
             // these keys drops them silently at the shape step.
             scope:                           $this->scope,
             scoreMode:                       $this->scoreMode,
+            // Item 1.2: root-only by design — per-directory files carrying
+            // max_ted_size are refused at discovery (a pair spans two dirs, so
+            // a per-dir cap is ambiguous — same silent-misfeed class as
+            // fingerprint_id_mode). Copied, never replaced.
+            maxTedSize:                      $this->maxTedSize,
         );
     }
 

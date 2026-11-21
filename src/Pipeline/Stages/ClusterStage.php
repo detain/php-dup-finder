@@ -50,6 +50,12 @@ final class ClusterStage implements CooperativeStageInterface
             // served to an un-numbered run would silently under-report
             // the drifted pairs the mode exists to find.
             $config->fingerprintIdMode,
+            // Item 1.2: the TED-size cap decides which jaccard-passing pairs
+            // get a real APTED verdict vs a 'jaccard-unverified' edge — edge
+            // sets (and thus cluster membership) genuinely differ between
+            // caps, so a cluster cache written under one cap must never be
+            // served to a run under another.
+            $config->maxTedSize,
             // Item 1.4 (§5b): the medoid-ball split knobs reshape cluster
             // membership, count and reported similarity. Bound to the very
             // constants buildClusterer() hands the Clusterer, so flipping a
@@ -227,6 +233,8 @@ final class ClusterStage implements CooperativeStageInterface
             // lost to df-cap concentration.
             unnumberedCandidateGuard: $config->fingerprintIdsUnnumbered(),
             candidateGuardNgramSize:  $config->ngramSize,
+            // Item 1.2: root-only TED-size cap (config file 'max_ted_size').
+            maxTedSize:               $config->maxTedSize,
         );
     }
 
@@ -313,6 +321,9 @@ final class ClusterStage implements CooperativeStageInterface
             // label mode the serial Clusterer gets, or clusters fork
             // with worker count (the classic heisenbug class).
             unnumbered: $config->fingerprintIdsUnnumbered(),
+            // Item 1.2: same twin law for the TED-size cap — serial and
+            // fork-zone scoring must gate the identical pairs identically.
+            maxTedSize: $config->maxTedSize,
         );
 
         $state->edges = [];
