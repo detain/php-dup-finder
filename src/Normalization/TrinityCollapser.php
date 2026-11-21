@@ -58,6 +58,21 @@ use PhpParser\NodeVisitorAbstract;
  * convention it persists everything in the unit-of-work; this is
  * reasonable for the surface patterns we care about.
  *
+ * Two further gates keep the synthetic write honest:
+ *
+ *   - **A save terminator is mandatory.** A read followed by mutates
+ *     that runs to the end of the statement list *without* a save is a
+ *     lost update, not an upsert — collapsing it would fabricate a
+ *     write the code never performs and report the buggy function as a
+ *     1.00 clone of the correct one.
+ *   - **An assignment mutate must not drop a side effect.** When the
+ *     absorbed statement is `$x->prop = <RHS>`, the RHS has to be a
+ *     plain value; if it computes anything observable (a call, a
+ *     `new`, a nested write, `include`, …) the fold would erase that
+ *     work from the canonical stream, so the trinity is abandoned.
+ *     Setter mutates are exempt: there the call *is* the mutation the
+ *     token stands for.
+ *
  * **Risk profile**
  *
  * Slightly higher than option 1 (DbOpCanonicalizer alone): false
@@ -70,6 +85,39 @@ use PhpParser\NodeVisitorAbstract;
  */
 final class TrinityCollapser extends NodeVisitorAbstract
 {
+    /**
+     * Expression nodes that do observable work beyond computing a
+     * value — anything that can persist, mutate state elsewhere, or
+     * transfer control. An assignment right-hand side containing one
+     * of these cannot be folded into the synthetic upsert without
+     * silently discarding the effect.
+     *
+     * @var list<class-string<Node\Expr>>
+     */
+    private const EFFECTFUL_NODES = [
+        Node\Expr\FuncCall::class,
+        Node\Expr\MethodCall::class,
+        Node\Expr\NullsafeMethodCall::class,
+        Node\Expr\StaticCall::class,
+        Node\Expr\New_::class,
+        Node\Expr\Clone_::class,
+        Node\Expr\Assign::class,
+        Node\Expr\AssignOp::class,
+        Node\Expr\AssignRef::class,
+        Node\Expr\PostInc::class,
+        Node\Expr\PostDec::class,
+        Node\Expr\PreInc::class,
+        Node\Expr\PreDec::class,
+        Node\Expr\Include_::class,
+        Node\Expr\Eval_::class,
+        Node\Expr\Exit_::class,
+        Node\Expr\Throw_::class,
+        Node\Expr\Yield_::class,
+        Node\Expr\YieldFrom::class,
+        Node\Expr\ShellExec::class,
+        Node\Expr\Print_::class,
+    ];
+
     public function __construct(
         private readonly DbOpRegistry $registry = new DbOpRegistry(),
     ) {
@@ -167,17 +215,24 @@ final class TrinityCollapser extends NodeVisitorAbstract
         }
 
         $mutateCount = 0;
+        $sawSave = false;
         $j = $start + 1;
         $n = count($stmts);
 
         while ($j < $n) {
             $next = $stmts[$j];
             if ($this->isMutateOf($next, $varName)) {
+                if (self::mutateDropsSideEffects($next)) {
+                    // Absorbing it would erase a side-effecting
+                    // computation from the canonical stream.
+                    return null;
+                }
                 $mutateCount++;
                 $j++;
                 continue;
             }
             if ($this->isSaveOf($next, $varName)) {
+                $sawSave = true;
                 $j++;
                 break;
             }
@@ -185,9 +240,12 @@ final class TrinityCollapser extends NodeVisitorAbstract
             return null;
         }
 
-        // Trinity must have read + 1+ mutates + save (we just consumed save).
-        // After the loop, $j points one past save.
-        if ($mutateCount === 0) {
+        // A trinity is read + 1+ mutates + an explicit save terminator:
+        // only the isSaveOf branch sets $sawSave, and on that path $j
+        // ends one past the consumed save. Falling out of the loop with
+        // $j >= $n means the mutate run reached end-of-body — nothing
+        // was ever persisted, so a collapse would invent a write.
+        if (!$sawSave || $mutateCount === 0) {
             return null;
         }
         return [$j - $start, $entity[1]];
@@ -279,6 +337,61 @@ final class TrinityCollapser extends NodeVisitorAbstract
             ] as $prefix) {
                 if (str_starts_with($name, $prefix)) {
                     return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether absorbing a mutate statement into the synthetic upsert
+     * would silently drop a side effect. Only *assignment* mutates carry
+     * a droppable right-hand side: `$x->prop = <RHS>` / `$x['k'] = <RHS>`
+     * / their compound variants. Setter mutates (`$x->setName(…)`) are
+     * exempt — the call there is the mutation the token represents.
+     *
+     * Boundary: magic `__get`/`__call` receivers are invisible to the
+     * AST, so a plain property fetch counts as pure.
+     */
+    private static function mutateDropsSideEffects(Node\Stmt $stmt): bool
+    {
+        if (!$stmt instanceof Node\Stmt\Expression) {
+            return false;
+        }
+        $assign = $stmt->expr;
+        if (!$assign instanceof Node\Expr\Assign && !$assign instanceof Node\Expr\AssignOp) {
+            return false;
+        }
+        return self::rhsIsEffectful($assign->expr);
+    }
+
+    /**
+     * Iterative subtree probe for {@see self::EFFECTFUL_NODES} — the
+     * stack discipline mirrors {@see \Phpdup\Util\AstSerializer::nodeCount()}
+     * so a deeply nested literal cannot recurse the engine stack.
+     */
+    private static function rhsIsEffectful(Node\Expr $rhs): bool
+    {
+        /** @var list<Node> $stack */
+        $stack = [$rhs];
+        while ($stack !== []) {
+            /** @var Node $node */
+            $node = array_pop($stack);
+            foreach (self::EFFECTFUL_NODES as $class) {
+                if ($node instanceof $class) {
+                    return true;
+                }
+            }
+            foreach ($node->getSubNodeNames() as $sub) {
+                $value = $node->$sub;
+                if ($value instanceof Node) {
+                    $stack[] = $value;
+                } elseif (is_array($value)) {
+                    foreach ($value as $child) {
+                        if ($child instanceof Node) {
+                            $stack[] = $child;
+                        }
+                    }
                 }
             }
         }

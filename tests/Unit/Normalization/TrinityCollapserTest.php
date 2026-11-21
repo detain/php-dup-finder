@@ -260,6 +260,133 @@ final class TrinityCollapserTest extends TestCase
         $this->assertNotContains('Identifier|id:find', $tokens);
     }
 
+    /**
+     * engine-005: a read whose mutate run reaches end-of-body without a
+     * save terminator never persisted anything. Collapsing it to
+     * `__DB_UPSERT__` fabricates a write the code does not perform.
+     */
+    public function testEndOfBodyMutateRunDoesNotCollapse(): void
+    {
+        $code = '<?php function f($id) {
+            $user = User::find($id);
+            $user->name = "Bob";
+            $user->setEmail("bob@example.com");
+        }';
+        $tokens = $this->canonicalTokens($code, trinity: true);
+        $this->assertNotContains('Name|n:__DB_UPSERT__', $tokens,
+            'read -> mutates -> EOF must NOT collapse: nothing was saved');
+        // The dead store stays visible in the canonical stream.
+        $this->assertContains('Identifier|id:__CALL_setEmail', $tokens,
+            'unfolded mutates must survive in the stream');
+        $this->assertContains('Name|n:__CLASS_User', $tokens,
+            'unfolded read must survive in the stream');
+    }
+
+    /** Same fabrication through the ArrayDimFetch mutate form. */
+    public function testEndOfBodyArrayDimMutateRunDoesNotCollapse(): void
+    {
+        $code = '<?php function f($id) {
+            $row = Repo::find($id);
+            $row["name"] = "Bob";
+        }';
+        $tokens = $this->canonicalTokens($code, trinity: true);
+        $this->assertNotContains('Name|n:__DB_UPSERT__', $tokens);
+    }
+
+    /**
+     * End-to-end face of engine-005: the lost-update function and the
+     * correct one must not canonicalise to the same stream (they used to
+     * both fold to `__DB_UPSERT__('user')` → reported 1.00 EXACT).
+     */
+    public function testNeverSavedFnIsNotAnExactCloneOfSavedFn(): void
+    {
+        $saved = '<?php function f($id) {
+            $u = User::find($id);
+            $u->name = "Bob";
+            $u->save();
+        }';
+        $deadStore = '<?php function f($id) {
+            $u = User::find($id);
+            $u->name = "Bob";
+        }';
+        $this->assertNotSame(
+            $this->canonicalHash($saved, trinity: true),
+            $this->canonicalHash($deadStore, trinity: true),
+            'a never-saved run must not hash equal to the saved trinity',
+        );
+    }
+
+    /**
+     * PDDETECT secondary (engine-005): absorbing `$x->prop = <RHS>`
+     * drops the RHS from the stream, so an effectful RHS must abort the
+     * collapse instead of being silently forgotten.
+     */
+    /** @dataProvider effectfulRhsProvider */
+    public function testMutateWithEffectfulRhsDoesNotCollapse(string $rhs, string $survivor): void
+    {
+        $code = '<?php function f($id, $other) {
+            $user = User::find($id);
+            $user->name = ' . $rhs . ';
+            $user->save();
+        }';
+        $tokens = $this->canonicalTokens($code, trinity: true);
+        $this->assertNotContains('Name|n:__DB_UPSERT__', $tokens,
+            "side-effecting RHS '$rhs' must refuse the fold");
+        $this->assertContains($survivor, $tokens,
+            "the effect inside '$rhs' must remain in the canonical stream");
+        $this->assertContains('Identifier|id:__CALL_save', $tokens,
+            'the save terminator must remain in the canonical stream');
+    }
+
+    /** @return iterable<string, array{string, string}> */
+    public static function effectfulRhsProvider(): iterable
+    {
+        yield 'function call' => ['fetchName()', 'Name|n:__CALL_fetchName'];
+        yield 'method call' => ['$other->getName()', 'Expr_MethodCall('];
+        yield 'nullsafe method call' => ['$other?->getName()', 'Expr_NullsafeMethodCall('];
+        yield 'static call' => ['NameFactory::make($id)', 'Name|n:__CLASS_NameFactory'];
+        yield 'new instance' => ['new NameTag($id)', 'Expr_New_('];
+        yield 'clone' => ['clone $other', 'Expr_Clone_('];
+        yield 'nested assignment' => ['($user->raw = "Bob")', 'Identifier|id:__PROP_raw'];
+        yield 'post-increment' => ['[$count++][0]', 'Expr_PostInc('];
+        yield 'compound mutate' => ['["x" => $y .= "z"]', 'Expr_AssignOp_Concat('];
+        yield 'call nested in array literal' => ['["ts" => time()]', 'Name|n:__CALL_time'];
+        yield 'shell exec' => ['`whoami`', 'Expr_ShellExec('];
+        yield 'throw expression' => ['(throw new LogicError("nope"))', 'Expr_Throw_('];
+    }
+
+    /**
+     * Boundary pin for the same clause: a right-hand side that computes
+     * nothing observable still folds cleanly (magic `__get` receivers are
+     * invisible to the AST and are deliberately treated as pure).
+     */
+    /** @dataProvider plainRhsProvider */
+    public function testMutateWithPlainRhsStillCollapses(string $rhs): void
+    {
+        $code = '<?php function f($id, $other) {
+            $user = User::find($id);
+            $user->name = ' . $rhs . ';
+            $user->save();
+        }';
+        $tokens = $this->canonicalTokens($code, trinity: true);
+        $this->assertContains('Name|n:__DB_UPSERT__', $tokens,
+            "plain RHS '$rhs' must still collapse");
+        $this->assertNotContains('Identifier|id:__CALL_save', $tokens);
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function plainRhsProvider(): iterable
+    {
+        yield 'literal' => ['"Bob"'];
+        yield 'variable' => ['$id'];
+        yield 'property fetch' => ['$other->title'];
+        yield 'array dim fetch' => ['$other["title"]'];
+        yield 'constant' => ['self::DEFAULT_NAME'];
+        yield 'literal concatenation' => ['"a" . "b"'];
+        yield 'array of literals' => ['["name" => "Bob"]'];
+        yield 'ternary of literals' => ['true ? "a" : "b"'];
+    }
+
     /** @return list<string> */
     private function canonicalTokens(
         string $code,
