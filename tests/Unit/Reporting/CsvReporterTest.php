@@ -45,7 +45,9 @@ final class CsvReporterTest extends TestCase
 
         // RFC 4180: every body row should have exactly 14 fields
         for ($i = 1; $i < count($rows); $i++) {
-            $cells = str_getcsv($rows[$i]);
+            // CI-85: PHP 8.4/8.5 deprecate omitting $escape; '\\' is
+            // verbatim the old default, so parsing behaviour is unchanged.
+            $cells = str_getcsv($rows[$i], ',', '"', '\\');
             $this->assertCount(14, $cells, "row $i should have 14 cells");
         }
     }
@@ -58,7 +60,9 @@ final class CsvReporterTest extends TestCase
         $csv = (new CsvReporter())->build($report);
         $rows = explode("\n", trim($csv));
         for ($i = 1; $i < count($rows); $i++) {
-            $cells = str_getcsv($rows[$i]);
+            // CI-85: PHP 8.4/8.5 deprecate omitting $escape; '\\' is
+            // verbatim the old default, so parsing behaviour is unchanged.
+            $cells = str_getcsv($rows[$i], ',', '"', '\\');
             $this->assertCount(14, $cells, "row {$i} should round-trip cleanly");
         }
     }
@@ -66,7 +70,6 @@ final class CsvReporterTest extends TestCase
     public function testEscapeNeutralizesFormulaInjection(): void
     {
         $r = new \ReflectionMethod(CsvReporter::class, 'escape');
-        $r->setAccessible(true);
         $reporter = new CsvReporter();
 
         // Cells starting with =, +, -, @, \t get text prefix (no RFC 4180 quoting needed)

@@ -75,7 +75,6 @@ final class ShapeletSketchTest extends TestCase
 
             // Access fallback directly via reflection for testing
             $reflection = new \ReflectionMethod(ShapeletSketch::class, 'fallbackPopcount');
-            $reflection->setAccessible(true);
             $fallbackResult = $reflection->invoke(null, $value);
 
             $this->assertSame(
@@ -91,7 +90,6 @@ final class ShapeletSketchTest extends TestCase
             $gmpResult = gmp_popcount(gmp_init(sprintf('%u', $value), 10));
 
             $reflection = new \ReflectionMethod(ShapeletSketch::class, 'fallbackPopcount');
-            $reflection->setAccessible(true);
             $fallbackResult = $reflection->invoke(null, $value);
 
             $this->assertSame(

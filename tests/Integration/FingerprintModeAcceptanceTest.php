@@ -162,7 +162,6 @@ final class FingerprintModeAcceptanceTest extends TestCase
     {
         $stage = new ClusterStage(exactOnly: false);
         $ref = new \ReflectionMethod(ClusterStage::class, 'cacheConfigKey');
-        $ref->setAccessible(true);
         $key = static fn(string $mode): string => $ref->invoke($stage, new Config(
             paths: ['/x'],
             exclude: [],
@@ -198,7 +197,6 @@ final class FingerprintModeAcceptanceTest extends TestCase
             }
 
             $buildRef = new \ReflectionMethod(ClusterStage::class, 'buildClusterer');
-            $buildRef->setAccessible(true);
             $clusterer = $buildRef->invoke(new ClusterStage(exactOnly: false), $state->config);
 
             $pairs = iterator_to_array($clusterer->generateCandidatePairs(
@@ -209,7 +207,6 @@ final class FingerprintModeAcceptanceTest extends TestCase
             $this->assertGreaterThan(0, count($pairs), "candidate generation is dead under mode $mode");
 
             $serialRef = new \ReflectionMethod(Clusterer::class, 'scorePairsSerially');
-            $serialRef->setAccessible(true);
             $serial = $serialRef->invoke($clusterer, $index);
 
             $worker = new PairScoreWorker(

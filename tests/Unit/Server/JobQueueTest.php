@@ -81,7 +81,6 @@ final class JobQueueTest extends TestCase
         $jobs = [];
         $reflection = new \ReflectionClass($queue);
         $prop = $reflection->getProperty('jobs');
-        $prop->setAccessible(true);
         /** @var array<string, array{status:string, payload:array<string,mixed>, result:?array<string,mixed>, error:?string, created_at:float, completed_at:?float}> $raw */
         $raw = $prop->getValue($queue);
         foreach ($raw as $id => $job) {
@@ -175,7 +174,6 @@ final class JobQueueTest extends TestCase
 
         $reflection = new \ReflectionClass($queue);
         $prop = $reflection->getProperty('jobs');
-        $prop->setAccessible(true);
         /** @var array<string, array{status:string, payload:array<string,mixed>, result:?array<string,mixed>, error:?string, created_at:float, completed_at:?float}> $jobs */
         $jobs = $prop->getValue($queue);
         $jobs[$id]['completed_at'] = $jobs[$id]['completed_at'] - JobQueue::JOB_TTL_SECONDS - 1;
@@ -209,7 +207,6 @@ final class JobQueueTest extends TestCase
 
         $reflection = new \ReflectionClass($queue);
         $prop = $reflection->getProperty('jobs');
-        $prop->setAccessible(true);
         /** @var array<string, array{status:string, payload:array<string,mixed>, result:?array<string,mixed>, error:?string, created_at:float, completed_at:?float}> $jobs */
         $jobs = $prop->getValue($queue);
         $jobs[$pendingId]['created_at'] = $jobs[$pendingId]['created_at'] - JobQueue::JOB_TTL_SECONDS - 10;
@@ -226,7 +223,6 @@ final class JobQueueTest extends TestCase
     {
         $reflection = new \ReflectionClass($queue);
         $prop = $reflection->getProperty('jobs');
-        $prop->setAccessible(true);
         /** @var array<string, array{status:string, payload:array<string,mixed>, result:?array<string,mixed>, error:?string, created_at:float, completed_at:?float}> $jobs */
         $jobs = $prop->getValue($queue);
         $keys = array_keys($jobs);

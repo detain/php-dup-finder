@@ -86,7 +86,6 @@ final class MlPairClientTest extends TestCase
     {
         $client = new MlPairClient('http://example.com');
         $r = new \ReflectionMethod($client, 'parseStatusCode');
-        $r->setAccessible(true);
         self::assertSame($expectedCode, $r->invoke($client, $headers));
     }
 

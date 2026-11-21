@@ -238,7 +238,6 @@ final class ScriptKindTest extends TestCase
         // candidate classifier must not accept 'script' — a positional
         // "match" here would be exactly the silent-mis-anchor class.
         $ref = new \ReflectionMethod(BlockAstLoader::class, 'matchesKind');
-        $ref->setAccessible(true);
         $this->assertFalse($ref->invoke(null, new Stmt\Block([]), 'script'));
         // The refusal type crosses the wire-free layers (plain message
         // string — Socketpair-Law-neutral, it never rides a worker stream).

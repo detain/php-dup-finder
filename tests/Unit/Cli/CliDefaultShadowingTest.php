@@ -81,7 +81,6 @@ final class CliDefaultShadowingTest extends TestCase
         $input = new ArrayInput($params, $command->getDefinition());
 
         $method = new \ReflectionMethod(Command::class, 'parseCliOverrides');
-        $method->setAccessible(true);
 
         /** @var array<string,mixed>|null $overrides */
         $overrides = $method->invoke($command, $input, new NullOutput());

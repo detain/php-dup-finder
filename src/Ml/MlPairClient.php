@@ -187,30 +187,29 @@ final class MlPairClient implements PairScorer
             if ($ch === false) {
                 return null;
             }
-            try {
-                curl_setopt_array($ch, [
-                    CURLOPT_URL            => $url,
-                    CURLOPT_POST           => true,
-                    CURLOPT_POSTFIELDS     => $body,
-                    CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
-                    CURLOPT_RETURNTRANSFER => true,
-                    CURLOPT_TIMEOUT        => $this->timeoutSec,
-                    CURLOPT_CONNECTTIMEOUT => $this->timeoutSec,
-                    CURLOPT_FOLLOWLOCATION => false,
-                    CURLOPT_PROTOCOLS      => CURLPROTO_HTTP | CURLPROTO_HTTPS,
-                ]);
-                $resp = curl_exec($ch);
-                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-                if ($httpCode < 200 || $httpCode >= 300) {
-                    return null;
-                }
-                if (!is_string($resp)) {
-                    return null;
-                }
-                return $resp;
-            } finally {
-                curl_close($ch);
+            // CI-85: no curl_close — deprecated in PHP 8.5 and a no-op
+            // since 8.0 (the handle closes on GC), which is why the
+            // try/finally that carried only that call is gone too.
+            curl_setopt_array($ch, [
+                CURLOPT_URL            => $url,
+                CURLOPT_POST           => true,
+                CURLOPT_POSTFIELDS     => $body,
+                CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT        => $this->timeoutSec,
+                CURLOPT_CONNECTTIMEOUT => $this->timeoutSec,
+                CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_PROTOCOLS      => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+            ]);
+            $resp = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            if ($httpCode < 200 || $httpCode >= 300) {
+                return null;
             }
+            if (!is_string($resp)) {
+                return null;
+            }
+            return $resp;
         }
 
         $ctx = stream_context_create([
@@ -225,7 +224,14 @@ final class MlPairClient implements PairScorer
         ]);
         $resp = @file_get_contents($url, false, $ctx);
         if ($resp !== false) {
-            $httpCode = $this->parseStatusCode($http_response_header);
+            // CI-85: PHP 8.5 deprecates the $http_response_header magic-
+            // variable read; http_get_last_response_headers() replaces it.
+            // On 8.3/8.4 the function does not exist and the legacy branch
+            // runs byte-identical to the old code.
+            $headers  = function_exists('http_get_last_response_headers')
+                ? (array) http_get_last_response_headers()
+                : $http_response_header;
+            $httpCode = $this->parseStatusCode($headers);
             if ($httpCode < 200 || $httpCode >= 300) {
                 return null;
             }

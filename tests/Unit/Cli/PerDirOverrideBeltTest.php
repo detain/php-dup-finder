@@ -146,7 +146,6 @@ final class PerDirOverrideBeltTest extends TestCase
     {
         $loader = new ConfigLoader();
         $method = new \ReflectionMethod($loader, 'shapeOverrides');
-        $method->setAccessible(true);
         /** @var array<string,mixed> $emitted */
         $emitted = $method->invoke($loader, self::fullPerDirectoryPayload());
         self::assertIsArray($emitted);

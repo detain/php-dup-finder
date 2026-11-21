@@ -97,7 +97,6 @@ final class ApplyExtractorTest extends TestCase
         $ext = new ApplyExtractor();
 
         $refl = new \ReflectionMethod($ext, 'extractFunctionName');
-        $refl->setAccessible(true);
         $name = $refl->invoke($ext, $cluster->signature);
 
         $this->assertSame('notifyByThreshold', $name);
@@ -107,7 +106,6 @@ final class ApplyExtractorTest extends TestCase
     {
         $ext = new ApplyExtractor();
         $refl = new \ReflectionMethod($ext, 'extractParameters');
-        $refl->setAccessible(true);
 
         $params = $refl->invoke($ext, "function notify(\n    int \$threshold,\n    string \$value,\n): mixed");
         $this->assertSame('int $threshold, string $value,', $params);
@@ -134,7 +132,6 @@ final class ApplyExtractorTest extends TestCase
 
         $ext = new ApplyExtractor();
         $refl = new \ReflectionMethod($ext, 'buildFunctionFile');
-        $refl->setAccessible(true);
 
         $modifiedAst = $cluster->generalizedAst;
         $content = $refl->invoke($ext, 'notifyByThreshold', $modifiedAst, $cluster);
@@ -169,7 +166,6 @@ final class ApplyExtractorTest extends TestCase
 
         $ext  = new ApplyExtractor();
         $refl = new \ReflectionMethod($ext, 'setNodeAtPath');
-        $refl->setAccessible(true);
         $refl->invoke(
             $ext,
             $func,
@@ -193,7 +189,6 @@ final class ApplyExtractorTest extends TestCase
 
         $ext = new ApplyExtractor();
         $refl = new \ReflectionMethod($ext, 'setNodeAtPath');
-        $refl->setAccessible(true);
 
         $replaceWith = new Variable('myParam');
         // Path: stmts[0]=If_, If_.cond=Greater, Greater.left=Variable($x)

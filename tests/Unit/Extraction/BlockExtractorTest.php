@@ -71,7 +71,6 @@ final class BlockExtractorTest extends TestCase
 
         $visitor = new \Phpdup\Extraction\BlockVisitor('virtual.php', 1, 100, [], static function (): void {});
         $classify = new \ReflectionMethod($visitor, 'classifyKind');
-        $classify->setAccessible(true);
         $emitted = [];
         foreach ($this->specimenNodes() as $node) {
             $kind = $classify->invoke($visitor, $node);

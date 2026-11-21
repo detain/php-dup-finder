@@ -140,7 +140,6 @@ final class MaxTedSizeConfigTest extends TestCase
         // keys are never emitted, so set-equality covers them trivially).
         $loader = new ConfigLoader();
         $ref = new \ReflectionMethod(ConfigLoader::class, 'shapeOverrides');
-        $ref->setAccessible(true);
         $out = $ref->invoke($loader, ['max_ted_size' => 250, 'min_block_size' => 9]);
         $this->assertArrayNotHasKey('max_ted_size', $out);
         $this->assertArrayHasKey('min_block_size', $out);

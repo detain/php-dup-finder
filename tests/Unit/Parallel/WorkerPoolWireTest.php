@@ -198,7 +198,6 @@ final class WorkerPoolWireTest extends TestCase
     public function testCorruptMidStreamFrameFailsLoudInsteadOfYieldingFalse(): void
     {
         $decode    = new \ReflectionMethod(WorkerPool::class, 'decodeFrame');
-        $decode->setAccessible(true);
         $allowList = SerializedClassAllowList::blockCacheClasses();
 
         $valid = serialize(['type' => 'block', 'file' => 'x.php', 'block' => $this->makeRealBlock()]);
@@ -223,7 +222,6 @@ final class WorkerPoolWireTest extends TestCase
     public function testDecodeFrameReturnsSentinelsAndValidRecordsUntouched(): void
     {
         $decode    = new \ReflectionMethod(WorkerPool::class, 'decodeFrame');
-        $decode->setAccessible(true);
         $allowList = SerializedClassAllowList::blockCacheClasses();
 
         // Sentinel precedence: well-formed control frames pass through for

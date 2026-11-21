@@ -121,7 +121,6 @@ final class FingerprintIdModeConfigTest extends TestCase
         // refusal above is the enforcement; belt set stays unchanged.
         $loader = new ConfigLoader();
         $ref = new \ReflectionMethod(ConfigLoader::class, 'shapeOverrides');
-        $ref->setAccessible(true);
         $out = $ref->invoke($loader, ['fingerprint_id_mode' => 'un-numbered', 'min_block_size' => 9]);
         $this->assertArrayNotHasKey('fingerprint_id_mode', $out);
         $this->assertArrayHasKey('min_block_size', $out);

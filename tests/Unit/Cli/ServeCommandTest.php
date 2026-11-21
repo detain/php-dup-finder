@@ -14,7 +14,6 @@ final class ServeCommandTest extends TestCase
 
         $reflection = new \ReflectionClass($command);
         $method = $reflection->getMethod('isLoopback');
-        $method->setAccessible(true);
 
         $this->assertTrue($method->invoke($command, '127.0.0.1'));
         $this->assertTrue($method->invoke($command, 'localhost'));
@@ -30,7 +29,6 @@ final class ServeCommandTest extends TestCase
 
         $reflection = new \ReflectionClass($command);
         $method = $reflection->getMethod('isLoopback');
-        $method->setAccessible(true);
 
         $this->assertFalse($method->invoke($command, '10.0.0.1'));
         $this->assertFalse($method->invoke($command, '172.16.0.1'));
@@ -43,7 +41,6 @@ final class ServeCommandTest extends TestCase
 
         $reflection = new \ReflectionClass($command);
         $method = $reflection->getMethod('extractHeaders');
-        $method->setAccessible(true);
 
         $raw = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer secret\r\nContent-Type: application/json\r\n\r\n";
         $headers = $method->invoke($command, $raw);
@@ -59,7 +56,6 @@ final class ServeCommandTest extends TestCase
 
         $reflection = new \ReflectionClass($command);
         $method = $reflection->getMethod('extractHeaders');
-        $method->setAccessible(true);
 
         $raw = "GET /healthz HTTP/1.1\r\nInvalidHeaderNoColon\r\nHost: localhost\r\n\r\n";
         $headers = $method->invoke($command, $raw);
@@ -74,7 +70,6 @@ final class ServeCommandTest extends TestCase
 
         $reflection = new \ReflectionClass($command);
         $method = $reflection->getMethod('extractHeaders');
-        $method->setAccessible(true);
 
         $raw = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nX-Custom-Header: value\r\n\r\n";
         $headers = $method->invoke($command, $raw);
@@ -90,7 +85,6 @@ final class ServeCommandTest extends TestCase
 
         $reflection = new \ReflectionClass($command);
         $method = $reflection->getMethod('extractHeaders');
-        $method->setAccessible(true);
 
         $raw = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nX-Empty: \r\n\r\n";
         $headers = $method->invoke($command, $raw);
@@ -105,7 +99,6 @@ final class ServeCommandTest extends TestCase
 
         $reflection = new \ReflectionClass($command);
         $method = $reflection->getMethod('isAllowedRoute');
-        $method->setAccessible(true);
 
         $this->assertTrue($method->invoke($command, 'GET', '/healthz'));
         $this->assertTrue($method->invoke($command, 'POST', '/analyze'));
@@ -125,7 +118,6 @@ final class ServeCommandTest extends TestCase
 
         $reflection = new \ReflectionClass($command);
         $method = $reflection->getMethod('isAllowedRoute');
-        $method->setAccessible(true);
 
         $this->assertTrue($method->invoke($command, 'GET', '/jobs/abc123def456'));
         $this->assertTrue($method->invoke($command, 'GET', '/jobs/abc'));
@@ -139,7 +131,6 @@ final class ServeCommandTest extends TestCase
 
         $reflection = new \ReflectionClass($command);
         $method = $reflection->getMethod('isAllowedRoute');
-        $method->setAccessible(true);
 
         $this->assertFalse($method->invoke($command, 'PUT', '/analyze'));
         $this->assertFalse($method->invoke($command, 'PATCH', '/analyze'));

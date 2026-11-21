@@ -422,6 +422,15 @@ HELP
             return false;
         }
 
+        // CI-85: PHP 8.5 deprecates the $http_response_header magic-
+        // variable read in favour of http_get_last_response_headers();
+        // on 8.3/8.4 the function does not exist and the legacy branch
+        // supplies byte-identical content. Read once — the headers are
+        // fixed by the time fopen() has returned.
+        $respHeaders = function_exists('http_get_last_response_headers')
+            ? (array) http_get_last_response_headers()
+            : ($http_response_header ?? []);
+
         $outHandle = fopen($dest, 'wb');
         if ($outHandle === false) {
             fclose($handle);
@@ -438,8 +447,8 @@ HELP
             $size += strlen($chunk);
 
             // Progress every 10 %
-            if (isset($http_response_header[0]) && preg_match('/Content-Length:\s*(\d+)/',
-                implode("\n", $http_response_header), $m)) {
+            if (isset($respHeaders[0]) && preg_match('/Content-Length:\s*(\d+)/',
+                implode("\n", $respHeaders), $m)) {
                 $total = (int)$m[1];
                 if ($total > 0) {
                     $pct = (int)(($size / $total) * 100 / 10) * 10;

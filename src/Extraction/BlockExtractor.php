@@ -300,7 +300,7 @@ final class BlockVisitor extends NodeVisitorAbstract
      */
     private function nodeCount(Node $node): int
     {
-        if ($this->nodeCounts->contains($node)) {
+        if ($this->nodeCounts->offsetExists($node)) {
             return $this->nodeCounts[$node];
         }
         $count = AstSerializer::nodeCount($node);

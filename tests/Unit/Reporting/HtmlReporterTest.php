@@ -123,7 +123,6 @@ final class HtmlReporterTest extends TestCase
     public function testHighlightPhpKeywordIsolation(string $code, string $expectedFragment, string $forbiddenFragment): void
     {
         $refl = new \ReflectionMethod(HtmlReporter::class, 'highlightPhp');
-        $refl->setAccessible(true);
 
         $output = $refl->invoke((new HtmlReporter()), $code);
 
@@ -185,7 +184,6 @@ final class HtmlReporterTest extends TestCase
     public function testHighlightPhpOutputIsValidDom(): void
     {
         $refl = new \ReflectionMethod(HtmlReporter::class, 'highlightPhp');
-        $refl->setAccessible(true);
 
         $cases = [
             'class="c"',

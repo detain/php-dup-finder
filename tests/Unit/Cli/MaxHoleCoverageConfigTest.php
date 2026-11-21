@@ -160,7 +160,6 @@ final class MaxHoleCoverageConfigTest extends TestCase
         // emitted, so set-equality covers them trivially).
         $loader = new ConfigLoader();
         $ref = new \ReflectionMethod(ConfigLoader::class, 'shapeOverrides');
-        $ref->setAccessible(true);
         $out = $ref->invoke($loader, ['max_hole_coverage' => 0.4, 'min_block_size' => 9]);
         $this->assertArrayNotHasKey('max_hole_coverage', $out);
         $this->assertArrayHasKey('min_block_size', $out);

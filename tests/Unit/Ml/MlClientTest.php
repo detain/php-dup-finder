@@ -71,7 +71,6 @@ final class MlClientTest extends TestCase
     public function testIsBlockedIp(string $input, bool $expected): void
     {
         $r = new \ReflectionMethod(MlClient::class, 'isBlockedIp');
-        $r->setAccessible(true);
         self::assertSame($expected, $r->invoke(null, $input));
     }
 
@@ -108,7 +107,6 @@ final class MlClientTest extends TestCase
         ) {
             if ($r->hasProperty($prop)) {
                 $p = $r->getProperty($prop);
-                $p->setAccessible(true);
                 $p->setValue($cluster, $value);
             }
         }
@@ -123,7 +121,6 @@ final class MlClientTest extends TestCase
     {
         $client = new MlClient('http://example.com');
         $r = new \ReflectionMethod($client, 'parseStatusCode');
-        $r->setAccessible(true);
         self::assertSame($expectedCode, $r->invoke($client, $headers));
     }
 

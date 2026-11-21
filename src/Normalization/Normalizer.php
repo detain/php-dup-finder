@@ -120,7 +120,6 @@ final class Normalizer
         // intern() returned $node unchanged and we skip the recursion.
         $reflection = new \ReflectionClass($node);
         foreach ($reflection->getProperties() as $property) {
-            $property->setAccessible(true);
             if (!$property->isInitialized($node)) {
                 continue;
             }
@@ -148,7 +147,6 @@ final class Normalizer
 
         $reflection = new \ReflectionClass($node);
         foreach ($reflection->getProperties() as $property) {
-            $property->setAccessible(true);
 
             if (!$property->isInitialized($clone)) {
                 continue;
