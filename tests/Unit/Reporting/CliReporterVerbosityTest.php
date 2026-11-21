@@ -5,6 +5,8 @@ namespace Phpdup\Tests\Unit\Reporting;
 
 use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\Config;
+use Phpdup\Clustering\Cluster;
+use Phpdup\Extraction\Block;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\Stages\ClusterStage;
 use Phpdup\Pipeline\Stages\PreprocessStage;
@@ -13,6 +15,9 @@ use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Reporting\CliReporter;
 use Phpdup\Reporting\Ranker;
 use Phpdup\Reporting\Report;
+use Phpdup\Util\LineRange;
+use SugarCraft\Style\Border;
+use SugarCraft\Style\Table\Table;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\NullOutput;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -116,6 +121,94 @@ final class CliReporterVerbosityTest extends TestCase
         $this->assertStringContainsString('summary  ', $rendered);
         $this->assertStringNotContainsString('scanned · ', $rendered, 'null counters must not render as fake zeros');
         $this->assertStringNotContainsString('no comparable blocks', $rendered);
+    }
+
+    /**
+     * output-060: the batched `Table::rows()` append must render exactly the
+     * bytes the old per-cluster `Table::row()` loop produced. The reference
+     * table here keeps the OLD shape on purpose — if the batched path ever
+     * drifts in cell derivation or ordering, this containment fails.
+     */
+    public function testClusterListTableBytesMatchRowByRowReference(): void
+    {
+        $report = $this->syntheticReport(6);
+        $out    = $this->buffered();
+        (new CliReporter(CliReporter::VERBOSITY_CLUSTERS))->render($report, $out);
+        $rendered = $out->fetch();
+
+        $table = Table::new()
+            ->border(Border::rounded())
+            ->headers('CLUSTER', 'MEMBERS', 'SIM', 'IMPACT', 'KIND', 'LOCATION');
+        foreach ($report->clusters as $c) {
+            $loc = isset($c->members[0]) ? $c->members[0]->location() : '';
+            $table = $table->row(
+                $c->id,
+                (string)$c->size(),
+                sprintf('%.2f', $c->similarity),
+                (string)$c->impact,
+                isset($c->members[0]->kind) ? $c->members[0]->kind : '',
+                $loc,
+            );
+        }
+        $this->assertStringContainsString($table->render(), $rendered);
+    }
+
+    /**
+     * output-060 structural pin: renderClusterList must append its rows in
+     * ONE `Table::rows()` call. The vendor Table is immutable — every
+     * `row()` call clones and spreads all prior rows, so a per-cluster
+     * `row()` loop is O(R²) at `--limit 0`. Reading the method source is
+     * the only way to pin the SHAPE of the append (byte equality against
+     * the row-by-row reference cannot tell the two apart).
+     */
+    public function testClusterListUsesOneBatchedRowsCallNotPerRowAppends(): void
+    {
+        $method = new \ReflectionMethod(CliReporter::class, 'renderClusterList');
+        $lines  = file((string)$method->getFileName());
+        $this->assertIsArray($lines);
+        $src = implode('', array_slice(
+            $lines,
+            $method->getStartLine() - 1,
+            $method->getEndLine() - $method->getStartLine() + 1,
+        ));
+
+        $this->assertStringContainsString('->rows(', $src, 'cluster table must append via one batched rows() call');
+        $this->assertStringNotContainsString('->row(', $src, 'per-cluster immutable row() appends are O(R^2) — regressions to the row-by-row shape are what output-060 forbids');
+    }
+
+    /**
+     * @param positive-int $count
+     * @return list<Cluster>
+     */
+    private function syntheticClusters(int $count): array
+    {
+        $clusters = [];
+        for ($i = 0; $i < $count; $i++) {
+            $block = new Block(
+                file: '/synthetic/Member' . $i . '.php',
+                range: new LineRange($i + 1, $i + 6),
+                kind: 'method',
+                namespace: 'App\\Mod' . $i,
+                class: 'Svc' . $i,
+                name: 'handle' . $i,
+                ast: new \PhpParser\Node\Stmt\Nop(),
+            );
+            $block->id = 'BLK' . $i;
+
+            $cluster        = new Cluster('C' . $i, [$block], 0.5 + $i / 100, $i % 2 === 0);
+            $cluster->impact = 10 * $i;
+            $clusters[]     = $cluster;
+        }
+        return $clusters;
+    }
+
+    private function syntheticReport(int $count): Report
+    {
+        $config = new Config(paths: [__DIR__], exclude: []);
+        return new Report(
+            files: $count, blocks: $count, parseErrors: 0,
+            clusters: $this->syntheticClusters($count), config: $config,
+        );
     }
 
     private function buffered(): BufferedOutput

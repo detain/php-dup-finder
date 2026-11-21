@@ -111,6 +111,57 @@ final class CliReporterHonestyTest extends TestCase
         $this->assertStringNotContainsString('placement:', $out->fetch());
     }
 
+    /**
+     * output-054: the banner and the trailer print the same totals — they
+     * must arrive from ONE computation (a class-source guard pins the
+     * shape), and both surfaces must agree with an independent recount of
+     * the report's clusters.
+     */
+    public function testTotalsAreComputedOnceAndAgreeAcrossBannerAndTrailer(): void
+    {
+        $cluster = $this->pairCluster();
+        $report  = $this->report($cluster, new Config(paths: [$this->tmp], exclude: [], maxHoleCoverage: 1.0));
+
+        $out = new BufferedOutput(OutputInterface::VERBOSITY_NORMAL, decorated: false);
+        (new CliReporter(CliReporter::VERBOSITY_SUMMARY_ONLY))->render($report, $out);
+        $rendered = $out->fetch();
+
+        // Truth, recomputed in the test.
+        $trueDuplicated = $report->totalDuplicatedLines();
+        $trueImpact     = array_sum(array_map(static fn(Cluster $c) => $c->impact, $report->clusters));
+
+        $this->assertSame(
+            1,
+            preg_match('/(\d+) files · (\d+) blocks · (\d+) clusters · (\d+) duplicated lines · (\d+) total impact/', $rendered, $banner),
+            'banner totals line must render',
+        );
+        $this->assertSame(
+            1,
+            preg_match('/summary  (\d+) clusters · (\d+) duplicated lines · (\d+) total impact/', $rendered, $trailer),
+            'trailer totals line must render',
+        );
+        $this->assertSame((string)count($report->clusters), $banner[3]);
+        $this->assertSame((string)$trueDuplicated, $banner[4]);
+        $this->assertSame((string)$trueImpact, $banner[5]);
+        $this->assertSame($banner[3], $trailer[1], 'banner and trailer must agree on cluster count');
+        $this->assertSame($banner[4], $trailer[2], 'banner and trailer must agree on duplicated lines');
+        $this->assertSame($banner[5], $trailer[3], 'banner and trailer must agree on total impact');
+
+        // Shape guard: each totals walk happens exactly once per render —
+        // the trailer receives the banner's locals instead of re-walking.
+        $src = (string)file_get_contents((new \ReflectionClass(CliReporter::class))->getFileName());
+        $this->assertSame(
+            1,
+            substr_count($src, 'totalDuplicatedLines('),
+            'output-054: duplicated-lines total must be computed once per render, not once per surface',
+        );
+        $this->assertSame(
+            1,
+            substr_count($src, 'array_sum('),
+            'output-054: impact total must be computed once per render, not once per surface',
+        );
+    }
+
     // ── fixtures ────────────────────────────────────────────────────────────
 
     private function render(Cluster $cluster, float $maxHoleCoverage): string

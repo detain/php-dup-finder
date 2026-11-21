@@ -51,14 +51,21 @@ final class CliReporter
         // One advisor per render so composer manifests are read once (item 5.3).
         $advisor = new PlacementAdvisor($report->config->paths);
 
+        // output-054: the banner and the trailer print the same totals, so
+        // they are computed once here and handed to both sites — a big
+        // report no longer pays the O(clusters) walks twice per render.
+        $clusterCount     = count($clusters);
+        $duplicated       = $report->totalDuplicatedLines();
+        $totalImpact      = array_sum(array_map(fn(Cluster $c) => $c->impact, $clusters));
+
         $out->writeln('');
         $out->writeln(Banner::title('phpdup', sprintf(
             '%d files · %d blocks · %d clusters · %d duplicated lines · %d total impact',
             $report->files,
             $report->blocks,
-            count($clusters),
-            $report->totalDuplicatedLines(),
-            array_sum(array_map(fn(Cluster $c) => $c->impact, $clusters)),
+            $clusterCount,
+            $duplicated,
+            $totalImpact,
         ), $theme, Border::rounded()));
         $out->writeln('');
 
@@ -83,7 +90,7 @@ final class CliReporter
         }
 
         if ($this->verbosity === self::VERBOSITY_SUMMARY_ONLY) {
-            $this->renderTrailer($report, $clusters, $theme, $out);
+            $this->renderTrailer($report, $clusterCount, $duplicated, $totalImpact, $theme, $out);
             return;
         }
 
@@ -95,7 +102,7 @@ final class CliReporter
 
         if ($this->verbosity === self::VERBOSITY_CLUSTERS) {
             $this->renderClusterList(array_slice($clusters, 0, $shown), $theme, $out);
-            $this->renderTrailer($report, $clusters, $theme, $out);
+            $this->renderTrailer($report, $clusterCount, $duplicated, $totalImpact, $theme, $out);
             return;
         }
 
@@ -103,23 +110,24 @@ final class CliReporter
             $this->renderCluster($i + 1, $clusters[$i], $report->config, $advisor, $theme, $width, $decorated, $out);
         }
 
-        $this->renderTrailer($report, $clusters, $theme, $out);
+        $this->renderTrailer($report, $clusterCount, $duplicated, $totalImpact, $theme, $out);
     }
 
     /**
      * Trailing summary line — kept identical across verbosity levels so
      * scripts grepping for the totals work regardless of mode.
      *
-     * @param list<Cluster> $clusters
+     * output-054: the totals arrive pre-computed from render() — the trailer
+     * no longer re-walks every cluster to re-derive what the banner printed.
      */
-    private function renderTrailer(Report $report, array $clusters, Theme $theme, OutputInterface $out): void
+    private function renderTrailer(Report $report, int $clusterCount, int $duplicated, int $totalImpact, Theme $theme, OutputInterface $out): void
     {
         $out->writeln('');
         $out->writeln(StatusLine::success(sprintf(
             'summary  %d clusters · %d duplicated lines · %d total impact',
-            count($clusters),
-            $report->totalDuplicatedLines(),
-            array_sum(array_map(fn(Cluster $c) => $c->impact, $clusters)),
+            $clusterCount,
+            $duplicated,
+            $totalImpact,
         ), $theme));
         $this->renderFileAccounting($report, $theme, $out);
     }
@@ -164,26 +172,35 @@ final class CliReporter
      * top-line numbers so users can grep-by-id and pipe into other
      * tools.
      *
+     * output-060: rows are collected first and appended through one
+     * `Table::rows()` call. The old `$table = $table->row(...)` loop ran on
+     * the immutable vendor Table, which clones and spreads ALL prior rows
+     * per call — O(R²) at `--limit 0` with thousands of clusters. One
+     * batched append is linear and renders byte-identically (pinned by
+     * CliReporterVerbosityTest).
+     *
      * @param list<Cluster> $clusters
      */
     private function renderClusterList(array $clusters, Theme $theme, OutputInterface $out): void
     {
         $out->writeln('');
-        $table = Table::new()
-            ->border(Border::rounded())
-            ->headers('CLUSTER', 'MEMBERS', 'SIM', 'IMPACT', 'KIND', 'LOCATION');
+        $rows = [];
         foreach ($clusters as $c) {
             $loc = isset($c->members[0]) ? $c->members[0]->location() : '';
-            $table = $table->row(
+            $rows[] = [
                 $c->id,
                 (string)$c->size(),
                 sprintf('%.2f', $c->similarity),
                 (string)$c->impact,
                 isset($c->members[0]->kind) ? $c->members[0]->kind : '',
                 $loc,
-            );
+            ];
         }
-        $out->writeln($table->render());
+        $out->writeln(Table::new()
+            ->border(Border::rounded())
+            ->headers('CLUSTER', 'MEMBERS', 'SIM', 'IMPACT', 'KIND', 'LOCATION')
+            ->rows($rows)
+            ->render());
     }
 
     private function renderCluster(int $num, Cluster $c, Config $config, PlacementAdvisor $advisor, Theme $theme, int $width, bool $decorated, OutputInterface $out): void
