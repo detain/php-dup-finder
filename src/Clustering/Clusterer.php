@@ -76,6 +76,24 @@ final class Clusterer
     private const SEEN_CAP = 200_000;
 
     /**
+     * Safety budget on total candidate-pair output of
+     * {@see generateCandidatePairs()} (item 0.5, F3 gen-loop guard).
+     *
+     * Rare-gram posting unions make pair count quadratic inside a clone
+     * family: measured corpora stay at 787-882 pairs/block (18.8M pairs on
+     * 23,895 blocks for phlix) while the observed storm hit 2,400-3,400
+     * pairs/block and died at 80 GB / ~320M materialized pairs. 60M bounds
+     * the materialized list at ~14 GB — ~3× the largest corpus ever
+     * completed, ~5× below the death zone. Breaching the budget halts with
+     * a loud {@see CandidateBudgetException} instead of an OOM; below it
+     * the enumeration is pair-for-pair identical to the unguarded loop.
+     */
+    public const MAX_CANDIDATE_PAIRS = 60_000_000;
+
+    /** Sentinel budget for {@see generateCandidatePairs()} meaning "no cap". */
+    public const UNLIMITED_CANDIDATE_PAIRS = PHP_INT_MAX;
+
+    /**
      * Generate the candidate-pair list (a_id, b_id) for parallel scoring.
      *
      * Used when the caller wants to dispatch pair scoring to a worker
@@ -88,11 +106,29 @@ final class Clusterer
      * overflow period may not be deduped, but this is extremely rare in
      * practice and bounds memory to O(SEEN_CAP) instead of O(corpus).
      *
+     * Output is hard-capped by the candidate budget: yielding pair number
+     * $maxCandidatePairs + 1 throws instead. The cap never reorders, skips
+     * or duplicates pairs below it, so any run that completes under the
+     * guard produces exactly what the uncapped loop would have.
+     *
+     * @param int|null $maxCandidatePairs total pairs this enumeration may
+     *        yield; null = self::MAX_CANDIDATE_PAIRS (use
+     *        self::UNLIMITED_CANDIDATE_PAIRS to disable the guard).
      * @return \Generator<array{0:string,1:string}>
      */
-    public function generateCandidatePairs(BlockIndex $index, ?OutputInterface $output = null): \Generator
-    {
+    public function generateCandidatePairs(
+        BlockIndex $index,
+        ?OutputInterface $output = null,
+        ?int $maxCandidatePairs = null,
+    ): \Generator {
         $totalBlocks = $index->size();
+        $candidateBudget = $maxCandidatePairs ?? self::MAX_CANDIDATE_PAIRS;
+        if ($candidateBudget < 1) {
+            throw new \InvalidArgumentException(sprintf(
+                'Candidate budget must be >= 1; got %d. Use Clusterer::UNLIMITED_CANDIDATE_PAIRS to disable the guard.',
+                $candidateBudget,
+            ));
+        }
         if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
             $output->writeln(sprintf('ngram-index: building inverted index for %d blocks [%s]', $totalBlocks, MemoryDebug::getMemoryUsage()));
         }
@@ -130,6 +166,12 @@ final class Clusterer
                 if (isset($seen[$key])) continue;
                 $seen[$key] = true;
                 $yieldCount++;
+                if ($yieldCount > $candidateBudget) {
+                    // Fail loud, not OOM: the (budget+1)-th pair is exactly
+                    // where a storm run would otherwise keep growing without
+                    // bound. Nothing before this line was reordered or lost.
+                    throw CandidateBudgetException::exceeded($candidateBudget, $blockNum, $totalBlocks);
+                }
                 yield [strcmp($aId, $bid) < 0 ? $aId : $bid, strcmp($aId, $bid) < 0 ? $bid : $aId];
             }
             if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG && $blockNum % 5000 === 0) {
