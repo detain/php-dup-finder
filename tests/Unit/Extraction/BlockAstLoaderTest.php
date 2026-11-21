@@ -16,8 +16,14 @@ use Phpdup\Clustering\Cluster;
 use Phpdup\Cli\Config;
 use PhpParser\Node\Scalar\LNumber;
 use PhpParser\Node\Expr\BinaryOp\Greater;
+use PhpParser\PrettyPrinter\Standard;
 use Phpdup\Util\LineRange;
+use Phpdup\Pipeline\PipelineState;
+use Phpdup\Pipeline\Stages\ScanningStage;
+use Phpdup\Pipeline\Stages\PreprocessStage;
+use Phpdup\Pipeline\Stages\ClusterStage;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\Console\Output\NullOutput;
 
 /**
  * Relocation pins for the lazy-AST loader (fix round, review item [M]-1).
@@ -526,10 +532,12 @@ final class BlockAstLoaderTest extends TestCase
     public function testFreshGroupsAreProvenWithoutAnyHashing(): void
     {
         // The fast path itself: cold-shape members (hints == live spans)
-        // covering EVERY live node of the key — count+position identity
-        // proves zero drift, so the sweep consumes no content
-        // recomputation at all, and resolve() may skip the strict-side
-        // [M-1] gate on the certified key without ever guessing.
+        // covering EVERY live node of the key — CLASS-SCOPED span identity
+        // (the [C-1] hardening: the proof runs per hash-class against the
+        // live-block corpus, geometry alone no longer books) proves zero
+        // drift, so the sweep consumes no content recomputation at all,
+        // and resolve() may skip the strict-side [M-1] gate on the
+        // certified key without ever guessing.
         $file = $this->write('r5a.php', self::twoTwinIfs());
         $pair = $this->ifPairBlocks($file, null, false);  // loaded, live hints
         $this->mintHashes($file, $pair[0], $pair[1]);
@@ -542,13 +550,15 @@ final class BlockAstLoaderTest extends TestCase
         $m2->unloadAst();
 
         $loader = $this->loaderWithConfig($file);
-        $loader->rebaseClusters([new Cluster('F0123456789abcde', [$m1, $m2], 1.0, true)]);
+        // The members ARE the live corpus here (same objects, ranges and
+        // hashes survive unloadAst): class buckets match ⇒ book fresh.
+        $loader->rebaseClusters([new Cluster('F0123456789abcde', [$m1, $m2], 1.0, true)], [$m1, $m2]);
 
         $stats = $loader->rebaseStats();
         self::assertSame(1, $stats['keys']);
-        self::assertSame(1, $stats['freshKeys'], 'fully-clustered span-exact key must be booked fresh');
+        self::assertSame(1, $stats['freshKeys'], 'fully-clustered class-exact key must be booked fresh');
         self::assertSame(0, $stats['hashes'], 'the freshness proof must not hash a single candidate');
-        self::assertSame($s1, [$m1->range->start, $m1->range->end], 'span-exact ⇒ nothing to refresh');
+        self::assertSame($s1, [$m1->range->start, $m1->range->end], 'class-exact ⇒ nothing to refresh');
         self::assertSame($s2, [$m2->range->start, $m2->range->end]);
 
         $n1 = $loader->resolve($m1);
@@ -572,8 +582,21 @@ final class BlockAstLoaderTest extends TestCase
         $m1->unloadAst();
         $m2->unloadAst();
 
+        // The live corpus holds TWO more same-key blocks (the echo-if
+        // decoys): orphan hash-classes in the live map defeat the class
+        // count check even though the member hints match their own spans.
+        $decoys = array_values(array_filter(
+            $this->allIfBlocks($file),
+            static fn (Block $b): bool => !in_array([$b->range->start, $b->range->end], [[16, 19], [24, 27]], true)
+        ));
+        self::assertCount(2, $decoys, 'the two decoy guards must be carriers too');
+        $this->mintHashes($file, ...$decoys);
+
         $loader = $this->loaderWithConfig($file);
-        $loader->rebaseClusters([new Cluster('Fabcdef0123456789', [$m1, $m2], 1.0, true)]);
+        $loader->rebaseClusters(
+            [new Cluster('Fabcdef0123456789', [$m1, $m2], 1.0, true)],
+            array_merge([$m1, $m2], $decoys)
+        );
 
         $stats = $loader->rebaseStats();
         self::assertSame(0, $stats['freshKeys'], 'a key with decoy blocks can never be proven fresh');
@@ -597,8 +620,15 @@ final class BlockAstLoaderTest extends TestCase
 
         $this->insertAfterOpen($file, 2); // both shift +2 — hints now stale
 
+        // Comment-only drift preserves both hashes (normalization ignores
+        // comments): the live carriers are the SAME classes at shifted
+        // spans, so the per-class SPAN leg — not the class-set leg —
+        // defeats booking and the full law re-anchors.
+        $carriers = $this->ifPairBlocks($file, null, false);
+        $this->mintHashes($file, $carriers[0], $carriers[1]);
+
         $loader = $this->loaderWithConfig($file);
-        $loader->rebaseClusters([new Cluster('F987654321fedcba', [$m1, $m2], 1.0, true)]);
+        $loader->rebaseClusters([new Cluster('F987654321fedcba', [$m1, $m2], 1.0, true)], $carriers);
 
         self::assertSame(0, $loader->rebaseStats()['freshKeys'], 'drift must defeat the proof');
         self::assertGreaterThan(0, $loader->rebaseStats()['hashes']);
@@ -617,10 +647,14 @@ final class BlockAstLoaderTest extends TestCase
         [$m1, $m2] = $pair;
         $m1->unloadAst();
         $m2->unloadAst();
+
+        // Capture the untouched live corpus BEFORE the hint is corrupted.
+        $carriers = $this->ifPairBlocks($file, null, false);
+        $this->mintHashes($file, $carriers[0], $carriers[1]);
         $m1->range = new LineRange($m1->range->start - 1, $m1->range->end - 1);
 
         $loader = $this->loaderWithConfig($file);
-        $loader->rebaseClusters([new Cluster('F5555aaaa5555aaaa', [$m1, $m2], 1.0, true)]);
+        $loader->rebaseClusters([new Cluster('F5555aaaa5555aaaa', [$m1, $m2], 1.0, true)], $carriers);
 
         self::assertSame(0, $loader->rebaseStats()['freshKeys']);
         self::assertGreaterThan(0, $loader->rebaseStats()['hashes']);
@@ -667,6 +701,445 @@ final class BlockAstLoaderTest extends TestCase
         self::assertSame([16, 19], [$trustedPair[0]->range->start, $trustedPair[0]->range->end],
             'trusted strict hit is served as identity, exactly as minted');
         self::assertSame(0, $trusted->rebaseStats()['hashes'], 'zero content proofs consumed');
+    }
+
+    public function testCrossClassTranspositionEscalatesByClassBuckets(): void
+    {
+        // [C-1], the reviewer's attack: two DISTINCT-content guards trade
+        // whole bodies while both stay extracted — every corpus token
+        // survives (a legitimate cache HIT) and the span multiset is
+        // slot-preserved, so the r5 geometry-only proof booked this key
+        // and served each member the SIBLING's bytes silently. The
+        // class-scoped proof sees every hash-class stranded at the other
+        // slot, escalates to the full content law, and re-anchors both
+        // members onto their own bodies — loud-or-correct, never silent.
+        $file = $this->write('r6a.php', self::transposedGuardsOrig());
+        [$a1, $a2] = $this->allIfBlocks($file);
+        $this->mintHashes($file, $a1, $a2);
+        self::assertNotSame($a1->structuralHash, $a2->structuralHash,
+            'two distinct-content guards occupy two hash classes');
+        $slot1 = [$a1->range->start, $a1->range->end];
+        $slot2 = [$a2->range->start, $a2->range->end];
+        $a1->unloadAst();
+        $a2->unloadAst();
+
+        file_put_contents($file, self::transposedGuardsSwapped());
+        [$c1, $c2] = $this->allIfBlocks($file);
+        $this->mintHashes($file, $c1, $c2);
+        self::assertSame($slot1, [$c1->range->start, $c1->range->end], 'slots survive the swap');
+        self::assertSame($slot2, [$c2->range->start, $c2->range->end]);
+        self::assertSame($a2->structuralHash, $c1->structuralHash, 'the ONER body moved to slot 1');
+
+        $loader = $this->loaderWithConfig($file);
+        $loader->rebaseClusters([new Cluster('Fcafe000000000001', [$a1, $a2], 1.0, true)], [$c1, $c2]);
+
+        $stats = $loader->rebaseStats();
+        self::assertSame(0, $stats['freshKeys'], 'a transposition must never book fresh');
+        self::assertGreaterThan(0, $stats['hashes'], 'escalation pays the content law');
+        self::assertSame($slot2, [$a1->range->start, $a1->range->end], 'ALPHA member re-anchors onto ALPHA bytes');
+        self::assertSame($slot1, [$a2->range->start, $a2->range->end], 'ONER member re-anchors onto ONER bytes');
+
+        $printer = new Standard();
+        $n1 = $loader->resolve($a1);
+        $n2 = $loader->resolve($a2);
+        self::assertNotNull($n1);
+        self::assertNotNull($n2);
+        $p1 = $printer->prettyPrint([$n1]);
+        $p2 = $printer->prettyPrint([$n2]);
+        self::assertStringContainsString('ALPHA', $p1, 'the attached AST IS the member’s own body');
+        self::assertStringNotContainsString('ONER', $p1);
+        self::assertStringContainsString('ONER', $p2);
+        self::assertStringNotContainsString('ALPHA', $p2);
+    }
+
+    public function testCrossScopeTranspositionEscalatesByClassBuckets(): void
+    {
+        // Second geometry family (my [C-1] audit extension): a top-level
+        // guard trades bodies with a same-kind guard NESTED inside a
+        // function. if-blocks carry no scope-binding fields (name null,
+        // class null, same namespace), so all three share ONE positional
+        // group, and the 1-for-1 exchange preserves the span multiset —
+        // pure geometry books it while the swapped classes are stranded.
+        // Class buckets see the stranding and escalate; the full law
+        // re-anchors all three guards onto their own bytes.
+        $file = $this->write('r6b.php', self::crossScopeOrig());
+        $orig = $this->allIfBlocks($file);
+        self::assertCount(3, $orig);
+        [$i1, $i2, $i3] = $orig;
+        $this->mintHashes($file, $i1, $i2, $i3);
+        self::assertNotSame($i2->structuralHash, $i3->structuralHash);
+        $spans = array_map(static fn (Block $b): array => [$b->range->start, $b->range->end], $orig);
+        foreach ($orig as $b) {
+            $b->unloadAst();
+        }
+
+        file_put_contents($file, self::crossScopeSwapped());
+        $live = $this->allIfBlocks($file);
+        $this->mintHashes($file, ...$live);
+        self::assertSame($spans, array_map(static fn (Block $b): array => [$b->range->start, $b->range->end], $live),
+            'the positional span multiset survives untouched');
+
+        $loader = $this->loaderWithConfig($file);
+        $loader->rebaseClusters([new Cluster('Fcafe000000000002', [$i1, $i2, $i3], 1.0, true)], $live);
+
+        $stats = $loader->rebaseStats();
+        self::assertSame(0, $stats['freshKeys'], 'a cross-scope crossing must escalate');
+        self::assertGreaterThan(0, $stats['hashes']);
+        self::assertSame($spans[0], [$i1->range->start, $i1->range->end]);
+        self::assertSame($spans[2], [$i2->range->start, $i2->range->end], 'the M2 member lands where the M2 body went');
+        self::assertSame($spans[1], [$i3->range->start, $i3->range->end], 'the M3 member lands where the M3 body went');
+
+        $printer = new Standard();
+        foreach ([[$i1, 'keep1'], [$i2, 'move2'], [$i3, 'move3']] as [$member, $marker]) {
+            $node = $loader->resolve($member);
+            self::assertNotNull($node);
+            self::assertStringContainsString($marker, $printer->prettyPrint([$node]),
+                "attached bytes must belong to the member itself ({$marker})");
+        }
+    }
+
+    public function testSameClassPermutationBooksFreshAndIsSpanHarmless(): void
+    {
+        // Semantics ruling (condition 4): aggressive normalization FOLDS
+        // literals, so '$out += 1' and '$out += 2' guards are ONE hash
+        // class. Exchanging their bodies keeps every class bucket
+        // span-identical — booking fresh is CORRECT here, not a hole:
+        // ApplyExtractor rewrites BY SPAN (rewriteMemberCallSite
+        // :320-352 re-parses from disk; findNodeInStmts :357-380 matches
+        // kind+range+name only), hole VALUES are read from the node AT
+        // each slot, and generalizedAst/holes/holePaths come from the
+        // resolve-ATTACHED ASTs — any bijection inside one hash class
+        // yields identical signatures, hole tables, and patches; the
+        // per-member rows stay set-equal. Only CROSS-class motion is
+        // observable downstream, and that is exactly what buckets police.
+        $file = $this->write('r6c.php', self::sameClassPermuteOrig());
+        [$p1, $p2] = $this->allIfBlocks($file);
+        $this->mintHashes($file, $p1, $p2);
+        self::assertSame($p1->structuralHash, $p2->structuralHash, 'folded literals share one class');
+        $s1 = [$p1->range->start, $p1->range->end];
+        $s2 = [$p2->range->start, $p2->range->end];
+        $p1->unloadAst();
+        $p2->unloadAst();
+
+        file_put_contents($file, self::sameClassPermuteSwapped()); // bytes differ, class identical
+        [$c1, $c2] = $this->allIfBlocks($file);
+        $this->mintHashes($file, $c1, $c2);
+
+        $loader = $this->loaderWithConfig($file);
+        $loader->rebaseClusters([new Cluster('Fcafe000000000003', [$p1, $p2], 1.0, true)], [$c1, $c2]);
+
+        $stats = $loader->rebaseStats();
+        self::assertSame(1, $stats['freshKeys'], 'within-class permutation is immaterial — booking stays lawful');
+        self::assertSame(0, $stats['hashes']);
+        self::assertSame($s1, [$p1->range->start, $p1->range->end]);
+        self::assertSame($s2, [$p2->range->start, $p2->range->end]);
+    }
+
+    public function testWarmTranspositionAtCliLevelStaysOnTruth(): void
+    {
+        // End-to-end [C-1] replay through the real stages: the cold run
+        // SAVES the cluster cache; a whole-statement transposition of
+        // file1 preserves every corpus token, so the warm run genuinely
+        // REPLAYS (asserted via clustersReplayed); the sweep — given the
+        // live block corpus — must escalate and re-anchor both file1
+        // members onto their own bodies, ids unmoved.
+        $dir = $this->dir . '/r6cli';
+        @mkdir($dir, 0o777, true);
+        file_put_contents($dir . '/file1.php', self::corpswpFile1());
+        file_put_contents($dir . '/file2.php', self::corpswpFile2());
+
+        $config = new Config(paths: [$dir], exclude: [], minBlockSize: 1, cacheDir: $dir . '/cc');
+        $cold = new PipelineState($config);
+        (new ScanningStage())->run($cold, new NullOutput());
+        (new PreprocessStage(false))->run($cold, new NullOutput());
+        (new ClusterStage(false))->run($cold, new NullOutput());
+        self::assertFalse($cold->clustersReplayed, 'a cold run must not claim a replay');
+        self::assertCount(2, $cold->clusters);
+
+        file_put_contents($dir . '/file1.php', self::corpswpFile1Swapped());
+        $warm = new PipelineState($config);
+        (new ScanningStage())->run($warm, new NullOutput());
+        (new PreprocessStage(false))->run($warm, new NullOutput());
+        (new ClusterStage(false))->run($warm, new NullOutput());
+        self::assertTrue($warm->clustersReplayed, 'a token-preserving transposition must replay');
+
+        $loader = new BlockAstLoader(new AstCache($dir . '/ast'), new AstParser(), $config);
+        $loader->rebaseClusters($warm->clusters, $warm->blocks);
+        self::assertSame(1, $loader->rebaseStats()['freshKeys'],
+            'only the untouched file2 key books fresh; the transposing file1 key escalates');
+
+        // CLUSTER-KEYED truth (never slot-relative — a slot-relative check
+        // passes vacuously on the pre-fix bug, whose members are
+        // self-consistently mislabelled). file2 never moved, so the cold
+        // run names which id owns ALPHA bytes; after the swap the live
+        // ALPHA body sits on the line containing 'ALPHA1', and the ALPHA
+        // cluster's file1 member MUST cover exactly that line.
+        $alphaLine = null;
+        $onerLine = null;
+        foreach (file($dir . '/file1.php') as $i => $line) {
+            if ($alphaLine === null && str_contains($line, 'ALPHA1')) {
+                $alphaLine = $i + 1;
+            }
+            if ($onerLine === null && str_contains($line, 'ONER1')) {
+                $onerLine = $i + 1;
+            }
+        }
+        self::assertNotNull($alphaLine);
+        self::assertNotNull($onerLine);
+        self::assertNotSame($alphaLine, $onerLine, 'the swap moved the bodies past each other');
+
+        $f2AlphaLine = null;
+        foreach (file($dir . '/file2.php') as $i => $line) {
+            if ($f2AlphaLine === null && str_contains($line, 'ALPHA1')) {
+                $f2AlphaLine = $i + 1;
+            }
+        }
+        self::assertNotNull($f2AlphaLine, 'file2 (never swapped) keeps its ALPHA body');
+        $alphaId = null;
+        foreach ($cold->clusters as $cluster) {
+            foreach ($cluster->members as $member) {
+                if (
+                    str_ends_with($member->file, '/file2.php')
+                    && $member->range->start <= $f2AlphaLine
+                    && $f2AlphaLine <= $member->range->end
+                ) {
+                    $alphaId = $cluster->id;
+                }
+            }
+        }
+        self::assertNotNull($alphaId, 'cold run identifies the ALPHA cluster');
+
+        $printer = new Standard();
+        $seen = 0;
+        foreach ($warm->clusters as $cluster) {
+            foreach ($cluster->members as $member) {
+                if (!str_ends_with($member->file, '/file1.php')) {
+                    continue;
+                }
+                ++$seen;
+                $own = $cluster->id === $alphaId ? $alphaLine : $onerLine;
+                self::assertTrue(
+                    $member->range->start <= $own && $own <= $member->range->end,
+                    'cluster ' . $cluster->id . ($cluster->id === $alphaId ? ' (ALPHA)' : ' (ONER)')
+                    . ' must carry the file1 member covering live line ' . $own
+                    . ', got [' . $member->range->start . ',' . $member->range->end . ']'
+                );
+                $node = $loader->resolve($member);
+                self::assertNotNull($node);
+                $body = $printer->prettyPrint([$node]);
+                self::assertTrue(
+                    str_contains($body, $cluster->id === $alphaId ? 'ALPHA' : 'ONER'),
+                    'attached AST must be the members own body'
+                );
+            }
+        }
+        self::assertSame(2, $seen, 'both file1 members were relocated');
+        $coldIds = array_map(static fn (Cluster $c): string => $c->id, $cold->clusters);
+        $warmIds = array_map(static fn (Cluster $c): string => $c->id, $warm->clusters);
+        sort($coldIds);
+        sort($warmIds);
+        self::assertSame($coldIds, $warmIds, 'content-derived ids are unmoved by the fix (and by the attack)');
+    }
+
+    /**
+     * Every kind-'if' block in the file's CURRENT bytes, sorted by start,
+     * built exactly like decoyMembers() so they share one positional
+     * group key with the hand-built members.
+     *
+     * @return list<Block>
+     */
+    private function allIfBlocks(string $file, bool $unload = false): array
+    {
+        $stmts = (new AstParser())->parseFile($file) ?? [];
+        $nodes = (new NodeFinder())->findInstanceOf($stmts, Node\Stmt\If_::class);
+        usort($nodes, static fn (Node $a, Node $b): int => $a->getStartLine() <=> $b->getStartLine());
+        $ns = null;
+        foreach ($stmts as $stmt) {
+            if ($stmt instanceof Node\Stmt\Namespace_ && $stmt->name !== null) {
+                $ns = $stmt->name->toString();
+                break;
+            }
+        }
+        $blocks = [];
+        foreach ($nodes as $node) {
+            $block = new Block($file, new LineRange($node->getStartLine(), $node->getEndLine()), 'if', $ns, null, null, $node);
+            if ($unload) {
+                $block->unloadAst();
+            }
+            $blocks[] = $block;
+        }
+        return $blocks;
+    }
+
+    private static function transposedGuardsOrig(): string
+    {
+        return <<<'PHP'
+            <?php
+
+            namespace TH2;
+
+            $v = 7;
+            $out = 0;
+            if ($v > 0) {
+                $out += strlen('ALPHA1');
+                $out += strlen('ALPHA2');
+            }
+            if ($v < 0) {
+                $out += strlen('ONER1');
+                $out += strlen('ONER2');
+            }
+            echo $out;
+            PHP;
+    }
+
+    private static function transposedGuardsSwapped(): string
+    {
+        return <<<'PHP'
+            <?php
+
+            namespace TH2;
+
+            $v = 7;
+            $out = 0;
+            if ($v < 0) {
+                $out += strlen('ONER1');
+                $out += strlen('ONER2');
+            }
+            if ($v > 0) {
+                $out += strlen('ALPHA1');
+                $out += strlen('ALPHA2');
+            }
+            echo $out;
+            PHP;
+    }
+
+    private static function crossScopeOrig(): string
+    {
+        return <<<'PHP'
+            <?php
+
+            namespace TH3;
+
+            $x = 3;
+            $out = 0;
+            if ($x > 0) { echo 'keep1'; }
+
+            if ($x > 1) { $out .= 'move2'; }
+
+            function wrap(float $f): float
+            {
+                $y = $f;
+                if ($x > 2) { $out[] = 'move3'; }
+                return $y;
+            }
+            PHP;
+    }
+
+    private static function crossScopeSwapped(): string
+    {
+        return <<<'PHP'
+            <?php
+
+            namespace TH3;
+
+            $x = 3;
+            $out = 0;
+            if ($x > 0) { echo 'keep1'; }
+
+            if ($x > 2) { $out[] = 'move3'; }
+
+            function wrap(float $f): float
+            {
+                $y = $f;
+                if ($x > 1) { $out .= 'move2'; }
+                return $y;
+            }
+            PHP;
+    }
+
+    private static function sameClassPermuteOrig(): string
+    {
+        return <<<'PHP'
+            <?php
+
+            namespace TH4;
+
+            $x = 1;
+            $out = 0;
+            if ($x > 0) { $out += 1; }
+
+            if ($x > 1) { $out += 2; }
+            echo $out;
+            PHP;
+    }
+
+    private static function sameClassPermuteSwapped(): string
+    {
+        return <<<'PHP'
+            <?php
+
+            namespace TH4;
+
+            $x = 1;
+            $out = 0;
+            if ($x > 1) { $out += 1; }
+
+            if ($x > 0) { $out += 2; }
+            echo $out;
+            PHP;
+    }
+
+    private static function corpswpFile1(): string
+    {
+        return <<<'PHP'
+            <?php
+            $v = (int)($argv[1] ?? 0);
+            $out = 0;
+            if ($v > 0) {
+                $out += strlen('ALPHA1');
+                $out += strlen('ALPHA2');
+                $out += strlen('ALPHA3');
+                $out += substr('ALPHA45', 1, 2) === 'LP' ? 1 : 0;
+                $out += implode(',', ['ALPa', 'ALPb']) === 'ALPa,ALPb' ? 2 : 0;
+            }
+            if ($v < 0) {
+                $out += strlen('ONER1');
+                $out += strlen('ONER2');
+                $out += strlen('ONER3');
+                $out += substr('ONER45', 0, 3) === 'ONE' ? 1 : 0;
+                $out += array_sum([5, 6, 7]) === 18 ? 2 : 0;
+            }
+            echo $out;
+            PHP;
+    }
+
+    private static function corpswpFile2(): string
+    {
+        return self::corpswpFile1();
+    }
+
+    private static function corpswpFile1Swapped(): string
+    {
+        return <<<'PHP'
+            <?php
+            $v = (int)($argv[1] ?? 0);
+            $out = 0;
+            if ($v < 0) {
+                $out += strlen('ONER1');
+                $out += strlen('ONER2');
+                $out += strlen('ONER3');
+                $out += substr('ONER45', 0, 3) === 'ONE' ? 1 : 0;
+                $out += array_sum([5, 6, 7]) === 18 ? 2 : 0;
+            }
+            if ($v > 0) {
+                $out += strlen('ALPHA1');
+                $out += strlen('ALPHA2');
+                $out += strlen('ALPHA3');
+                $out += substr('ALPHA45', 1, 2) === 'LP' ? 1 : 0;
+                $out += implode(',', ['ALPa', 'ALPb']) === 'ALPa,ALPb' ? 2 : 0;
+            }
+            echo $out;
+            PHP;
     }
 
     // ---------------------------------------------------------------- glue

@@ -64,7 +64,7 @@ use Phpdup\Util\LineRange;
  * dedup is not its job — the fork parent rebases merged members through
  * rebaseClusters(), which re-runs this same content law over the real
  * objects before anything is reported or applied (excepting whole
- * positional keys it PROVES span-exact — the [m-2] freshness law, see
+ * positional keys it PROVES class-exact — the [m-2] freshness law, see
  * that method's docblock).
  */
 final class BlockAstLoader
@@ -105,7 +105,7 @@ final class BlockAstLoader
     private bool $freshScan = false;
 
     /**
-     * Positional group keys the rebasing sweep PROVED span-exact against
+     * Positional group keys the rebasing sweep PROVED class-exact against
      * live bytes (freshness law, see rebaseClusters()). Loaders are
      * per-process and a warm replay is a fresh process over fresh bytes,
      * so booking stays valid for exactly the run whose bytes it proved;
@@ -193,7 +193,7 @@ final class BlockAstLoader
         // block's own if its CONTENT still matches — a different-content
         // sibling that drifted onto the hint (or any same-span stranger)
         // is an imposter, and serving it silently is the Vector-2 door
-        // seen from the strict side. Keys the sweep proved span-exact
+        // seen from the strict side. Keys the sweep proved class-exact
         // against live bytes ([m-2] freshness law) are exempt: their
         // strict hit is identity, not a guess.
         if ($found !== null
@@ -578,7 +578,7 @@ final class BlockAstLoader
     /**
      * Public evidence counters for the [m-2] fast path (per-process,
      * observation only — NEVER a correctness input): keys = positional
-     * groups swept, freshKeys = groups proven span-exact without a single
+     * groups swept, freshKeys = groups proven class-exact without a single
      * content recomputation, hashes = candidate re-normalisations
      * performed (escalated sweeps plus per-block resolve() gates).
      *
@@ -604,30 +604,44 @@ final class BlockAstLoader
      * truth applied batch-wise.
      *
      * Two passes per positional file+group key ([m-2] no-drift fast path):
-     * FIRST the freshness law — if the key's stale members are exactly as
-     * many as its live candidate nodes and every member's hint equals a
-     * distinct live span (sorted elementwise), then nothing drifted: a
-     * cluster-cache HIT certifies every structuralHash unchanged, and the
-     * only edits that leave all hashes intact are comment/whitespace ones,
-     * which shift blocks STRICTLY ORDER-PRESERVING (bodies cannot swap or
-     * cross without changing content, and content change is an honest
-     * MISS). Count-plus-position identity therefore pins each member onto
-     * ITS OWN live body by pure pigeonhole — no re-normalisation is needed
-     * to trust it, and the key is booked in freshKeys so resolve() may skip
-     * the strict-side content gate too. SECOND, any key failing the proof
-     * (decoy blocks below the clustering threshold, drifted spans, lost
-     * bodies) escalates to the full content law, unchanged from [M-1]:
-     * for every file+group+structuralHash class it sorts the stale members
-     * by hint, gathers the content-equal live candidate nodes by position,
-     * and takes the unique cost-minimal ORDER-PRESERVING assignment
-     * (sequence DP); classes whose member count exceeds the live twin
-     * count lost a body and hit the loud spine instead of a silent guess.
+     * FIRST the CLASS-SCOPED freshness law ([C-1] revision) — a cluster-cache
+     * HIT certifies the corpus token multiset (file|structuralHash, count-
+     * sensitive) unchanged, which means the run's live extracted blocks are
+     * a PERMUTATION of the cached ones among their own hash classes — but
+     * NOT that they never crossed slots: whole-statement transpositions of
+     * same-scope blocks of DIFFERENT classes preserve every token while
+     * moving bodies between hinted spans. Geometry alone (count + position
+     * identity) is therefore blind to exactly the crossing that matters.
+     * Booking now asks the live corpus itself: for EVERY (group, hash-class)
+     * the member classes and the live block classes must agree as SETS, and
+     * per class the sorted member hint spans must equal the sorted live
+     * spans of that class. A pass pins each member onto a live block of its
+     * OWN class by multiset agreement — still zero re-normalisation — and
+     * books the key in freshKeys so resolve() may skip the strict-side
+     * content gate too. Within a class, WHICH twin sits on WHICH span is
+     * provably immaterial: --apply re-parses each file and rewrites by SPAN
+     * (ApplyExtractor::rewriteMemberCallSite + strict findNodeInStmts), and
+     * unification reads the resolve-ATTACHED ASTs, so any bijection inside
+     * a hash class yields identical signatures, hole tables and patches.
+     * SECOND, any key failing the class proof (drifted spans, transposed
+     * bodies, orphan or missing classes, an empty live corpus) escalates to
+     * the full content law, unchanged from [M-1]: for every
+     * file+group+structuralHash class it parses the file, sorts the stale
+     * members by hint, gathers the content-equal live candidate nodes by
+     * position, and takes the unique cost-minimal ORDER-PRESERVING
+     * assignment (sequence DP); classes whose member count exceeds the live
+     * twin count lost a body and hit the loud spine instead of a silent
+     * guess. Parsing and hashing now happen ONLY inside escalation arms.
      * Members the serial path already resolved carry live ASTs and are
      * skipped; ranges-only mutation keeps the lazy-memory profile intact.
      *
      * @param list<Cluster> $clusters
+     * @param list<Block>   $liveBlocks this run's extracted blocks (with
+     *                                  fresh ranges + structuralHashes);
+     *                                  empty = no booking evidence, every
+     *                                  key escalates to the full law
      */
-    public function rebaseClusters(array $clusters): void
+    public function rebaseClusters(array $clusters, array $liveBlocks = []): void
     {
         if ($this->freshScan) {
             return; // nothing replayed, nothing stale, nothing to rebase
@@ -650,10 +664,34 @@ final class BlockAstLoader
             return;
         }
 
-        /** @var array<string, list<Node>> $pools candidate pools per file+group */
+        // [C-1] the live corpus, bucketed by (positional group, hash class)
+        // into span strings — the run's own extraction already carries the
+        // correct ranges and hashes, so booking costs one array pass.
+        /** @var array<string, array<string, list<string>>> $liveByGroup */
+        $liveByGroup = [];
+        foreach ($liveBlocks as $block) {
+            if ($block->structuralHash === '') {
+                continue;
+            }
+            $liveByGroup[self::groupKey($block)][$block->structuralHash][]
+                = $block->range->start . '-' . $block->range->end;
+        }
+
+        /** @var array<string, list<Node>> $pools candidate pools, escalation-only */
         $pools = [];
         foreach ($byKey as $poolKey => $classes) {
             $this->sweptKeys++;
+
+            // [m-2] fast path, [C-1] class-scoped: book only when member
+            // classes and live classes agree as SETS and per class the hint
+            // and live span multisets are identical. Nothing is parsed or
+            // re-normalised to get here.
+            if (self::groupIsFresh($classes, $liveByGroup[$poolKey] ?? [])) {
+                $this->freshKeys[$poolKey] = true;
+                $this->freshKeyCount++;
+                continue;
+            }
+
             /** @var list<Block> $keyMembers every stale member sharing this key */
             $keyMembers = array_merge(...array_values($classes));
             $sample = $keyMembers[0];
@@ -663,16 +701,6 @@ final class BlockAstLoader
                 $pools[$poolKey] = $this->liveCandidateNodes($stmts, $sample);
             }
             $live = $pools[$poolKey];
-
-            // [m-2] fast path: prove zero drift from geometry alone (the
-            // freshness law in the docblock). A pass here means EVERY live
-            // node of this key is some member's own body at its own span —
-            // no hashing needed to trust that, and nothing to rebase.
-            if (self::keyIsFresh($keyMembers, $live)) {
-                $this->freshKeys[$poolKey] = true;
-                $this->freshKeyCount++;
-                continue;
-            }
 
             foreach ($classes as $members) {
                 usort($members, static fn (Block $a, Block $b): int => $a->range->start <=> $b->range->start);
@@ -712,37 +740,49 @@ final class BlockAstLoader
     }
 
     /**
-     * Freshness proof for one positional key: stale member hints and live
-     * candidate spans must agree COUNT-FOR-COUNT and SPAN-FOR-SPAN.
-     * Sound because the only way a warm replay reaches here with live
-     * bytes is a cluster-cache hit, which certifies every structuralHash
-     * (and hence the whole block multiset of this key) unchanged, and
-     * hash-unchanged file edits shift blocks strictly order-preservingly —
-     * so the k-th hint by start is the k-th live body. A count mismatch
-     * (sub-threshold decoy nodes, or a starved member) or ANY positional
-     * difference fails the pigeonhole and escalates to full content
-     * binding; this proof only ever CERTIFES zero staleness, it never
-     * guesses an anchor.
+     * Class-scoped freshness proof for one positional key ([C-1]).
+     * A cluster-cache hit preserves the (file|structuralHash) COUNT
+     * MULTISET, so this run's live extracted blocks are the cached blocks
+     * permuted among their own hash classes; comment/whitespace drift then
+     * shifts each class strictly order-preservingly. Booking requires more
+     * than geometry: the member classes and the live classes of the group
+     * must agree as SETS (an orphan live class or a vanished member class
+     * means bodies moved across classes — escalate), and per class the
+     * sorted hint spans must equal the sorted live spans (any crossing,
+     * near-miss or drift fails here). A booked key may still permute
+     * WITHIN a class — provably harmless, see rebaseClusters()'s docblock
+     * (span-local apply + attachment-local unification). This proof only
+     * ever CERTIFES zero harmful staleness; it never guesses an anchor.
+     * An empty live map books nothing (escalate everything).
      *
-     * @param list<Block> $members
-     * @param list<Node>  $live
+     * @param array<string, list<Block>> $classes   class key → members
+     * @param array<string, list<string>> $liveByHash live spans per class
      */
-    private static function keyIsFresh(array $members, array $live): bool
+    private static function groupIsFresh(array $classes, array $liveByHash): bool
     {
-        if (count($members) !== count($live)) {
-            return false;
+        if ($liveByHash === []) {
+            return false; // no live-corpus evidence => no proof
         }
-        $hints = [];
-        foreach ($members as $member) {
-            $hints[] = [$member->range->start, $member->range->end];
+        if (count($liveByHash) !== count($classes)) {
+            return false; // classes crossed (orphan or missing)
         }
-        usort($hints, static fn (array $a, array $b): int => [$a[0], $a[1]] <=> [$b[0], $b[1]]);
-        $spans = [];
-        foreach ($live as $node) {
-            $spans[] = [$node->getStartLine(), $node->getEndLine()];
+        foreach ($classes as $classKey => $members) {
+            $hash = substr($classKey, strrpos($classKey, "\x1e") + 1);
+            if (!isset($liveByHash[$hash])) {
+                return false;
+            }
+            $hints = [];
+            foreach ($members as $member) {
+                $hints[] = $member->range->start . '-' . $member->range->end;
+            }
+            $live = $liveByHash[$hash];
+            sort($hints);
+            sort($live);
+            if ($hints !== $live) {
+                return false;
+            }
         }
-        usort($spans, static fn (array $a, array $b): int => [$a[0], $a[1]] <=> [$b[0], $b[1]]);
-        return $hints === $spans;
+        return true;
     }
 
     /**

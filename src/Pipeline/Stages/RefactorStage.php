@@ -103,7 +103,7 @@ final class RefactorStage implements CooperativeStageInterface
         if (!$state->clustersReplayed) {
             $loader?->trustFreshScan();
         }
-        $loader?->rebaseClusters($state->clusters);
+        $loader?->rebaseClusters($state->clusters, $state->blocks);
 
         if ($useParallel) {
             yield from $this->iterParallel($state, $loader, $workers, $total);
