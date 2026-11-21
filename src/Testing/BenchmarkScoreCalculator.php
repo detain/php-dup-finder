@@ -13,8 +13,14 @@ namespace Phpdup\Testing;
  * member sets overlap by at least {@see self::OVERLAP_FLOOR} on
  * Jaccard, after collapsing line-range fuzz of {@see self::LINE_TOLERANCE}.
  *
+ * Fuzz rule: two members match when the file is equal and BOTH endpoints
+ * lie within ±LINE_TOLERANCE of their counterpart (the advertised ±2-line
+ * rule). Matching is one-to-one — a maximum bipartite pairing over the
+ * unique members — so the intersection can neither silently vanish
+ * (bucket-straddle loss) nor inflate (one member counted for several).
+ *
  * Used both by the bench harness (`bench/score.php`) and by
- * `tests/Unit/Bench/ScoreCalculatorTest.php`.
+ * `tests/Unit/Bench/BenchmarkScoreCalculatorTest.php`.
  */
 final class BenchmarkScoreCalculator
 {
@@ -30,17 +36,10 @@ final class BenchmarkScoreCalculator
         if ($a === [] && $b === []) {
             return 1.0;
         }
-        $aKeys = array_map(fn(array $m): string => $this->key($m), $a);
-        $bKeys = array_map(fn(array $m): string => $this->key($m), $b);
-        $aSet = array_fill_keys($aKeys, true);
-        $bSet = array_fill_keys($bKeys, true);
-        $intersection = 0;
-        foreach (array_keys($aSet) as $k) {
-            if (isset($bSet[$k])) {
-                $intersection++;
-            }
-        }
-        $union = count($aSet) + count($bSet) - $intersection;
+        $aMembers = self::uniqueMembers($a);
+        $bMembers = self::uniqueMembers($b);
+        $intersection = self::maxToleranceMatching($aMembers, $bMembers);
+        $union = count($aMembers) + count($bMembers) - $intersection;
         return $union === 0 ? 0.0 : $intersection / $union;
     }
 
@@ -81,15 +80,98 @@ final class BenchmarkScoreCalculator
         ];
     }
 
-    /** @param array{file:string, start:int, end:int} $m */
-    private function key(array $m): string
+    /**
+     * Exact member key — a member is one (file, start, end) triple; the
+     * ±tolerance rule lives in {@see self::withinTolerance()}, never in
+     * the key. Quantizing the key re-introduces straddle loss: floor()
+     * buckets drop pairs exactly LINE_TOLERANCE apart (99 vs 101 at tol 2)
+     * while bucket-set intersection would inflate (98 vs 102 share a
+     * bucket yet are 4 apart).
+     *
+     * @param array{file:string, start:int, end:int} $m
+     */
+    private static function exactKey(array $m): string
     {
-        // Quantize line numbers to a tolerance-sized bucket so two
-        // tools that disagree by ~1-2 lines on a block boundary still
-        // collapse onto the same key.
+        return $m['file'] . ':' . $m['start'] . '-' . $m['end'];
+    }
+
+    /**
+     * @param list<array{file:string, start:int, end:int}> $members
+     * @return list<array{file:string, start:int, end:int}>
+     */
+    private static function uniqueMembers(array $members): array
+    {
+        $seen = [];
+        $unique = [];
+        foreach ($members as $m) {
+            $k = self::exactKey($m);
+            if (isset($seen[$k])) {
+                continue;
+            }
+            $seen[$k] = true;
+            $unique[] = $m;
+        }
+        return $unique;
+    }
+
+    /**
+     * The advertised ±LINE_TOLERANCE rule: same file, both endpoints
+     * within tolerance of their counterpart.
+     *
+     * @param array{file:string, start:int, end:int} $x
+     * @param array{file:string, start:int, end:int} $y
+     */
+    private static function withinTolerance(array $x, array $y): bool
+    {
         $tol = self::LINE_TOLERANCE;
-        $startBucket = (int)floor($m['start'] / max(1, $tol));
-        $endBucket   = (int)floor($m['end']   / max(1, $tol));
-        return $m['file'] . ':' . $startBucket . '-' . $endBucket;
+        return $x['file'] === $y['file']
+            && abs($x['start'] - $y['start']) <= $tol
+            && abs($x['end'] - $y['end']) <= $tol;
+    }
+
+    /**
+     * Maximum bipartite matching (Kuhn's augmenting-path algorithm) under
+     * the tolerance predicate. Clusters carry a handful of members, so
+     * O(L·R) scans per augmentation is well inside budget; the pairing is
+     * deterministic (fixed left/right order, first-found augmenting path).
+     *
+     * @param list<array{file:string, start:int, end:int}> $left
+     * @param list<array{file:string, start:int, end:int}> $right
+     */
+    private static function maxToleranceMatching(array $left, array $right): int
+    {
+        /** @var array<int, int|null> $owner right index -> matched left index */
+        $owner = array_fill(0, count($right), null);
+        $matches = 0;
+        foreach (array_keys($left) as $li) {
+            /** @var array<int, bool> $seen right indices probed by this search */
+            $seen = [];
+            if (self::augment((int) $li, $left, $right, $owner, $seen)) {
+                $matches++;
+            }
+        }
+        return $matches;
+    }
+
+    /**
+     * @param list<array{file:string, start:int, end:int}> $left
+     * @param list<array{file:string, start:int, end:int}> $right
+     * @param array<int, int|null> $owner
+     * @param array<int, bool> $seen
+     */
+    private static function augment(int $li, array $left, array $right, array &$owner, array &$seen): bool
+    {
+        foreach (array_keys($right) as $rj) {
+            if (isset($seen[$rj]) || !self::withinTolerance($left[$li], $right[$rj])) {
+                continue;
+            }
+            $seen[$rj] = true;
+            $current = $owner[$rj];
+            if ($current === null || self::augment($current, $left, $right, $owner, $seen)) {
+                $owner[$rj] = $li;
+                return true;
+            }
+        }
+        return false;
     }
 }

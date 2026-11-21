@@ -124,4 +124,79 @@ final class BenchmarkScoreCalculatorTest extends TestCase
         $calc = new BenchmarkScoreCalculator();
         self::assertSame(1.0, $calc->jaccardOnMembers([], []));
     }
+
+    public function testStraddlingPairExactlyAtToleranceMatches(): void
+    {
+        // The regression: lines 99 vs 101 at LINE_TOLERANCE=2 are exactly
+        // tolerance apart, but the old floor(line/tol) bucketing put them
+        // in buckets 49 and 50 and the match silently vanished.
+        $calc = new BenchmarkScoreCalculator();
+        self::assertSame(1.0, $calc->jaccardOnMembers(
+            [['file' => 'a.php', 'start' => 99, 'end' => 99]],
+            [['file' => 'a.php', 'start' => 101, 'end' => 101]]
+        ));
+    }
+
+    public function testPairBeyondToleranceDoesNotMatch(): void
+    {
+        // No bucket inflation: 98 vs 102 is 4 apart (> tol 2) yet shares a
+        // candidate bucket under a bucket-set intersection scheme — it
+        // must NOT match. Same for 99 vs 102 (3 apart).
+        $calc = new BenchmarkScoreCalculator();
+        self::assertSame(0.0, $calc->jaccardOnMembers(
+            [['file' => 'a.php', 'start' => 98, 'end' => 98]],
+            [['file' => 'a.php', 'start' => 102, 'end' => 102]]
+        ));
+        self::assertSame(0.0, $calc->jaccardOnMembers(
+            [['file' => 'a.php', 'start' => 99, 'end' => 99]],
+            [['file' => 'a.php', 'start' => 102, 'end' => 102]]
+        ));
+    }
+
+    public function testToleranceMustHoldOnBothEndpoints(): void
+    {
+        // Start lines agree within tolerance but end lines drift by 3 —
+        // the member pair must not match.
+        $calc = new BenchmarkScoreCalculator();
+        self::assertSame(0.0, $calc->jaccardOnMembers(
+            [['file' => 'a.php', 'start' => 10, 'end' => 20]],
+            [['file' => 'a.php', 'start' => 11, 'end' => 23]]
+        ));
+    }
+
+    public function testMatchingIsOneToOneSoIntersectionCannotInflate(): void
+    {
+        // Two unique reported members both sit within tolerance of one
+        // ground-truth member: the intersection counts the pairing once,
+        // never twice. 2 left + 1 right - 1 matched = union of 2.
+        $calc = new BenchmarkScoreCalculator();
+        self::assertSame(0.5, $calc->jaccardOnMembers(
+            [
+                ['file' => 'a.php', 'start' => 10, 'end' => 10],
+                ['file' => 'a.php', 'start' => 11, 'end' => 11],
+            ],
+            [['file' => 'a.php', 'start' => 10, 'end' => 10]]
+        ));
+    }
+
+    public function testStraddlingClusterStillScoresTruePositive(): void
+    {
+        // Whole-cluster end-to-end proof of the fix: a two-member reported
+        // cluster off by exactly 2 lines matches ground truth at Jaccard
+        // 1.0. Under the old bucketing zero members shared a key (both
+        // straddled a boundary), Jaccard fell to 0.0 and the true positive
+        // was lost — the under-reporting described in the finding.
+        $reported = [[
+            ['file' => 'a.php', 'start' => 99, 'end' => 99],
+            ['file' => 'b.php', 'start' => 99, 'end' => 99],
+        ]];
+        $gt = [[
+            ['file' => 'a.php', 'start' => 101, 'end' => 101],
+            ['file' => 'b.php', 'start' => 101, 'end' => 101],
+        ]];
+        $score = (new BenchmarkScoreCalculator())->score($reported, $gt);
+        self::assertSame(1, $score['tp']);
+        self::assertSame(1.0, $score['recall']);
+        self::assertSame(1.0, $score['precision']);
+    }
 }
