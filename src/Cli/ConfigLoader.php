@@ -40,7 +40,7 @@ final class ConfigLoader
             'baseline', 'baseline_out', 'diff_base', 'apply',
         ];
         $resolver = new OverrideResolver($flatKeys);
-        $flat = $resolver->resolve($overrides, $data, [
+        $flat = $this->coerceNumerics($resolver->resolve($overrides, $data, [
             'min_block_size' => $base->minBlockSize,
             'max_block_size' => $base->maxBlockSize,
             'normalization_mode' => $base->normalizationMode,
@@ -67,7 +67,7 @@ final class ConfigLoader
             'baseline_out' => $base->baselineOutFile,
             'diff_base' => $base->diffBase,
             'apply' => $base->apply,
-        ]);
+        ]));
 
         $report = is_array($data['report'] ?? null) ? $data['report'] : [];
         $htmlOverride = $overrides['html'] ?? ($report['html'] ?? null);
@@ -135,6 +135,121 @@ final class ConfigLoader
             diffBase:                      $flat['diff_base'],
             apply:                         $flat['apply'],
         );
+    }
+
+    /**
+     * Numeric flat keys and their valid domain, mirroring
+     * {@see validate()} / docs/config-schema.json: key => [kind, min, max|null].
+     *
+     * Symfony Console hands every VALUE_REQUIRED option to us as a raw
+     * string, while {@see Config} is strict-typed with int/float params;
+     * without coercion `--min-block-size 10` dies with a TypeError. This
+     * table is the single boundary that parses CLI override strings back
+     * into their declared types before Config is constructed.
+     */
+    private const NUMERIC_KEYS = [
+        'min_block_size'       => ['int',   1,    null],
+        'max_block_size'       => ['int',   1,    null],
+        'ngram_size'           => ['int',   2,    10],
+        'min_cluster_impact'   => ['int',   0,    null],
+        'workers'              => ['int',   0,    null],
+        'fail_on_impact'       => ['int',   0,    null],
+        'max_clusters'         => ['int',   0,    null],
+        'similarity_threshold' => ['float', 0.0,  1.0],
+        'tree_threshold'       => ['float', 0.0,  1.0],
+        'max_df'               => ['float', 0.0,  1.0],
+        'ir_threshold'         => ['float', 0.0,  1.0],
+        'ml_pair_threshold'    => ['float', 0.0,  1.0],
+    ];
+
+    /**
+     * Parse the resolved numeric flat keys into real int/float values.
+     *
+     * Passes native int/float values through untouched (JSON configs and
+     * profiles already decode to native types), casts strictly-typed
+     * numeric strings, and rejects anything else with an
+     * {@see \InvalidArgumentException} that the CLI layer turns into the
+     * conventional friendly exit 2. Range validation in Config's
+     * constructor remains the last-resort backstop.
+     *
+     * @param array<string,mixed> $flat
+     * @return array<string,mixed>
+     */
+    private function coerceNumerics(array $flat): array
+    {
+        foreach (self::NUMERIC_KEYS as $key => $domain) {
+            if (!array_key_exists($key, $flat)) {
+                continue;
+            }
+            $value = $flat[$key];
+            if ($value === null) {
+                continue; // nullable handling stays with the Config defaults
+            }
+            [$kind, $min, $max] = $domain;
+            $flat[$key] = $kind === 'int'
+                ? self::coerceInt($key, $value, $min, $max)
+                : self::coerceFloat($key, $value, $min, $max);
+        }
+        return $flat;
+    }
+
+    private static function coerceInt(string $key, mixed $value, int|float $min, int|float|null $max): int
+    {
+        if (is_int($value)) {
+            $parsed = $value;
+        } elseif (is_string($value) && preg_match('/^[+-]?\d+$/', trim($value)) === 1) {
+            $parsed = (int)trim($value);
+        } else {
+            throw new \InvalidArgumentException(
+                sprintf('%s must be an integer, got %s', $key, self::describeValue($value))
+            );
+        }
+        self::assertDomain($key, $parsed, $min, $max);
+        return $parsed;
+    }
+
+    private static function coerceFloat(string $key, mixed $value, int|float $min, int|float|null $max): float
+    {
+        if (is_int($value) || is_float($value)) {
+            $parsed = (float)$value;
+        } elseif (is_string($value) && is_numeric(trim($value))) {
+            $parsed = (float)trim($value);
+        } else {
+            throw new \InvalidArgumentException(
+                sprintf('%s must be a number, got %s', $key, self::describeValue($value))
+            );
+        }
+        self::assertDomain($key, $parsed, $min, $max);
+        return $parsed;
+    }
+
+    /**
+     * Every float key in NUMERIC_KEYS spans the unit interval, so its
+     * violation message mirrors validate()'s "must be in [0, 1]" wording;
+     * int keys report the single bound they broke.
+     */
+    private static function assertDomain(string $key, int|float $value, int|float $min, int|float|null $max): void
+    {
+        $violated = $value < $min || ($max !== null && $value > $max);
+        if (!$violated) {
+            return;
+        }
+        if ($max !== null && (is_float($min) || is_float($value))) {
+            throw new \InvalidArgumentException(sprintf('%s must be in [%s, %s]', $key, $min, $max));
+        }
+        if ($value < $min) {
+            throw new \InvalidArgumentException(sprintf('%s must be >= %d', $key, $min));
+        }
+        throw new \InvalidArgumentException(sprintf('%s must be <= %d', $key, $max));
+    }
+
+    private static function describeValue(mixed $value): string
+    {
+        if (is_string($value)) {
+            $shown = strlen($value) > 40 ? substr($value, 0, 40) . '…' : $value;
+            return "'$shown'";
+        }
+        return get_debug_type($value);
     }
 
     /**

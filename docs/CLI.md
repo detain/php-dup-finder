@@ -80,7 +80,7 @@ for the full JSON-Schema-compatible spec.
 |--------------------------------------------|-------------|--------------------------------------------------------------------------------------------------------|
 | `-c, --config FILE`                        | —           | Load settings from a `phpdup.json` config file. CLI flags override file values.                        |
 | `-j, --workers N`                          | `0` (auto)  | Worker count for parallel preprocess + pair scoring. `0` = auto-detect from `nproc` / `/proc/cpuinfo`. `1` = serial. |
-| `--no-cache`                               | off         | Don't read or write the AST cache for this run.                                                        |
+| `--no-cache`                               | off         | Skip AST **index reuse** for this run: the per-file incremental cache (`IndexStore`) is not read, and the refactor stage does not reload cached ASTs. **Note:** this does not suppress writes — the parser's on-disk AST cache under `cache_dir` is still populated during the run; set `cache_dir` to a throwaway path (e.g. a temp directory) if you need nothing written to disk. |
 | `--no-incremental`                         | off         | Disable per-file index-snapshot reuse. Forces re-fingerprinting every file.                            |
 | `--no-lazy-ast`                            | off         | Keep all original ASTs in memory throughout the run. Higher RSS, slightly faster anti-unification.     |
 | `--low-memory`                             | off         | Use CompactNgramBag (32-bit fingerprint) + CanonicalNodePool interning for lower RSS on large corpora. |
@@ -212,7 +212,7 @@ first line of the zsh dump.
 |------|------------------------------------------------------------------------------------|
 | `0`  | Successful run. **Note:** `analyze` does NOT exit non-zero when clusters are found (unless CI-gate thresholds are set). Gate CI on the JSON report — an empty `clusters` array means clean. |
 | `1`  | Internal error (uncaught exception, reporter failure, etc.).                       |
-| `2`  | Invalid input: missing required argument, unknown shell for `completion`, schema-validation failure for `--validate-config`, invalid `--theme`, etc. |
+| `2`  | Invalid input: missing required argument, unknown shell for `completion`, schema-validation failure for `--validate-config`, a non-numeric or out-of-domain value for a numeric option (e.g. `--min-block-size abc`, `--similarity 1.5`), invalid `--theme`, etc. |
 | `3`  | CI gate triggered: `--fail-on-impact N` exceeded (total cluster impact > N) or `--max-clusters N` exceeded (cluster count > N). |
 | `4`  | CI gate triggered: `--baseline FILE` was provided, FILE exists, and new duplicate clusters were found that were not present in the baseline. |
 

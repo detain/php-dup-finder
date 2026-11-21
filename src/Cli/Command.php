@@ -200,12 +200,19 @@ HELP;
 
         $autoTuneExactOnly = $this->resolveAutoTune($input, $output, $paths, $overrides);
 
-        $config = (new ConfigLoader())->load(
-            paths: $paths,
-            configFile: $input->getOption('config'),
-            overrides: $overrides,
-            profileExclude: $profileExclude,
-        );
+        try {
+            $config = (new ConfigLoader())->load(
+                paths: $paths,
+                configFile: $input->getOption('config'),
+                overrides: $overrides,
+                profileExclude: $profileExclude,
+            );
+        } catch (\RuntimeException | \InvalidArgumentException $e) {
+            // Invalid config / un-coercible numeric flag values surface as
+            // the conventional friendly exit 2, never as a raw stack trace.
+            $output->writeln('<error>phpdup: ' . $e->getMessage() . '</error>');
+            return 2;
+        }
 
         $runtimeOptions = $this->parseRuntimeOptions($input, $output, $autoTuneExactOnly);
 
@@ -433,6 +440,10 @@ HELP;
      */
     private function parseRuntimeOptions(InputInterface $input, OutputInterface $output, bool $autoTuneExactOnly): array
     {
+        // --no-cache silences INDEX reuse (the per-file IndexStore lookup in
+        // PreprocessStage and the cached AST reload in RefactorStage). It does
+        // NOT stop the on-disk parser cache: PreprocessWorker always writes
+        // AstCache entries under config->cache_dir during a run. See docs/CLI.md.
         $useCache  = !$input->getOption('no-cache');
         $exactOnly = (bool)$input->getOption('exact-only') || $autoTuneExactOnly;
         $showStats = (bool)$input->getOption('stats');
