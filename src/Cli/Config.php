@@ -217,11 +217,16 @@ final class Config
     /** @param list<string> $paths */
     public static function defaults(array $paths): self
     {
+        // 7.2(a): *.tpl.php is deliberately NOT excluded any more — PHP code
+        // inside template-suffixed files is real duplicate surface and must
+        // be scanned by default. Plain *.tpl (and every other non-PHP
+        // extension) is still invisible until FileScanner::looksLikePhp()
+        // is widened, which is an owner-gated decision (plan §6 #6).
         return new self(
             paths: $paths,
             exclude: [
                 'vendor/**', 'node_modules/**', 'logs/**', 'cache/**',
-                'storage/**', 'build/**', 'dist/**', '**/*.tpl.php',
+                'storage/**', 'build/**', 'dist/**',
                 '**/.phpdup-cache/**', '**/phpdup-report/**',
             ],
         );
