@@ -35,6 +35,22 @@ emitted as JSON ints (`Num::json`), so snapshot bytes are box- and
 version-independent; finding ids hash member paths relative to the configured
 scan roots, so the same cluster mints the same id on any machine.
 
+The Psalm leg of the static-analysis job currently fails with 9
+InvalidArgument errors (`IrLifter.php:219/223/227/307`,
+`DbOpCanonicalizer.php:126/164/181/211`, `TrinityCollapser.php:223`). The
+count held across the 6.0.0 → 6.20.9 bump, but the list is not the one
+recorded when `psalm-baseline.xml` was cut: 4 of the 9 are the
+`ArgPlaceholder`-widened shape that entered with php-parser 5.9.0's
+`Node\Arg` typing, and the baseline (header still pinned `psalm-version="6.0.0"`)
+predates all of them — the leg has been red on CI since before the PHP 8.5
+matrix landed. Failure tolerance today: no test leg swallows failures — the
+matrix runs `fail-fast: false` (a red leg does not cancel its siblings but
+still fails the workflow), and the only `continue-on-error` steps are
+infrastructure: the Codecov upload above and the SARIF upload inside the
+consumer composite action (`.github/actions/phpdup/action.yml`). The Psalm
+step itself has no tolerance, so the static job stays red until the 9 are
+re-baselined or fixed — an owner ruling, not a CI-config default.
+
 A maintained composite action lives at `.github/actions/phpdup/action.yml` in
 this repo. From your workflow:
 

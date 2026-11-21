@@ -154,7 +154,11 @@ final class DeclaredTwinAnalyzer
                     'doc-comment twin claim "%s" (line %d) drifted: best measured Jaccard %s against %s is below the %.2f threshold',
                     (string) $row['reference'],
                     (int) $row['line'],
-                    is_float($row['similarity']) ? number_format($row['similarity'], 4) : 'n/a',
+                    (is_int($row['similarity']) || is_float($row['similarity']))
+                        // Num::json collapses whole values to int at mint —
+                        // accept both so a whole measured similarity still
+                        // renders its number instead of 'n/a'.
+                        ? number_format((float) $row['similarity'], 4) : 'n/a',
                     (string) ($row['target_file'] ?? 'the referenced file'),
                     $this->similarityThreshold,
                 ),

@@ -5,6 +5,7 @@ namespace Phpdup\Reporting;
 
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
+use Phpdup\Util\Num;
 
 /**
  * SARIF 2.1.0 output for GitHub / GitLab PR annotations.
@@ -117,7 +118,7 @@ final class SarifReporter
             'properties' => array_filter([
                 'kind'               => $member->kind,
                 'clusterKind'        => $cluster->members[0]->kind ?? null,
-                'similarity'         => $cluster->similarity,
+                'similarity'         => Num::json($cluster->similarity), // whole floats render int bytes (8.3/8.4/8.5-invariant)
                 'exact'              => $cluster->exact,
                 'impact'             => $cluster->impact,
                 'memberCount'        => count($cluster->members),

@@ -5,6 +5,8 @@ namespace Phpdup\Tests\Unit\Reporting;
 
 use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\Config;
+use Phpdup\Clustering\Cluster;
+use Phpdup\Extraction\Block;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\Stages\ClusterStage;
 use Phpdup\Pipeline\Stages\PreprocessStage;
@@ -13,6 +15,7 @@ use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Reporting\Ranker;
 use Phpdup\Reporting\Report;
 use Phpdup\Reporting\SarifReporter;
+use Phpdup\Util\LineRange;
 use Symfony\Component\Console\Output\NullOutput;
 
 final class SarifReporterTest extends TestCase
@@ -84,6 +87,52 @@ final class SarifReporterTest extends TestCase
         $props = $found['properties'];
         $this->assertGreaterThanOrEqual(1, $props['optionalSegmentCount']);
         $this->assertTrue($props['hasOptionalSegments']);
+    }
+
+    /**
+     * phpver-fix drift class, SARIF surface: a raw whole float in
+     * `properties.similarity` reaches json_encode, whose rendering of
+     * float(1) is `1` on PHP 8.3 and `1.0` on 8.4+ — SARIF files would
+     * byte-drift per minor version. The emit routes through Num::json,
+     * so whole values (and values whole after rounding) are int bytes on
+     * every version. Pinned synthetically (no pipeline run) so a revert
+     * to the raw emit goes red on every host, including this 8.3 box
+     * where the 0.99999 case alone distinguishes the two code paths.
+     */
+    public function testWholeFloatSimilarityRendersVersionInvariantIntBytes(): void
+    {
+        $member = static fn(string $name): Block => new Block(
+            file: 'sarif-pin.php',
+            range: new LineRange(1, 5),
+            kind: 'function',
+            namespace: null,
+            class: null,
+            name: $name,
+        );
+
+        $whole  = new Cluster('F0000000000000001', [$member('a')], 1.0, true);
+        // Rounds whole at the contract precision — must collapse to int 1
+        // through Num::json, while a raw emit would print 0.99999 verbatim.
+        $near   = new Cluster('F0000000000000002', [$member('c')], 0.99999, false);
+
+        $report  = new Report(1, 2, 0, [$whole, $near], Config::defaults([]));
+        $payload = (new SarifReporter())->build($report);
+        $bytes   = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+
+        $this->assertIsString($bytes);
+        $this->assertSame(2, substr_count((string) $bytes, '"similarity": 1'),
+            'both similarity renders are int-typed 1 — never 1.0, never 0.99999');
+        $this->assertStringNotContainsString('"similarity": 1.0', (string) $bytes);
+        $this->assertStringNotContainsString('0.99999', (string) $bytes);
+
+        $decoded = json_decode((string) $bytes, true);
+        $renders = array_map(
+            static fn(array $r): int|float => $r['properties']['similarity'],
+            $decoded['runs'][0]['results'],
+        );
+        foreach ($renders as $render) {
+            $this->assertIsInt($render, 'decoded JSON type is int on every version (assertSame-strict pin)');
+        }
     }
 
     private function buildReport(): Report
