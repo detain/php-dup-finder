@@ -173,46 +173,68 @@ final class PreprocessWorker
                     $output->writeln(sprintf('worker: cache hit for: %s', $path));
                 }
             }
-            $cfg   = $this->config->effectiveFor($path);
-            $tools = $toolFor($cfg);
+            // Buffer-and-discard (Hazard-1): this file's rows are staged in
+            // $fileRows and only reach $out once the WHOLE file completed. A
+            // mid-file throw (unexpected AST shape, broken normalization
+            // plugin, ...) must never leave a partial block list in the
+            // stream — the master counts processed files by row and caches
+            // exactly the rows it receives (PreprocessStage cache-save), so a
+            // truncated list would be persisted as the file's complete row
+            // set and silently hide the rest of the file on every later
+            // incremental run.
+            $fileRows   = [];
             $blockCount = 0;
-            foreach ($tools['extractor']->extract($path, $stmts) as $block) {
-                ++$blockCount;
-                if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                    $output->writeln(sprintf('worker:   extracted block kind=%s size=%d from %s', $block->kind, $block->size, $path));
+            try {
+                $cfg   = $this->config->effectiveFor($path);
+                $tools = $toolFor($cfg);
+                foreach ($tools['extractor']->extract($path, $stmts) as $block) {
+                    ++$blockCount;
+                    if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                        $output->writeln(sprintf('worker:   extracted block kind=%s size=%d from %s', $block->kind, $block->size, $path));
+                    }
+                    $tools['normalizer']->normalize($block);
+                    $block->structuralHash = $hasher->hash($block->canonical);
+                    $block->ngramBag = $tools['fp']->fingerprint($block->canonical);
+                    // Option-5 IR-tier preprocessing: lift the block's
+                    // *original* AST (pre-canonicalisation, so library
+                    // surface still informs the lifter's pattern matchers)
+                    // and store the printed-token multiset on the block.
+                    // A null lift result leaves $irBag null, which the
+                    // Clusterer treats as "skip the IR tier for this pair".
+                    if ($tools['irLifter'] !== null && $block->ast !== null) {
+                        $ir = $tools['irLifter']->lift($block->ast);
+                        if ($ir !== null) {
+                            $block->irBag = self::tokenMultiset($tools['irPrinter']->tokens($ir));
+                        }
+                    }
+                    // Drop the original AST now that canonicalization + all
+                    // downstream consumers (hashing, fingerprinting, IR) are
+                    // done.  AntiUnifier reloads via BlockAstLoader on demand.
+                    // Only unload when lazyAst is enabled; otherwise keep the
+                    // AST in memory for RefactorStage (which has no loader when
+                    // lazyAst=false).
+                    if ($cfg->lazyAst) {
+                        $block->unloadAst();
+                    }
+                    $fileRows[] = ['type' => 'block', 'file' => $path, 'block' => $block];
                 }
-                $tools['normalizer']->normalize($block);
-                $block->structuralHash = $hasher->hash($block->canonical);
-                $block->ngramBag = $tools['fp']->fingerprint($block->canonical);
-                // Option-5 IR-tier preprocessing: lift the block's
-                // *original* AST (pre-canonicalisation, so library
-                // surface still informs the lifter's pattern matchers)
-                // and store the printed-token multiset on the block.
-                // A null lift result leaves $irBag null, which the
-                // Clusterer treats as "skip the IR tier for this pair".
-                if ($tools['irLifter'] !== null && $block->ast !== null) {
-                    $ir = $tools['irLifter']->lift($block->ast);
-                    if ($ir !== null) {
-                        $block->irBag = self::tokenMultiset($tools['irPrinter']->tokens($ir));
+                if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                    if ($blockCount === 0) {
+                        $output->writeln(sprintf('worker:   no blocks extracted from %s (kind=%s, minBlockSize=%d)', $path, $cfg->allowedKinds === [] ? 'all' : implode(',', $cfg->allowedKinds), $cfg->minBlockSize));
+                    } else {
+                        $output->writeln(sprintf('worker:   extracted %d blocks from %s', $blockCount, $path));
                     }
                 }
-                // Drop the original AST now that canonicalization + all
-                // downstream consumers (hashing, fingerprinting, IR) are
-                // done.  AntiUnifier reloads via BlockAstLoader on demand.
-                // Only unload when lazyAst is enabled; otherwise keep the
-                // AST in memory for RefactorStage (which has no loader when
-                // lazyAst=false).
-                if ($cfg->lazyAst) {
-                    $block->unloadAst();
-                }
-                $out[] = ['type' => 'block', 'file' => $path, 'block' => $block];
+            } catch (\Throwable $e) {
+                // Same error-row contract as the parse-error path above:
+                // PreprocessStage turns this into parseErrors++ (and now
+                // excludes the file from cache-save), so one poison file fails
+                // softly instead of taking the whole forked run to exit 255.
+                $out[] = ['type' => 'error', 'file' => $path, 'message' => $e->getMessage()];
+                continue;
             }
-            if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-                if ($blockCount === 0) {
-                    $output->writeln(sprintf('worker:   no blocks extracted from %s (kind=%s, minBlockSize=%d)', $path, $cfg->allowedKinds === [] ? 'all' : implode(',', $cfg->allowedKinds), $cfg->minBlockSize));
-                } else {
-                    $output->writeln(sprintf('worker:   extracted %d blocks from %s', $blockCount, $path));
-                }
+            foreach ($fileRows as $row) {
+                $out[] = $row;
             }
             // Trigger PHP's cyclic GC and clear per-cycle memory caches
             // every 10 files to prevent memory buildup from serialize/

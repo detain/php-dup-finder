@@ -149,6 +149,7 @@ final class PreprocessStage implements CooperativeStageInterface
             $state->debug($output, sprintf('preprocess: processing %d files across %d workers [%s]', count($toProcess), $workerCount, MemoryDebug::getMemoryUsage()));
 
             $processedFilesSet = [];
+            $errorFiles        = []; // files that emitted an error row — never cache-saved
             $sinceYield        = 0;
 
             $state->debug($output, sprintf('preprocess: collecting results from workers... [%s]', MemoryDebug::getMemoryUsage()));
@@ -156,6 +157,7 @@ final class PreprocessStage implements CooperativeStageInterface
                 $processedFilesSet[$row['file']] = true;
                 if ($row['type'] === 'error') {
                     $state->parseErrors++;
+                    $errorFiles[$row['file']] = true;
                 } elseif ($row['type'] === 'block') {
                     /** @var Block $b */
                     $b = $row['block'];
@@ -182,6 +184,17 @@ final class PreprocessStage implements CooperativeStageInterface
                 $byFile = [];
                 foreach ($blocks as $b) {
                     $byFile[$b->file][] = $b;
+                }
+                // Belt for buffer-and-discard (Hazard-1): PreprocessWorker
+                // now flushes a file's rows only when the whole file
+                // succeeded, so no file can legitimately appear here with
+                // both block rows and an error row. If a future producer
+                // breaks that all-or-nothing contract, drop the file from
+                // cache-save rather than persist a truncated per-file block
+                // list — a later cache hit on a partial list would hide the
+                // rest of the file forever.
+                foreach ($errorFiles as $erroredFile => $_) {
+                    unset($byFile[$erroredFile]);
                 }
                 $state->debug($output, sprintf('preprocess: saving %d files to cache... [%s]', count($byFile), MemoryDebug::getMemoryUsage()));
                 foreach ($byFile as $file => $list) {

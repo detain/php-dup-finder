@@ -316,9 +316,21 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
                 $args[] = new Node\Arg($case->cond);
             }
 
-            // For case body: use the last statement if it's a Return,
-            // otherwise wrap all statements in a closure.
-            if (count($case->stmts) === 1 && $case->stmts[0] instanceof Node\Stmt\Return_) {
+            // For case body: a lone `return <expr>;` contributes the value
+            // directly; everything else is wrapped as a statement list. The
+            // `->expr !== null` arm matters twice over: a bare `return;`
+            // carries a null expr (which Arg::__construct rejects — the BUG-A
+            // TypeError behind every worker-poison crash on switch-shaped
+            // code), and letting it fall into the statement-list branch
+            // encodes it EXPLICITLY as Closure{stmts:[Return_(null)]} instead
+            // of silently aliasing it to the value-return form it never was.
+            // $case->stmts here belongs to Normalizer::normalize()'s deep
+            // clone, so wrapping it never mutates the cached original AST.
+            if (
+                count($case->stmts) === 1
+                && $case->stmts[0] instanceof Node\Stmt\Return_
+                && $case->stmts[0]->expr !== null
+            ) {
                 $body = $case->stmts[0]->expr;
             } else {
                 $body = new Node\Expr\Closure(['stmts' => $case->stmts]);
