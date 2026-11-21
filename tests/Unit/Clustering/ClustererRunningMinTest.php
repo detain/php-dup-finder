@@ -5,6 +5,7 @@ namespace Phpdup\Tests\Unit\Clustering;
 
 use PHPUnit\Framework\TestCase;
 use Phpdup\Clustering\Clusterer;
+use Phpdup\Clustering\MatchTier;
 use Phpdup\Extraction\Block;
 use Phpdup\Index\BlockIndex;
 use Phpdup\Similarity\JaccardSimilarity;
@@ -19,6 +20,13 @@ use Phpdup\Similarity\TreeEditDistance;
  * with a single pass over the edge list during union(), updating a
  * per-root running minimum.  This test asserts equality for synthetic
  * small components where the ground-truth minimum is known.
+ *
+ * Edge fixtures are 4-tuples [a, b, sim, tier] exactly as
+ * {@see Clusterer::cluster()} destructures them (its docblock contract):
+ * the tier token carries a {@see MatchTier} value — the synthetic sub-1.0
+ * scores mirror scored (Jaccard-tier) edges. A 3-tuple here would raise
+ * "Undefined array key 3" inside the union loop, and phpunit.xml pins
+ * failOnWarning.
  */
 final class ClustererRunningMinTest extends TestCase
 {
@@ -58,7 +66,7 @@ final class ClustererRunningMinTest extends TestCase
      * Brute-force O(k²) reference: scan all pairs in the cluster
      * and return the minimum edge similarity.
      *
-     * @param list<array{0:string,1:string,2:float}> $edges
+     * @param list<array{0:string,1:string,2:float,3:string}> $edges
      * @param list<string> $memberIds
      */
     private function bruteForceMin(array $edges, array $memberIds): float
@@ -102,9 +110,9 @@ final class ClustererRunningMinTest extends TestCase
 
         // Edge order intentionally shuffled vs. insertion order.
         $edges = [
-            ['A', 'C', 0.80],  // weakest → running min after this union
-            ['A', 'B', 0.95],
-            ['B', 'C', 0.85],
+            ['A', 'C', 0.80, MatchTier::Jaccard->value],  // weakest → running min after this union
+            ['A', 'B', 0.95, MatchTier::Jaccard->value],
+            ['B', 'C', 0.85, MatchTier::Jaccard->value],
         ];
 
         $clusterer = new Clusterer(
@@ -149,8 +157,8 @@ final class ClustererRunningMinTest extends TestCase
         $index->add($d);
 
         $edges = [
-            ['A', 'B', 0.72],
-            ['C', 'D', 0.91],
+            ['A', 'B', 0.72, MatchTier::Jaccard->value],
+            ['C', 'D', 0.91, MatchTier::Jaccard->value],
         ];
 
         $clusterer = new Clusterer(
@@ -205,9 +213,9 @@ final class ClustererRunningMinTest extends TestCase
         // Weakest edge first — tests that running-min correctly
         // propagates through subsequent unions.
         $edges = [
-            ['A', 'C', 0.75],  // min
-            ['A', 'B', 0.90],
-            ['B', 'C', 0.88],
+            ['A', 'C', 0.75, MatchTier::Jaccard->value],  // min
+            ['A', 'B', 0.90, MatchTier::Jaccard->value],
+            ['B', 'C', 0.88, MatchTier::Jaccard->value],
         ];
 
         $clusterer = new Clusterer(
@@ -250,9 +258,9 @@ final class ClustererRunningMinTest extends TestCase
         }
 
         $edges = [
-            ['A', 'B', 0.95],
-            ['B', 'C', 0.88],
-            ['C', 'D', 0.82],
+            ['A', 'B', 0.95, MatchTier::Jaccard->value],
+            ['B', 'C', 0.88, MatchTier::Jaccard->value],
+            ['C', 'D', 0.82, MatchTier::Jaccard->value],
         ];
 
         $clusterer = new Clusterer(
@@ -292,9 +300,9 @@ final class ClustererRunningMinTest extends TestCase
 
         // All edges are relatively low similarity.
         $edges = [
-            ['A', 'B', 0.62],
-            ['B', 'C', 0.58],
-            ['A', 'C', 0.55],
+            ['A', 'B', 0.62, MatchTier::Jaccard->value],
+            ['B', 'C', 0.58, MatchTier::Jaccard->value],
+            ['A', 'C', 0.55, MatchTier::Jaccard->value],
         ];
 
         $clusterer = new Clusterer(
