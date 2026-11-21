@@ -288,7 +288,6 @@ final class PreprocessStage implements CooperativeStageInterface
         $this->checkMemory($output);
     }
 
-    /** @param list<Block> $blocks */
     /**
      * Canonical block ordering + content-derived ids (CI-85 T2, r2).
      *
@@ -339,6 +338,7 @@ final class PreprocessStage implements CooperativeStageInterface
         return $blocks;
     }
 
+    /** @param list<Block> $blocks */
     private function printStats(OutputInterface $out, array $blocks): void
     {
         $kinds = [];
