@@ -12,7 +12,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up PHP
         uses: shivammathur/setup-php@v2
@@ -35,7 +35,7 @@ jobs:
         run: php -r "echo hash_hmac_file('sha256', 'phpdup.phar', base64_decode(\$_SERVER['HMAC_SECRET_KEY']));" > phpdup.phar.sig
 
       - name: Upload Release Assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             phpdup.phar
