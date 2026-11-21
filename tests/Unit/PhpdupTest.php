@@ -31,6 +31,35 @@ final class PhpdupTest extends TestCase
         $this->assertNotSame($base, $after, 'fluent setters must clone (immutable builder)');
     }
 
+    public function testRunWithoutPathsThrowsActionableError(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessageMatches('/at least one path is required.*paths\(\[.*\]\)/s');
+
+        (new Phpdup())->run();
+    }
+
+    public function testRunAfterExplicitEmptyPathsThrowsActionableError(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessageMatches('/at least one path is required/s');
+
+        (new Phpdup())->paths([])->run();
+    }
+
+    public function testNonEmptyPathsStillRunAndReturnReport(): void
+    {
+        $report = (new Phpdup())
+            ->paths([__DIR__ . '/../Fixtures/notify'])
+            ->minBlockSize(4)
+            ->minImpact(0)
+            ->noLazyAst()
+            ->run();
+
+        $this->assertInstanceOf(Report::class, $report);
+        $this->assertGreaterThanOrEqual(1, $report->files, 'guard must not disturb the happy path');
+    }
+
     public function testExactOnlySkipsApprox(): void
     {
         $report = (new Phpdup())

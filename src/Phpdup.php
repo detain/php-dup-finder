@@ -136,9 +136,20 @@ final class Phpdup
      * Run the pipeline and return the final Report. Output goes to a
      * NullOutput by default; pass a custom OutputInterface to surface
      * progress messages.
+     *
+     * @throws \InvalidArgumentException when no paths were configured —
+     *                                  an empty scan is always a caller mistake,
+     *                                  never a silent empty report
      */
     public function run(?OutputInterface $output = null): Report
     {
+        if ($this->paths === []) {
+            throw new \InvalidArgumentException(
+                "phpdup: at least one path is required. Configure the facade with "
+                . "\$phpdup->paths(['src/']) — one or more files or directories — before calling run()."
+            );
+        }
+
         $output ??= new NullOutput();
 
         $config = new Config(
