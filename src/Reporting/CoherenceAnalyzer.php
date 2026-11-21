@@ -16,13 +16,24 @@ use Phpdup\Similarity\JaccardSimilarity;
  * out of step with the cluster and is a strong candidate for human
  * review before applying the suggested abstraction.
  *
- * Cost is O(k²) per cluster where k = member count. Negligible for
- * typical clusters (k ≤ 20); skipped entirely for k ≤ 2 (no room for
+ * Cost is O(k²) per cluster where k = member count, in **unordered**
+ * pairs: each symmetric pair is scored once and its value is credited
+ * to both members' means, so k members cost k·(k−1)/2 similarity
+ * calls, not k·(k−1). Skipped entirely for k ≤ 2 (no room for
  * an outlier).
  */
 final class CoherenceAnalyzer
 {
     private readonly JaccardSimilarity $jaccard;
+
+    /**
+     * Monotonic count of {@see JaccardSimilarity::similarity()} calls
+     * made by {@see self::outliersFor()} across the process. Test seam
+     * pinning the unordered-pair economy (finding output-027): the
+     * delta for a cluster with k non-empty-bag members must be
+     * k·(k−1)/2. Production code never reads it.
+     */
+    public static int $similarityCallCount = 0;
 
     public function __construct(
         private readonly float $outlierThreshold = 0.6,
@@ -56,17 +67,32 @@ final class CoherenceAnalyzer
         foreach ($cluster->members as $idx => $m) {
             $bags[$idx] = $m->ngramBag ?? [];
         }
+        /** @var list<float> $sums */
+        $sums = array_fill(0, $k, 0.0);
+        /** @var list<int> $counts */
+        $counts = array_fill(0, $k, 0);
+        for ($i = 0; $i < $k; $i++) {
+            if (!$bags[$i]) {
+                continue; // empty bag: this member scores nothing, as before
+            }
+            for ($j = $i + 1; $j < $k; $j++) {
+                if (!$bags[$j]) {
+                    continue;
+                }
+                self::$similarityCallCount++;
+                $sim = $this->jaccard->similarity($bags[$i], $bags[$j]);
+                // One score, both sides: Jaccard is exactly symmetric, so
+                // crediting the single value to each member's mean is
+                // bit-identical to the old per-direction recomputation.
+                $sums[$i] += $sim;
+                $sums[$j] += $sim;
+                $counts[$i]++;
+                $counts[$j]++;
+            }
+        }
         $outliers = [];
         for ($i = 0; $i < $k; $i++) {
-            $sum = 0.0;
-            $cnt = 0;
-            for ($j = 0; $j < $k; $j++) {
-                if ($i === $j) continue;
-                if (!$bags[$i] || !$bags[$j]) continue;
-                $sum += $this->jaccard->similarity($bags[$i], $bags[$j]);
-                $cnt++;
-            }
-            $mean = $cnt > 0 ? $sum / $cnt : 1.0;
+            $mean = $counts[$i] > 0 ? $sums[$i] / $counts[$i] : 1.0;
             if ($mean < $this->outlierThreshold) {
                 $outliers[] = $i;
             }
