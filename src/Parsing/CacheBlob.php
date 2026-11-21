@@ -155,6 +155,11 @@ final class CacheBlob
                 foreach ($value->getSubNodeNames() as $name) {
                     $stack[] = $value->$name;
                 }
+                // Attributes are not a sub-node list — a forged blob can
+                // hide there, so the screen walks them too (engine-S23a r1 M-1).
+                foreach ($value->getAttributes() as $attrValue) {
+                    $stack[] = $attrValue;
+                }
                 continue;
             }
             if (is_array($value)) {

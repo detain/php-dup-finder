@@ -155,6 +155,33 @@ final class AstCacheTest extends TestCase
         $this->assertNull($cache->get($this->sourceFile), 'recursive screening must reject the nested incomplete class');
     }
 
+    public function testDisallowedClassInAttributesSlotIsMiss(): void
+    {
+        // engine-S23a r1 M-1: Node::$attributes is not a sub-node list, so
+        // the original walk skipped it. Reuse the splice trick to forge a
+        // byte-valid blob whose incomplete class hides in an attribute
+        // value — the screen must catch it, not return a poisoned hit.
+        $fn = new Node\Stmt\Function_('f');
+        $fn->setAttribute('hidden', new \stdClass());
+        $evil = self::spliceSegment(
+            serialize([$fn]),
+            self::objectMarker(\stdClass::class),
+            'O:10:"Evil_Class":1:{s:4:"evil";s:4:"data";}'
+        );
+
+        // Counter-assert: the payload passes the top-level screen with the
+        // forged class smuggled live into the attribute slot.
+        $decoded = unserialize($evil, ['allowed_classes' => SerializedClassAllowList::parserClasses()]);
+        $this->assertIsArray($decoded);
+        $this->assertInstanceOf(Node\Stmt\Function_::class, $decoded[0]);
+        $this->assertInstanceOf(\__PHP_Incomplete_Class::class, $decoded[0]->getAttribute('hidden'));
+
+        $cache = $this->cache();
+        $cache->put($this->sourceFile, $this->parseSource());
+        file_put_contents($this->onlyBlob(), CacheBlob::frame($evil));
+        $this->assertNull($cache->get($this->sourceFile), 'decode screening must walk the attributes slot too');
+    }
+
     public function testDeepAstIsNotCachedAndDoesNotThrow(): void
     {
         // ~4k node levels — inside the serialize() stack-guard crash zone
