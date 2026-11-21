@@ -55,13 +55,18 @@ final class NormalizerTest extends TestCase
 
     public function testBranchRoleSwappedPairIsNotByteIdentical(): void
     {
-        // engine-002 acceptance: the finding's pair. Under the old
-        // first-occurrence ordinals both blocks re-dealt the rename
-        // maps isomorphically (then-arm call __CALL0, else-arm
-        // __CALL1) and canonicalised to byte-identical streams — the
-        // detector stamped the inversion EXACT 1.00. Name-stamped
-        // sentinels keep `send` and `log` distinct tokens, so the
-        // arms can no longer trade identities invisibly.
+        // engine-002 acceptance: a branch-role-swapped pair must not
+        // canonicalise byte-identically. Pre-fix, cross-vocabulary
+        // twins collapsed byte-identically under the first-occurrence
+        // ordinals (that is what the flipped test pinned), and the
+        // role-swap EXACT 1.00 lie reproduces when the swapped
+        // vocabularies first appear inside the arms (property-vocab
+        // variant). This toy pair was itself shielded pre-fix by
+        // engine-055's Param double-rename — its streams differed at
+        // __V4/__V6 and the old --exact-only yielded 0 clusters.
+        // Name-stamped sentinels now keep `send` and `log` distinct
+        // tokens, so the arms can no longer trade identities
+        // invisibly.
         $a = '<?php function a($f, $o, $m, $e) { if ($f) { $o->send($m); } else { $o->log($e); } }';
         $b = '<?php function b($f, $o, $m, $e) { if ($f) { $o->log($e); } else { $o->send($m); } }';
         $this->assertNotSame($this->canonicalHash($a, 'aggressive'), $this->canonicalHash($b, 'aggressive'));
