@@ -30,6 +30,28 @@ final class WorkerPool
     /** Length-prefix size for the streaming framing protocol (4 bytes, big-endian uint32). */
     private const FRAME_HEADER = 4;
 
+    /**
+     * shell-038 — ceiling multiplier for the effective concurrent-worker
+     * count: the pool never forks more than `4 × detected CPUs` children in
+     * one run, no matter how large the requested value is. The request can
+     * arrive through several admission layers (CLI flag, config file,
+     * programmatic Config/WorkerPool construction, serve workers), so the
+     * clamp lives HERE — the one choke point every fork path passes
+     * through — and ConfigLoader only notes an above-ceiling request
+     * (shell-S10 lane ruling: clamp-with-note, not an exit-2 rejection).
+     */
+    public const WORKERS_CEILING_MULTIPLIER = 4;
+
+    /**
+     * Test seam for the socketpair creation inside the fork loop
+     * (shell-028): lets a test force a mid-loop failure after k children
+     * were already spawned and prove the partial set is reaped. Production
+     * code never sets it.
+     *
+     * @var (\Closure(): (false|array{0: resource, 1: resource}))|null
+     */
+    private static ?\Closure $socketPairFactory = null;
+
     public function __construct(
         public readonly int $workers = 0,
     ) {
@@ -40,6 +62,49 @@ final class WorkerPool
         return function_exists('pcntl_fork')
             && function_exists('pcntl_waitpid')
             && function_exists('posix_kill');
+    }
+
+    /**
+     * Hard ceiling for concurrent children in one run: 4 × the detected
+     * CPU count (PHPDUP_WORKERS overrides the CPU detection through
+     * {@see detectCpuCount()}, and therefore moves the ceiling too).
+     */
+    public static function workersCeiling(): int
+    {
+        return self::WORKERS_CEILING_MULTIPLIER * max(1, self::detectCpuCount());
+    }
+
+    /**
+     * Clamp a requested worker count into [1, {@see workersCeiling()}].
+     * Applied before chunking so an oversized request yields fewer, bigger
+     * chunks (chunk/child count == ceiling) instead of a fork storm.
+     */
+    public static function clampWorkers(int $requested): int
+    {
+        return min(max(1, $requested), self::workersCeiling());
+    }
+
+    /**
+     * Install the socketpair test seam (see $socketPairFactory); pass null
+     * to restore the real stream_socket_pair(). Tests MUST restore it in a
+     * finally block: the pool is shared across the whole test process.
+     *
+     * @param (\Closure(): (false|array{0: resource, 1: resource}))|null $factory
+     */
+    public static function setSocketPairFactory(?\Closure $factory): void
+    {
+        self::$socketPairFactory = $factory;
+    }
+
+    /** @return false|array{0: resource, 1: resource} child end first */
+    private static function openWorkerPair()
+    {
+        $factory = self::$socketPairFactory;
+        if ($factory !== null) {
+            return $factory();
+        }
+        $pair = @stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        return $pair === false ? false : $pair;
     }
 
     public static function detectCpuCount(): int
@@ -99,13 +164,22 @@ final class WorkerPool
      * @note When the generator is abandoned (e.g., on TUI/pipeline cancel with ^C),
      * the `finally` block is triggered via PHP Generator GC: children are sent
      * SIGTERM via posix_kill() before being reaped with pcntl_waitpid(), ensuring
-     * no orphaned workers linger on stream_select().
+     * no orphaned workers linger on stream_select(). A deliberate abandon is
+     * silent by design — the exit-status verification below runs only when the
+     * drain loop completed on its own, so cancelling never surfaces as a throw.
+     *
+     * @throws \RuntimeException if a child dies mid-chunk, exits nonzero,
+     *         exits without its __done sentinel, reports an __error frame,
+     *         or the fork set cannot be completed (shell-005, shell-028).
      */
     public function runStreaming(array $items, \Closure $task): \Generator
     {
         if (!$items) return;
 
         $workers = max(1, $this->workers > 0 ? $this->workers : self::detectCpuCount());
+        // shell-038: bound the fork set BEFORE chunking — an oversized
+        // request yields fewer, bigger chunks instead of one child per file.
+        $workers = self::clampWorkers($workers);
         if ($workers === 1 || !self::isAvailable() || count($items) < 8) {
             yield from $task($items);
             return;
@@ -113,8 +187,9 @@ final class WorkerPool
 
         $chunks   = self::chunkInto($items, $workers);
         $pipes    = [];   // parent socket per chunk index
-        $pids     = [];
+        $pids     = [];   // child pid per chunk index; entries vanish as reaped
         $buffers  = [];
+        $sawDone  = [];   // chunk idx → child's __done sentinel arrived
         $gcCounter = 0;
 
         // Decode with the same explicit class allow-list the disk caches use
@@ -128,43 +203,64 @@ final class WorkerPool
         // is the hot decode path.
         $allowList = SerializedClassAllowList::blockCacheClasses();
 
-        foreach ($chunks as $idx => $chunk) {
-            $pair = @stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
-            if ($pair === false) {
-                throw new \RuntimeException('stream_socket_pair failed');
-            }
-            [$childEnd, $parentEnd] = $pair;
-
-            $pid = pcntl_fork();
-            if ($pid === -1) {
-                throw new \RuntimeException('pcntl_fork failed');
-            }
-            if ($pid === 0) {
-                // child
-                @fclose($parentEnd);
-                try {
-                    foreach ($task($chunk) as $record) {
-                        self::writeRecord($childEnd, $record);
-                    }
-                    self::writeRecord($childEnd, ['__done' => true]);
-                    @fclose($childEnd);
-                    exit(0);
-                } catch (\Throwable $e) {
-                    @self::writeRecord($childEnd, ['__error' => $e->getMessage() . "\n" . $e->getTraceAsString()]);
-                    @fclose($childEnd);
-                    exit(1);
-                }
-            }
-
-            // parent
-            @fclose($childEnd);
-            stream_set_blocking($parentEnd, false);
-            $pipes[$idx]   = $parentEnd;
-            $pids[$idx]    = $pid;
-            $buffers[$idx] = '';
-        }
-
+        // shell-028: the try/finally that owns pipe-closing and child-reaping
+        // opens BEFORE the fork loop. A stream_socket_pair() or pcntl_fork()
+        // failure mid-loop then unwinds through the same cleanup: every
+        // already-spawned child is SIGTERMed and reaped, every parent-side fd
+        // is closed, and the generator-abandon path covers partial sets too.
         try {
+            foreach ($chunks as $idx => $chunk) {
+                $pair = self::openWorkerPair();
+                if ($pair === false) {
+                    throw new \RuntimeException(sprintf(
+                        'stream_socket_pair failed before worker %d of %d could start (%d already spawned)',
+                        $idx + 1,
+                        count($chunks),
+                        count($pids),
+                    ));
+                }
+                [$childEnd, $parentEnd] = $pair;
+
+                $pid = pcntl_fork();
+                if ($pid === -1) {
+                    // This iteration's pair is registered nowhere yet, so the
+                    // finally cannot see it — close both ends here or its two
+                    // fds litter the parent on every fork shortfall.
+                    @fclose($childEnd);
+                    @fclose($parentEnd);
+                    throw new \RuntimeException(sprintf(
+                        'pcntl_fork failed before worker %d of %d could start (%d already spawned)',
+                        $idx + 1,
+                        count($chunks),
+                        count($pids),
+                    ));
+                }
+                if ($pid === 0) {
+                    // child
+                    @fclose($parentEnd);
+                    try {
+                        foreach ($task($chunk) as $record) {
+                            self::writeRecord($childEnd, $record);
+                        }
+                        self::writeRecord($childEnd, ['__done' => true]);
+                        @fclose($childEnd);
+                        exit(0);
+                    } catch (\Throwable $e) {
+                        @self::writeRecord($childEnd, ['__error' => $e->getMessage() . "\n" . $e->getTraceAsString()]);
+                        @fclose($childEnd);
+                        exit(1);
+                    }
+                }
+
+                // parent
+                @fclose($childEnd);
+                stream_set_blocking($parentEnd, false);
+                $pipes[$idx]   = $parentEnd;
+                $pids[$idx]    = $pid;
+                $buffers[$idx] = '';
+                $sawDone[$idx] = false;
+            }
+
             while ($pipes !== []) {
                 $read   = $pipes;
                 $write  = null;
@@ -187,6 +283,22 @@ final class WorkerPool
                     if ($chunk === false || ($chunk === '' && @feof($sock))) {
                         @fclose($sock);
                         unset($pipes[$idx]);
+                        // shell-005: EOF without the child's __done sentinel is
+                        // never a normal close — the child died or exited short
+                        // of its contract. If it is already collectable, fail
+                        // now instead of idling until the slowest sibling
+                        // drains; otherwise the post-drain verification pass
+                        // below collects and verifies it (a child is collectable
+                        // at latest once it has exited, and it exits right after
+                        // the socket can no longer carry more data).
+                        if (!$sawDone[$idx]) {
+                            $status   = 0;
+                            $deadPid  = $pids[$idx];
+                            if (@pcntl_waitpid($deadPid, $status, WNOHANG) === $deadPid) {
+                                unset($pids[$idx]);
+                                self::assertWorkerStatus($idx, $status, false, $buffers[$idx] ?? '');
+                            }
+                        }
                         continue;
                     }
                     if ($chunk === '') continue;
@@ -206,6 +318,9 @@ final class WorkerPool
                             throw new \RuntimeException("Worker $idx failed: " . $record['__error']);
                         }
                         if (is_array($record) && isset($record['__done'])) {
+                            // shell-005: the sentinel is the ONLY thing that
+                            // vouches for a complete chunk; remember it saw one.
+                            $sawDone[$idx] = true;
                             $closeAfter = true;
                             break;
                         }
@@ -224,10 +339,50 @@ final class WorkerPool
                     gc_collect_cycles();
                 }
             }
+
+            // shell-005: every worker stream is closed. Verify each still-
+            // uncollected child's terminal status against the stream contract
+            // BEFORE the run may count as success: the only accepted ending
+            // is exit(0) with the __done sentinel observed. Signal deaths,
+            // nonzero exits and sentinel-less clean exits throw — a partially
+            // filled chunk is never silently dropped again, and a child that
+            // raced past the fast-fail's WNOHANG window is caught here (the
+            // blocking wait returns once its shutdown has completed).
+            foreach ($pids as $idx => $childPid) {
+                $status    = 0;
+                $collected = 0;
+                do {
+                    $collected = pcntl_waitpid($childPid, $status);
+                } while (
+                    $collected === -1
+                    && function_exists('pcntl_get_last_error')
+                    && pcntl_get_last_error() === PCNTL_EINTR
+                );
+                // Collected (or gone): it has been dealt with — the finally
+                // must not wait on it again.
+                unset($pids[$idx]);
+                if ($collected !== $childPid) {
+                    // ECHILD/-1 without status: the child vanished from
+                    // under us. Without the sentinel that is a failed chunk;
+                    // with it, the stream itself already proved completion.
+                    if (!$sawDone[$idx]) {
+                        throw new \RuntimeException(
+                            "Worker $idx vanished before its exit status could be inspected and never wrote "
+                            . 'its __done sentinel. Refusing to report a partial result stream as success.'
+                        );
+                    }
+                    continue;
+                }
+                self::assertWorkerStatus($idx, $status, (bool)($sawDone[$idx] ?? false), (string)($buffers[$idx] ?? ''));
+            }
         } finally {
             foreach ($pipes as $sock) @fclose($sock);
             $status = 0;
             foreach ($pids as $pid) {
+                // Only children NOT already collected by the drain loop or
+                // the verification pass land here — the throw/cancel paths:
+                // SIGTERM the stragglers, then a blocking wait so the finally
+                // never returns a littered process table.
                 $waitResult = @pcntl_waitpid($pid, $status, WNOHANG);
                 if ($waitResult === 0) {
                     @posix_kill($pid, SIGTERM);
@@ -235,6 +390,69 @@ final class WorkerPool
                 }
             }
         }
+    }
+
+    /**
+     * The stream contract's single verdict for one reaped child: exit(0)
+     * WITH the __done sentinel observed is the only success. Signal deaths,
+     * nonzero exits and sentinel-less clean exits all throw, each with the
+     * strongest diagnosis the wire provided (shell-005).
+     *
+     * An __error frame is NOT diagnosed here — decodeFrame's caller throws
+     * the moment such a frame parses, carrying the child's message verbatim
+     * ("Worker $idx failed: <message+trace>"), which is the "throw with the
+     * child's message frame when present" posture. This verifier owns the
+     * cases where no frame ever arrived.
+     *
+     * @param string $residue undrained bytes left in that index's buffer
+     *                        (a half-written frame from the death moment).
+     */
+    private static function assertWorkerStatus(int $idx, int $status, bool $sawDone, string $residue): void
+    {
+        if (pcntl_wifsignaled($status)) {
+            $signal = pcntl_wtermsig($status);
+            throw new \RuntimeException(sprintf(
+                'Worker %d was killed by signal %d (%s) mid-chunk%s; its stream never reached the '
+                . '__done sentinel. Refusing to report a partial result stream as success.',
+                $idx,
+                $signal,
+                self::signalName($signal),
+                $residue !== '' ? sprintf(' (%d bytes of a half-written frame were still in the pipe)', strlen($residue)) : '',
+            ));
+        }
+        $exit = pcntl_wifexited($status) ? pcntl_wexitstatus($status) : -1;
+        if ($exit !== 0) {
+            throw new \RuntimeException(sprintf(
+                'Worker %d exited with status %d mid-chunk without completing its sentinel. '
+                . 'Refusing to report a partial result stream as success.',
+                $idx,
+                $exit,
+            ));
+        }
+        if (!$sawDone) {
+            throw new \RuntimeException(sprintf(
+                'Worker %d exited cleanly without its __done sentinel%s. The chunk was dropped '
+                . 'without completing; refusing to report a partial result stream as success.',
+                $idx,
+                $residue !== '' ? sprintf(' (%d bytes of a half-written frame were still in the pipe)', strlen($residue)) : '',
+            ));
+        }
+    }
+
+    /** Best-effort name for the worker-killing signals a bounded answer helps with. */
+    private static function signalName(int $signal): string
+    {
+        return match ($signal) {
+            SIGKILL => 'SIGKILL',
+            SIGSEGV => 'SIGSEGV',
+            SIGABRT => 'SIGABRT',
+            SIGBUS  => 'SIGBUS',
+            SIGFPE  => 'SIGFPE',
+            SIGPIPE => 'SIGPIPE',
+            SIGTERM => 'SIGTERM',
+            SIGINT  => 'SIGINT',
+            default => 'unnamed',
+        };
     }
 
     /**

@@ -225,6 +225,108 @@ final class NumericFlagCoercionTest extends TestCase
         return new CommandTester($app->find('analyze'));
     }
 
+    // ── shell-S10 (shell-038): the workers-ceiling NOTE posture ──────────
+    //
+    // Lane ruling pinned here: an above-ceiling workers value is admitted
+    // unchanged (exit 0, Config->workers untouched) — enforcement is the
+    // pool's clamp (WorkerPool::clampWorkers), not a config-schema error.
+    // The note is the user-visible counterpart of that silent clamp.
+    // PHPDUP_WORKERS pins the ceiling to a deterministic 8 (4 × 2).
+
+    public function testWorkersAbovePoolCeilingIsAdmittedWithCeilingNote(): void
+    {
+        $original = getenv('PHPDUP_WORKERS');
+        putenv('PHPDUP_WORKERS=2');
+        try {
+            $loader = new ConfigLoader(warnOnSkip: false);
+            $config = $loader->load([], null, ['workers' => '100000']);
+
+            $this->assertSame(100000, $config->workers, 'admission unchanged: the clamp is the pool\'s job, not exit 2');
+            $this->assertSame([], $loader->skipNotes(), 'a ceiling note is not a discovery skip');
+            $this->assertCount(1, $loader->loadNotes());
+            $this->assertStringContainsString('workers=100000', $loader->loadNotes()[0]);
+            $this->assertStringContainsString('ceiling of 8', $loader->loadNotes()[0]);
+            $this->assertStringContainsString('clamps', $loader->loadNotes()[0]);
+        } finally {
+            if ($original === false) {
+                putenv('PHPDUP_WORKERS');
+            } else {
+                putenv("PHPDUP_WORKERS=$original");
+            }
+        }
+    }
+
+    public function testWorkersAtOrBelowPoolCeilingLoadSilently(): void
+    {
+        $original = getenv('PHPDUP_WORKERS');
+        putenv('PHPDUP_WORKERS=2');
+        try {
+            // Boundary (== ceiling), one below, the auto sentinel, and a
+            // padded string — none of these may produce a note, and none are
+            // rewritten by the loader (the clamp is the pool's, not here).
+            foreach ([['8', 8], ['7', 7], ['0', 0], [' 6 ', 6]] as [$raw, $expected]) {
+                $loader = new ConfigLoader(warnOnSkip: false);
+                $config = $loader->load([], null, ['workers' => $raw]);
+                $this->assertSame($expected, $config->workers, "workers='$raw' passes through");
+                $this->assertSame([], $loader->loadNotes(), "workers='$raw' must stay silent");
+            }
+        } finally {
+            if ($original === false) {
+                putenv('PHPDUP_WORKERS');
+            } else {
+                putenv("PHPDUP_WORKERS=$original");
+            }
+        }
+    }
+
+    public function testConfigFileWorkersAboveCeilingAlsoNoted(): void
+    {
+        $original = getenv('PHPDUP_WORKERS');
+        putenv('PHPDUP_WORKERS=2');
+        try {
+            $configPath = $this->corpusDir() . '/big-workers.json';
+            file_put_contents($configPath, '{"workers": 40}');
+            $loader = new ConfigLoader(warnOnSkip: false);
+            $config = $loader->load([], $configPath, []);
+            $this->assertSame(40, $config->workers, 'config-file layer rides the same admitted-then-clamped posture');
+            $this->assertCount(1, $loader->loadNotes());
+            $this->assertStringContainsString('workers=40', $loader->loadNotes()[0]);
+        } finally {
+            if ($original === false) {
+                putenv('PHPDUP_WORKERS');
+            } else {
+                putenv("PHPDUP_WORKERS=$original");
+            }
+        }
+    }
+
+    public function testHugeWorkersFlagRunsCleanlyAndExitsZero(): void
+    {
+        $original = getenv('PHPDUP_WORKERS');
+        putenv('PHPDUP_WORKERS=2');
+        try {
+            $tester = $this->commandTester();
+            $exit = $tester->execute([
+                'paths'        => [$this->corpusDir()],
+                '--workers'    => '100000',
+                '--limit'      => '3',
+                '--stage'      => 'scanning',
+                '--plain'      => true,
+            ]);
+            // The documented posture for this lane ruling: an oversized
+            // request is NOT invalid invocation (exit 2) and never a crash —
+            // the run happens, clamped.
+            $this->assertSame(0, $exit);
+            $this->assertStringNotContainsString('Uncaught', $tester->getDisplay());
+        } finally {
+            if ($original === false) {
+                putenv('PHPDUP_WORKERS');
+            } else {
+                putenv("PHPDUP_WORKERS=$original");
+            }
+        }
+    }
+
     /** Two tiny PHP files, absolute temp path — no repo litter, <8 files so the fork path never spawns. */
     private function corpusDir(): string
     {

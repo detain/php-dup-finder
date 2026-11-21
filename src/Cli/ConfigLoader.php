@@ -19,6 +19,9 @@ final class ConfigLoader
     /** @var list<string> skip notes recorded during the most recent load() */
     private array $skipNotes = [];
 
+    /** @var list<string> admission notes recorded during the most recent load() */
+    private array $loadNotes = [];
+
     /**
      * @param bool $warnOnSkip  emit each recorded skip note as a
      *                          "phpdup: warning: ..." line on STDERR, the
@@ -44,6 +47,30 @@ final class ConfigLoader
     }
 
     /**
+     * Admission notes recorded during the most recent load() that are NOT
+     * discovery skips (shell-038: the workers-ceiling clamp note is the
+     * first member). A large but valid `workers` value stays admitted — the
+     * pool clamps it — and this is where the user learns the clamp fired.
+     * Kept separate from skipNotes() so the "clean run records nothing"
+     * discovery contract is untouched. Mirrors the skip-note echo: always
+     * collected; warnOnSkip also writes it to STDERR.
+     *
+     * @return list<string>
+     */
+    public function loadNotes(): array
+    {
+        return $this->loadNotes;
+    }
+
+    private function addLoadNote(string $note): void
+    {
+        $this->loadNotes[] = $note;
+        if ($this->warnOnSkip) {
+            fwrite(STDERR, "phpdup: warning: {$note}\n");
+        }
+    }
+
+    /**
      * Record one discovery skip; mirrors FileScanner::addSkipNote()'s
      * contract: the note is always collected, warnOnSkip also echoes it.
      */
@@ -66,6 +93,7 @@ final class ConfigLoader
     public function load(array $paths, ?string $configFile, array $overrides = [], ?array $profileExclude = null): Config
     {
         $this->skipNotes = [];
+        $this->loadNotes = [];
         $base = Config::defaults($paths);
         $data = [];
 
@@ -140,6 +168,28 @@ final class ConfigLoader
         $report = is_array($data['report'] ?? null) ? $data['report'] : [];
         $htmlOverride = $overrides['html'] ?? ($report['html'] ?? null);
         $jsonOverride = $overrides['json'] ?? ($report['json'] ?? null);
+
+        // shell-038 / shell-S10 lane ruling (pinned in NumericFlagCoercionTest):
+        // an above-ceiling `workers` value is NOT invalid input — it stays
+        // admitted (exit 0 posture, ConfigLoaderTest's exit-2 pins cover only
+        // genuinely invalid values). The enforcement is the pool's clamp
+        // (WorkerPool::clampWorkers, min(requested, 4 × CPUs)), and the
+        // user-visible counterpart of that silent clamp is this note:
+        // collected in loadNotes() and echoed to STDERR under warnOnSkip,
+        // exactly like the discovery skip notes.
+        $workersRequested = (int)($flat['workers'] ?? 0);
+        $workersCeiling   = \Phpdup\Parallel\WorkerPool::workersCeiling();
+        if ($workersRequested > $workersCeiling) {
+            $this->addLoadNote(sprintf(
+                'workers=%d exceeds the parallel ceiling of %d (%d x %d detected CPUs); '
+                . 'the worker pool clamps every run to %d concurrent children.',
+                $workersRequested,
+                $workersCeiling,
+                \Phpdup\Parallel\WorkerPool::WORKERS_CEILING_MULTIPLIER,
+                \Phpdup\Parallel\WorkerPool::detectCpuCount(),
+                $workersCeiling,
+            ));
+        }
 
         $allowedKinds = $base->allowedKinds;
         if (array_key_exists('allowed_kinds', $overrides)) {
