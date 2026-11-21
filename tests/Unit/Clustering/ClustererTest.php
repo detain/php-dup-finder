@@ -5,6 +5,7 @@ namespace Phpdup\Tests\Unit\Clustering;
 
 use PHPUnit\Framework\TestCase;
 use Phpdup\Clustering\Clusterer;
+use Phpdup\Clustering\MatchTier;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
 use Phpdup\Extraction\BlockExtractor;
@@ -144,7 +145,7 @@ final class ClustererTest extends TestCase
         );
 
         $edges = [
-            ['high', 'shared', 0.85],
+            ['high', 'shared', 0.85, MatchTier::Jaccard->value],
         ];
 
         $clusters = $clusterer->cluster($index, $edges);
@@ -186,7 +187,7 @@ final class ClustererTest extends TestCase
         );
 
         $edges = [
-            ['low', 'far', 0.50],
+            ['low', 'far', 0.50, MatchTier::Jaccard->value],
         ];
 
         $clusters = $clusterer->cluster($index, $edges);
@@ -228,8 +229,8 @@ final class ClustererTest extends TestCase
         );
 
         $edges = [
-            ['A', 'B', 0.86],
-            ['C', 'D', 0.84],
+            ['A', 'B', 0.86, MatchTier::Jaccard->value],
+            ['C', 'D', 0.84, MatchTier::Jaccard->value],
         ];
 
         $clusters = $clusterer->cluster($index, $edges);
@@ -276,9 +277,9 @@ final class ClustererTest extends TestCase
         );
 
         $edges = [
-            ['A', 'B', 0.95],
-            ['B', 'C', 0.90],
-            ['C', 'D', 0.85],
+            ['A', 'B', 0.95, MatchTier::Jaccard->value],
+            ['B', 'C', 0.90, MatchTier::Jaccard->value],
+            ['C', 'D', 0.85, MatchTier::Jaccard->value],
         ];
 
         $clusters = $clusterer->cluster($index, $edges);
@@ -329,9 +330,9 @@ final class ClustererTest extends TestCase
         );
 
         $edges = [
-            ['A', 'B', 0.95],
-            ['B', 'C', 0.90],
-            ['C', 'D', 0.85],
+            ['A', 'B', 0.95, MatchTier::Jaccard->value],
+            ['B', 'C', 0.90, MatchTier::Jaccard->value],
+            ['C', 'D', 0.85, MatchTier::Jaccard->value],
         ];
 
         $clusters = $clusterer->cluster($index, $edges);
@@ -387,8 +388,8 @@ final class ClustererTest extends TestCase
         );
 
         $edges = [
-            ['A', 'B', 0.95],
-            ['C', 'D', 0.91],
+            ['A', 'B', 0.95, MatchTier::Jaccard->value],
+            ['C', 'D', 0.91, MatchTier::Jaccard->value],
         ];
 
         $clusters = $clusterer->cluster($index, $edges);
