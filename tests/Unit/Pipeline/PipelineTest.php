@@ -5,10 +5,12 @@ namespace Phpdup\Tests\Unit\Pipeline;
 
 use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\Config;
+use Phpdup\Pipeline\DebugLogger;
 use Phpdup\Pipeline\Pipeline;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\Stage;
 use Phpdup\Pipeline\StageInterface;
+use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\NullOutput;
 use Symfony\Component\Console\Output\OutputInterface;
 
@@ -154,6 +156,140 @@ final class PipelineTest extends TestCase
 
         $this->assertSame($state, $returned);
         $this->assertSame(Stage::Scanning, $state->stage);
+    }
+
+    // ── DebugLogger wiring (once-S69 / php-dup-finder-once-079) ─────────
+
+    /**
+     * A writable debug-log path records every debug()-level message the
+     * pipeline pushes (the normal, admitted posture).
+     */
+    public function testPipelineRecordsDebugMessagesToWritableLog(): void
+    {
+        $log = sys_get_temp_dir() . '/phpdup-s69-ok-' . getmypid() . '.log';
+        @unlink($log);
+        try {
+            $state = new PipelineState(
+                Config::defaults([__DIR__])->withOverrides(['debug_log' => $log]),
+            );
+            (new Pipeline([$this->debugEmittingStage()]))->run($state, $this->debugOutput());
+
+            $this->assertSame("m1\nm2\nm3\n", @file_get_contents($log));
+        } finally {
+            @unlink($log);
+        }
+    }
+
+    /**
+     * Unopenable log path (bypassing CLI admission — the serve/watch
+     * payload posture): the whole run surfaces EXACTLY ONE fopen warning,
+     * not one per message. The old retry-on-false leg spammed fopen
+     * diagnostics on every debug() call; the failed open now parks the
+     * handle terminal-false. The run still completes and shutdown stays
+     * TypeError-free (shell-S29 safe-close core).
+     */
+    public function testUnwritableDebugLogWarnsOnceNotPerMessage(): void
+    {
+        $deadPath = sys_get_temp_dir() . '/phpdup-s69-missing-' . getmypid() . '/x.log';
+
+        $warnings = self::captureWarnings(function () use ($deadPath): void {
+            $state = new PipelineState(
+                Config::defaults([__DIR__])->withOverrides(['debug_log' => $deadPath]),
+            );
+            (new Pipeline([$this->debugEmittingStage()]))->run($state, $this->debugOutput());
+            $this->assertSame(Stage::Reporting, $state->stage, 'run must complete despite dead log');
+        });
+
+        $fopenWarnings = array_values(array_filter(
+            $warnings,
+            static fn(string $w): bool => str_contains($w, 'Failed to open stream'),
+        ));
+        $this->assertCount(1, $fopenWarnings, 'three debug messages must cost one warning, not three');
+        clearstatcache();
+        $this->assertFalse(is_file($deadPath), 'no log file may materialize on a dead path');
+    }
+
+    public function testAdmissionProbePassesWritablePathSilently(): void
+    {
+        $log = sys_get_temp_dir() . '/phpdup-s69-probe-' . getmypid() . '.log';
+        @unlink($log); // start from an absent path
+        try {
+            $warnings = self::captureWarnings(function () use ($log): void {
+                $this->assertNull(DebugLogger::admissionProbe($log));
+            });
+            $this->assertSame([], $warnings, 'the admission probe never leaks a warning');
+            $this->assertFileExists($log, 'append-mode probe materializes the log');
+            $this->assertSame('', file_get_contents($log));
+        } finally {
+            @unlink($log);
+        }
+    }
+
+    public function testAdmissionProbeNamesTheFailureWithoutWarning(): void
+    {
+        $deadPath = sys_get_temp_dir() . '/phpdup-s69-missing-' . getmypid() . '/x.log';
+
+        $reason = null;
+        $warnings = self::captureWarnings(static function () use ($deadPath, &$reason): void {
+            $reason = DebugLogger::admissionProbe($deadPath);
+        });
+
+        $this->assertSame([], $warnings, 'admission failures surface via the return value only');
+        $this->assertIsString($reason);
+        $this->assertStringContainsString('Failed to open stream', $reason);
+        $this->assertStringStartsNotWith('fopen(', $reason, 'the fopen() prefix is stripped for the one-line message');
+    }
+
+    private function debugEmittingStage(): StageInterface
+    {
+        return new class implements StageInterface {
+            public function name(): Stage { return Stage::Scanning; }
+            public function run(PipelineState $state, OutputInterface $output): void
+            {
+                $state->debug($output, 'm1');
+                $state->debug($output, 'm2');
+                $state->debug($output, 'm3');
+                $state->stage = Stage::Reporting; // mark completion for the dead-log pin
+            }
+        };
+    }
+
+    private function debugOutput(): OutputInterface
+    {
+        $output = new BufferedOutput();
+        $output->setVerbosity(OutputInterface::VERBOSITY_DEBUG);
+        return $output;
+    }
+
+    /**
+     * Run a callback with PHP warnings collected instead of emitted —
+     * hermetic under phpunit.xml's failOnWarning="true" while still
+     * counting what the user would have seen. Only EXPRESSION-LEVEL
+     * suppression (@fopen in the admission probe) is skipped: PHPUnit
+     * globally lowers error_reporting, so the capture first installs an
+     * E_ALL baseline — under it, a diagnostic whose own bit is absent
+     * from the live mask was suppressed at the call site.
+     *
+     * @return list<string>
+     */
+    private static function captureWarnings(callable $fn): array
+    {
+        $collected = [];
+        $previousMask = error_reporting(E_ALL); // strict baseline under PHPUnit's lowered mask
+        set_error_handler(static function (int $severity, string $message) use (&$collected): bool {
+            if (!(error_reporting() & $severity)) {
+                return false; // @-suppressed at the call site: nothing surfaces to the user either
+            }
+            $collected[] = $message;
+            return true;
+        });
+        try {
+            $fn();
+        } finally {
+            restore_error_handler();
+            error_reporting($previousMask);
+        }
+        return $collected;
     }
 
     /** @param list<Stage> $observed */

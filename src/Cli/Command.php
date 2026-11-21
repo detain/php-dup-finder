@@ -5,6 +5,7 @@ namespace Phpdup\Cli;
 
 use Phpdup\Clustering\CandidateBudgetException;
 use Phpdup\Refactor\ScriptKindApplyRefusal;
+use Phpdup\Pipeline\DebugLogger;
 use Phpdup\Pipeline\Pipeline;
 use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Tui\PhpdupModel;
@@ -222,6 +223,20 @@ HELP;
             // the conventional friendly exit 2, never as a raw stack trace.
             $output->writeln('<error>phpdup: ' . $e->getMessage() . '</error>');
             return 2;
+        }
+
+        // once-S69 (php-dup-finder-once-079): admit an unwritable --debug-log
+        // path here — before the pipeline constructs a DebugLogger and before
+        // any analysis work starts. Old posture: the run continued, append()
+        // retried fopen per debug message (warning spam), and shutdown could
+        // still die. Now: one clear error line, usage exit 2, nothing opened.
+        if ($config->debugLog !== null) {
+            $debugLogError = DebugLogger::admissionProbe($config->debugLog);
+            if ($debugLogError !== null) {
+                $output->writeln('<error>phpdup: --debug-log path is not writable: '
+                    . $config->debugLog . ' (' . $debugLogError . ')</error>');
+                return 2;
+            }
         }
 
         $runtimeOptions = $this->parseRuntimeOptions($input, $output, $autoTuneExactOnly);
