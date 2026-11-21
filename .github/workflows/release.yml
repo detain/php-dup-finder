@@ -6,6 +6,18 @@ on:
       - 'v*'
 
 jobs:
+  # once-S05 (php-dup-finder-once-005) — fail-closed signing rebuild:
+  #   * the HMAC secret env is declared on the step that SIGNS (and only
+  #     there — it used to sit on the upload step while the sign step ran
+  #     without it, so every public release was HMAC'd with an empty key);
+  #   * the sign step refuses to run with an unset/empty secret;
+  #   * the signature covers a tag-bound release MANIFEST whose bytes also
+  #     pin the artifact's sha256, so self:update no longer trusts a
+  #     checksum from the same response as the artifact;
+  #   * signing uses the RAW key string — UpdateCommand::VERIFICATION_KEY
+  #     is compared in the same raw form (the old base64_decode() here vs
+  #     raw constant there could never agree);
+  #   * the publish job only runs after the round-trip verify gate below.
   build-and-sign:
     name: Build & Sign PHAR
     runs-on: ubuntu-latest
@@ -29,10 +41,126 @@ jobs:
           BOX_PHAR: 1
 
       - name: Compute SHA-256 checksum
+        # Informational sidecar for manual installs (sha256sum). NOT used
+        # by self:update verification anymore — the artifact hash the
+        # client honors is the one pinned inside the SIGNED manifest.
         run: php -r "echo hash_file('sha256', 'phpdup.phar');" > phpdup.phar.sha256
 
-      - name: Compute HMAC-SHA256 signature
-        run: php -r "echo hash_hmac_file('sha256', 'phpdup.phar', base64_decode(\$_SERVER['HMAC_SECRET_KEY']));" > phpdup.phar.sig
+      - name: Build release manifest
+        env:
+          MANIFEST_TAG: ${{ github.ref_name }}
+        run: |
+          php -r '
+            $sha = trim((string) file_get_contents("phpdup.phar.sha256"));
+            $tag = (string) getenv("MANIFEST_TAG");
+            if (!preg_match("/^[0-9a-f]{64}$/", $sha) || $tag === "") {
+                fwrite(STDERR, "release.yml: malformed checksum sidecar or empty tag\n");
+                exit(1);
+            }
+            echo json_encode(
+                ["schema" => 1, "tag" => $tag, "file" => "phpdup.phar", "sha256" => $sha],
+                JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES
+            ), "\n";
+          ' > phpdup.release.json
+
+      - name: Sign release manifest (HMAC-SHA256)
+        env:
+          HMAC_SECRET_KEY: ${{ secrets.HMAC_SECRET_KEY }}
+        run: |
+          if [ -z "${HMAC_SECRET_KEY:-}" ]; then
+            echo "::error::HMAC_SECRET_KEY is not configured for this repository."
+            echo "::error::Refusing to publish an empty-key signature (php-dup-finder-once-005)."
+            exit 1
+          fi
+          # RAW key string on both sides — no base64_decode() here ever
+          # again; UpdateCommand verifies against the same raw form.
+          php -r "echo hash_hmac_file('sha256', 'phpdup.release.json', (string) getenv('HMAC_SECRET_KEY'));" > phpdup.release.json.sig
+
+      - name: Stage workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: |
+            phpdup.phar
+            phpdup.phar.sha256
+            phpdup.release.json
+            phpdup.release.json.sig
+          if-no-files-found: error
+
+  # Acceptance gate for php-dup-finder-once-005: the CI round-trip.
+  # Sign -> verify through the REAL UpdateCommand code path (offline
+  # --verify-* mode, available from a source tree): a good artifact must
+  # verify (exit 0), a tampered one must refuse (exit 1), and the shipped
+  # placeholder verification key must REFUSE (exit 1) instead of passing.
+  # `publish` needs this job, so nothing is attached to a release unless
+  # all three legs hold.
+  roundtrip-verify:
+    name: Verify self:update round-trip (sign -> verify -> tamper refusal)
+    runs-on: ubuntu-latest
+    needs: build-and-sign
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+
+      - name: Install dependencies
+        run: composer install --no-interaction --no-dev
+
+      - name: Fetch staged release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+
+      - name: Round-trip — good artifact verifies (exit 0)
+        env:
+          PHPDUP_UPDATE_VERIFICATION_KEY: ${{ secrets.HMAC_SECRET_KEY }}
+        run: |
+          php bin/phpdup self:update \
+            --verify-artifact=phpdup.phar \
+            --verify-manifest=phpdup.release.json \
+            --verify-signature=phpdup.release.json.sig
+
+      - name: Round-trip — tampered artifact refuses (exit 1)
+        env:
+          PHPDUP_UPDATE_VERIFICATION_KEY: ${{ secrets.HMAC_SECRET_KEY }}
+        run: |
+          cp phpdup.phar phpdup.tampered.phar
+          printf 'TAMPER' >> phpdup.tampered.phar
+          if php bin/phpdup self:update \
+              --verify-artifact=phpdup.tampered.phar \
+              --verify-manifest=phpdup.release.json \
+              --verify-signature=phpdup.release.json.sig; then
+            echo "::error::tampered artifact passed verification — fail-open regression"
+            exit 1
+          fi
+
+      - name: Round-trip — placeholder verification key refuses (exit 1)
+        run: |
+          # No PHPDUP_UPDATE_VERIFICATION_KEY here: the compiled-in constant
+          # is still the build placeholder, and verification must REFUSE.
+          if php bin/phpdup self:update \
+              --verify-artifact=phpdup.phar \
+              --verify-manifest=phpdup.release.json \
+              --verify-signature=phpdup.release.json.sig; then
+            echo "::error::placeholder verification key passed verification — fail-open regression"
+            exit 1
+          fi
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: roundtrip-verify
+
+    steps:
+      - name: Fetch staged release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets
 
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v3
@@ -40,9 +168,12 @@ jobs:
           files: |
             phpdup.phar
             phpdup.phar.sha256
-            phpdup.phar.sig
+            phpdup.release.json
+            phpdup.release.json.sig
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HMAC_SECRET_KEY: ${{ secrets.HMAC_SECRET_KEY }}
+          # NOTE: HMAC_SECRET_KEY deliberately absent — the upload step
+          # never needed it; the old placement (secret on upload, missing
+          # on sign) is the bug once-S05 fixed.

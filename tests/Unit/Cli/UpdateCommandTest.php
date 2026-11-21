@@ -8,15 +8,35 @@ use Phpdup\Cli\UpdateCommand;
 use Symfony\Component\Console\Application;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\BufferedOutput;
-use Symfony\Component\Console\Output\NullOutput;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
+/**
+ * shell-S36 legs: honest download completion over stream seams + the real
+ * execute() download-caller leg (mock file:// transport only).
+ *
+ * once-S05 legs (php-dup-finder-once-005, fail-closed integrity rebuild):
+ * signed release manifest + tag binding + artifact hash pinned to the
+ * manifest (never to the same-response sha256 sidecar), placeholder-key
+ * REFUSAL, raw-vs-base64 key-form agreement with the release.yml signing
+ * formula, the confined --dev-allow-unsigned banner, and the offline
+ * --verify-* round-trip code path the CI gate drives (exit 0 good /
+ * exit 1 tamper).
+ */
 final class UpdateCommandTest extends TestCase
 {
+    /** Raw-string key exactly as .github/workflows/release.yml would sign with it. */
+    private const RAW_KEY = 'once-s05-raw-key-Zm9vYmFy (never base64-decoded either side)';
+
+    private const TAG = 'v9.9.9-s05';
+
+    private const KEY_ENV = 'PHPDUP_UPDATE_VERIFICATION_KEY';
+
     private ?string $s36Scratch = null;
 
     protected function tearDown(): void
     {
+        putenv(self::KEY_ENV);
+        unset($_ENV[self::KEY_ENV], $_SERVER[self::KEY_ENV]);
         if ($this->s36Scratch !== null) {
             foreach (glob($this->s36Scratch . '/*') ?: [] as $f) {
                 @unlink($f);
@@ -27,69 +47,389 @@ final class UpdateCommandTest extends TestCase
         parent::tearDown();
     }
 
-    public function testValidSignatureIsAccepted(): void
+    // ------------------------------------------------------------------
+    // once-S05 — signed-manifest verification through the REAL code path
+    // ------------------------------------------------------------------
+
+    public function testGoodSignedReleaseInstallsThroughRealVerifyPath(): void
     {
-        $command = new TestUpdateCommand(TestUpdateCommand::MODE_VALID_SIGNATURE);
+        $artifact = $this->makeArtifact();
+        [$manifest, $sig] = $this->makeSignedManifestPair($artifact, self::TAG, self::RAW_KEY);
+        $command = $this->s05Command($artifact, $manifest, $sig);
+        $command->keyOverride = self::RAW_KEY;
 
-        $app = new Application('phpdup', '0.0.0');
-        $app->add($command);
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput([]), $output);
+        $messages = $output->fetch();
 
-        $outputPath = sys_get_temp_dir() . '/phpdup-valid-test.phar';
-        $input = new ArrayInput(['--output' => $outputPath]);
-        $output = new NullOutput();
-
-        $exitCode = $command->run($input, $output);
-
-        $this->assertSame(0, $exitCode);
-        $this->assertFileExists($outputPath);
-        unlink($outputPath);
+        $this->assertSame(0, $exit);
+        $this->assertSame(1, $command->realVerifyCalls, 'real HMAC primitive must run exactly once');
+        $this->assertStringContainsString('Manifest HMAC-SHA256', $messages);
+        $this->assertStringContainsString('verified', $messages);
+        $this->assertStringContainsString('pinned to the signed manifest', $messages);
+        $this->assertStringEqualsFile($this->fakePharPath(), (string)file_get_contents($artifact));
+        $this->assertSame([], $this->scratchGlob('*.tmp.*'));
     }
 
-    public function testTamperedPharIsRejected(): void
+    public function testTamperedArtifactRefusedAgainstManifestPin(): void
     {
-        $command = new TestUpdateCommand(TestUpdateCommand::MODE_TAMPERED_PHAR);
+        $artifact = $this->makeArtifact();
+        [$manifest, $sig] = $this->makeSignedManifestPair($artifact, self::TAG, self::RAW_KEY);
+        // Tamper AFTER signing: the manifest pins the pristine hash, the
+        // served bytes no longer match — the classic release-bucket swap.
+        file_put_contents($artifact, (string)file_get_contents($artifact) . "\nTAMPERED");
 
-        $app = new Application('phpdup', '0.0.0');
-        $app->add($command);
+        $command = $this->s05Command($artifact, $manifest, $sig);
+        $command->keyOverride = self::RAW_KEY;
 
-        $outputPath = sys_get_temp_dir() . '/phpdup-tampered-test.phar';
-        $input = new ArrayInput(['--output' => $outputPath]);
-        $output = new NullOutput();
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput([]), $output);
 
-        $exitCode = $command->run($input, $output);
-
-        $this->assertSame(1, $exitCode);
-        $this->assertFileDoesNotExist($outputPath);
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('SHA-256 does not match the signed manifest', $output->fetch());
+        $this->assertStringEqualsFile($this->fakePharPath(), 'OLD-PHAR-CONTENT', 'tampered bytes must never hot-swap');
+        $this->assertSame([], $this->scratchGlob('*.tmp.*'));
     }
 
-    public function testMissingSignatureIsRejectedWithoutAllowUnsigned(): void
+    public function testSameResponseChecksumAssetIsNoLongerTrusted(): void
     {
-        $command = new TestUpdateCommand(TestUpdateCommand::MODE_NO_SIGNATURE);
+        // The release response carries a sha256 sidecar with a WRONG value.
+        // The old flow could fall back to it; the once-S05 flow ignores it
+        // entirely and pins only what the signed manifest says — so the
+        // install succeeds (manifest is authoritative) and, conversely, the
+        // sidecar can never be the reason an install passes.
+        $artifact = $this->makeArtifact();
+        [$manifest, $sig] = $this->makeSignedManifestPair($artifact, self::TAG, self::RAW_KEY);
+        $sidecar = $this->scratchFile('remote.phar.sha256');
+        file_put_contents($sidecar, str_repeat('d', 64));
 
-        $app = new Application('phpdup', '0.0.0');
-        $app->add($command);
+        $command = $this->s05Command($artifact, $manifest, $sig);
+        $command->keyOverride = self::RAW_KEY;
+        $command->releasePayload['assets'][] = [
+            'name' => 'phpdup.phar.sha256',
+            'browser_download_url' => 'file://' . $sidecar,
+        ];
 
-        $input = new ArrayInput([]);
-        $output = new NullOutput();
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput([]), $output);
 
-        $exitCode = $command->run($input, $output);
-
-        $this->assertSame(1, $exitCode);
+        $this->assertSame(0, $exit, 'a mismatched same-response sidecar must not affect the outcome');
+        $this->assertStringNotContainsString('Verifying checksum', $output->fetch(), 'the legacy checksum-fallback section is gone');
+        $this->assertStringEqualsFile($this->fakePharPath(), (string)file_get_contents($artifact));
     }
 
-    public function testMissingSignatureIsAcceptedWithAllowUnsigned(): void
+    public function testPlaceholderKeyRefusesInsteadOfPassing(): void
     {
-        $command = new TestUpdateCommand(TestUpdateCommand::MODE_NO_SIGNATURE);
+        $artifact = $this->makeArtifact();
+        [$manifest, $sig] = $this->makeSignedManifestPair($artifact, self::TAG, self::RAW_KEY);
+        $command = $this->s05Command($artifact, $manifest, $sig);
+        // keyOverride stays null and no env key is set → resolved key is the
+        // shipped VERIFICATION_KEY placeholder → hard refusal BEFORE transfer.
+        $this->assertTrue($command->keyIsPlaceholder());
 
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput([]), $output);
+        $messages = $output->fetch();
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('placeholder', $messages);
+        $this->assertStringContainsString('VERIFICATION_KEY', $messages);
+        $this->assertSame(0, $command->realVerifyCalls, 'nothing may verify with the placeholder');
+        $this->assertStringEqualsFile($this->fakePharPath(), 'OLD-PHAR-CONTENT');
+        $this->assertSame([], $this->scratchGlob('*.tmp.*'), 'refusal must happen before any download residue');
+    }
+
+    public function testPlaceholderKeyVerifyPrimitiveRefusesDirectly(): void
+    {
+        $artifact = $this->makeArtifact();
+        [$manifest, $sig] = $this->makeSignedManifestPair($artifact, self::TAG, self::RAW_KEY);
+        $command = $this->s05Command($artifact, $manifest, $sig);
+
+        // Even when driven straight (offline-style call sites), the real
+        // verifySignature must REFUSE with the placeholder — never pass.
+        $this->assertFalse($command->verifyDirect($manifest, trim((string)file_get_contents($sig))));
+    }
+
+    public function testRawKeyFormMatchesSigningFormulaBothSides(): void
+    {
+        $artifact = $this->makeArtifact();
+        [$manifest, $sig] = $this->makeSignedManifestPair($artifact, self::TAG, self::RAW_KEY);
+        $command = $this->s05Command($artifact, $manifest, $sig);
+        $command->keyOverride = self::RAW_KEY;
+
+        $this->assertTrue(
+            $command->verifyDirect($manifest, trim((string)file_get_contents($sig))),
+            'raw-string key on both sides must agree (release.yml formula)',
+        );
+    }
+
+    public function testBase64DecodedKeySignatureIsRefused(): void
+    {
+        // Old release.yml signed with base64_decode(secret) while the client
+        // verified with the raw constant — the forms could never agree. Pin
+        // that this lane's raw/raw contract stays broken against the old
+        // one-sided decode.
+        $artifact = $this->makeArtifact();
+        [$manifest, $sig] = $this->makeSignedManifestPair($artifact, self::TAG, base64_decode(self::RAW_KEY, true) ?: 'x');
+
+        $command = $this->s05Command($artifact, $manifest, $sig);
+        $command->keyOverride = self::RAW_KEY;
+
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput([]), $output);
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('does not verify', $output->fetch());
+        $this->assertStringEqualsFile($this->fakePharPath(), 'OLD-PHAR-CONTENT');
+    }
+
+    public function testEnvOverrideSuppliesRawKey(): void
+    {
+        // Exactly what the roundtrip-verify job in release.yml does: set the
+        // env key, no rebuild, verification uses it raw.
+        $artifact = $this->makeArtifact();
+        [$manifest, $sig] = $this->makeSignedManifestPair($artifact, self::TAG, self::RAW_KEY);
+        putenv(self::KEY_ENV . '=' . self::RAW_KEY);
+
+        $command = $this->s05Command($artifact, $manifest, $sig);
+
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput([]), $output);
+
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString('pinned to the signed manifest', $output->fetch());
+    }
+
+    public function testManifestTagMismatchRefused(): void
+    {
+        // A signed manifest for another tag must not be replayed onto this
+        // release: the tag is bound against the API metadata response.
+        $artifact = $this->makeArtifact();
+        [$manifest, $sig] = $this->makeSignedManifestPair($artifact, 'v0.0.0-evil', self::RAW_KEY);
+
+        $command = $this->s05Command($artifact, $manifest, $sig);
+        $command->keyOverride = self::RAW_KEY;
+
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput([]), $output);
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('pinned to tag v0.0.0-evil', $output->fetch());
+        $this->assertStringEqualsFile($this->fakePharPath(), 'OLD-PHAR-CONTENT');
+        $this->assertSame([], $this->scratchGlob('*.tmp.*'));
+    }
+
+    public function testMissingManifestAssetsRefuseInstall(): void
+    {
+        $artifact = $this->makeArtifact();
+        $command = $this->s05Command($artifact, null, null);
+        $command->keyOverride = self::RAW_KEY;
+
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput([]), $output);
+        $messages = $output->fetch();
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('no signed manifest', $messages);
+        $this->assertStringContainsString('--dev-allow-unsigned', $messages, 'the refusal must name the only (loud, dev) way through');
+        $this->assertSame(0, $command->realVerifyCalls);
+        $this->assertStringEqualsFile($this->fakePharPath(), 'OLD-PHAR-CONTENT');
+        $this->assertSame([], $this->scratchGlob('*.tmp.*'), 'the guard runs before any transfer');
+    }
+
+    public function testReleaseManifestDownloadFailureAbortsInstall(): void
+    {
+        $artifact = $this->makeArtifact();
+        [$manifest, $sig] = $this->makeSignedManifestPair($artifact, self::TAG, self::RAW_KEY);
+        $command = $this->s05Command($artifact, $manifest, $sig);
+        $command->keyOverride = self::RAW_KEY;
+        $command->failManifestDownload = true;
+
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput([]), $output);
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('Download of release manifest failed.', $output->fetch());
+        $this->assertSame(0, $command->realVerifyCalls);
+        $this->assertStringEqualsFile($this->fakePharPath(), 'OLD-PHAR-CONTENT');
+        $this->assertSame([], $this->scratchGlob('*.tmp.*'));
+    }
+
+    public function testMalformedSignatureFileRefused(): void
+    {
+        $artifact = $this->makeArtifact();
+        [$manifest, $sig] = $this->makeSignedManifestPair($artifact, self::TAG, self::RAW_KEY);
+        file_put_contents($sig, 'deadbeef-not-hex-at-all');
+
+        $command = $this->s05Command($artifact, $manifest, $sig);
+        $command->keyOverride = self::RAW_KEY;
+
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput([]), $output);
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('Signature file is malformed', $output->fetch());
+        $this->assertStringEqualsFile($this->fakePharPath(), 'OLD-PHAR-CONTENT');
+    }
+
+    public function testSignedButUnparseableManifestRefused(): void
+    {
+        // Signature math may PASS while the envelope is garbage: the parser
+        // must still refuse — the manifest never reaches install logic in a
+        // half-trusted shape (parse, don't validate downstream).
+        $artifact = $this->makeArtifact();
+        $manifest = $this->scratchFile('garbage.release.json');
+        file_put_contents($manifest, "this is not json {\n");
+        $sig = $manifest . '.sig';
+        file_put_contents($sig, hash_hmac_file('sha256', $manifest, self::RAW_KEY));
+
+        $command = $this->s05Command($artifact, $manifest, $sig);
+        $command->keyOverride = self::RAW_KEY;
+
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput([]), $output);
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('not valid JSON', $output->fetch());
+        $this->assertStringEqualsFile($this->fakePharPath(), 'OLD-PHAR-CONTENT');
+    }
+
+    // ------------------------------------------------------------------
+    // once-S05 — --dev-allow-unsigned (the confined funnel)
+    // ------------------------------------------------------------------
+
+    public function testAllowUnsignedFlagIsGone(): void
+    {
+        $definition = (new UpdateCommand())->getDefinition();
+        $this->assertFalse($definition->hasOption('allow-unsigned'), 'bare --allow-unsigned must no longer exist');
+        $this->assertTrue($definition->hasOption('dev-allow-unsigned'));
+        $this->assertStringContainsString('DEV ONLY', (string)$definition->getOption('dev-allow-unsigned')->getDescription());
+    }
+
+    public function testDevAllowUnsignedInstallsWithLoudBanner(): void
+    {
+        $artifact = $this->makeArtifact();
+        // No manifest/sig assets AND placeholder key — dev mode must still
+        // install (that is its whole, loudly-disclosed purpose) — and say so.
+        $command = $this->s05Command($artifact, null, null);
+
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput(['--dev-allow-unsigned' => true]), $output);
+        $messages = $output->fetch();
+
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString('INSTALLING WITHOUT INTEGRITY VERIFICATION', $messages);
+        $this->assertStringContainsString('UNVERIFIED', $messages);
+        $this->assertSame(0, $command->realVerifyCalls);
+        $this->assertStringEqualsFile($this->fakePharPath(), (string)file_get_contents($artifact));
+    }
+
+    // ------------------------------------------------------------------
+    // once-S05 — offline --verify-* mode (CI round-trip code path)
+    // ------------------------------------------------------------------
+
+    public function testOfflineVerifyGoodArtifactExitsZero(): void
+    {
+        putenv(self::KEY_ENV . '=' . self::RAW_KEY);
+        $artifact = $this->makeArtifact();
+        [$manifest, $sig] = $this->makeSignedManifestPair($artifact, self::TAG, self::RAW_KEY);
+
+        // Plain command: offline mode runs before the phar guard, so a source
+        // tree (phpunit context, Phar::running() === '') is enough.
+        $command = new UpdateCommand();
         $app = new Application('phpdup', '0.0.0');
         $app->add($command);
 
-        $input = new ArrayInput(['--allow-unsigned' => true]);
-        $output = new NullOutput();
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput([
+            '--verify-artifact' => $artifact,
+            '--verify-manifest' => $manifest,
+            '--verify-signature' => $sig,
+        ]), $output);
+        $messages = $output->fetch();
 
-        $exitCode = $command->run($input, $output);
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString('Offline verification passed', $messages);
+        $this->assertStringContainsString('not bound to a live release', $messages, 'offline mode must disclose the unbound tag');
+    }
 
-        $this->assertSame(0, $exitCode);
+    public function testOfflineVerifyTamperedArtifactExitsOne(): void
+    {
+        putenv(self::KEY_ENV . '=' . self::RAW_KEY);
+        $artifact = $this->makeArtifact();
+        [$manifest, $sig] = $this->makeSignedManifestPair($artifact, self::TAG, self::RAW_KEY);
+        file_put_contents($artifact, (string)file_get_contents($artifact) . "\nTAMPERED");
+
+        $command = new UpdateCommand();
+        $app = new Application('phpdup', '0.0.0');
+        $app->add($command);
+
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput([
+            '--verify-artifact' => $artifact,
+            '--verify-manifest' => $manifest,
+            '--verify-signature' => $sig,
+        ]), $output);
+
+        $this->assertSame(1, $exit, 'tamper after signing must exit 1 (round-trip gate leg)');
+        $this->assertStringContainsString('SHA-256 does not match the signed manifest', $output->fetch());
+    }
+
+    public function testOfflineVerifyPlaceholderKeyExitsOne(): void
+    {
+        // No env key: the third round-trip leg — placeholder must REFUSE.
+        $artifact = $this->makeArtifact();
+        [$manifest, $sig] = $this->makeSignedManifestPair($artifact, self::TAG, self::RAW_KEY);
+
+        $command = new UpdateCommand();
+        $app = new Application('phpdup', '0.0.0');
+        $app->add($command);
+
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput([
+            '--verify-artifact' => $artifact,
+            '--verify-manifest' => $manifest,
+            '--verify-signature' => $sig,
+        ]), $output);
+
+        $this->assertSame(1, $exit);
+        $messages = $output->fetch();
+        $this->assertStringContainsString('placeholder', $messages);
+        $this->assertStringContainsString('VERIFICATION_KEY', $messages);
+    }
+
+    public function testOfflineVerifyRequiresAllThreeOptions(): void
+    {
+        $artifact = $this->makeArtifact();
+        $command = new UpdateCommand();
+        $app = new Application('phpdup', '0.0.0');
+        $app->add($command);
+
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput(['--verify-artifact' => $artifact]), $output);
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('together', $output->fetch());
+    }
+
+    // ------------------------------------------------------------------
+    // once-S05 — dry-run honesty (reports, never verifies, never writes)
+    // ------------------------------------------------------------------
+
+    public function testDryRunReportsPlaceholderAndMissingAssets(): void
+    {
+        $artifact = $this->makeArtifact();
+        $command = $this->s05Command($artifact, null, null);
+
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput(['--dry-run' => true]), $output);
+        $messages = $output->fetch();
+
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString('PLACEHOLDER', $messages);
+        $this->assertStringContainsString('MISSING', $messages);
+        $this->assertStringEqualsFile($this->fakePharPath(), 'OLD-PHAR-CONTENT');
+        $this->assertSame([], $this->scratchGlob('*.tmp.*'));
     }
 
     // ------------------------------------------------------------------
@@ -319,12 +659,93 @@ final class UpdateCommandTest extends TestCase
         return $this->scratchFile('phpdup-running.phar');
     }
 
+    // -- once-S05 fixture builders ----------------------------------------
+
+    private function makeArtifact(string $name = 'remote.phar'): string
+    {
+        $path = $this->scratchFile($name);
+        file_put_contents($path, 'S05-PHAR-BYTES-' . str_repeat('q', 5000));
+        return $path;
+    }
+
+    /**
+     * Build + sign a manifest for the artifact, byte-for-byte the release.yml
+     * formula: JSON envelope (schema 1, tag, file, sha256) and
+     * hash_hmac_file over the manifest FILE bytes with the RAW key string.
+     *
+     * @return array{0: string, 1: string} [manifestPath, signaturePath]
+     */
+    private function makeSignedManifestPair(string $artifactPath, string $tag, string $key, ?string $shaOverride = null): array
+    {
+        $manifest = $this->scratchFile($tag . '.release.json');
+        $sha = $shaOverride ?? hash_file('sha256', $artifactPath);
+        if ($sha === false) {
+            $this->fail('cannot hash artifact');
+        }
+        file_put_contents($manifest, json_encode([
+            'schema' => 1,
+            'tag'    => $tag,
+            'file'   => 'phpdup.phar',
+            'sha256' => $sha,
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+
+        $sig = $this->scratchFile($tag . '.release.json.sig');
+        file_put_contents($sig, hash_hmac_file('sha256', $manifest, $key));
+        return [$manifest, $sig];
+    }
+
+    private function s05Command(
+        string $artifactPath,
+        ?string $manifestPath,
+        ?string $sigPath,
+        string $tag = self::TAG,
+    ): S05UpdateCommand {
+        file_put_contents($this->fakePharPath(), 'OLD-PHAR-CONTENT');
+
+        $command = new S05UpdateCommand();
+        $command->fakePharPath = $this->fakePharPath();
+
+        $assets = [['name' => 'phpdup.phar', 'browser_download_url' => 'file://' . $artifactPath]];
+        if ($manifestPath !== null) {
+            $command->manifestUrl = 'file://' . $manifestPath;
+            $assets[] = ['name' => 'phpdup.release.json', 'browser_download_url' => $command->manifestUrl];
+        }
+        if ($sigPath !== null) {
+            $assets[] = ['name' => 'phpdup.release.json.sig', 'browser_download_url' => 'file://' . $sigPath];
+        }
+        $command->releasePayload = [
+            'tag_name'     => $tag,
+            'prerelease'   => false,
+            'draft'        => false,
+            'published_at' => '2026-01-01T00:00:00Z',
+            'assets'       => $assets,
+        ];
+
+        $app = new Application('phpdup', '0.0.0');
+        $app->add($command);
+        return $command;
+    }
+
+    // -- shell-S36 fixture builder -----------------------------------------
+
     private function s36Command(bool $failPharDownload = false, bool $failSigDownload = false): TestUpdateCommand
     {
         $pharSrc = $this->scratchFile('remote.phar');
         $sigSrc = $this->scratchFile('remote.phar.sig');
-        file_put_contents($pharSrc, 'NEW-PHAR-BYTES-' . str_repeat('z', 70000));
-        file_put_contents($sigSrc, 'deadbeef-deadbeef');
+        $manifestSrc = $this->scratchFile('remote.release.json');
+        $pharBytes = 'NEW-PHAR-BYTES-' . str_repeat('z', 70000);
+        file_put_contents($pharSrc, $pharBytes);
+        // once-S05 asset model: a well-formed manifest (its sha256 matches
+        // the served bytes — validateManifest + the hash pin are REAL in
+        // this leg too) and a 64-hex signature file (the format guard is
+        // real; the HMAC check itself stays mocked via the seam).
+        file_put_contents($manifestSrc, json_encode([
+            'schema' => 1,
+            'tag'    => 'v9.9.9-s36',
+            'file'   => 'phpdup.phar',
+            'sha256' => hash('sha256', $pharBytes),
+        ], JSON_PRETTY_PRINT) . "\n");
+        file_put_contents($sigSrc, str_repeat('ab', 32));
         file_put_contents($this->fakePharPath(), 'OLD-PHAR-CONTENT');
 
         $command = new TestUpdateCommand(TestUpdateCommand::MODE_S36);
@@ -340,7 +761,8 @@ final class UpdateCommandTest extends TestCase
             'published_at' => '2026-01-01T00:00:00Z',
             'assets'       => [
                 ['name' => 'phpdup.phar', 'browser_download_url' => $command->pharUrl],
-                ['name' => 'phpdup.phar.sig', 'browser_download_url' => $command->sigUrl],
+                ['name' => 'phpdup.release.json', 'browser_download_url' => 'file://' . $manifestSrc],
+                ['name' => 'phpdup.release.json.sig', 'browser_download_url' => $command->sigUrl],
             ],
         ];
 
@@ -384,15 +806,88 @@ final class UpdateCommandTest extends TestCase
     }
 }
 
+/**
+ * once-S05 harness: real UpdateCommand::execute() + real verifySignature
+ * over mock file:// transport; only the environment seams (phar path,
+ * release metadata, key, manifest-download failure) are steered.
+ */
+class S05UpdateCommand extends UpdateCommand
+{
+    public string $fakePharPath = '';
+
+    /** @var array<string, mixed> */
+    public array $releasePayload = [];
+
+    public ?string $keyOverride = null;
+
+    public string $manifestUrl = '';
+
+    public bool $failManifestDownload = false;
+
+    public int $realVerifyCalls = 0;
+
+    public function keyIsPlaceholder(): bool
+    {
+        return $this->verificationKeyIsPlaceholder();
+    }
+
+    public function verifyDirect(string $payloadFile, string $expectedSig): bool
+    {
+        return $this->verifySignature($payloadFile, $expectedSig);
+    }
+
+    #[\Override]
+    protected function runningPharPath(): string
+    {
+        return $this->fakePharPath;
+    }
+
+    #[\Override]
+    protected function runningVersion(): string
+    {
+        return '0.0.0';
+    }
+
+    #[\Override]
+    protected function githubToken(): string
+    {
+        return '';
+    }
+
+    #[\Override]
+    protected function fetchJson(string $url, array $headers): ?array
+    {
+        return $this->releasePayload;
+    }
+
+    #[\Override]
+    protected function resolveVerificationKey(): string
+    {
+        return $this->keyOverride ?? parent::resolveVerificationKey();
+    }
+
+    #[\Override]
+    protected function verifySignature(string $payloadFile, string $expectedSig): bool
+    {
+        $this->realVerifyCalls++;
+        return parent::verifySignature($payloadFile, $expectedSig);
+    }
+
+    #[\Override]
+    protected function downloadFile(string $url, string $dest, SymfonyStyle $io): bool
+    {
+        if ($this->failManifestDownload && $url === $this->manifestUrl) {
+            return false;
+        }
+        return parent::downloadFile($url, $dest, $io);
+    }
+}
+
 class TestUpdateCommand extends UpdateCommand
 {
-    public const MODE_VALID_SIGNATURE = 'valid';
-    public const MODE_TAMPERED_PHAR = 'tampered';
-    public const MODE_NO_SIGNATURE = 'no-sig';
     public const MODE_S36 = 's36';
 
     private string $mode;
-    private string $testPharContent = '<?php $version = "1.0.0"; echo "test";';
 
     // shell-S36 controls (only consulted in MODE_S36)
     public ?string $fakePharPath = null;
@@ -424,79 +919,22 @@ class TestUpdateCommand extends UpdateCommand
         return $this->pipeStream($in, $out, $expectedBytes, $io);
     }
 
-    protected function execute(\Symfony\Component\Console\Input\InputInterface $input, \Symfony\Component\Console\Output\OutputInterface $output): int
-    {
-        if ($this->mode === self::MODE_S36) {
-            // Exercise the REAL UpdateCommand::execute() download caller leg.
-            return parent::execute($input, $output);
-        }
-
-        $io = new SymfonyStyle($input, $output);
-        $outPath = $input->getOption('output');
-
-        if ($this->mode === self::MODE_NO_SIGNATURE) {
-            $allowUnsigned = (bool)$input->getOption('allow-unsigned');
-            $io->section('Verifying signature…');
-            $io->warning('No signature file found — proceeding without verification (--allow-unsigned).');
-            if (!$allowUnsigned) {
-                $io->error('No signature file found in release. Use --allow-unsigned to install anyway (not recommended).');
-                return 1;
-            }
-            $io->success('Update complete (no signature verification).');
-            return 0;
-        }
-
-        $tmpFile = $outPath ?? (sys_get_temp_dir() . '/phpdup.phar.tmp.' . bin2hex(random_bytes(8)));
-
-        file_put_contents($tmpFile, $this->testPharContent);
-        if ($this->mode === self::MODE_TAMPERED_PHAR) {
-            file_put_contents($tmpFile, $this->testPharContent . "\n// TAMPERED");
-        }
-
-        $tmpSig = $tmpFile . '.sig';
-        $expectedSig = hash_hmac('sha256', $this->testPharContent, $this->getVerificationKey());
-        file_put_contents($tmpSig, $expectedSig . "\n");
-
-        $io->section('Verifying signature…');
-        if (!$this->verifySignature($tmpFile, trim((string)@file_get_contents($tmpSig)))) {
-            @unlink($tmpFile);
-            @unlink($tmpSig);
-            $io->error("HMAC-SHA256 signature mismatch.\nUse --allow-unsigned to install anyway (not recommended).");
-            return 1;
-        }
-
-        @unlink($tmpSig);
-
-        if ($outPath !== null) {
-            chmod($outPath, 0755 & ~umask());
-            $io->success("phpdup written to: {$outPath}");
-            return 0;
-        }
-
-        $io->success('phpdup updated.');
-        return 0;
-    }
-
-    private function getVerificationKey(): string
-    {
-        $rc = new \ReflectionClass(UpdateCommand::class);
-        $const = $rc->getConstant('VERIFICATION_KEY');
-        return $const !== false ? $const : 'REPLACE_WITH_REAL_PUBLIC_KEY';
-    }
-
     protected function verifySignature(string $pharFile, string $expectedSig): bool
     {
         if ($this->mode === self::MODE_S36) {
             $this->verifySignatureCalls++;
             return $this->verifyResult;
         }
-        if ($this->mode === self::MODE_TAMPERED_PHAR) {
-            return false;
-        }
-        if ($this->mode === self::MODE_VALID_SIGNATURE) {
-            return true;
-        }
         return parent::verifySignature($pharFile, $expectedSig);
+    }
+
+    /**
+     * once-S05 asset model: execute() refuses on a placeholder key before
+     * any download — the S36 legs supply a test key through this seam.
+     */
+    protected function resolveVerificationKey(): string
+    {
+        return 's36-raw-test-key';
     }
 
     protected function githubToken(): string
@@ -527,7 +965,7 @@ class TestUpdateCommand extends UpdateCommand
         if ($this->mode === self::MODE_S36) {
             if ($this->failPharDownload && $url === $this->pharUrl) {
                 // A torn transfer leaves partial bytes at $dest and the
-                // caller owns cleanup (@unlink at UpdateCommand.php:237).
+                // caller owns cleanup (@unlink in execute()'s phar leg).
                 // Writing real bytes makes the test's '*.tmp.*' glob
                 // pin load-bearing: dropping that unlink surfaces the
                 // residue and turns the assertion red (symmetry with the
