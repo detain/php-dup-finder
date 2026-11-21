@@ -43,6 +43,13 @@ final class NgramFingerprint
     public function fingerprint(Node $node): array
     {
         $tokens = AstSerializer::tokens($node);
+        // Engine-S02a name stamps (`__CALL_send`) carry identifier
+        // identity, not tier information: aggressive mode's similarity
+        // contract has always been vocabulary-agnostic, so the fold
+        // applies in BOTH numbering modes (the exact tier is the one
+        // that went name-honest). Counter un-numbering below stays the
+        // mode-gated item-1.1 knob.
+        $tokens = array_map([IdentifierIds::class, 'foldStamps'], $tokens);
         if ($this->unnumbered) {
             // Coarsening the identifier alphabet can only merge gram keys
             // (multiset Jaccard is monotone under token identification),

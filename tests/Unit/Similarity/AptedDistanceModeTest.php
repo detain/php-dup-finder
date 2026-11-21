@@ -48,19 +48,28 @@ final class AptedDistanceModeTest extends TestCase
             'un-numbered labels must score a slot-flip pair as identical (doc §3.3 class)');
     }
 
-    public function testGuardDriftStrictlyImprovesWithoutReachingOne(): void
+    public function testGuardDriftIsNumberingInvariantAfterNameStamps(): void
     {
-        // The §3.3 row-2 shape: different statement counts mean the
-        // trees genuinely differ, so un-numbering must only RAISE the
-        // score, not perfect it. Measured: .5714 → .6429.
+        // The §3.3 row-2 shape. Rewritten by engine-S02a: the strict
+        // numbered→un-numbered improvement this fixture used to show
+        // (.5714 → .6429) came from first-occurrence ordinals on call
+        // names — the head guard shifted every later __CALL slot in
+        // the numbered labels only. Name-stamped calls fold to family
+        // tokens in BOTH modes, so the pair is now numbering-invariant
+        // at the un-numbered value (.6428…): coarsening no longer
+        // changes it, and the score stays honestly < 1 because the
+        // trees genuinely differ (statement counts). The strict
+        // improvement class survives on variable-slot misalignment,
+        // pinned above by testParamSlotFlipReachesOneOnlyUnnumbered.
         [$a] = self::blocksFrom('<?php function s($log, $r) { $r->go($log); return $r->back($log); }');
         [$b] = self::blocksFrom('<?php function s($log, $r) { $r->warn(); if (!$log) { return false; } $r->go($log); return $r->back($log); }');
 
         $numbered   = (new TreeEditDistance())->similarity($a, $b);
         $unnumbered = (new TreeEditDistance(null, true))->similarity($a, $b);
 
-        $this->assertGreaterThan($numbered, $unnumbered, 'coarsening must strictly improve this pair');
-        $this->assertLessThan(1.0, $unnumbered, 'and honest fixtures stay <1 when shapes genuinely differ');
+        $this->assertSame($numbered, $unnumbered,
+            'post-S02a the guard-drift class carries no numbered divergence (stamps fold in both modes)');
+        $this->assertLessThan(1.0, $numbered, 'and honest fixtures stay <1 when shapes genuinely differ');
     }
 
     public function testMonotoneOverFixtureBlocks(): void

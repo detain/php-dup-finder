@@ -332,6 +332,11 @@ final class AptedDistance
         $type = AstSerializer::shortType($node);
         $scalar = AstSerializer::scalarPart($node);
         $label = $scalar === null ? $type : $type . '|' . $scalar;
+        // Engine-S02a: name stamps fold in both modes (similarity tiers
+        // are vocabulary-agnostic by aggressive mode's contract); the
+        // first-occurrence counters stay behind the item-1.1 knob, in
+        // lockstep with NgramFingerprint via this shared helper.
+        $label = IdentifierIds::foldStamps($label);
         return $unnumbered ? IdentifierIds::strip($label) : $label;
     }
 }

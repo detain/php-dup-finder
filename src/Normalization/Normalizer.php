@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Phpdup\Normalization;
 
 use PhpParser\Node;
+use PhpParser\NodeFinder;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
 use Phpdup\Extraction\Block;
@@ -17,7 +18,12 @@ use Phpdup\Util\CanonicalNodePool;
  *   1. Identifier canonicalization. Local variables and parameters are
  *      renamed to $__V0, $__V1, … in first-occurrence order. Two
  *      structurally identical functions whose only difference is local
- *      variable names produce identical canonical ASTs.
+ *      variable names produce identical canonical ASTs. Declarations
+ *      and uses run through one handler (the traverser visits a Param's
+ *      Variable child, so a Param-side rename would take a second
+ *      slot — engine-055), and a token is never dealt to a name some
+ *      user variable of the block literally carries ($__V0 cannot
+ *      alias the generated space).
  *
  *   2. Literal canonicalization. Scalar literals (string/int/float) are
  *      replaced by typed sentinel values: "__STR", 0, 0.0. The original
@@ -25,10 +31,19 @@ use Phpdup\Util\CanonicalNodePool;
  *      can recover them.
  *
  *   3. Name canonicalization (aggressive only). Function names, method
- *      names, property names, class-string keys, and class names in
- *      `new X(…)`/`X::foo(…)` are replaced by sentinel names like
- *      __CALL, __PROP, __KEY, __CLASS. This is the canonicalization
- *      that lets two SQL-builders or two CRUD handlers cluster.
+ *      names, property names, and class names in `new X(…)`/`X::foo(…)`
+ *      are replaced by NAME-STAMPED sentinels like `__CALL_send`,
+ *      `__PROP_total`, `__CLASS_Repo`. The stamp is injective on the
+ *      original name (not a first-occurrence ordinal), so shared
+ *      framework vocabularies — two `->where()->update()` SQL-builders
+ *      — still canonicalize to byte-identical streams, while a pair
+ *      that only agrees after permuting names across branch roles
+ *      cannot (engine-002: the ordinal scheme re-dealt isomorphic maps
+ *      for branch-role-swapped code and lied "EXACT" about it).
+ *      Cross-vocabulary shape twins drop from the exact tier to the
+ *      near-duplicate tiers, where Util\IdentifierIds folds both
+ *      ordinal and stamped tokens in lockstep, preserving their
+ *      structural similarity.
  *
  * Modes:
  *   strict      — only #1
@@ -78,7 +93,11 @@ final class Normalizer
         }
 
         $traverser = new NodeTraverser();
-        $traverser->addVisitor(new CanonicalizingVisitor($this->mode, $this->plugins));
+        $traverser->addVisitor(new CanonicalizingVisitor(
+            $this->mode,
+            $this->plugins,
+            self::collectUserVariableNames($clone),
+        ));
         $stmts = $traverser->traverse([$clone]);
         $block->canonical = $stmts[0];
 
@@ -134,6 +153,30 @@ final class Normalizer
                 }
             }
         }
+    }
+
+    /**
+     * Pre-scan the block clone for every user-spelled Variable name.
+     *
+     * The variable pass deals sentinels from a shared `__Vn` counter;
+     * without this set, a user identifier that literally spells a
+     * generated name (`$__V0`) could occupy its own slot and alias two
+     * distinct variables onto one token once any pass re-enters a
+     * renamed node (engine-055 guard — see CanonicalizingVisitor).
+     *
+     * @return array<string,true>
+     */
+    private static function collectUserVariableNames(Node $clone): array
+    {
+        $names = [];
+        $finder = new NodeFinder();
+        foreach ($finder->findInstanceOf([$clone], Node\Expr\Variable::class) as $variable) {
+            /** @var Node\Expr\Variable $variable */
+            if (is_string($variable->name)) {
+                $names[$variable->name] = true;
+            }
+        }
+        return $names;
     }
 
     /**
@@ -193,26 +236,27 @@ final class Normalizer
 /** @internal */
 final class CanonicalizingVisitor extends NodeVisitorAbstract
 {
-    /** @var array<string,string> */
+    /** Shape of the generated variable-sentinel space (engine-055 guard). */
+    private const GENERATED_VAR_SHAPE = '/^__V\d+$/';
+
+    /** @var array<string,string> original user name → generated sentinel */
     private array $varRenames = [];
     private int $varCounter = 0;
 
-    /** @var array<string,string> */
-    private array $callRenames = [];
-    private int $callCounter = 0;
+    /** @var array<string,true> every user-spelled variable name of this block */
+    private readonly array $userVarNames;
 
-    /** @var array<string,string> */
-    private array $propRenames = [];
-    private int $propCounter = 0;
-
-    /** @var array<string,string> */
-    private array $classRenames = [];
-    private int $classCounter = 0;
-
+    /**
+     * @param array<string,true> $userVarNames names collected by
+     *        {@see Normalizer::collectUserVariableNames()} before the
+     *        traversal, so dealt sentinels can be steered clear of them.
+     */
     public function __construct(
         private readonly string $mode,
         private readonly ?PluginRegistry $plugins = null,
+        array $userVarNames = [],
     ) {
+        $this->userVarNames = $userVarNames;
     }
 
     #[\Override]
@@ -398,17 +442,20 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
 
     private function canonicalizeVariables(Node $node): void
     {
+        // Declarations and uses share ONE handler (engine-055): the old
+        // Param branch stamped a sentinel onto $node->var->name during
+        // the Param visit, and the traverser then re-entered that very
+        // child as a Variable whose (already-rewritten) name missed the
+        // map — dealing a second slot, so the declaration canonicalised
+        // to __V1 while the body read __V0 and the rename map soaked up
+        // generated names as keys. A Param always carries a plain
+        // Variable child, so the Variable branch below renames both
+        // sites exactly once, in declaration order.
         if ($node instanceof Node\Expr\Variable && is_string($node->name)) {
             if ($node->name === 'this') {
                 return; // keep $this — semantically distinct
             }
-            $node->name = $this->getOrAssign($this->varRenames, $node->name, '__V', $this->varCounter);
-            return;
-        }
-        if ($node instanceof Node\Param && $node->var instanceof Node\Expr\Variable && is_string($node->var->name)) {
-            if ($node->var->name !== 'this') {
-                $node->var->name = $this->getOrAssign($this->varRenames, $node->var->name, '__V', $this->varCounter);
-            }
+            $node->name = $this->getOrAssignVar($node->name);
             return;
         }
         // Function and method declaration names are container labels, not
@@ -417,6 +464,36 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
         if ($node instanceof Node\Stmt\Function_ || $node instanceof Node\Stmt\ClassMethod) {
             $node->name = new Node\Identifier('__FN');
         }
+    }
+
+    /**
+     * First-occurrence ordinal rename for local identifiers, guarded
+     * against the two aliasing classes engine-055 names:
+     *
+     *  - A sentinel is never dealt to a name some user variable of this
+     *    block literally carries, so `$__V0` cannot alias the generated
+     *    space (the pathological spelling intentionally stops clumping
+     *    with ordinary variables — the trade that buys collision safety).
+     *  - A generated-shaped name that is NOT a user variable of the
+     *    block is a rename artifact (a pass re-entering an already
+     *    renamed node); renaming it again would mint a phantom slot and
+     *    pollute the map with generated keys, so it passes through.
+     */
+    private function getOrAssignVar(string $original): string
+    {
+        if (isset($this->varRenames[$original])) {
+            return $this->varRenames[$original];
+        }
+        if (preg_match(self::GENERATED_VAR_SHAPE, $original) === 1
+            && !isset($this->userVarNames[$original])
+        ) {
+            return $original;
+        }
+        do {
+            $token = '__V' . $this->varCounter++;
+        } while (isset($this->userVarNames[$token]));
+        $this->varRenames[$original] = $token;
+        return $token;
     }
 
     private function canonicalizeLiterals(Node $node): void
@@ -442,22 +519,46 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
         }
     }
 
+    /**
+     * Aggressive-mode name pass: every recognised call/property/class
+     * identifier is replaced by its name-stamped sentinel (`__CALL_send`,
+     * `__PROP_total`, `__CLASS_Repo`).
+     *
+     * engine-002: the old scheme numbered these maps by first occurrence
+     * within the block. A branch-role-swapped pair (`if($f){$o->send($m)}
+     * else{$o->log($e)}` vs the arms exchanged) re-deals the ordinal
+     * maps isomorphically — both sides canonicalise to byte-identical
+     * streams and the detector stamps the pair EXACT similarity 1.00,
+     * which is a behavior inversion, not a type-1 clone. A stamp that
+     * embeds the name is injective on the identifier space: the same
+     * name is the same token at every position (shared framework
+     * vocabularies — the two SQL-builders of the mode's stated purpose
+     * — still merge byte-identically), while any permutation of names
+     * across arms changes at least one token and can no longer hide
+     * behind slot order. Cross-vocabulary shape twins fall out of the
+     * exact tier into the Jaccard/TED tiers, where Util\IdentifierIds
+     * folds the stamps symmetrically.
+     *
+     * Variables keep first-occurrence ordinals on purpose: local-name
+     * agnosticism is the mode's pass-#1 contract and variable slots
+     * carry no cross-block identity claim.
+     */
     private function canonicalizeNames(Node $node): void
     {
         // method/function call names
         if ($node instanceof Node\Expr\MethodCall && $node->name instanceof Node\Identifier) {
-            $node->name = new Node\Identifier($this->getOrAssign($this->callRenames, $node->name->name, '__CALL', $this->callCounter));
+            $node->name = new Node\Identifier('__CALL_' . $node->name->name);
             return;
         }
         if ($node instanceof Node\Expr\NullsafeMethodCall && $node->name instanceof Node\Identifier) {
-            $node->name = new Node\Identifier($this->getOrAssign($this->callRenames, $node->name->name, '__CALL', $this->callCounter));
+            $node->name = new Node\Identifier('__CALL_' . $node->name->name);
             return;
         }
         if ($node instanceof Node\Expr\StaticCall && $node->name instanceof Node\Identifier) {
-            $node->name = new Node\Identifier($this->getOrAssign($this->callRenames, $node->name->name, '__CALL', $this->callCounter));
+            $node->name = new Node\Identifier('__CALL_' . $node->name->name);
             // also fold the class name
             if ($node->class instanceof Node\Name) {
-                $node->class = new Node\Name($this->getOrAssign($this->classRenames, $node->class->toString(), '__CLASS', $this->classCounter));
+                $node->class = new Node\Name('__CLASS_' . $node->class->toString());
             }
             return;
         }
@@ -465,47 +566,36 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
             $name = $node->name->toString();
             // keep core functions that change structural meaning of clone
             if (!self::isStructuralFunction($name)) {
-                $node->name = new Node\Name($this->getOrAssign($this->callRenames, $name, '__CALL', $this->callCounter));
+                $node->name = new Node\Name('__CALL_' . $name);
             }
             return;
         }
         // property access
         if ($node instanceof Node\Expr\PropertyFetch && $node->name instanceof Node\Identifier) {
-            $node->name = new Node\Identifier($this->getOrAssign($this->propRenames, $node->name->name, '__PROP', $this->propCounter));
+            $node->name = new Node\Identifier('__PROP_' . $node->name->name);
             return;
         }
         if ($node instanceof Node\Expr\NullsafePropertyFetch && $node->name instanceof Node\Identifier) {
-            $node->name = new Node\Identifier($this->getOrAssign($this->propRenames, $node->name->name, '__PROP', $this->propCounter));
+            $node->name = new Node\Identifier('__PROP_' . $node->name->name);
             return;
         }
         if ($node instanceof Node\Expr\StaticPropertyFetch && $node->name instanceof Node\VarLikeIdentifier) {
-            $node->name = new Node\VarLikeIdentifier($this->getOrAssign($this->propRenames, $node->name->name, '__PROP', $this->propCounter));
+            $node->name = new Node\VarLikeIdentifier('__PROP_' . $node->name->name);
             return;
         }
         // class constant fetch and `new X`
         if ($node instanceof Node\Expr\ClassConstFetch && $node->class instanceof Node\Name) {
-            $node->class = new Node\Name($this->getOrAssign($this->classRenames, $node->class->toString(), '__CLASS', $this->classCounter));
+            $node->class = new Node\Name('__CLASS_' . $node->class->toString());
             return;
         }
         if ($node instanceof Node\Expr\New_ && $node->class instanceof Node\Name) {
-            $node->class = new Node\Name($this->getOrAssign($this->classRenames, $node->class->toString(), '__CLASS', $this->classCounter));
+            $node->class = new Node\Name('__CLASS_' . $node->class->toString());
             return;
         }
         if ($node instanceof Node\Expr\Instanceof_ && $node->class instanceof Node\Name) {
-            $node->class = new Node\Name($this->getOrAssign($this->classRenames, $node->class->toString(), '__CLASS', $this->classCounter));
+            $node->class = new Node\Name('__CLASS_' . $node->class->toString());
             return;
         }
-    }
-
-    /**
-     * @param array<string,string> $map
-     */
-    private function getOrAssign(array &$map, string $original, string $prefix, int &$counter): string
-    {
-        if (!isset($map[$original])) {
-            $map[$original] = $prefix . $counter++;
-        }
-        return $map[$original];
     }
 
     /**
@@ -514,8 +604,8 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
      * Synthetic `__DB_<OP>__` calls produced by
      * {@see DbOpCanonicalizer} are treated structurally so the op
      * name survives the aggressive name pass; without this, two
-     * canonicalised DB ops would collapse to `__CALL0` and lose the
-     * very signal we just synthesised.
+     * canonicalised DB ops would collapse to `__CALL___DB_READ__` and
+     * the pass would stamp over the very signal we just synthesised.
      */
     private static function isStructuralFunction(string $name): bool
     {

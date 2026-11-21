@@ -96,13 +96,25 @@ final class NgramFingerprintModeTest extends TestCase
             'un-numbered bags of a numbering-cascade pair must be identical (doc §3.3 class)');
     }
 
-    public function testGuardDriftContainmentReachesOneUnnumbered(): void
+    public function testGuardDriftContainmentReachesOneInBothModes(): void
     {
         // improve_logic.md §3.3 row-2 class (a head guard shifts the
-        // identifier usage pattern): measured via diag2.php — C .7391
-        // numbered collapses to C_u=1.0000 un-numbered, i.e. the
-        // un-guarded block's stripped bag IS a window sub-multiset of
-        // the guarded one (doc promise .840 → 1.000, same class).
+        // identifier usage pattern). Rewritten by engine-S02a: the
+        // numbered divergence this fixture used to show (C .7391 via
+        // diag2.php) was MANUFACTURED by two writer mechanisms the
+        // sentinel redesign removed — (a) first-occurrence ordinals on
+        // call names, so a head-guard insert cascaded every later
+        // __CALL slot, and (b) the Param double-rename, which dealt
+        // body uses a different slot than the declaration. With
+        // name-stamped calls (folded to family tokens in BOTH modes,
+        // since the stamp carries cross-block identity, not tier
+        // information) and one slot per user variable, this pair's
+        // bags are numbering-invariant: the un-guarded stripped bag is
+        // now a window sub-multiset of the guarded one even numbered,
+        // C = 1.0000 in both modes. The genuine numbered knob is still
+        // pinned by testUnnumberedCollapsesRenumberCascade (variable
+        // slot misalignment survives: numbered 0.1795 / un-numbered
+        // 1.0000, values byte-identical to the pre-S02a measurements).
         $without = self::blockOf('<?php function s($log, $r) { $r->go($log); return $r->back($log); }');
         $withGuard = self::blockOf('<?php function s($log, $r) { $r->warn(); if (!$log) { return false; } $r->go($log); return $r->back($log); }');
         $c = new ContainmentSimilarity();
@@ -114,7 +126,8 @@ final class NgramFingerprintModeTest extends TestCase
             (new NgramFingerprint(5, false, true))->fingerprint($withGuard),
             (new NgramFingerprint(5, false, true))->fingerprint($without),
         );
-        $this->assertLessThan(1.0, $numberedC, 'numbered containment must miss the sub-multiset relation');
+        $this->assertEqualsWithDelta(1.0, $numberedC, 0.0001,
+            'post-S02a the guard-drift class is numbering-invariant: sub-multiset holds numbered too');
         $this->assertEqualsWithDelta(1.0, $unnumberedC, 0.0001,
             'stripped bag of the smaller block must be a sub-multiset of the larger');
     }

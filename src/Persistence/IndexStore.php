@@ -47,7 +47,13 @@ final class IndexStore
     // bytes instead of the ini-dependent decimal cast, moving every
     // structuralHash that covers a float literal. Snapshots written by
     // the previous serializer must not serve stale hashes.
-    private const PARSER_VERSION = 'parser-v5-floatbytes';
+    // 'namesentinel' (engine-S02a): Normalizer's aggressive name pass
+    // moved from first-occurrence ordinals (__CALL0) to name stamps
+    // (__CALL_send) and the Param double-rename re-dealt variable
+    // slots — every canonical structuralHash shifts. Snapshots written
+    // by the ordinal writer must not serve stale exact-bucket hashes
+    // next to live ones.
+    private const PARSER_VERSION = 'parser-v6-namesentinel';
 
     public function isEnabled(): bool
     {
