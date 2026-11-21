@@ -6,6 +6,56 @@ namespace Phpdup\Cli;
 final class ConfigLoader
 {
     /**
+     * shell-029 — hard ceiling for every config file read: the root
+     * phpdup.json AND each auto-discovered per-directory .phpdup.json.
+     * Config files are small declarative data; anything larger is an
+     * accident or an attack (the FUZZ probe measured a 50 MB input at
+     * 65.4 s / 438 MB RSS). Over-cap files are refused (root) or skipped
+     * (discovery), and the READ is bounded, so oversized input never
+     * enters memory whole.
+     */
+    private const MAX_CONFIG_FILE_BYTES = 1_048_576;
+
+    /** @var list<string> skip notes recorded during the most recent load() */
+    private array $skipNotes = [];
+
+    /**
+     * @param bool $warnOnSkip  emit each recorded skip note as a
+     *                          "phpdup: warning: ..." line on STDERR, the
+     *                          same contract FileScanner keeps. Notes are
+     *                          collected in skipNotes() regardless, so
+     *                          tests can assert them without STDERR
+     *                          capture.
+     */
+    public function __construct(private readonly bool $warnOnSkip = true)
+    {
+    }
+
+    /**
+     * Paths-and-reasons of per-directory configs the last load() discovery
+     * walk had to skip, in discovery order (shell-010). Unusable discovered
+     * configs no longer abort the run, so this is how callers SEE them.
+     *
+     * @return list<string>
+     */
+    public function skipNotes(): array
+    {
+        return $this->skipNotes;
+    }
+
+    /**
+     * Record one discovery skip; mirrors FileScanner::addSkipNote()'s
+     * contract: the note is always collected, warnOnSkip also echoes it.
+     */
+    private function addSkipNote(string $note): void
+    {
+        $this->skipNotes[] = $note;
+        if ($this->warnOnSkip) {
+            fwrite(STDERR, "phpdup: warning: {$note}\n");
+        }
+    }
+
+    /**
      * @param list<string> $paths
      * @param array<string,mixed> $overrides
      * @param list<string>|null $profileExclude  Profile-supplied exclude globs.
@@ -15,6 +65,7 @@ final class ConfigLoader
      */
     public function load(array $paths, ?string $configFile, array $overrides = [], ?array $profileExclude = null): Config
     {
+        $this->skipNotes = [];
         $base = Config::defaults($paths);
         $data = [];
 
@@ -22,12 +73,18 @@ final class ConfigLoader
             if (!is_file($configFile)) {
                 throw new \RuntimeException("Config file not found: $configFile");
             }
-            $decoded = json_decode((string)file_get_contents($configFile), true);
-            if (!is_array($decoded)) {
-                throw new \RuntimeException("Config file is not valid JSON: $configFile");
+            // shell-029: bounded size cap + JSON_THROW_ON_ERROR so an
+            // oversized, malformed or over-nested root config fails with the
+            // real reason (e.g. "Maximum stack depth exceeded") instead of a
+            // full unbounded decode or a bare "not valid JSON". Root-config
+            // problems are user errors: they stay fatal, and the CLI layer
+            // maps the RuntimeException to the documented exit 2.
+            $payload = self::decodeConfigFile($configFile);
+            if (is_string($payload)) {
+                throw new \RuntimeException("Config file {$payload}: $configFile");
             }
-            $this->validate($decoded, $configFile);
-            $data = $decoded;
+            $this->validate($payload, $configFile);
+            $data = $payload;
         }
 
         $flatKeys = [
@@ -138,7 +195,7 @@ final class ConfigLoader
             sort:                          $flat['sort'],
             tedWeights:                    $flat['ted_weights'],
             normalizationPlugins: $this->extractNormalizationPlugins($data),
-            perDirectoryOverrides: $this->discoverPerDirectoryOverrides($resolvedPaths),
+            perDirectoryOverrides: $this->discoverPerDirectoryOverrides($resolvedPaths, $resolvedExclude),
             dbAware: (bool)($overrides['db_aware'] ?? $data['db_aware'] ?? $base->dbAware),
             trinityCollapse: (bool)($overrides['trinity_collapse'] ?? $data['trinity_collapse'] ?? $base->trinityCollapse),
             dbSymbolsMethods: $this->extractDbSymbols($data, $overrides, 'methods'),
@@ -380,16 +437,49 @@ final class ConfigLoader
      * {@see validate()} so misconfigured per-directory files fail loudly
      * at load time rather than mid-pipeline.
      *
+     * shell-010 — two walk fixes:
+     *  - EXCLUDES ARE HONOURED. Every entry is tested against the SAME
+     *    resolved exclude list (hence the same segment-safe glob dialect:
+     *    the decision goes through FileScanner::isExcluded(), not a second
+     *    compiler) that the scanner will later apply, so ConfigLoader never
+     *    reads files or directories the scan will refuse. Excluded trees are
+     *    pruned BEFORE descent: a stock run no longer costs 5.8× a whole
+     *    FileScanner pass just to discover (452.7 ms vs 77.5 ms on a
+     *    25.5k-entry tree), and a third-party package that ships its own
+     *    stale or broken `.phpdup.json` inside vendor/ can no longer poison
+     *    the user's run.
+     *  - UNUSABLE FILES DEGRADE, THEY DO NOT ABORT. A discovered config that
+     *    cannot be consumed (oversized, unreadable, broken JSON, not a JSON
+     *    object) is skipped with a note (skipNotes() + STDERR) and the run
+     *    continues — the same environment-skip policy the walk already
+     *    keeps for unreadable directories. This is a deliberate, disclosed
+     *    user-visible change: such a file inside an INCLUDED directory used
+     *    to throw and exit 2. Valid-but-misconfigured files (unknown keys,
+     *    out-of-range values, the root-only stance-key refusals below) keep
+     *    throwing: once excluded trees are never read, failing loudly on a
+     *    subtree the user DID ask to scan carries no false-positive risk,
+     *    and shell-S22's root-only posture pins the throw.
+     *
      * Found files override only the subtree rooted at their directory;
      * the actual layered merge happens in {@see Config::effectiveFor()}.
      *
      * @param list<string> $paths
+     * @param list<string> $excludeGlobs  the exact resolved list Config hands
+     *        to FileScanner (append-merge semantics already applied), so the
+     *        two walks prune identically
      * @return array<string, array<string, mixed>>
      */
-    private function discoverPerDirectoryOverrides(array $paths): array
+    private function discoverPerDirectoryOverrides(array $paths, array $excludeGlobs): array
     {
         $out = [];
+        // One shared compiled exclude gate for every root. warnOnSkip: false —
+        // this instance only answers isExcluded(); every note below comes from
+        // ConfigLoader's own recorder.
+        $gate = new \Phpdup\Scanning\FileScanner($excludeGlobs, warnOnSkip: false);
         foreach ($paths as $root) {
+            // Same yardstick as FileScanner::scan(): entries are matched
+            // relative to a '/'-trimmed root (a lone "/" root kept whole).
+            $root = strlen($root) > 1 ? rtrim($root, '/') : $root;
             if (!is_dir($root)) {
                 continue;
             }
@@ -408,13 +498,19 @@ final class ConfigLoader
             // unreadable branch is SKIPPED, never fatal.
             $filter = new \RecursiveCallbackFilterIterator(
                 $dirIt,
-                static function (\RecursiveDirectoryIterator|\SplFileInfo|string $current): bool {
+                static function (\RecursiveDirectoryIterator|\SplFileInfo|string $current) use ($gate, $root): bool {
                     // Psalm models every value the inner iterator may hand a
                     // RecursiveCallbackFilterIterator callback (entry, child
                     // iterator, string key); only SplFileInfo carries
                     // permissions, everything else passes through untouched.
                     if (!$current instanceof \SplFileInfo) {
                         return true;
+                    }
+                    // shell-010: prune anything the scanner would exclude.
+                    // A pruned directory is never descended, so configs
+                    // inside it are never read, never validated, never noted.
+                    if (self::isExcludedUnder($gate, $root, $current)) {
+                        return false;
                     }
                     return $current->isDir() ? $current->isReadable() : true;
                 }
@@ -424,21 +520,22 @@ final class ConfigLoader
                 foreach ($iter as $file) {
                     if (!$file instanceof \SplFileInfo) continue;
                     if ($file->getBasename() !== '.phpdup.json') continue;
-                    if (!$file->isReadable()) {
-                        // n-R2-2: a config FILE the walk can see but not open
-                        // (race, permissions) must not crash the run with a
-                        // raw file_get_contents warning mislabelled as "not
-                        // valid JSON" — environment errors stay non-fatal,
-                        // exactly like the directory-skips above.
+                    if (!$file->isFile()) continue;
+
+                    // shell-010 + shell-029: an unusable discovered config —
+                    // oversized, unreadable (the n-R2-2 race case; the reason
+                    // is now stated instead of swallowed), broken JSON, or a
+                    // non-object — skips with a note and the run continues.
+                    $payload = self::decodeConfigFile($file->getPathname());
+                    if (is_string($payload)) {
+                        $this->addSkipNote(
+                            'skipped unusable per-directory config ' . $file->getPathname() . " ($payload)"
+                        );
                         continue;
-                    }
-                    $decoded = json_decode((string)file_get_contents($file->getPathname()), true);
-                    if (!is_array($decoded)) {
-                        throw new \RuntimeException('Per-directory config is not valid JSON: ' . $file->getPathname());
                     }
                     // Re-use the same validator so per-directory files can't
                     // smuggle in misspelled keys or out-of-range values.
-                    $this->validate($decoded, $file->getPathname());
+                    $this->validate($payload, $file->getPathname());
 
                     // Item 1.1 (§5a): fingerprint_id_mode is ROOT-ONLY, and
                     // the key is deliberately absent from shapeOverrides().
@@ -447,7 +544,7 @@ final class ConfigLoader
                     // for one shared candidate index / TED gate comparison
                     // and one warm cache — the exact silent-misfeed class
                     // this knob's cache-key packet exists to prevent.
-                    if (array_key_exists('fingerprint_id_mode', $decoded)) {
+                    if (array_key_exists('fingerprint_id_mode', $payload)) {
                         throw new \RuntimeException(
                             "fingerprint_id_mode is not a per-directory key (root phpdup.json only): "
                             . $file->getPathname()
@@ -463,7 +560,7 @@ final class ConfigLoader
                     // leave the user believing the subtree was scoped or
                     // re-scored when it never was.
                     foreach (['scope', 'score_mode'] as $stanceKey) {
-                        if (array_key_exists($stanceKey, $decoded)) {
+                        if (array_key_exists($stanceKey, $payload)) {
                             throw new \RuntimeException(
                                 $stanceKey . ' is not a per-directory key (root phpdup.json only): '
                                 . $file->getPathname()
@@ -480,7 +577,7 @@ final class ConfigLoader
                     // whichever dir's value won, the other dir's blocks would
                     // be judged under a cap its author never chose — the exact
                     // silent-misfeed class these refusals exist to prevent.
-                    if (array_key_exists('max_ted_size', $decoded)) {
+                    if (array_key_exists('max_ted_size', $payload)) {
                         throw new \RuntimeException(
                             'max_ted_size is not a per-directory key (root phpdup.json only): '
                             . $file->getPathname()
@@ -491,7 +588,7 @@ final class ConfigLoader
                     // posture — a cluster spans members from many dirs, and
                     // the re-expression threshold is a stance about the ONE
                     // final report, not about a subtree.
-                    if (array_key_exists('max_hole_coverage', $decoded)) {
+                    if (array_key_exists('max_hole_coverage', $payload)) {
                         throw new \RuntimeException(
                             'max_hole_coverage is not a per-directory key (root phpdup.json only): '
                             . $file->getPathname()
@@ -502,18 +599,97 @@ final class ConfigLoader
                     if ($dir === false) {
                         continue;
                     }
-                    $out[$dir] = $this->shapeOverrides($decoded);
+                    $out[$dir] = $this->shapeOverrides($payload);
                 }
             } catch (\UnexpectedValueException $e) {
                 // A directory went unreadable/vanished between list and descend
                 // (race): keep whatever this root yielded so far and move on.
-                // Genuinely invalid per-directory configs still throw
-                // RuntimeException above — config errors stay exit 2,
-                // environment errors stay invisible.
+                // Misconfigured per-directory configs still throw
+                // RuntimeException above (config errors stay exit 2); directory
+                // environment errors stay silent, unusable CONFIG FILE errors
+                // are noted (shell-010).
                 continue;
             }
         }
         return $out;
+    }
+
+    /**
+     * Read and JSON-decode a config file under the size cap (shell-029).
+     * Shared by both consumers: the root leg of {@see load()} turns a
+     * failure into a RuntimeException (invalid config → documented exit 2),
+     * discovery degrades it to a skip note (shell-010).
+     *
+     * The cap is enforced by BOUNDED READ — an oversized file is detected
+     * without ever being slurped whole. JSON_THROW_ON_ERROR makes the real
+     * failure (e.g. "Maximum stack depth exceeded", "Syntax error") part of
+     * the reason instead of the old blanket "not valid JSON", and the
+     * depth limit keeps a pathological nesting from recursing into the
+     * parser's own stack exhaustion.
+     *
+     * @return array<array-key,mixed>|string the decoded payload on success,
+     *         or a human-readable reason WITHOUT the path on failure (the
+     *         callers compose it; per-directory notes name the file once)
+     */
+    private static function decodeConfigFile(string $path): array|string
+    {
+        $handle = @fopen($path, 'rb');
+        if ($handle === false) {
+            return 'could not be read';
+        }
+        $bytes = @stream_get_contents($handle, self::MAX_CONFIG_FILE_BYTES + 1);
+        fclose($handle);
+        if ($bytes === false) {
+            return 'could not be read';
+        }
+        if (strlen($bytes) > self::MAX_CONFIG_FILE_BYTES) {
+            return sprintf('exceeds the size cap of %d bytes', self::MAX_CONFIG_FILE_BYTES);
+        }
+        try {
+            $decoded = json_decode($bytes, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $e) {
+            return sprintf('is not valid JSON (%s)', $e->getMessage());
+        }
+        if (!is_array($decoded)) {
+            return sprintf('is not a JSON object (got %s)', get_debug_type($decoded));
+        }
+        return $decoded;
+    }
+
+    /**
+     * Whether a walked entry matches the exclude list the scanner will
+     * apply (shell-010). The match string is built exactly like
+     * FileScanner's own filter callback does it — root-relative, a
+     * trailing '/' on directories — and the decision goes through
+     * FileScanner::isExcluded(), so the two walks cannot drift apart:
+     * what the scan will not read, discovery will not read either.
+     */
+    private static function isExcludedUnder(
+        \Phpdup\Scanning\FileScanner $gate,
+        string $root,
+        \SplFileInfo $entry
+    ): bool {
+        $rel = self::relpathUnder($entry->getPathname(), $root);
+        if ($rel === '') {
+            return false;
+        }
+        return $entry->isDir() ? $gate->isExcluded($rel . '/') : $gate->isExcluded($rel);
+    }
+
+    /**
+     * Path of a walked entry relative to its scan root — mirrors the
+     * private FileScanner::relpath() by construction (both walks must
+     * measure "relative" the same way or excludes drift).
+     */
+    private static function relpathUnder(string $abs, string $root): string
+    {
+        if (str_starts_with($abs, $root . '/')) {
+            return substr($abs, strlen($root) + 1);
+        }
+        if ($abs === $root) {
+            return '';
+        }
+        return $abs;
     }
 
     /**

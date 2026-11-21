@@ -477,4 +477,104 @@ final class ConfigLoaderTest extends TestCase
         );
         $this->assertSame('HEAD~1', $config->diffBase);
     }
+
+    // ------------------------------------------------------------------
+    // shell-029 — root config read: bounded size cap + throwing JSON
+    // ------------------------------------------------------------------
+
+    public function testRootConfigOverSizeCapIsRefused(): void
+    {
+        $tmp = sys_get_temp_dir() . '/phpdup-' . uniqid() . '.json';
+        // Valid JSON, just padded past the 1 MiB cap: refusing it proves
+        // the SIZE gate fires, and the bounded read proves the file is never
+        // slurped whole (the old FUZZ probe: 50 MB → 65.4 s / 438 MB RSS).
+        $json = '{"paths":["src"]}';
+        file_put_contents($tmp, str_repeat(' ', 2 * 1048576) . $json);
+        try {
+            try {
+                (new ConfigLoader(warnOnSkip: false))->load(paths: ['src'], configFile: $tmp);
+                $this->fail('a 2 MB root config must be refused with a size-cap error');
+            } catch (\RuntimeException $e) {
+                $this->assertStringContainsString('Config file', $e->getMessage());
+                $this->assertStringContainsString('exceeds the size cap of 1048576 bytes', $e->getMessage());
+                $this->assertStringContainsString($tmp, $e->getMessage());
+            }
+        } finally {
+            @unlink($tmp);
+        }
+    }
+
+    public function testRootConfigExactlyAtSizeCapIsAccepted(): void
+    {
+        $tmp = sys_get_temp_dir() . '/phpdup-' . uniqid() . '.json';
+        $json = '{"paths":["src"]}';
+        file_put_contents($tmp, str_repeat(' ', 1048576 - strlen($json)) . $json);
+        try {
+            $config = (new ConfigLoader(warnOnSkip: false))->load(paths: ['src'], configFile: $tmp);
+            $this->assertSame(['src'], $config->paths, 'a file AT the cap is still legal');
+        } finally {
+            @unlink($tmp);
+        }
+    }
+
+    public function testRootConfigDeepNestingNamesTheRealJsonException(): void
+    {
+        $tmp = sys_get_temp_dir() . '/phpdup-' . uniqid() . '.json';
+        // 700 levels defeats the parser's own 512 depth limit; the user now
+        // sees WHY (JSON_THROW_ON_ERROR) instead of the old blanket
+        // "Config file is not valid JSON".
+        file_put_contents($tmp, str_repeat('[', 700) . str_repeat(']', 700));
+        try {
+            try {
+                (new ConfigLoader(warnOnSkip: false))->load(paths: ['src'], configFile: $tmp);
+                $this->fail('over-nested root config must be refused');
+            } catch (\RuntimeException $e) {
+                $this->assertStringContainsString('is not valid JSON (Maximum stack depth exceeded)', $e->getMessage());
+                $this->assertStringContainsString($tmp, $e->getMessage());
+            }
+        } finally {
+            @unlink($tmp);
+        }
+    }
+
+    public function testRootConfigSyntaxErrorNamesTheRealJsonException(): void
+    {
+        $tmp = sys_get_temp_dir() . '/phpdup-' . uniqid() . '.json';
+        file_put_contents($tmp, '{oops');
+        try {
+            try {
+                (new ConfigLoader(warnOnSkip: false))->load(paths: ['src'], configFile: $tmp);
+                $this->fail('malformed root config must be refused');
+            } catch (\RuntimeException $e) {
+                $this->assertStringContainsString('is not valid JSON (Syntax error)', $e->getMessage());
+                $this->assertStringContainsString($tmp, $e->getMessage());
+            }
+        } finally {
+            @unlink($tmp);
+        }
+    }
+
+    public function testRootConfigNonObjectJsonIsRefusedWithItsType(): void
+    {
+        $tmp = sys_get_temp_dir() . '/phpdup-' . uniqid() . '.json';
+        file_put_contents($tmp, 'null');
+        try {
+            try {
+                (new ConfigLoader(warnOnSkip: false))->load(paths: ['src'], configFile: $tmp);
+                $this->fail('a JSON null is not a config object');
+            } catch (\RuntimeException $e) {
+                $this->assertStringContainsString('is not a JSON object (got null)', $e->getMessage());
+                $this->assertStringContainsString($tmp, $e->getMessage());
+            }
+        } finally {
+            @unlink($tmp);
+        }
+    }
+
+    public function testSkipNotesResetOnEveryLoad(): void
+    {
+        $loader = new ConfigLoader(warnOnSkip: false);
+        $loader->load(paths: ['src'], configFile: null);
+        $this->assertSame([], $loader->skipNotes(), 'a clean run records nothing');
+    }
 }
