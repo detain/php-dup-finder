@@ -661,8 +661,22 @@ HELP;
         $state    = new PipelineState($config);
         SignalHandler::install($state);
         $pipeline = $buildPipeline(null);
+        // shell-S23 (php-dup-finder-shell-040): drive the cooperative
+        // generator here instead of Pipeline::run() so a ScanningStage that
+        // fails its --diff-base probe aborts the run at the stage boundary
+        // — downstream stages never start, so nothing is extracted before
+        // the exit-2 render below (was: full run, then the message). The
+        // DebugLogger wiring mirrors Pipeline::run() 1:1.
+        $state->setDebugLogger(new DebugLogger($config->debugLog));
+        $gen = $pipeline->iter($state, $output);
         try {
-            $pipeline->run($state, $output);
+            foreach ($gen as $_) {
+                if ($state->scanError !== null) {
+                    // Abandon the pump: the suspended generator is dropped
+                    // with the local, its stages-after-scanning never run.
+                    break;
+                }
+            }
         } catch (CandidateBudgetException | ScriptKindApplyRefusal $e) {
             // ft-n2: the budget halt is a runtime stop, not an invalid
             // invocation — its message already names every remedy. Render
