@@ -222,6 +222,62 @@ final class AstCacheTest extends TestCase
         $this->assertSame('// leading line', $loadedComments[1]->getText());
     }
 
+    public function testCommentSmuggledDynamicPropertyFailsScreen(): void
+    {
+        // engine-S23a r3 LOW: the Comment leaf was accepted UNWALKED, so a
+        // smuggled dynamic property — a live object here, a
+        // __PHP_Incomplete_Class after a hostile decode — sailed past the
+        // screen into a poisoned HIT. The leaf now self-verifies that its
+        // own properties are null-or-scalar.
+        $evil = new Node\Stmt\Function_('f');
+        $evilComment = self::commentWithProps(['payload' => new \stdClass()]);
+        $evil->setAttribute('comments', [$evilComment]);
+        $this->assertFalse(
+            CacheBlob::isCleanTree($evil),
+            'object smuggled into a Comment property must fail the screen (reverting to a bare continue is the mutant)'
+        );
+
+        // Counter-assert the discriminator: the same Comment shape minus
+        // the smuggled object stays clean, so the false above is caused
+        // by the object, not by the Comment or its dynamic props per se.
+        $honest = new Node\Stmt\Function_('f');
+        $honestComment = self::commentWithProps(['note' => 'scalar', 'revision' => 7]);
+        $honest->setAttribute('comments', [$honestComment]);
+        $this->assertTrue(CacheBlob::isCleanTree($honest), 'null-or-scalar Comment properties must remain acceptable');
+
+        // End-to-end over the real decode path: a blob carrying this
+        // smuggle must degrade to a MISS, never return a poisoned hit.
+        $cache = $this->cache();
+        $cache->put($this->sourceFile, $this->parseSource());
+        file_put_contents($this->onlyBlob(), CacheBlob::frame(serialize([$evil])));
+        $this->assertNull($cache->get($this->sourceFile), 'smuggled Comment property must fail closed to a miss');
+    }
+
+    public function testCommentWithScalarDynamicPropertiesRoundTripsToHit(): void
+    {
+        // Acceptance half of the r3 hardening (HIT round-trip preserved):
+        // Comment leaves whose properties are all null-or-scalar —
+        // including scalar dynamic ones — must keep cache-HITting. The
+        // screen may only reject smuggles, never void the honest r2
+        // round-trip contract.
+        $file = $this->tmp . '/src/ScalarProps.php';
+        file_put_contents($file, "<?php\n// note\nfunction greet(\$n) { echo 'hi'; }\n");
+        $stmts = $this->parseSource($file);
+        $stmts[0]->setAttribute('comments', [self::commentWithProps(['author' => 'phpdup', 'revision' => 7], '// note')]);
+
+        $cache = $this->cache();
+        $cache->put($file, $stmts);
+
+        $loaded = $cache->get($file);
+        $this->assertNotNull($loaded, 'scalar-only Comment properties must stay cacheable');
+        $loadedComments = $loaded[0]->getAttributes()['comments'] ?? [];
+        $this->assertCount(1, $loadedComments);
+        $this->assertInstanceOf(\PhpParser\Comment::class, $loadedComments[0]);
+        $this->assertSame('// note', $loadedComments[0]->getText());
+        $this->assertSame('phpdup', $loadedComments[0]->author, 'scalar dynamic prop survives the round-trip');
+        $this->assertSame(7, $loadedComments[0]->revision);
+    }
+
     public function testDeepAstIsNotCachedAndDoesNotThrow(): void
     {
         // ~4k node levels — inside the serialize() stack-guard crash zone
@@ -320,6 +376,35 @@ final class AstCacheTest extends TestCase
             $inner = new Node\Expr\Array_([new Node\Expr\ArrayItem($inner)]);
         }
         return [new Node\Stmt\Expression($inner)];
+    }
+
+    /**
+     * A real Comment carrying the given dynamic properties, materialised
+     * by restoring a hand-extended serialize payload — the shape a
+     * hostile blob smuggles props into a Comment leaf with. The
+     * silence-operator hides PHP 8.2+'s dynamic-property creation
+     * deprecation at fixture materialisation; the object graph the
+     * screen inspects is unaffected.
+     *
+     * @param array<string,mixed> $dynamicProps
+     */
+    private static function commentWithProps(array $dynamicProps, string $text = '// smuggle probe'): \PhpParser\Comment
+    {
+        $base = serialize(new \PhpParser\Comment($text, 3, 0, 0, 3, 15, 5));
+        if (!preg_match('/^O:(\d+):"PhpParser\\\\Comment":(\d+):\{(.*)\}$/s', $base, $m)) {
+            self::fail('serialized Comment shape changed — update this fixture');
+        }
+        $extra = '';
+        foreach ($dynamicProps as $key => $value) {
+            $extra .= serialize((string)$key) . serialize($value);
+        }
+        $payload = 'O:' . $m[1] . ':"PhpParser\\Comment":'
+            . ((int)$m[2] + count($dynamicProps)) . ':{' . $m[3] . $extra . '}';
+        $built = @unserialize($payload, ['allowed_classes' => true]);
+        if (!$built instanceof \PhpParser\Comment) {
+            self::fail('extended payload did not restore a real Comment');
+        }
+        return $built;
     }
 
     /** Serialized-object prefix for a class, e.g. O:26:"PhpParser\...". */

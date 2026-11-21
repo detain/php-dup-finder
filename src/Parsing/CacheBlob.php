@@ -136,7 +136,8 @@ final class CacheBlob
 
     /**
      * True when every slot of a decoded AST holds null, a scalar, an
-     * array of the same, another real Node, or a real PhpParser comment.
+     * array of the same, another real Node, or a real PhpParser comment
+     * carrying only null-or-scalar properties of its own.
      *
      * `__PHP_Incomplete_Class` — and any other object that is neither a
      * Node nor a Comment, sneaking through an untyped array or attribute
@@ -170,7 +171,12 @@ final class CacheBlob
                 continue;
             }
             if ($value instanceof \PhpParser\Comment) {
-                continue; // real comments ride the attributes: scalar-only value object, allowed leaf
+                // Real comments ride the attributes as value objects —
+                // accept the leaf only after its own properties prove
+                // null-or-scalar, or a smuggled dynamic property passes
+                // the screen (engine-S23a r3 LOW).
+                foreach ((array)$value as $cv) { if ($cv !== null && !is_scalar($cv)) { return false; } }
+                continue;
             }
             return false;
         }
