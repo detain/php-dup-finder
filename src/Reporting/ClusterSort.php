@@ -120,7 +120,40 @@ final class ClusterSort
     }
 
     /**
+     * Instrumentation seam: total calls to {@see project()} since the last
+     * reset. Exists so the "exactly one projection per cluster" contract of
+     * {@see apply()} is testable without subclassing (the class is final);
+     * {@see \Phpdup\Tests\Unit\Reporting\ClusterSortTest()} is the only caller.
+     */
+    private static int $projectCalls = 0;
+
+    public static function projectCallCount(): int
+    {
+        return self::$projectCalls;
+    }
+
+    public static function resetProjectCallCount(): void
+    {
+        self::$projectCalls = 0;
+    }
+
+    /**
      * Apply this sort to a list of clusters. Pure — returns a new list.
+     *
+     * Schwartzian transform (decorate-sort-undecorate): every cluster is
+     * projected exactly once up front together with its tie-break fields,
+     * the decorated tuples are sorted, and the clusters are extracted
+     * again. The former inline-projection form called project() twice per
+     * comparison — O(N log N) projections of non-trivial keys such as
+     * `lines` (a member walk) or `name` (strtolower of a qualified name);
+     * this form performs exactly N.
+     *
+     * The emitted ordering is unchanged: the same primary key (with its
+     * string/numeric split), then the same size DESC ▸ similarity DESC ▸
+     * id ASC tie-break chain. A final input-position tie-break makes even
+     * fully-equal clusters (identical ids included) keep their relative
+     * order, instead of relying on usort internals — usort has been
+     * explicitly unstable since PHP 8.0.
      *
      * @param list<Cluster> $clusters
      * @return list<Cluster>
@@ -129,26 +162,44 @@ final class ClusterSort
     {
         $sign = $this->direction === self::DIRECTION_DESC ? -1 : 1;
 
-        usort($clusters, function (Cluster $a, Cluster $b) use ($sign): int {
-            $av = $this->project($a);
-            $bv = $this->project($b);
-            $primary = is_string($av)
-                ? strcmp($av, (string)$bv)
-                : ($av <=> $bv);
+        /** @var list<array{int|float|string, int, float, string, int, Cluster}> $decorated */
+        $decorated = [];
+        foreach ($clusters as $position => $cluster) {
+            $decorated[] = [
+                $this->project($cluster),   // [0] sort key, projected once
+                $cluster->size(),           // [1] tie-break 1: member count
+                $cluster->similarity,       // [2] tie-break 2: similarity
+                $cluster->id,               // [3] tie-break 3: alphabetical id
+                $position,                  // [4] tie-break 4: input position
+                $cluster,                   // [5] payload
+            ];
+        }
+
+        /** @param array{int|float|string, int, float, string, int, Cluster} $a */
+        usort($decorated, static function (array $a, array $b) use ($sign): int {
+            $primary = is_string($a[0])
+                ? strcmp($a[0], (string) $b[0])
+                : ($a[0] <=> $b[0]);
             if ($primary !== 0) {
                 return $sign * $primary;
             }
             // Stable tie-break: higher member count wins, then higher
             // similarity, then alphabetical id (always ascending — keeps
             // diffs stable regardless of the user's primary direction).
-            $tie = $b->size() <=> $a->size();
+            $tie = $b[1] <=> $a[1];
             if ($tie !== 0) return $tie;
-            $tie = $b->similarity <=> $a->similarity;
+            $tie = $b[2] <=> $a[2];
             if ($tie !== 0) return $tie;
-            return strcmp($a->id, $b->id);
+            $tie = strcmp($a[3], $b[3]);
+            if ($tie !== 0) return $tie;
+            return $a[4] <=> $b[4];
         });
 
-        return $clusters;
+        $sorted = [];
+        foreach ($decorated as $tuple) {
+            $sorted[] = $tuple[5];
+        }
+        return $sorted;
     }
 
     /**
@@ -156,6 +207,8 @@ final class ClusterSort
      */
     public function project(Cluster $c): int|float|string
     {
+        self::$projectCalls++;
+
         return match ($this->key) {
             self::KEY_IMPACT      => $c->impact,
             self::KEY_MEMBERS     => $c->size(),
