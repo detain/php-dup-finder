@@ -12,6 +12,12 @@
  *   - jscpd    — bench/tools/node_modules/.bin/jscpd or system `jscpd`
  *   - simian   — system `simian` (commercial, almost never present)
  *
+ * Pair-grained competitors (phpcpd/pmd-cpd/jscpd emit one record per
+ * clone PAIR) are normalized with
+ * `BenchmarkScoreCalculator::closureFromPairs()` — the transitive
+ * closure over shared members — so family-level scoring compares
+ * like with like; the raw pair count is preserved as `extra.pairs`.
+ *
  * Usage:
  *   php bench/run.php                    # all corpora, all tools
  *   php bench/run.php --corpus=NAME      # single corpus
@@ -25,6 +31,7 @@ declare(strict_types=1);
 require_once dirname(__DIR__) . '/vendor/autoload.php';
 
 use Phpdup\Testing\BenchmarkResultsRenderer;
+use Phpdup\Testing\BenchmarkScoreCalculator;
 
 $root        = dirname(__DIR__);
 $corporaDir  = $root . '/bench/corpora';
@@ -219,10 +226,8 @@ function discoverTools(string $root, string $toolsDir, string $nodeBin): array
                 if (!$xml instanceof SimpleXMLElement) {
                     return ['clusters' => null, 'extra' => $extra];
                 }
-                $clusters = 0;
                 $members = [];
                 foreach ($xml->duplication as $dup) {
-                    $clusters++;
                     $group = [];
                     $lines = (int)$dup['lines'];
                     foreach ($dup->file as $f) {
@@ -235,8 +240,12 @@ function discoverTools(string $root, string $toolsDir, string $nodeBin): array
                     }
                     $members[] = $group;
                 }
+                // PMD XML lists fragment groups pairwise; close them into
+                // families so cluster-level scoring is fair (see header).
+                $extra['pairs'] = count($members);
+                $members = BenchmarkScoreCalculator::closureFromPairs($members);
                 $extra['members'] = $members;
-                return ['clusters' => $clusters, 'extra' => $extra];
+                return ['clusters' => count($members), 'extra' => $extra];
             },
         ];
     }
@@ -281,6 +290,9 @@ function discoverTools(string $root, string $toolsDir, string $nodeBin): array
                     }
                     $members[] = $group;
                 }
+                // Same pairwise report shape as phpcpd — close to families.
+                $extra['pairs'] = count($members);
+                $members = BenchmarkScoreCalculator::closureFromPairs($members);
                 $extra['members'] = $members;
                 return ['clusters' => count($members), 'extra' => $extra];
             },
@@ -327,11 +339,14 @@ function discoverTools(string $root, string $toolsDir, string $nodeBin): array
                         ['file' => (string)($b['name'] ?? ''), 'start' => (int)($b['start'] ?? 0), 'end' => (int)($b['end'] ?? 0)],
                     ];
                 }
+                // jscpd's report is flat pairwise duplicates. Scored raw,
+                // a fully-correct 5-member family (10 pair rows) matches
+                // no family ground truth above the floor — it is closed
+                // into families first, and the raw pair count stays
+                // visible as extra.pairs.
+                $extra['pairs'] = count($members);
+                $members = BenchmarkScoreCalculator::closureFromPairs($members);
                 $extra['members'] = $members;
-                // jscpd reports pairwise duplicates, not transitive
-                // clusters; we keep both views. The "clusters" column
-                // is the pair count, which is what the tool calls a
-                // "clone".
                 return ['clusters' => count($members), 'extra' => $extra];
             },
         ];

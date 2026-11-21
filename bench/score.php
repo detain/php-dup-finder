@@ -2,14 +2,24 @@
 /**
  * Detection-rate scoring for the synthetic-fuzz corpus.
  *
- * Reads `bench/corpora/synthetic-fuzz/.ground-truth.json` and the
- * latest run JSON under `bench/results/`, then computes per-tool
- * precision / recall / F1 and writes a markdown summary to
+ * Reads `bench/corpora/synthetic-fuzz/.ground-truth.json` — one
+ * ground-truth cluster per planted clone family — and the latest run
+ * JSON under `bench/results/`, then computes per-tool precision /
+ * recall / F1 and writes a markdown summary to
  * `bench/results/detection-rate.md`.
  *
- * Two clusters match when their member sets overlap by Jaccard
- * ≥ 0.6 with a ±2-line tolerance on block boundaries (see
- * {@see \Phpdup\Testing\BenchmarkScoreCalculator}).
+ * Scoring is family-granular and containment-aware (see
+ * {@see \Phpdup\Testing\BenchmarkScoreCalculator}): a reported cluster
+ * is a true positive when OVERLAP_FLOOR of its members are explainable
+ * by one family (matched/nested/covers under the advertised ±2-line
+ * rule — nested genuine detections are not unconditional FPs), and a
+ * family is detected when one cluster tolerance-matches OVERLAP_FLOOR
+ * of its planted occurrences one-to-one. Competitor output arrives
+ * pair-grained and is already closed into families by bench/run.php;
+ * `negative_files` in the manifest are planted code with no true clone
+ * class — clusters over them are unexplainable and pay the precision
+ * price. All member paths are canonicalized to corpus-relative form
+ * (ground truth is stored relative; tools emit absolute paths).
  *
  * Usage:
  *   php bench/score.php                           # latest run
@@ -33,9 +43,12 @@ if (!is_file($gtFile)) {
 }
 
 $gt = json_decode((string)file_get_contents($gtFile), true);
-$groundTruth = is_array($gt) && isset($gt['clusters']) && is_array($gt['clusters'])
-    ? $gt['clusters']
-    : [];
+$groundTruth = [];
+if (is_array($gt) && isset($gt['clusters']) && is_array($gt['clusters'])) {
+    foreach ($gt['clusters'] as $family) {
+        $groundTruth[] = normalizeGroup($family);
+    }
+}
 
 $runFile = $argv[1] ?? findLatestRun($resultsDir);
 if ($runFile === null || !is_file($runFile)) {
@@ -92,12 +105,30 @@ function normalizeGroup($g): array
             continue;
         }
         $out[] = [
-            'file'  => (string)($m['file'] ?? ''),
+            'file'  => corpusRelative((string)($m['file'] ?? '')),
             'start' => (int)($m['start'] ?? 0),
             'end'   => (int)($m['end'] ?? 0),
         ];
     }
     return $out;
+}
+
+/**
+ * Canonicalize a member path against the (flat) synthetic corpus dir:
+ * ground truth is stored corpus-relative, tools emit whatever they were
+ * handed (absolute scan paths, cwd-relative paths, basenames). Stripping
+ * up to the last `synthetic-fuzz/` segment collapses the absolute and
+ * dir-relative forms; anything without the marker in a flat corpus is a
+ * basename already.
+ */
+function corpusRelative(string $path): string
+{
+    $marker = 'synthetic-fuzz/';
+    $pos = strrpos($path, $marker);
+    if ($pos !== false) {
+        return substr($path, $pos + strlen($marker));
+    }
+    return basename($path);
 }
 
 function findLatestRun(string $dir): ?string

@@ -1,107 +1,119 @@
 {
-    "description": "Synthetic fuzz corpus \u2014 every generated file body is a clone of every other under type-2 normalization.",
+    "description": "Synthetic bench corpus: 4 structurally distinct clone families x 5 members (one ground-truth cluster per family; members vary identifiers only, so each family is a type-2 clone class and families share no shape). negative_files names planted code with no true clone class \u2014 detections there are false positives.",
     "clusters": [
         [
             {
-                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/alpha_000.php",
+                "file": "guard_000.php",
                 "start": 8,
                 "end": 18
             },
             {
-                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/alpha_001.php",
+                "file": "guard_001.php",
                 "start": 8,
                 "end": 18
             },
             {
-                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/alpha_002.php",
+                "file": "guard_002.php",
                 "start": 8,
                 "end": 18
             },
             {
-                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/alpha_003.php",
+                "file": "guard_003.php",
                 "start": 8,
                 "end": 18
             },
             {
-                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/alpha_004.php",
-                "start": 8,
-                "end": 18
-            },
-            {
-                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/beta_000.php",
-                "start": 8,
-                "end": 18
-            },
-            {
-                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/beta_001.php",
-                "start": 8,
-                "end": 18
-            },
-            {
-                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/beta_002.php",
-                "start": 8,
-                "end": 18
-            },
-            {
-                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/beta_003.php",
-                "start": 8,
-                "end": 18
-            },
-            {
-                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/beta_004.php",
-                "start": 8,
-                "end": 18
-            },
-            {
-                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/gamma_000.php",
-                "start": 8,
-                "end": 18
-            },
-            {
-                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/gamma_001.php",
-                "start": 8,
-                "end": 18
-            },
-            {
-                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/gamma_002.php",
-                "start": 8,
-                "end": 18
-            },
-            {
-                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/gamma_003.php",
-                "start": 8,
-                "end": 18
-            },
-            {
-                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/gamma_004.php",
-                "start": 8,
-                "end": 18
-            },
-            {
-                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/delta_000.php",
-                "start": 8,
-                "end": 18
-            },
-            {
-                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/delta_001.php",
-                "start": 8,
-                "end": 18
-            },
-            {
-                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/delta_002.php",
-                "start": 8,
-                "end": 18
-            },
-            {
-                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/delta_003.php",
-                "start": 8,
-                "end": 18
-            },
-            {
-                "file": "/home/sites/php-dup-finder/bench/corpora/synthetic-fuzz/delta_004.php",
+                "file": "guard_004.php",
                 "start": 8,
                 "end": 18
             }
+        ],
+        [
+            {
+                "file": "accumulate_000.php",
+                "start": 8,
+                "end": 20
+            },
+            {
+                "file": "accumulate_001.php",
+                "start": 8,
+                "end": 20
+            },
+            {
+                "file": "accumulate_002.php",
+                "start": 8,
+                "end": 20
+            },
+            {
+                "file": "accumulate_003.php",
+                "start": 8,
+                "end": 20
+            },
+            {
+                "file": "accumulate_004.php",
+                "start": 8,
+                "end": 20
+            }
+        ],
+        [
+            {
+                "file": "dispatch_000.php",
+                "start": 8,
+                "end": 20
+            },
+            {
+                "file": "dispatch_001.php",
+                "start": 8,
+                "end": 20
+            },
+            {
+                "file": "dispatch_002.php",
+                "start": 8,
+                "end": 20
+            },
+            {
+                "file": "dispatch_003.php",
+                "start": 8,
+                "end": 20
+            },
+            {
+                "file": "dispatch_004.php",
+                "start": 8,
+                "end": 20
+            }
+        ],
+        [
+            {
+                "file": "retry_000.php",
+                "start": 8,
+                "end": 22
+            },
+            {
+                "file": "retry_001.php",
+                "start": 8,
+                "end": 22
+            },
+            {
+                "file": "retry_002.php",
+                "start": 8,
+                "end": 22
+            },
+            {
+                "file": "retry_003.php",
+                "start": 8,
+                "end": 22
+            },
+            {
+                "file": "retry_004.php",
+                "start": 8,
+                "end": 22
+            }
         ]
+    ],
+    "negative_files": [
+        "neg_000.php",
+        "neg_001.php",
+        "neg_002.php",
+        "neg_003.php"
     ]
 }
