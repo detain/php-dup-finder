@@ -5,6 +5,7 @@ namespace Phpdup\Tests\Unit\Cli;
 
 use Phpdup\Cli\Config;
 use Phpdup\Cli\ConfigLoader;
+use Phpdup\Scanning\FileScanner;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -119,6 +120,36 @@ final class ExcludeSemanticsTest extends TestCase
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('exclude_reset must be a boolean');
         (new ConfigLoader())->validate(['exclude_reset' => 'yes']);
+    }
+
+    // ── shell-030 (S21 rider): chained-globstar excludes survive the stack ──
+
+    /**
+     * End-to-end seatbelt for the ReDoS coalescing: an exclude list carrying
+     * adjacent globstar-slash runs flows through ConfigLoader's full stack
+     * (defaults + file) into FileScanner's compiler, and the coalesced
+     * regexes must exclude exactly what the un-coalesced ones excluded.
+     * FileScannerTest owns the compile-level equivalence table; this pins
+     * the semantics where users actually write such patterns.
+     */
+    public function testAdjacentGlobstarExcludeSurvivesConfigStack(): void
+    {
+        $file = $this->configFile(['exclude' => ['**/**/vendor/**', 'mod/**/**/legacy']]);
+
+        $config = (new ConfigLoader())->load(['src'], $file);
+
+        $this->assertContains('**/vendor/**', $config->exclude, 'stock defaults stay under the chain');
+        $this->assertContains('**/**/vendor/**', $config->exclude, 'the chained form is appended verbatim');
+
+        $scanner = new FileScanner($config->exclude, warnOnSkip: false);
+        $this->assertTrue($scanner->isExcluded('vendor/x.php'), 'root-level vendor still excluded');
+        $this->assertTrue($scanner->isExcluded('a/b/vendor/c.php'), 'deep vendor still excluded');
+        $this->assertTrue($scanner->isExcluded('vendor/'), 'directory-prune form still excluded');
+        $this->assertFalse($scanner->isExcluded('myvendor/x.php'), 'coalescing must not re-open the over-match');
+
+        $this->assertTrue($scanner->isExcluded('mod/a/b/legacy'), 'mid-pattern chain behaves like one globstar');
+        $this->assertFalse($scanner->isExcluded('mod/a/b/legacy.php'), 'anchored tail stays anchored');
+        $this->assertSame(PREG_NO_ERROR, preg_last_error(), 'every verdict came from an int preg_match');
     }
 
     // ── per-directory layer (Config::effectiveFor / withOverrides) ─────────

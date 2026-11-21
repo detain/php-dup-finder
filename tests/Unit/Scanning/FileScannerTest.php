@@ -79,6 +79,180 @@ final class FileScannerTest extends TestCase
         $this->assertFalse($scanner->isExcluded('mycache/Widget.php'));
     }
 
+    // ── shell-030: coalesce adjacent globstar-slash groups (ReDoS) ─────────
+
+    /**
+     * Equivalence table for the shell-030 coalescing: every globstar-slash
+     * token once compiled a nested-quantifier group, so adjacent runs blew
+     * up combinatorially. The coalesced compiler must emit ONE group per
+     * maximal run and accept EXACTLY the language the legacy form accepted
+     * (checked path-by-path against {@see globstarCorpus()}), while the
+     * negative-control rows pin that nothing else changed either: a run
+     * separated by a literal slash, or a trailing double-star, keeps its
+     * legacy bytes untouched.
+     *
+     * @return array<string, array{string, string, string, list<string>, list<string>}>
+     */
+    public static function globstarEquivalenceProvider(): array
+    {
+        return [
+            'single run (identity)' => [
+                '**/x', '#^(?:[^/]*/)*x$#', '#^(?:[^/]*/)*x$#',
+                ['x', 'a/x', '//x', str_repeat('level/', 8) . 'x'], ['ax', 'a/b'],
+            ],
+            'double run coalesces' => [
+                '**/**/x', '#^(?:[^/]*/)*(?:[^/]*/)*x$#', '#^(?:[^/]*/)*x$#',
+                ['x', 'a/x', 'a/b/x', '//x', 'a//x', str_repeat('level/', 8) . 'x'], ['ax', 'a/b'],
+            ],
+            'quad run collapses to one group' => [
+                '**/**/**/**/x',
+                '#^(?:[^/]*/)*(?:[^/]*/)*(?:[^/]*/)*(?:[^/]*/)*x$#', '#^(?:[^/]*/)*x$#',
+                ['x', 'a/x', 'a/b/c/d/e/f/g/h/x', '//x'], ['ax'],
+            ],
+            'mid-pattern pair' => [
+                'a/**/**/b', '#^a/(?:[^/]*/)*(?:[^/]*/)*b$#', '#^a/(?:[^/]*/)*b$#',
+                ['a/b', 'a/c/b', 'a/c/d/b', 'a//b'], ['a/b/c', 'x/a/b'],
+            ],
+            'deep vendor chain' => [
+                '**/**/vendor/**', '#^(?:[^/]*/)*(?:[^/]*/)*vendor/.*$#', '#^(?:[^/]*/)*vendor/.*$#',
+                ['vendor/x.php', 'a/b/vendor/c/x.php', 'vendor/'],
+                ['myvendor/x.php', 'vendorx/y.php', 'notvendor/'],
+            ],
+            'trailing run is not a segment group (identity)' => [
+                '**/**', '#^(?:[^/]*/)*.*$#', '#^(?:[^/]*/)*.*$#',
+                ['x', 'a/b', '', 'a/'], [],
+            ],
+            'empty-segment sandwich keeps BOTH groups (identity)' => [
+                '**//**/x', '#^(?:[^/]*/)*/(?:[^/]*/)*x$#', '#^(?:[^/]*/)*/(?:[^/]*/)*x$#',
+                ['//x', 'a//x', 'a/b//x', '/x'], ['a/x', '//', 'x'],
+            ],
+            'root-relative (identity)' => [
+                '/vendor/**', '#^vendor/.*$#', '#^vendor/.*$#',
+                ['vendor/x.php', 'vendor/'], ['a/vendor/x.php'],
+            ],
+            'bare segment glob (identity)' => [
+                '**/', '#^(?:[^/]*/)*$#', '#^(?:[^/]*/)*$#',
+                ['', 'a/', 'a/b/'], ['a', 'a/b', 'a/b/c.php'],
+            ],
+            'metacharacter dot after coalesced run' => [
+                '**/**/x.y', '#^(?:[^/]*/)*(?:[^/]*/)*x\.y$#', '#^(?:[^/]*/)*x\.y$#',
+                ['x.y', 'a/b/x.y'], ['xzy', 'a/b/xy'],
+            ],
+            'prefixed triple chain' => [
+                'lib/**/**/**/old',
+                '#^lib/(?:[^/]*/)*(?:[^/]*/)*(?:[^/]*/)*old$#', '#^lib/(?:[^/]*/)*old$#',
+                ['lib/old', 'lib/a/old', 'lib/a/b/c/old'], ['lib/a/new', 'alib/old'],
+            ],
+            'triple-star run folds with the next' => [
+                '***/**/x', '#^(?:[^/]*/)*(?:[^/]*/)*x$#', '#^(?:[^/]*/)*x$#',
+                ['x', 'a/b/x'], ['ax'],
+            ],
+        ];
+    }
+
+    /**
+     * @param array{string, string, string, list<string>, list<string>} $case
+     *        [glob, legacy compiled, coalesced compiled, must-match, must-not-match]
+     * @dataProvider globstarEquivalenceProvider
+     */
+    public function testCoalescedCompileIsLanguageEquivalentToLegacy(
+        string $glob,
+        string $legacy,
+        string $coalesced,
+        array $mustMatch,
+        array $mustNotMatch
+    ): void {
+        $compiled = $this->compileGlob($glob);
+        $this->assertSame($coalesced, $compiled, "compiled shape for {$glob}");
+
+        foreach (self::globstarCorpus() as $path) {
+            $before = preg_match($legacy, $path);
+            $after = preg_match($compiled, $path);
+            // Both forms must stay analyzable: an int verdict, never a
+            // silent false from a backtrack-limit blowout.
+            $this->assertIsInt($before, "legacy returned false on {$path} for {$glob}");
+            $this->assertIsInt($after, "coalesced returned false on {$path} for {$glob}");
+            $this->assertSame(PREG_NO_ERROR, preg_last_error(), "preg error after {$path} for {$glob}");
+            $this->assertSame($before, $after, "pre/post compile disagree on {$path} for {$glob}");
+        }
+        foreach ($mustMatch as $path) {
+            $this->assertSame(1, preg_match($compiled, $path), "{$glob} must still match {$path}");
+        }
+        foreach ($mustNotMatch as $path) {
+            $this->assertSame(0, preg_match($compiled, $path), "{$glob} must still reject {$path}");
+        }
+    }
+
+    /**
+     * shell-030 acceptance: a 45-level adversarial path checked through
+     * isExcluded() against a 15-deep globstar-slash chain must return a real
+     * verdict — int from preg_match, PREG_NO_ERROR behind it — inside a
+     * CI-safe time box. Before the coalescing this combination exhausted
+     * pcre.backtrack_limit (FUZZ: seconds per file, then silent false =
+     * the exclude stops matching entirely). The near-miss arm is the sharp
+     * edge: PCRE auto-possessifies adjacent identical groups on plainly
+     * foreign tails (those stay linear), but a final segment that shares
+     * its leading bytes with the literal tail re-opens the split search
+     * across all 15 groups — measured 38.6ms + PREG_BACKTRACK_LIMIT_ERROR
+     * on the legacy compile, microseconds on the coalesced one.
+     */
+    public function testAdversarialGlobstarChainIsBoundedAndNeverSilent(): void
+    {
+        $deep = str_repeat('level/', 45) . 'file.php';
+        $nearMissPath = str_repeat('level/', 45) . 'level-xyz.php';
+        $chain = str_repeat('**/', 15);
+
+        $miss = new FileScanner([$chain . 'never-matches'], warnOnSkip: false);
+        $near = new FileScanner([$chain . 'level-matchy.php'], warnOnSkip: false);
+        $hit = new FileScanner([$chain . 'file.php'], warnOnSkip: false);
+
+        $t0 = hrtime(true);
+        $missVerdict = $miss->isExcluded($deep);
+        $nearVerdict = $near->isExcluded($nearMissPath);
+        $hitVerdict = $hit->isExcluded($deep);
+        $elapsedMs = (hrtime(true) - $t0) / 1e6;
+
+        $this->assertFalse($missVerdict, 'chain + foreign tail must not match');
+        $this->assertFalse($nearVerdict, 'chain + near-miss tail must not match');
+        $this->assertTrue($hitVerdict, 'chain + real tail must exclude (coalescing kept the language)');
+        $this->assertSame(
+            PREG_NO_ERROR,
+            preg_last_error(),
+            'no backtrack-limit blowout behind the verdicts (legacy compile returned silent false here)'
+        );
+        $this->assertLessThan(10.0, $elapsedMs, "three 45-level checks against a 15-group chain took {$elapsedMs}ms (budget: 10ms)");
+    }
+
+    /**
+     * Paths used for the pre/post equivalence sweep. Segment counts stay ≤ 8
+     * so even the legacy combinatorial form walks the table in microseconds;
+     * the adversarial depth is pinned separately, on the coalesced form only.
+     *
+     * @return list<string>
+     */
+    private static function globstarCorpus(): array
+    {
+        return [
+            '', 'x', 'ax', 'a/x', 'a/b/x', 'a/b/c/d/e/f/g/h/x',
+            '//x', 'a//x', 'a/b//c/x', '/x', 'a/', 'a/b/',
+            'vendor/', 'vendor/x.php', 'a/b/vendor/c/x.php', 'myvendor/x.php', 'vendorx/y.php',
+            'x.y', 'a/b/x.y', 'xzy', 'lib/old', 'lib/a/old', 'lib/a/b/c/old', 'alib/old',
+            'mod/a/b/legacy', 'mod/a/b/legacy.php',
+            str_repeat('level/', 8) . 'x', str_repeat('level/', 8) . 'old',
+        ];
+    }
+
+    /**
+     * Reach the private compiler the same way the shell-S20 yard-stick pin
+     * reaches escapeReason(): reflection on the gate, no production seam.
+     */
+    private function compileGlob(string $glob): string
+    {
+        $scanner = new FileScanner([], warnOnSkip: false);
+        $compile = new \ReflectionMethod(FileScanner::class, 'globToRegex');
+        return $compile->invoke($scanner, $glob);
+    }
+
     // ── Item 5.2 / NN2: unreadable trees skip loudly instead of hard-dying ──
 
     public function testUnreadableScanRootIsSkippedNotFatal(): void

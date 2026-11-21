@@ -250,6 +250,18 @@ final class FileScanner
      *
      * This fixes the item-5.2 over-match: the old compiler emitted `.*` for
      * every `**`, so `**`/vendor/** crossed "/" and also wiped `myvendor/`.
+     *
+     * Adjacent globstar chains are COALESCED (shell-030): the segment form
+     * `(?:[^/]*\/)*` matches zero or more whole segments, and that language
+     * is closed under concatenation (a run of segments followed by another
+     * run is still one run), so N adjacent groups accept exactly what one
+     * group does. Emitting one group per `**`/ token instead handed PCRE a
+     * nested-quantifier family: backtrack combinations grow like
+     * C(segments+N-1, N-1), which on a 45-level path with a dozen chained
+     * groups exhausts pcre.backtrack_limit — preg_match() then returns
+     * silent false, the pattern stops matching anything, and `vendor`-style
+     * protection evaporates without an error. One group per maximal run is
+     * immune; the compiled form needs no raised limits.
      */
     private function globToRegex(string $glob): string
     {
@@ -270,7 +282,15 @@ final class FileScanner
                         $re .= '.*';            // trailing ** → everything below
                     } elseif ($glob[$i] === '/') {
                         $i++;                   // consume the boundary slash
-                        $re .= '(?:[^/]*/)*';   // zero or more whole segments
+                        // shell-030: coalesce an adjacent '**/' chain into ONE
+                        // segment group. Only the group emitted by this branch
+                        // can end $re with that exact text (literal chars go
+                        // through preg_quote, which back-escapes ( ? : [ ] * )
+                        // and /), so this suffix test is collision-proof.
+                        $group = '(?:[^/]*/)*'; // zero or more whole segments
+                        if (!str_ends_with($re, $group)) {
+                            $re .= $group;
+                        }
                     } else {
                         $re .= '[^/]*';         // ** mid-segment → one '*'
                     }
