@@ -160,6 +160,45 @@ final class CandidateBudgetFlagTest extends TestCase
         return $dir;
     }
 
+    // ---- m1 fix pins: Config::withOverrides must consume AND preserve ----
+
+    public function testWithOverridesConsumesCandidateBudget(): void
+    {
+        $root = new Config(paths: [self::scratchDir()], exclude: []);
+        self::assertSame(7, $root->withOverrides(['candidate_budget' => 7])->candidateBudget);
+        // Per-dir JSON may carry numeric strings; the cast must hold.
+        self::assertSame(9, $root->withOverrides(['candidate_budget' => '9'])->candidateBudget);
+    }
+
+    public function testDerivedConfigNeverResetsRootBudget(): void
+    {
+        // Anti-reset (the latent half of m1): a derived Config built from
+        // UNRELATED overrides must carry the root's explicit budget. Before
+        // the fix, withOverrides omitted the named arg and silently rewound
+        // to the 60M default — neutering the memory guard on every derivation.
+        $root = new Config(paths: [self::scratchDir()], exclude: [], candidateBudget: 123);
+        self::assertSame(123, $root->withOverrides(['min_block_size' => 4])->candidateBudget);
+        self::assertSame(123, $root->withOverrides([])->candidateBudget);
+    }
+
+    public function testPerDirectoryCandidateBudgetReachesDerivedConfig(): void
+    {
+        // End-to-end of the discover -> shapeOverrides -> withOverrides chain:
+        // a per-directory .phpdup.json candidate_budget must not be silently
+        // dropped from the derived per-file Config.
+        $dir = self::makeChainCorpus();
+        mkdir($dir . '/sub', 0o777, true);
+        file_put_contents($dir . '/sub/.phpdup.json', '{"candidate_budget": 5}');
+
+        $root = (new ConfigLoader())->load([$dir], null, []);
+        self::assertSame(5, $root->effectiveFor($dir . '/sub/f0.php')->candidateBudget, 'per-dir value consumed');
+        self::assertSame(
+            Clusterer::MAX_CANDIDATE_PAIRS,
+            $root->effectiveFor($dir . '/f0.php')->candidateBudget,
+            'files outside the sub-directory keep the root budget',
+        );
+    }
+
     private static function drainToClustering(Config $config): PipelineState
     {
         $state = new PipelineState($config);

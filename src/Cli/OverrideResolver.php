@@ -9,8 +9,10 @@ namespace Phpdup\Cli;
  * Replaces hand-rolled `?? $overrides ?? $data ?? $default` chains for
  * simple scalar configuration keys.
  *
- * @see ConfigLoader::load()  Primary consumer; passes the ~19 flat keys that
- *                             share the same three-tier precedence.
+ * @see ConfigLoader::load()  Primary consumer; passes the flat keys it shares
+ *                             the same three-tier precedence over — the table
+ *                             of record is `ConfigLoader::$flatKeys` +
+ *                             `NUMERIC_KEYS` (never hard-count it here).
  */
 final class OverrideResolver
 {

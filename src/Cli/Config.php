@@ -336,6 +336,7 @@ final class Config
             baselineOutFile:                 isset($overrides['baseline_out']) ? (string)$overrides['baseline_out'] : $this->baselineOutFile,
             diffBase:                        isset($overrides['diff_base']) ? (string)$overrides['diff_base'] : $this->diffBase,
             apply:                           isset($overrides['apply']) ? (bool)$overrides['apply'] : $this->apply,
+            candidateBudget:                 isset($overrides['candidate_budget']) ? (int)$overrides['candidate_budget'] : $this->candidateBudget,
         );
     }
 }
