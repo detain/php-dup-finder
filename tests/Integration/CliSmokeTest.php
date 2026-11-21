@@ -448,6 +448,125 @@ final class CliSmokeTest extends TestCase
         );
     }
 
+    public function testWarmDeletionDriftIsLoudOrHonestNeverDoubleAnchored(): void
+    {
+        // Review round-3 [M-1] pin (vector 1): content-preserving DELETION
+        // of the filler block moves both twin members UP 15 lines while the
+        // cluster cache still hits (correct by design). The monotone claim
+        // ledger must then either produce the honest pairing (each member on
+        // its own live block) or die with 'could not relocate' — silently
+        // double-anchoring two members onto one node (the r2 behaviour the
+        // reviewer reproduced at RC=0) is the corruption this pins shut.
+        // The unit suite proves both branches deterministically per resolve
+        // order; through the real pipeline the member order decides which
+        // branch fires, so this pin asserts the union — minus silence.
+        $corpus = $this->makeTwinForeachCorpus();
+        $cache  = $this->tmp . '/warm-del';
+
+        $cold = $this->cli(
+            ['analyze', $corpus, '--workers=1', '--json', $this->tmp . '/del-a.json'],
+            cacheDir: $cache,
+        );
+        $this->assertSame(0, $cold['exit'], $cold['combined']);
+        $ja = json_decode((string) file_get_contents($this->tmp . '/del-a.json'), true);
+        $this->assertIsArray($ja);
+
+        $rowsBefore = $this->memberRows($ja);
+        $this->deleteTwinFillers($corpus);
+        // Snapshot AFTER our own drift edit: whatever the warm run does to
+        // corpus bytes from here on is strictly the analyzer's doing.
+        $twinBefore = (string) file_get_contents($corpus . '/impl_12.php');
+
+        $warm = $this->cli(
+            ['analyze', $corpus, '--workers=1', '--json', $this->tmp . '/del-b.json'],
+            cacheDir: $cache,
+        );
+
+        if ($warm['exit'] === 0) {
+            $this->assertStringContainsString('clusters from cache', $warm['combined']);
+            $jb = json_decode((string) file_get_contents($this->tmp . '/del-b.json'), true);
+            $this->assertIsArray($jb);
+            $rowsAfter = $this->memberRows($jb);
+            $this->assertSame(array_keys($rowsBefore), array_keys($rowsAfter), 'membership stable');
+            foreach ($rowsBefore as $id => $pairs) {
+                $seen = [];
+                foreach ($pairs as $i => $pair) {
+                    [$file, $s, $e] = $pair;
+                    [$aFile, $aS, $aE] = $rowsAfter[$id][$i];
+                    $this->assertSame($file, $aFile, 'member file order must be stable across replay');
+                    // Either genuinely relocated (a member the deletion
+                    // moved: -15) or untouched (a member elsewhere).
+                    $this->assertTrue(
+                        [$aS, $aE] === [$s - 15, $e - 15] || [$aS, $aE] === [$s, $e],
+                        "warm member of $id must be relocated -15 or untouched, got $s-$e -> $aS-$aE",
+                    );
+                    $key = $file . '#' . $aS . '-' . $aE;
+                    $this->assertArrayNotHasKey($key, $seen, "two members of $id silently share live span $key");
+                    $seen[$key] = true;
+                }
+            }
+            // The twin file's two members specifically must sit on THEIR
+            // lines: after deleting lines 5-19, foreach #1/#2 live at 5-7
+            // and 12-14 (their cold spans minus 15).
+            $this->assertStringContainsString('// g1', (string) file_get_contents($corpus . '/impl_12.php'));
+        } else {
+            $this->assertStringContainsString('could not relocate', $warm['combined'],
+                'a non-zero warm exit must be the loud relocation spine, not some unrelated failure');
+            $this->assertStringContainsString('clusters from cache', $warm['combined']);
+            $this->assertFileDoesNotExist($this->tmp . '/del-b.json', 'a crashed run ships no report');
+        }
+        $this->assertSame(
+            $twinBefore,
+            (string) file_get_contents($corpus . '/impl_12.php'),
+            'analyze alone must never touch corpus bytes',
+        );
+    }
+
+    public function testWarmDeletionDriftApplyNeverWritesSilently(): void
+    {
+        // Review round-3 pin (vector 1 + --apply trace): the r1 reviewer
+        // traced that double-anchored members make ApplyExtractor::applyMember
+        // (src/Refactor/ApplyExtractor.php:338-341,357-417) silently SKIP the
+        // second site and still report 'applied' — a partial refactor shipped
+        // as complete. The loader spine now dies BEFORE any write, or
+        // resolves honestly. Assert: loud ⇒ corpus bytes byte-identical;
+        // honest ⇒ no member pair shares a span (the precondition of the
+        // silent skip cannot exist).
+        $corpus = $this->makeTwinForeachCorpus();
+        $cache  = $this->tmp . '/warm-del-apply';
+
+        $cold = $this->cli(
+            ['analyze', $corpus, '--workers=1', '--json', $this->tmp . '/ap-a.json'],
+            cacheDir: $cache,
+        );
+        $this->assertSame(0, $cold['exit'], $cold['combined']);
+
+        $this->deleteTwinFillers($corpus);
+        $bytes = [];
+        foreach (glob($corpus . '/*.php') ?: [] as $f) {
+            $bytes[$f] = sha1_file($f);
+        }
+
+        $run = $this->cli(
+            ['analyze', $corpus, '--workers=1', '--apply', '--json', $this->tmp . '/ap-b.json'],
+            cacheDir: $cache,
+        );
+
+        if ($run['exit'] !== 0) {
+            $this->assertStringContainsString('could not relocate', $run['combined']);
+            foreach ($bytes as $f => $sum) {
+                $this->assertSame($sum, sha1_file($f), "loud warm --apply must leave $f untouched");
+            }
+        } else {
+            $jb = json_decode((string) file_get_contents($this->tmp . '/ap-b.json'), true);
+            $this->assertIsArray($jb);
+            foreach ($this->memberRows($jb) as $id => $pairs) {
+                $keys = array_map(static fn (array $p): string => $p[0] . '#' . $p[1] . '-' . $p[2], $pairs);
+                $this->assertCount(count(array_unique($keys)), $keys, "cluster $id double-anchors under --apply");
+            }
+        }
+    }
+
     // ------------------------------------------------------ repo corpora
 
     public function testFixturesCorpusMatchesCommittedContract(): void
@@ -663,6 +782,81 @@ final class CliSmokeTest extends TestCase
      * $n files, each with the SAME function body → one big clone cluster;
      * >= 8 files cross WorkerPool's fork threshold.
      */
+    /**
+     * Review [M-1] round-3 corpus: eleven plain files + one twin file whose
+     * body carries the SAME foreach twice, separated by 15 deletable
+     * filler lines above the first clone and 4 gap lines between. Deleting
+     * the fillers is comment-only drift: every structuralHash (and thus
+     * the cluster-cache corpus token multiset) is untouched, so a warm run
+     * MUST hit the cache — and the lazy loader then replays two stale
+     * hints whose upward shift has no forward-bias answer.
+     */
+    private function makeTwinForeachCorpus(): string
+    {
+        $dir = $this->tmp . '/twins';
+        mkdir($dir, 0o775, true);
+        for ($i = 1; $i <= 11; $i++) {
+            file_put_contents($dir . sprintf('/impl_%02d.php', $i), <<<'PHP'
+                <?php
+                function report_totals(array $rows): float
+                {
+                    $sum = 0.0;
+                    foreach ($rows as $row) {
+                        $sum += $row['amount'] * $row['rate'];
+                    }
+                    return round($sum, 2);
+                }
+                PHP);
+        }
+        $fillers = '';
+        for ($f = 1; $f <= 15; $f++) {
+            $fillers .= sprintf("        // f%02d\n", $f);
+        }
+        $gaps = "        // g1\n        // g2\n        // g3\n        // g4\n";
+        $clone = "                    foreach (\$rows as \$row) {\n                        \$sum += \$row['amount'] * \$row['rate'];\n                    }\n";
+        file_put_contents($dir . '/impl_12.php', <<<PHP
+            <?php
+            function report_totals(array \$rows): float
+            {
+                \$sum = 0.0;
+
+            PHP . $fillers . $clone . $gaps . $clone . <<<PHP
+                    return round(\$sum, 2);
+                }
+            PHP);
+        return $dir;
+    }
+
+    /** Delete the 15 '// fNN' filler lines from the twin file (content-preserving). */
+    private function deleteTwinFillers(string $corpus): void
+    {
+        $file = $corpus . '/impl_12.php';
+        $lines = explode("\n", (string) file_get_contents($file));
+        $kept  = [];
+        foreach ($lines as $line) {
+            if (preg_match('/^\s+\/\/ f\d\d$/', $line)) {
+                continue;
+            }
+            $kept[] = $line;
+        }
+        $removed = count($lines) - count($kept);
+        $this->assertSame(15, $removed, 'the deletion protocol must remove exactly the filler block');
+        file_put_contents($file, implode("\n", $kept));
+    }
+
+    /** @return array<string, list<array{0:string,1:int,2:int}>> cluster-id => member [file,start,end] rows */
+    private function memberRows(array $json): array
+    {
+        $out = [];
+        foreach ($json['clusters'] as $c) {
+            foreach ($c['members'] ?? [] as $m) {
+                $out[(string) $c['id']][] = [(string) $m['file'], (int) $m['start'], (int) $m['end']];
+            }
+        }
+        ksort($out);
+        return $out;
+    }
+
     private function makeDupCorpus(int $n): string
     {
         $dir = $this->tmp . '/dup';

@@ -23,20 +23,40 @@ use Phpdup\Util\LineRange;
  * produced by this process's own scan.
  *
  * A range replayed from the cluster cache is only an ADVISORY hint:
- * content-preserving edits (comment or blank-line inserts above a
- * block) leave structuralHash — and therefore the v3/v4 corpus token —
- * untouched, so the cache legitimately hits while every cached line
- * number below the edit has drifted. On a strict miss the loader
- * re-anchors by structural identity (kind + declared name + enclosing
- * namespace/class), scoring candidates by span preservation and
- * proximity to the stale hint, and refreshes the block's range to the
- * located node either way. Genuine ambiguity still fails loudly:
- * guessing a signature from the wrong sibling would poison reports.
+ * content-preserving edits (comment or blank-line shifts) leave the
+ * structuralHash — and therefore the corpus cache token — untouched, so
+ * the cache legitimately hits while every cached line number below the
+ * edit has drifted. The loader therefore keeps a per-GROUP claim ledger
+ * — group = file + kind + declared name + namespace + enclosing class —
+ * and every resolution (strict or re-anchored) must:
+ *   • claim a physically distinct node (a span another stale member of
+ *     the same group already owns is never served twice — this closes
+ *     the "sibling drifted exactly onto my stale hint" door), and
+ *   • preserve order: stale hints are file order (a content-preserving
+ *     edit never swaps two blocks), so a member may only anchor to a
+ *     candidate that sits between the nodes claimed by its hint-
+ *     neighbours — the k-th stale member maps onto the k-th live
+ *     candidate.
+ * Within those constraints insertion drift re-anchors cleanly (span
+ * preserved, nearest to the hint, below-or-at the hint wins ties).
+ * Deletion drift, an exhausted candidate pool, or a truly ambiguous
+ * survivor set fail LOUD by design — a silent mis-anchor poisons every
+ * downstream consumer (reports, --apply), while a loud relocation error
+ * merely costs one honest cache miss the operator can force. Guessing a
+ * signature from the wrong sibling is never acceptable.
  */
 final class BlockAstLoader
 {
     /** @var array<string, list<Node\Stmt>> file → cached stmts (per-process) */
     private array $cache = [];
+
+    /**
+     * Claims per group key: hint range (as served, pre-refresh), the
+     * assigned live range, and the owning Block's object id.
+     *
+     * @var array<string, list<array{hint: array{int,int}, assigned: array{int,int}, owner: int}>>
+     */
+    private array $claims = [];
 
     public function __construct(
         private readonly AstCache $astCache,
@@ -58,14 +78,46 @@ final class BlockAstLoader
             }
             $this->cache[$block->file] = $stmts;
         }
-        $found = $this->findStrict($stmts, $block);
+
+        $group   = self::groupKey($block);
+        $foreign = $this->foreignClaims($group, $block);
+
+        // Re-entry: this exact block was already located once in this
+        // process (its range now carries the assigned truth). Serve the
+        // same node without touching the ledger.
+        foreach ($this->claims[$group] ?? [] as $claim) {
+            if ($claim['owner'] !== spl_object_id($block)) {
+                continue;
+            }
+            if ([$block->range->start, $block->range->end] !== $claim['assigned']) {
+                continue;
+            }
+            $again = $this->findStrict($stmts, $block, exclude: $foreign, forceRange: $claim['assigned']);
+            if ($again !== null) {
+                $block->ast = $again;
+                return $again;
+            }
+            // Self-claim no longer points at real bytes (mid-process file
+            // change — not a supported flow, but never let it double-claim):
+            // drop OUR entry only, foreign claims stay booked, fall through.
+            $self    = spl_object_id($block);
+            $this->claims[$group] = array_values(array_filter(
+                $this->claims[$group] ?? [],
+                static fn (array $c): bool => $c['owner'] !== $self
+            ));
+            break;
+        }
+
+        $hintObj = $block->range;
+        $hint    = [$hintObj->start, $hintObj->end];
+        $found   = $this->findStrict($stmts, $block, exclude: $foreign);
         if ($found === null) {
-            $found = $this->findReanchored($stmts, $block);
+            $found = $this->findReanchored($stmts, $block, $hint, $foreign);
         }
         if ($found === null) {
             throw new \RuntimeException(sprintf(
                 'BlockAstLoader: could not relocate block %s in %s (kind %s, hinted range %s)',
-                $block->qualifiedName(), $block->file, $block->kind, (string) $block->range
+                $block->qualifiedName(), $block->file, $block->kind, (string) $hintObj
             ));
         }
         // The located node is now the truth for this block: a warm-cache
@@ -73,25 +125,70 @@ final class BlockAstLoader
         // consumers (refactor signatures, JSON member lines) must not
         // keep reporting the drifted position.
         $block->range = new LineRange($found->getStartLine(), $found->getEndLine());
-        $block->ast = $found;
+        $block->ast   = $found;
+        $this->claims[$group][] = [
+            'hint'     => $hint,
+            'assigned' => [$found->getStartLine(), $found->getEndLine()],
+            'owner'    => spl_object_id($block),
+        ];
         return $found;
     }
 
+    private static function groupKey(Block $block): string
+    {
+        return implode("\x1f", [
+            $block->file,
+            $block->kind,
+            $block->name ?? '*',
+            $block->namespace ?? '*',
+            $block->class ?? '*',
+        ]);
+    }
+
     /**
-     * Exact kind + line-range + name match (the original resolution).
+     * Ranges already owned by OTHER blocks of the same group, plus the
+     * hint each claim arrived with (order bookkeeping).
      *
-     * @param list<Node\Stmt> $stmts
+     * @return list<array{hint: array{int,int}, assigned: array{int,int}}>
      */
-    private function findStrict(array $stmts, Block $block): ?Node
+    private function foreignClaims(string $group, Block $block): array
+    {
+        $out = [];
+        foreach ($this->claims[$group] ?? [] as $claim) {
+            if ($claim['owner'] === spl_object_id($block)) {
+                continue;
+            }
+            $out[] = ['hint' => $claim['hint'], 'assigned' => $claim['assigned']];
+        }
+        return $out;
+    }
+
+    /**
+     * Exact kind + line-range + name match, minus any span a foreign
+     * member of the same group already claimed (a claimed node is
+     * somebody else's anchor — serving it twice is the silent
+     * double-anchor Vector-2 door).
+     *
+     * @param list<Node\Stmt>                  $stmts
+     * @param list<array{hint: array{int,int}, assigned: array{int,int}}> $exclude
+     * @param array{int,int}|null              $forceRange
+     */
+    private function findStrict(array $stmts, Block $block, array $exclude, ?array $forceRange = null): ?Node
     {
         $found = null;
         $kindMatch = static fn (Node $node, string $kind): bool => self::matchesKind($node, $kind);
         $traverser = new NodeTraverser();
-        $traverser->addVisitor(new class($block, $found, $kindMatch) extends NodeVisitorAbstract {
+        $traverser->addVisitor(new class($block, $found, $kindMatch, $exclude, $forceRange) extends NodeVisitorAbstract {
+            /**
+             * @param list<array{hint: array{int,int}, assigned: array{int,int}}> $exclude
+             * @param array{int,int}|null                                         $forceRange
+             */
             public function __construct(
                 private readonly Block $block,
                 private ?Node &$found,
                 private readonly \Closure $kindMatch,
+                private readonly array $exclude,
+                private readonly ?array $forceRange,
             ) {
             }
             #[\Override]
@@ -100,14 +197,21 @@ final class BlockAstLoader
                 if ($this->found !== null) {
                     return null;
                 }
-                if ($node->getStartLine() !== $this->block->range->start) return null;
-                if ($node->getEndLine()   !== $this->block->range->end)   return null;
-                if (!($this->kindMatch)($node, $this->block->kind))        return null;
+                $wantStart = $this->forceRange[0] ?? $this->block->range->start;
+                $wantEnd   = $this->forceRange[1] ?? $this->block->range->end;
+                if ($node->getStartLine() !== $wantStart) return null;
+                if ($node->getEndLine()   !== $wantEnd)   return null;
+                foreach ($this->exclude as $taken) {
+                    if ($taken['assigned'] === [$wantStart, $wantEnd]) {
+                        return null; // foreign-claimed span is never free
+                    }
+                }
+                if (!($this->kindMatch)($node, $this->block->kind))  return null;
                 if ($this->block->name !== null) {
                     $name = match (true) {
                         $node instanceof Node\Stmt\Function_   => $node->name->toString(),
                         $node instanceof Node\Stmt\ClassMethod => $node->name->toString(),
-                        default                                => null,
+                        default                              => null,
                     };
                     if ($name !== $this->block->name) return null;
                 }
@@ -120,18 +224,25 @@ final class BlockAstLoader
     }
 
     /**
-     * Range-insensitive re-anchor — the warm-cache cure (review M-1).
+     * Range-insensitive re-anchor — the warm-cache cure.
      *
-     * A cluster-cache hit replays members whose line ranges predate the
-     * current file bytes. Structural identity still pins the block:
-     * kind, declared name (methods/functions), enclosing namespace and
-     * class. Among survivors the one whose span the edit preserved and
-     * whose distance to the stale hint is smallest wins; a tie or an
-     * empty pool returns null so the caller keeps its loud failure.
+     * Candidates must agree on kind, declared name (when present),
+     * enclosing namespace and class scope. Beyond that, only nodes not
+     * already claimed by a foreign group member and ORDER-CONSISTENT
+     * with every existing claim survive: stale hints are file order, so
+     * a member anchors strictly below the node claimed by its
+     * next-lower-hint neighbour and strictly above its next-higher one.
+     * Among survivors the one whose span the edit preserved and whose
+     * distance to the stale hint is smallest wins (insertions are the
+     * promised drift direction, so a candidate below-or-at the hint
+     * beats an equidistant mirror above it); a survivor-less pool or an
+     * exact tie returns null so the caller keeps its loud failure.
      *
-     * @param list<Node\Stmt> $stmts
+     * @param list<Node\Stmt>  $stmts
+     * @param array{int,int}   $hint  [start,end] as originally served
+     * @param list<array{hint: array{int,int}, assigned: array{int,int}}> $foreign
      */
-    private function findReanchored(array $stmts, Block $block): ?Node
+    private function findReanchored(array $stmts, Block $block, array $hint, array $foreign): ?Node
     {
         $kindMatch = static fn (Node $node, string $kind): bool => self::matchesKind($node, $kind);
         $traverser = new NodeTraverser();
@@ -158,7 +269,13 @@ final class BlockAstLoader
                     return null;
                 }
                 if ($node instanceof Node\Stmt\ClassLike) {
-                    $this->classStack[] = $node->name?->toString() ?? '<anonymous-class>';
+                    // MUST mirror BlockVisitor's anonymous marker verbatim
+                    // ('<anonymous>', BlockExtractor.php:101): the scope
+                    // filter compares against Block::$class, and a
+                    // divergent sentinel silently excludes every
+                    // anonymous-class member from re-anchoring (the
+                    // self-scan warm replay caught this).
+                    $this->classStack[] = $node->name?->toString() ?? '<anonymous>';
                     return null;
                 }
                 $this->consider($node);
@@ -192,7 +309,7 @@ final class BlockAstLoader
                     $name = match (true) {
                         $node instanceof Node\Stmt\Function_   => $node->name->toString(),
                         $node instanceof Node\Stmt\ClassMethod => $node->name->toString(),
-                        default                                => null,
+                        default                              => null,
                     };
                     if ($name !== $this->block->name) {
                         return;
@@ -203,16 +320,7 @@ final class BlockAstLoader
                 $dStart   = $node->getStartLine() - $this->block->range->start;
                 $dEnd     = $node->getEndLine() - $this->block->range->end;
                 $this->candidates[] = [
-                    'node' => $node,
-                    // Lexicographic score, best first:
-                    //  1. span preserved (inserts ABOVE keep line count);
-                    //  2. smallest total distance to the stale hint;
-                    //  3. non-negative shift — insertions are the promised
-                    //     drift direction (docs/CLI.md: comment/blank-line
-                    //     shifts), so a candidate below-or-at the hint
-                    //     beats a mirror above it; deletions that shift
-                    //     blocks upward lose this lever only when a tie
-                    //     exists, and a tie loses to the loud failure.
+                    'node'  => $node,
                     'score' => [
                         $nodeSpan === $hintSpan ? 0 : 1,
                         abs($dStart) + abs($dEnd),
@@ -224,7 +332,30 @@ final class BlockAstLoader
         $traverser->addVisitor($visitor);
         $traverser->traverse($stmts);
 
-        $pool = $visitor->candidates;
+        $pool = [];
+        foreach ($visitor->candidates as $candidate) {
+            $start = $candidate['node']->getStartLine();
+            $span  = [$start, $candidate['node']->getEndLine()];
+            $ok    = true;
+            foreach ($foreign as $claim) {
+                if ($claim['assigned'] === $span) {
+                    $ok = false; // physically taken
+                    break;
+                }
+                if ($hint[0] > $claim['hint'][0] && $start <= $claim['assigned'][0]) {
+                    $ok = false; // must sit strictly below the lower neighbour
+                    break;
+                }
+                if ($hint[0] < $claim['hint'][0] && $start >= $claim['assigned'][0]) {
+                    $ok = false; // must sit strictly above the upper neighbour
+                    break;
+                }
+            }
+            if ($ok) {
+                $pool[] = $candidate;
+            }
+        }
+
         if ($pool === []) {
             return null;
         }
