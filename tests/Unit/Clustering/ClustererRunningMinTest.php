@@ -7,7 +7,12 @@ use PHPUnit\Framework\TestCase;
 use Phpdup\Clustering\Clusterer;
 use Phpdup\Clustering\MatchTier;
 use Phpdup\Extraction\Block;
+use Phpdup\Extraction\BlockExtractor;
+use Phpdup\Fingerprint\NgramFingerprint;
+use Phpdup\Fingerprint\SubtreeHasher;
 use Phpdup\Index\BlockIndex;
+use Phpdup\Normalization\Normalizer;
+use Phpdup\Parsing\AstParser;
 use Phpdup\Similarity\JaccardSimilarity;
 use Phpdup\Similarity\TreeEditDistance;
 
@@ -324,5 +329,199 @@ final class ClustererRunningMinTest extends TestCase
         // And it must equal the minimum edge weight exactly.
         $this->assertEqualsWithDelta(0.55, $clusters[0]->similarity, 1e-9,
             'cluster similarity must equal the weakest edge (A,C)=0.55');
+    }
+
+    // -----------------------------------------------------------------
+    // engine-007 (half B) — Tier-2 confirmation honesty pins.
+    //
+    // These exercise the FULL scoring path (cluster() with no supplied
+    // edges → scorePairsSerially), unlike the synthetic-edge running-min
+    // cases above. They pin that the tree tier never rubber-stamps a
+    // statement permutation with a Jaccard-tier 1.0 mint after the
+    // flatten() size-sort was removed (engine-S08a): the sibling
+    // sequence is the statement sequence, so the DP now charges the
+    // reorder instead of collapsing it to edit distance 0.
+    // -----------------------------------------------------------------
+
+    /**
+     * Reproduce what the preprocess stage feeds the scorer: parse →
+     * extract → normalize, then hash + n-gram bag from the canonical
+     * tree (mirrors PreprocessWorker's field population).
+     */
+    private function preprocessedBlock(string $code, string $mode, string $id): Block
+    {
+        $stmts  = (new AstParser())->parseCode($code);
+        $blocks = (new BlockExtractor(minSize: 1))->extract('engine007.php', $stmts);
+        $block  = $blocks[0];
+
+        (new Normalizer($mode))->normalize($block);
+        $block->id              = $id;
+        $block->structuralHash  = (new SubtreeHasher())->hash($block->canonical);
+        $block->ngramBag        = (new NgramFingerprint(n: 5))->fingerprint($block->canonical);
+
+        return $block;
+    }
+
+    /**
+     * engine-007 — the reviewer's canonical repro pair: swapped
+     * UNEQUAL-size siblings (`$u = 1;` before `if($u){g();}` and after
+     * it). Its bag Jaccard clears a deliberately loose similarity
+     * floor, so the pair genuinely reaches the tree-confirming gate —
+     * and must be REJECTED there. Under the old size-sorting flatten()
+     * both bodies linearised to the same label sequence, the gate saw
+     * tedSim 1.0000 ≥ 0.85, and the Jaccard tier minted the permuted
+     * pair as a confirmed clone. With physical child order restored the
+     * permutation is a real edit and no edge survives at all.
+     */
+    public function testPermutedUnequalSizePairNeverEarnsJaccardTierConfirmation(): void
+    {
+        foreach (['default', 'aggressive'] as $mode) {
+            $a = $this->preprocessedBlock('<?php function f() { $u = 1; if ($u) { g(); } }', $mode, 'p1');
+            $b = $this->preprocessedBlock('<?php function f() { if ($u) { g(); } $u = 1; }', $mode, 'p2');
+
+            // The rejection below must be the tree tier doing its job,
+            // not the pair never reaching it: pin that the bag score is
+            // above the similarity floor we are about to use.
+            $jac = (new JaccardSimilarity())->similarity($a->ngramBag, $b->ngramBag);
+            $this->assertGreaterThanOrEqual(0.25, $jac,
+                "[$mode] fixture broken: pair must reach the tree gate (jac $jac)");
+
+            $index = new BlockIndex();
+            $index->add($a);
+            $index->add($b);
+
+            $clusterer = new Clusterer(
+                similarity: new JaccardSimilarity(),
+                tree: new TreeEditDistance(),
+                similarityThreshold: 0.25,
+                treeThreshold: 0.85,
+                maxDocumentFrequency: 1.0,
+            );
+
+            // treeThreshold 0.85 gates the confirm: a TED score below it
+            // drops the edge (scorePairsSerially continues), so the pair
+            // must produce no cluster. Pre-S08a this minted a Jaccard-tier
+            // edge at min(jac, 1.0) — the confirmation lie.
+            $clusters = $clusterer->cluster($index);
+            $this->assertSame([], $clusters,
+                "[$mode] statement-permuted pair must not be confirmed by the tree tier (engine-007)");
+        }
+    }
+
+    /**
+     * engine-007 — the equal-size swap from the finding
+     * (`$u = 1; $v = 2;` vs `$v = 2; $u = 1;`). Under today's stack
+     * the first-occurrence ordinals make the two canonical trees
+     * byte-identical, so the pair lands in the Phase-1 EXACT-hash
+     * bucket with a similarity of 1.0 — honest: identical trees really
+     * are identical. What must NOT happen (the pre-fix lie) is a pair
+     * whose structuralHashes differ earning a Jaccard-tier 1.0 through
+     * the tree tier. Pin both halves of that statement.
+     */
+    public function testEqualSizeSwapMintsThroughExactTierNotAJaccardLie(): void
+    {
+        foreach (['default', 'aggressive'] as $mode) {
+            $a = $this->preprocessedBlock('<?php function f() { $u = 1; $v = 2; }', $mode, 'p1');
+            $b = $this->preprocessedBlock('<?php function f() { $v = 2; $u = 1; }', $mode, 'p2');
+
+            $identicalTrees = $a->structuralHash === $b->structuralHash;
+            $this->assertTrue($identicalTrees,
+                "[$mode] fixture: ordinal renaming collapses this pair to identical canonical trees");
+
+            $index = new BlockIndex();
+            $index->add($a);
+            $index->add($b);
+
+            $clusterer = new Clusterer(
+                similarity: new JaccardSimilarity(),
+                tree: new TreeEditDistance(),
+                similarityThreshold: 0.80,
+                treeThreshold: 0.85,
+                maxDocumentFrequency: 1.0,
+            );
+
+            $clusters = $clusterer->cluster($index);
+            $this->assertCount(1, $clusters, "[$mode] identical-tree pair must cluster");
+            $cluster = $clusters[0];
+            $this->assertTrue($cluster->exact, "[$mode] must arrive via the exact-hash tier");
+            $this->assertEqualsWithDelta(1.0, $cluster->similarity, 1e-9);
+
+            foreach ($cluster->pairs as $pair) {
+                $this->assertSame(MatchTier::ExactHash->value, $pair['matchTier'],
+                    "[$mode] a 1.0 on permuted-but-identical trees must be stamped exact-hash, never jaccard (engine-007)");
+            }
+
+            // The tree tier never gets to lie here: any jaccard-tier mint
+            // that ever appears for this index would carry min(jac, ted)
+            // with ted < 1.0 (physical order now charges the swap).
+            foreach ($cluster->pairs as $pair) {
+                if ($pair['matchTier'] === MatchTier::Jaccard->value) {
+                    $this->assertLessThan(1.0, $pair['matchScore'],
+                        "[$mode] Jaccard tier must never mint 1.0 on order-permuted code (engine-007)");
+                }
+            }
+        }
+    }
+
+    /**
+     * engine-007 boundary documentation — the finding's p6 audit pair
+     * (`log_audit($id); write_row($id);` and its reversal). Measured
+     * truth after both legs of the fix:
+     *
+     *  - default mode: the names survive in the bags (jac 0.5789 < the
+     *    0.80 floor) and the pair is never even confirmed-candidate;
+     *  - aggressive mode: IdentifierIds::foldStamps (engine-002, an
+     *    intentional cross-vocabulary contract) folds BOTH call names to
+     *    the same token, so the two label sequences become literally
+     *    identical and every tier of the similarity stack — ordered TED
+     *    included — correctly reports 1.0. The remaining hash difference
+     *    is the name-honest exact tier's doing, not a flatten() ordering
+     *    bug.
+     *
+     * This pins the boundary so a future change cannot silently pass
+     * EITHER direction: reordering a pair that still differs in folded
+     * vocabulary must not mint, and this fold-equivalent pair's score is
+     * a contract, not a regression.
+     */
+    public function testAuditReorderBoundaryIsFoldContractNotFlattenLie(): void
+    {
+        $base = '<?php function f() { log_audit($id); write_row($id); }';
+        $perm = '<?php function f() { write_row($id); log_audit($id); }';
+
+        $a = $this->preprocessedBlock($base, 'default', 'p1');
+        $b = $this->preprocessedBlock($perm, 'default', 'p2');
+        $jac = (new JaccardSimilarity())->similarity($a->ngramBag, $b->ngramBag);
+        $this->assertLessThan(0.80, $jac,
+            'default mode keeps call vocabulary distinct — the pair must not clear the similarity floor');
+
+        $index = new BlockIndex();
+        $index->add($a);
+        $index->add($b);
+        $strict = new Clusterer(
+            similarity: new JaccardSimilarity(),
+            tree: new TreeEditDistance(),
+            similarityThreshold: 0.80,
+            treeThreshold: 0.85,
+            maxDocumentFrequency: 1.0,
+        );
+        $this->assertSame([], $strict->cluster($index),
+            'default-mode audit reorder must not be minted at all');
+
+        // Aggressive mode: the two bodies fold to the SAME token stream,
+        // so their bag Jaccard is exactly 1.0 and TED of identical label
+        // sequences is legitimately 0 — the mint is vocabulary-agnostic
+        // by contract (engine-002), the one case where a 1.0 reorder
+        // score is NOT the engine lying about order.
+        $a2 = $this->preprocessedBlock($base, 'aggressive', 'p1');
+        $b2 = $this->preprocessedBlock($perm, 'aggressive', 'p2');
+        $folded = (new JaccardSimilarity())->similarity($a2->ngramBag, $b2->ngramBag);
+        $this->assertEqualsWithDelta(1.0, $folded, 1e-9,
+            'aggressive mode must fold both audit names (foldStamps contract)');
+        $this->assertEqualsWithDelta(
+            1.0,
+            (new TreeEditDistance())->similarity($a2->canonical, $b2->canonical),
+            1e-9,
+            'identical folded label sequences are distance 0 even for an order-sensitive TED'
+        );
     }
 }
