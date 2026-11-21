@@ -56,6 +56,13 @@ final class ClusterStage implements CooperativeStageInterface
             // caps, so a cluster cache written under one cap must never be
             // served to a run under another.
             $config->maxTedSize,
+            // shell-004: the TED cost model rescales every APTED verdict in
+            // the jaccard lane — edge scores (and cluster similarity) move
+            // between 'default' and 'semantic', so the cluster cache must
+            // not serve across models. Same argument as maxTedSize, one
+            // notch earlier in the chain. Key-namespace change only: no
+            // PARSER_VERSION bump (fingerprintIdMode precedent).
+            $config->tedWeights,
             // Item 1.4 (§5b): the medoid-ball split knobs reshape cluster
             // membership, count and reported similarity. Bound to the very
             // constants buildClusterer() hands the Clusterer, so flipping a
@@ -345,6 +352,11 @@ final class ClusterStage implements CooperativeStageInterface
             // Item 1.2: same twin law for the TED-size cap — serial and
             // fork-zone scoring must gate the identical pairs identically.
             maxTedSize: $config->maxTedSize,
+            // shell-004: same twin law for the TED cost model — before
+            // this the fork zone hardcoded 'default' while buildClusterer
+            // (above) honoured --ted-weights, so a non-default model made
+            // edge scores fork with worker count.
+            tedWeights: $config->tedWeights,
         );
 
         $state->edges = [];

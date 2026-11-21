@@ -7,6 +7,7 @@ use Phpdup\Clustering\Clusterer;
 use Phpdup\Index\BlockIndex;
 use Phpdup\Ml\MlPairClient;
 use Phpdup\Similarity\ContainmentSimilarity;
+use Phpdup\Similarity\EditCostModel;
 use Phpdup\Similarity\JaccardSimilarity;
 use Phpdup\Similarity\TreeEditDistance;
 
@@ -66,11 +67,25 @@ final class PairScoreWorker
         // threads the same Config value into both). Plain int → safe under
         // the Socketpair Law (no non-scalar ever crosses to the worker).
         private readonly int $maxTedSize = Clusterer::DEFAULT_MAX_TED_SIZE,
+        // shell-004: TED cost model — MUST mirror the serial Clusterer's
+        // EditCostModel wiring (ClusterStage::buildClusterer() threads the
+        // same Config value into both). Before this parameter the fork
+        // zone hardcoded the default model, so under `--ted-weights` edge
+        // scores (and hence clusters) forked with worker count. Plain
+        // string model id → safe under the Socketpair Law.
+        private readonly string $tedWeights = EditCostModel::MODEL_DEFAULT,
     ) {
         if ($this->maxTedSize < 1) {
             throw new \InvalidArgumentException(sprintf(
                 'maxTedSize must be >= 1 (0 or negative would gate every TED pair); got %d.',
                 $this->maxTedSize,
+            ));
+        }
+        if (!in_array($this->tedWeights, EditCostModel::MODELS, true)) {
+            throw new \InvalidArgumentException(sprintf(
+                'Unknown tedWeights model for the fork-zone scorer: %s (known: %s).',
+                $this->tedWeights,
+                implode(', ', EditCostModel::MODELS),
             ));
         }
     }
@@ -89,7 +104,7 @@ final class PairScoreWorker
             baseUrl: $this->mlPairUrl,
             timeoutSec: $this->mlPairTimeoutSec,
         )) : null;
-        $ted         = new TreeEditDistance(null, $this->unnumbered);
+        $ted         = new TreeEditDistance(new EditCostModel($this->tedWeights), $this->unnumbered);
         $containment = new ContainmentSimilarity();
         $edges       = [];
         // Collect ML candidates for batch scoring (avoids per-pair HTTP latency).
