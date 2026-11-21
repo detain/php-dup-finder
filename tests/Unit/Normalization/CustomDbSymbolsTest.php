@@ -94,6 +94,32 @@ final class CustomDbSymbolsTest extends TestCase
             'custom override must replace the stock OP_READ classification');
     }
 
+    public function testUserConfiguredGenericNameBypassesReceiverGate(): void
+    {
+        // engine-003 half A: `get` sits in the generic name tier and
+        // needs receiver evidence — unless the user mapped it
+        // themselves. An explicit db_symbols entry is itself evidence,
+        // so `$x->get($k)` folds with a bare variable receiver.
+        $registry = new DbOpRegistry(customMethodOps: ['get' => DbOpRegistry::OP_READ]);
+        $tokens = $this->canonicalTokens(
+            '<?php function f($x, $k) { return $x->get($k); }',
+            $registry,
+        );
+        $this->assertContains('Name|n:__DB_READ__', $tokens,
+            'a user-configured generic name must fold without receiver evidence');
+        // The stock default registry still gates it (classification
+        // lives on the registry; pins kept here so half B can own
+        // DbOpRegistryTest without collision).
+        $this->assertTrue(DbOpRegistry::default()->requiresReceiverEvidence('get'));
+        $this->assertTrue(DbOpRegistry::default()->requiresReceiverEvidence('ALL'));
+        $this->assertTrue(DbOpRegistry::default()->requiresReceiverEvidence('save'));
+        $this->assertFalse(DbOpRegistry::default()->requiresReceiverEvidence('find'));
+        $this->assertFalse(DbOpRegistry::default()->requiresReceiverEvidence('flush'));
+        $this->assertFalse(DbOpRegistry::default()->requiresReceiverEvidence('frobnicate'));
+        $configured = new DbOpRegistry(customMethodOps: ['save' => DbOpRegistry::OP_WRITE]);
+        $this->assertFalse($configured->requiresReceiverEvidence('save'));
+    }
+
     public function testBundledLaravelDbSymbolsLoadCleanly(): void
     {
         // The bundled profiles/db-aware-laravel.json must round-trip

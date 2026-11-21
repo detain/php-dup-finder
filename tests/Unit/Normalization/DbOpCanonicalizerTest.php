@@ -72,13 +72,122 @@ final class DbOpCanonicalizerTest extends TestCase
     public function testEloquentSaveEqualsDoctrineFlush(): void
     {
         // Identical scaffolding — only the terminal write call differs.
-        $eloquent = '<?php function f($a, $b) { $b->name = "Bob"; $b->save(); }';
+        // The Eloquent receiver `$model` carries DB name evidence, so
+        // the generic-tier `save` folds; `flush` is not generic and
+        // folds on its name alone.
+        $eloquent = '<?php function f($a, $b) { $b->name = "Bob"; $model->save(); }';
         $doctrine = '<?php function f($a, $b) { $b->name = "Bob"; $a->flush(); }';
         // Both terminal writes rewrite to __DB_WRITE__("?").
         $this->assertSame(
             $this->canonicalHashDbAware($eloquent),
             $this->canonicalHashDbAware($doctrine),
         );
+    }
+
+    public function testGenericGetterWithoutReceiverEvidenceIsNotFolded(): void
+    {
+        // engine-003 repro: `$this->store->get($k)` vs
+        // `$this->logger->get($k)` — a cache store and a logger, no
+        // database anywhere. Under pure-name folding both became
+        // identical `__DB_READ__` synthetics (EXACT "DB clones").
+        // With the receiver-evidence gate neither folds: no synthetic
+        // token appears and the db-aware stream is byte-identical to
+        // the untouched non-db-aware one.
+        $store = '<?php function f($k) { return $this->store->get($k); }';
+        $logger = '<?php function f($k) { return $this->logger->get($k); }';
+        foreach (['store' => $store, 'logger' => $logger] as $label => $code) {
+            $tokens = $this->canonicalTokens($code, true);
+            $this->assertNotContains('Name|n:__DB_READ__', $tokens,
+                "non-DB receiver `$label` must not fold a generic get() into a DB synthetic");
+            $this->assertSame(
+                $this->canonicalTokens($code, false),
+                $tokens,
+                "db-aware output for `$label` must equal the untouched path",
+            );
+        }
+        // And the un-folded pair no longer shares the hash class of a
+        // genuine, evidence-bearing DB read.
+        $genuine = '<?php function f($db, $k) { return $db->get($k); }';
+        $this->assertContains('Name|n:__DB_READ__', $this->canonicalTokens($genuine, true));
+        $this->assertNotSame(
+            $this->canonicalHash($store, dbAware: true),
+            $this->canonicalHash($genuine, dbAware: true),
+            'a store get() must not be an EXACT clone of a DB get()',
+        );
+    }
+
+    public function testBareSaveWithoutReceiverEvidenceIsNotFolded(): void
+    {
+        // `$b->save()` on a plain parameter carries no DB signal —
+        // the block stays on the untouched path.
+        $code = '<?php function f($a, $b) { $b->name = "Bob"; $b->save(); }';
+        $this->assertNotContains('Name|n:__DB_WRITE__', $this->canonicalTokens($code, true));
+        $this->assertSame(
+            $this->canonicalHash($code, dbAware: false),
+            $this->canonicalHash($code, dbAware: true),
+        );
+    }
+
+    public function testReceiverNameEvidenceFoldsGenericTier(): void
+    {
+        // Variables/properties named with DB words are evidence: the
+        // generic verbs fold exactly as they always did on such
+        // receivers.
+        $this->assertContains('Name|n:__DB_READ__', $this->canonicalTokens(
+            '<?php function f($db, $k) { return $db->get($k); }', true,
+        ));
+        $this->assertContains('Name|n:__DB_READ__', $this->canonicalTokens(
+            '<?php function f($repository) { return $repository->all(); }', true,
+        ));
+        $this->assertContains('Name|n:__DB_WRITE__', $this->canonicalTokens(
+            '<?php function f($entity) { return $entity->save(); }', true,
+        ));
+    }
+
+    public function testBuilderChainSeedIsReceiverEvidence(): void
+    {
+        // Structural evidence: a terminal get() on a query-builder
+        // chain seeded by table() or by a static model call folds.
+        $this->assertContains('Name|n:__DB_READ__', $this->canonicalTokens(
+            '<?php function f($db) { return $db->table("users")->where("id", 1)->get(); }', true,
+        ));
+        $this->assertContains('Name|n:__DB_READ__', $this->canonicalTokens(
+            '<?php function f() { return User::where("active", 1)->get(); }', true,
+        ));
+        // The builder-seeded read still clusters with the same-payload
+        // raw-SQL read (both __DB_READ__ family synthetics), so genuine
+        // DB clones are unaffected by the gate.
+    }
+
+    public function testStaticCallsAreOutsideTheGenericGate(): void
+    {
+        // `User::all()` — the receiver is an explicit class symbol, a
+        // concrete reference even without composer-signal backing; the
+        // gate applies to instance receivers only.
+        $this->assertContains('Name|n:__DB_READ__', $this->canonicalTokens(
+            '<?php function f() { return User::all(); }', true,
+        ));
+    }
+
+    public function testCustomReceiverEvidenceNamesExtendTheSet(): void
+    {
+        // Extension seam: a caller that *knows* `$store` is a DB/cache
+        // receiver can admit the name. Un-admitted it stays unfolded;
+        // admitted it folds — the gate is configurable, never lossy on
+        // evidence.
+        $code = '<?php function f($store, $k) { return $store->get($k); }';
+        $this->assertNotContains('Name|n:__DB_READ__', $this->canonicalTokens($code, true));
+
+        $parser = new AstParser();
+        $stmts = $parser->parseCode($code);
+        $blocks = (new BlockExtractor(minSize: 1))->extract('test.php', $stmts);
+        $this->assertNotEmpty($blocks);
+        (new \Phpdup\Normalization\DbOpCanonicalizer(
+            extraReceiverEvidenceNames: ['store'],
+        ))->apply($blocks[0]->ast);
+        (new Normalizer(mode: 'aggressive'))->normalize($blocks[0]);
+        $this->assertContains('Name|n:__DB_READ__',
+            \Phpdup\Util\AstSerializer::tokens($blocks[0]->canonical));
     }
 
     public function testQueryBuilderUpdateAndRawUpdateCluster(): void

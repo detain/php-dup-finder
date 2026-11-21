@@ -61,15 +61,66 @@ use PhpParser\NodeVisitorAbstract;
  * class will still be rewritten. The canonicalizer is therefore
  * gated behind `db_aware: true` (CLI: `--db-aware`) and is **off by
  * default**. Tier-1 AST-only clustering remains the unmodified path.
+ *
+ * One exception to pure-name matching: the **generic name tier**
+ * (`get` / `all` / `save` — see {@see DbOpRegistry::GENERIC_NAME_TIER})
+ * is folded only when the receiver carries DB evidence. Those verbs are
+ * ubiquitous on non-DB objects (a cache `store->get()` and a
+ * `logger->get()` are not database reads), and name-only folding of
+ * them fabricated EXACT "DB clones" of unrelated code. Evidence has two
+ * sources: a structural query-builder seed in the receiver chain
+ * (`DB::table('users')->…->get()`, `User::where(…)->get()`), or a
+ * receiver variable/property whose name is a recognised DB word
+ * ({@see DEFAULT_RECEIVER_EVIDENCE_NAMES}, extendable via the
+ * constructor). Static calls skip the gate — their receiver is an
+ * explicit class symbol. A tier name the user configured explicitly in
+ * the registry bypasses the gate (the mapping is itself evidence).
  */
 final class DbOpCanonicalizer extends NodeVisitorAbstract
 {
     /** AST attribute key for the canonical op. */
     public const ATTR_OP = 'phpdup.dbOp';
 
+    /**
+     * Receiver-name evidence for the generic name tier: lower-cased
+     * variable / property names that identify a database-ish object at
+     * a glance (`$db`, `$pdo`, `$this->connection`, `$repository`, …).
+     * Deliberately excludes generic container words like `store`,
+     * `cache` or `logger` — those are exactly the non-DB receivers the
+     * gate exists to protect.
+     *
+     * @var list<string>
+     */
+    public const DEFAULT_RECEIVER_EVIDENCE_NAMES = [
+        'db', 'dbc', 'dbh', 'dbal', 'pdo', 'dsn', 'conn', 'connection',
+        'link', 'mysqli', 'pgsql', 'postgres', 'sqlite', 'sqlsrv', 'odbc',
+        'em', 'entitymanager', 'repository', 'repo', 'dao', 'mapper',
+        'query', 'builder', 'querybuilder', 'qb', 'stmt', 'statement',
+        'sth', 'cursor', 'resultset', 'doctrine', 'eloquent',
+        'model', 'entity', 'record', 'table',
+    ];
+
+    /** @var array<string,true> Lower-cased evidence names, ready for isset(). */
+    private readonly array $receiverEvidenceNames;
+
+    /**
+     * @param list<string> $extraReceiverEvidenceNames Additional receiver
+     *                                                 names treated as DB
+     *                                                 evidence (callers
+     *                                                 wiring config keys
+     *                                                 in later).
+     */
     public function __construct(
         private readonly DbOpRegistry $registry = new DbOpRegistry(),
+        array $extraReceiverEvidenceNames = [],
     ) {
+        $this->receiverEvidenceNames = array_fill_keys(
+            array_merge(
+                self::DEFAULT_RECEIVER_EVIDENCE_NAMES,
+                array_map('strtolower', $extraReceiverEvidenceNames),
+            ),
+            true,
+        );
     }
 
     /**
@@ -154,6 +205,18 @@ final class DbOpCanonicalizer extends NodeVisitorAbstract
         $methodName = $node->name->name;
         $op = $this->registry->lookupMethod($methodName);
         if ($op === null) {
+            return null;
+        }
+
+        // Receiver-evidence gate (engine-003): generic CRUD verbs
+        // (`get` / `all` / `save`) are ordinary method names on cache
+        // stores, loggers and collections — folding them on name alone
+        // fabricates EXACT DB clones of non-DB code. Refuse the fold
+        // unless the receiver side carries DB evidence.
+        if (
+            $this->registry->requiresReceiverEvidence($methodName)
+            && !$this->hasReceiverEvidence($node)
+        ) {
             return null;
         }
 
@@ -350,6 +413,59 @@ final class DbOpCanonicalizer extends NodeVisitorAbstract
             return null;
         }
         return null;
+    }
+
+    /**
+     * Walk the receiver chain of an instance call looking for DB
+     * evidence, used only for the generic name tier (see the class
+     * docblock). Two independent signal kinds satisfy the gate:
+     *
+     *   1. **Structural seed** — the chain is a query builder started
+     *      with a table/entity seed (`DB::table('users')->…`) or a
+     *      static class seed (`User::where(…)->…`). Delegated to
+     *      {@see extractTableFromBuilderChain()}, which recognises
+     *      exactly those shapes.
+     *   2. **Receiver name** — any variable or property along the
+     *      chain (`$db`, `$this->connection`, `$userRepository` →
+     *      nope, names are whole-word, so `$repository`) is in
+     *      {@see $receiverEvidenceNames}.
+     *
+     * Stops at anything that is not a plain property/method hop
+     * (function-call results, expressions); no hop, no evidence.
+     */
+    private function hasReceiverEvidence(Node\Expr $node): bool
+    {
+        if ($this->extractTableFromBuilderChain($node) !== null) {
+            return true;
+        }
+        $cursor = $node->var ?? null;
+        for ($i = 0; $i < 10; $i++) {
+            if ($cursor instanceof Node\Expr\Variable && is_string($cursor->name)) {
+                if (isset($this->receiverEvidenceNames[strtolower($cursor->name)])) {
+                    return true;
+                }
+                return false; // `$this->…` bottoms out at `this`.
+            }
+            if (
+                ($cursor instanceof Node\Expr\PropertyFetch || $cursor instanceof Node\Expr\NullsafePropertyFetch)
+                && $cursor->name instanceof Node\Identifier
+                && isset($this->receiverEvidenceNames[strtolower($cursor->name->name)])
+            ) {
+                return true;
+            }
+            if (
+                $cursor instanceof Node\Expr\MethodCall
+                || $cursor instanceof Node\Expr\NullsafeMethodCall
+                || $cursor instanceof Node\Expr\PropertyFetch
+                || $cursor instanceof Node\Expr\NullsafePropertyFetch
+                || $cursor instanceof Node\Expr\ArrayDimFetch
+            ) {
+                $cursor = $cursor->var;
+                continue;
+            }
+            return false;
+        }
+        return false;
     }
 
     /**

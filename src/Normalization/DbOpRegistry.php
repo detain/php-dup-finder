@@ -26,7 +26,7 @@ namespace Phpdup\Normalization;
  *   - **PostgreSQL ext**: `pg_query()`, `pg_query_params()`,
  *     `pg_fetch_assoc()`, `pg_fetch_all()`.
  *   - **Generic patterns**: any method literally named `find`,
- *     `findById`, `save`, `update`, `delete`, `query`, `execute`
+ *     `findById`, `update`, `delete`, `query`, `execute`
  *     on an unknown receiver — coarse but high-recall.
  *
  * The registry is intentionally biased toward **high recall**: a few
@@ -34,6 +34,17 @@ namespace Phpdup\Normalization;
  * an unrelated class) are preferable to missing real ORM ↔ raw-SQL
  * clones. Reporters surface the `db-op` cluster tag so reviewers see
  * which clusters were formed via this canonicalisation.
+ *
+ * **Exception — the generic name tier.** `get`, `all` and `save` are
+ * among the most common method names in PHP (cache stores, loggers,
+ * collections, form models all define them), so pure-name folding of
+ * those three fabricates DB clones of non-DB code. They are excluded
+ * from the name-only tier: {@see self::GENERIC_NAME_TIER} and
+ * {@see self::requiresReceiverEvidence()} mark them, and
+ * {@see DbOpCanonicalizer} refuses to fold an instance call for a
+ * tier member unless the receiver carries DB evidence. A name the
+ * user configured explicitly via `customMethodOps` is exempt — an
+ * explicit mapping is itself the evidence.
  *
  * **Customisation**: callers can pass a `customMethodOps` map to the
  * constructor to override or extend the built-in dispatch table.
@@ -51,6 +62,21 @@ final class DbOpRegistry
     public const OP_QUERY   = 'db.query';
 
     /**
+     * Stock method names too generic for pure-name folding.
+     *
+     * An instance call carrying one of these names is only rewritten
+     * into a `__DB_*__` synthetic when the receiver chain supplies DB
+     * evidence (builder seed or a recognised DB receiver name) — see
+     * {@see DbOpCanonicalizer}. Static calls are not gated: their
+     * receiver is an explicit class symbol. User-configured entries
+     * (customMethodOps / db_symbols profiles) are exempt for that
+     * name — an explicit mapping counts as evidence.
+     *
+     * @var list<string>
+     */
+    public const GENERIC_NAME_TIER = ['get', 'all', 'save'];
+
+    /**
      * Method names → canonical op (case-insensitive lookup).
      *
      * @var array<string,string>
@@ -65,6 +91,9 @@ final class DbOpRegistry
         'findall'        => self::OP_READ,
         'first'          => self::OP_READ,
         'firstorfail'    => self::OP_READ,
+        // NOTE: `get`, `all` and `save` live in the generic name tier —
+        // {@see GENERIC_NAME_TIER}. The canonicalizer refuses to fold
+        // them on an instance receiver without DB evidence.
         'get'            => self::OP_READ,
         'all'            => self::OP_READ,
         'fetch'          => self::OP_READ,
@@ -300,6 +329,9 @@ final class DbOpRegistry
     /** @var array<string,string> Function-name lookup, lower-cased. */
     private array $functionOps;
 
+    /** @var array<string,true> Lower-cased names supplied via customMethodOps. */
+    private array $configuredMethodNames = [];
+
     /**
      * @param array<string,string> $customMethodOps   Additional or overriding method → op entries.
      * @param array<string,string> $customFunctionOps Additional or overriding function → op entries.
@@ -308,7 +340,9 @@ final class DbOpRegistry
     {
         $this->methodOps = self::METHOD_OPS;
         foreach ($customMethodOps as $name => $op) {
-            $this->methodOps[strtolower($name)] = $op;
+            $key = strtolower((string) $name);
+            $this->methodOps[$key] = $op;
+            $this->configuredMethodNames[$key] = true;
         }
 
         $this->functionOps = self::FUNCTION_OPS;
@@ -326,6 +360,21 @@ final class DbOpRegistry
     public function lookupMethod(string $name): ?string
     {
         return $this->methodOps[strtolower($name)] ?? null;
+    }
+
+    /**
+     * Whether an instance method named `$name` may only fold to a
+     * `__DB_*__` synthetic when the receiver carries DB evidence.
+     *
+     * True exactly for the stock generic tier ({@see GENERIC_NAME_TIER})
+     * unless the user configured that method name explicitly — a
+     * `customMethodOps` entry is itself evidence. Case-insensitive.
+     */
+    public function requiresReceiverEvidence(string $name): bool
+    {
+        $key = strtolower($name);
+        return in_array($key, self::GENERIC_NAME_TIER, true)
+            && !isset($this->configuredMethodNames[$key]);
     }
 
     /**
