@@ -245,13 +245,15 @@ final class PreprocessStage implements CooperativeStageInterface
         }
 
         // Assign IDs (after collecting from all sources). CI-85 determinism:
-        // assignCanonicalIds() establishes a content-derived total order
+        // assignCanonicalIds() establishes a content-derived canonical order
         // before any id is minted, and numbers blocks by rank WITHIN their
         // hash-prefix family, so ids never depend on arrival order and
         // unrelated families coming or going never renumber a stable
-        // cluster's clones. The method docblock carries the exact totality
-        // claim and its emit-symmetry caveat — r2 review corrected the
-        // false key-uniqueness statement the r1 comment baked in here.
+        // cluster's clones. The method docblock states the exact guarantee
+        // boundary: total at the mint/members[] layer up to emit-symmetry;
+        // normalization-folded raw-AST projections (holes[].observed) are
+        // outside it — r2 review corrected the r1 false key-uniqueness
+        // comment, r3 corrects the r2 over-strong invisibility wording.
         $state->debug($output, sprintf('preprocess: assigning IDs to %d blocks... [%s]', count($blocks), MemoryDebug::getMemoryUsage()));
         $blocks = self::assignCanonicalIds($blocks);
 
@@ -289,34 +291,50 @@ final class PreprocessStage implements CooperativeStageInterface
     }
 
     /**
-     * Canonical block ordering + content-derived ids (CI-85 T2, r2).
+     * Canonical block ordering + content-derived ids (CI-85 T2, r3 wording).
      *
      * Sort key: (file, range start, range end, kind, namespace, class,
-     * name, structuralHash) — the eight fields a report emits for a
-     * block, minus run-context (repo/scope are stamped later; id is what
-     * we are minting). Ids are then rank-within-hash8-prefix, which
-     * isolates families from each other's presence entirely.
+     * name, structuralHash) — the per-member fields of the report's
+     * members[] rows. (size is also emitted but content-derived, hence
+     * equal under a hash tie; repo/scope are run-context off the file
+     * path, equal by the file key, stamped after mint.) Ids are then
+     * rank-within-hash8-prefix, which isolates families from each
+     * other's presence entirely.
      *
-     * TOTALITY, stated honestly (r1 review killed the old claim): the key
-     * is NOT strictly total — two distinct nodes can share all eight
-     * fields (e.g. two byte-identical closures on one physical line of
-     * one method: reviewer craft "Tied"; a real, constructible shape).
-     * What makes determinism survive such an orbit is EMIT-SYMMETRY:
-     * every downstream handle of a block is either its emitted fields or
-     * its id string, two tied blocks have byte-equal emitted fields (that
-     * is what the tie means), and the orbit's id labels ({prefix}_k and
-     * {prefix}_k+1, …) depend only on the orbit's POSITION in the sorted
-     * array — not on which physical block took which slot. So no report
-     * byte can observe the permutation. What the r1 six-key tuple DID leak
-     * was the class-asymmetric tie (same line, same method name in two
-     * classes): members[] rows embed `class`, so there the permutation WAS
-     * observable (reviewer seam flipped report md5s). namespace+class in
-     * the key close exactly that gap; the residual orbit is provably
-     * invisible. Physical-to-label binding inside an orbit rests on
-     * per-file emission contiguity (both collection paths flush a file's
-     * blocks together) + PHP>=8.0 stable usort — true today, immaterial
-     * to bytes; the permanent pin PreprocessStageIdDeterminismTest
-     * exercises both shapes under adversarial shuffles.
+     * DETERMINISM BOUNDARY, stated exactly (the r2 review caught my r2
+     * wording overclaiming twice — "kills every OBSERVABLE tie" / "no
+     * report byte can observe the permutation" / "immaterial to bytes"
+     * were FALSE as written; the erratum is owned in this method's
+     * successor commit message):
+     *   GUARANTEED — (i) the r1 class-asymmetric tie leak is closed:
+     *       members[] rows embed `class`, six keys allowed such ties to
+     *       reach report bytes (reviewer reproduced the 2/4 report-md5
+     *       split), and namespace+class remove exactly that exposure;
+     *   (ii) for an orbit that still ties under eight keys, the minted
+     *       family labels and every members[]-field projection are
+     *       host-independent, because tied members' emitted fields are
+     *       byte-equal and ids are positional labels within the family.
+     *   NOT GUARANTEED — normalization-equality is the boundary, and the
+     *       raw AST remains a downstream handle: default/aggressive
+     *       modes fold LITERAL differences, so orbit members can have
+     *       differing raw ASTs (reviewer TiedLit craft: same-line
+     *       closures differing only `+1` vs `+2` share hash 33aea77f),
+     *       and `holes[].observed` is projected from the raw AST in
+     *       member-position order (AntiUnifier seeds and walks members;
+     *       JsonReporter dumps the list unsorted). Such an orbit can
+     *       permute holes[].observed ORDER bytes in the JSON/HTML/
+     *       refactor-tests surfaces under --no-lazy-ast + adversarial
+     *       arrival. Production default (lazy-AST) fail-fast-crashes on
+     *       this exact shape in BlockAstLoader (pre-existing r1 Minor-3)
+     *       — that SHIELDS the surface only as an architectural
+     *       accident, not a designed guard. Residual exposure is filed
+     *       as a wave-5 OWNER-DECISION backlog row (normalize observed
+     *       at mint / pin arrival order / declare --no-lazy-ast
+     *       best-effort). Inside-orbit physical-to-label binding also
+     *       still rests on per-file emission contiguity + PHP>=8.0
+     *       stable usort — true today; the pinning test
+     *       (PreprocessStageIdDeterminismTest) covers the mint-label and
+     *       members[]-field layer ONLY, not raw-AST projections.
      *
      * @param list<Block> $blocks
      * @return list<Block> the same blocks, canonically ordered, ids minted

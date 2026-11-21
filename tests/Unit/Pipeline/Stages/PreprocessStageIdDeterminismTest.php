@@ -23,13 +23,21 @@ use ReflectionMethod;
  *       REPORT-OBSERVABLE under an adversarial arrival shuffle (reviewer
  *       seam flipped report md5s 2/4).
  *   (B) emit-symmetric: byte-identical same-line closures. The tie survives
- *       even the r2 eight-key tuple — but every emitted field of the two
- *       blocks is byte-equal and ids are positional labels inside the
- *       hash-prefix family, so no report byte can observe the permutation.
+ *       even the r2 eight-key tuple — but every EMITTED members[] field of
+ *       the two blocks is byte-equal and the family ids are positional
+ *       labels, so the permutation cannot move the members[]-layer bytes.
  *
- * Fix (A) is namespace+class in the key; (B) is pinned here as provably
- * invisible. Together they state the real invariant: total order up to
- * emit-symmetry (see PreprocessStage::assignCanonicalIds docblock). The
+ * Fix (A) is namespace+class in the key; (B) is pinned AT THIS LAYER ONLY.
+ * The r2 wording here ("no report byte can observe the permutation", arm
+ * name "...InvisibleToEveryReportByte") overclaimed and is corrected in
+ * this round: raw ASTs of orbit members can differ post-normalization
+ * (default/aggressive modes fold literals) and holes[].observed is
+ * member-position ordered — that exposure lives OUTSIDE these arms, is
+ * guarded on the production lazy-AST path only accidentally (the
+ * pre-existing BlockAstLoader fail-fast), and is filed as a WAVE-5
+ * OWNER-DECISION backlog row. The invariant these arms pin: total order
+ * up to emit-symmetry AT THE MINT/MEMBERS[] LAYER (boundary stated in
+ * PreprocessStage::assignCanonicalIds docblock). The
  * r1 code comment claiming such ties were unconstructible was false and
  * is corrected by the same commit that adds these pins.
  *
@@ -144,7 +152,7 @@ final class PreprocessStageIdDeterminismTest extends TestCase
         $this->assertSame(substr($alpha->structuralHash, 0, 8) . '_0', $idByObject[spl_object_id($alpha)] ?? '');
     }
 
-    public function testEmitSymmetricOrbitIsInvisibleToEveryReportByte(): void
+    public function testEmitSymmetricOrbitKeepsMintLayerLabelsStable(): void
     {
         // Reviewer tie1 craft: byte-identical closures, same physical line,
         // same class. Honest admission: the eight-key tuple STILL ties.
@@ -168,10 +176,12 @@ final class PreprocessStageIdDeterminismTest extends TestCase
             mt_srand($seed);
             shuffle($shuffled);
             $after = $this->assign($shuffled);
-            // The permutation is invisible iff the per-position projection
-            // is byte-equal — which holds exactly because every tied field
-            // is byte-equal and ids are positional labels.
-            $this->assertSame($baselineProjection, $this->emitProjection($after), "seed $seed orbit scramble must be byte-silent");
+            // Scope of this arm: the per-position members[]/label
+            // projection is byte-equal because every tied EMITTED field is
+            // byte-equal and ids are positional family labels. It does NOT
+            // (and cannot) witness raw-AST projections — holes[].observed
+            // order escapes here; see class docblock + wave-5 backlog.
+            $this->assertSame($baselineProjection, $this->emitProjection($after), "seed $seed orbit scramble must not move family labels at the mint layer");
             $this->assertSame($idSet, [$after[0]->id, $after[1]->id]);
         }
     }
