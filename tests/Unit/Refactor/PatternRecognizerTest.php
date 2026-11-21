@@ -212,6 +212,200 @@ final class PatternRecognizerTest extends TestCase
         $this->assertContains('container-registration', $cluster->patternTags);
     }
 
+    // ---------------------------------------------------------------
+    // output-021: tag honesty — evidence required, fail closed
+    // ---------------------------------------------------------------
+
+    public function testNullAstMemberReceivesNoSemanticTags(): void
+    {
+        // The lazy-AST case used to auto-yes container-registration from
+        // the method name alone (and that is the only detector family
+        // with a null-AST return-true path). Any AST-based tag on an
+        // unloaded member is a lie; name-based heuristics may still fire.
+        $blocks = $this->dummyMembers('register');
+        foreach ($blocks as $b) {
+            $b->ast = null;
+        }
+        $cluster = new Cluster('TEST', $blocks, 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertSame([], $cluster->patternTags);
+    }
+
+    public function testCrudHandlerRejectsSubstringVerbNames(): void
+    {
+        // thread() ⊃ "read", preselect() ⊃ "select", prefetch() ⊃ "fetch"
+        // — bare substring matching tagged all three as crud handlers.
+        $thread  = $this->blocksFromCode('<?php function thread() { return 1; }');
+        $pre     = $this->blocksFromCode('<?php function preselect() { return 2; }');
+        $pref    = $this->blocksFromCode('<?php function prefetch() { return 3; }');
+        $cluster = new Cluster('TEST', [$thread[0], $pre[0], $pref[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertNotContains('crud-handler', $cluster->patternTags);
+    }
+
+    public function testCrudHandlerKeepsWholeSegmentVerbs(): void
+    {
+        foreach (['deleteUser', 'insert_row', 'Create', 'fetchMany'] as $name) {
+            $blocks  = $this->blocksFromCode("<?php function {$name}() { return 1; }");
+            $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+            (new PatternRecognizer())->tag($cluster);
+            $this->assertContains('crud-handler', $cluster->patternTags,
+                "segment-level CRUD verb '{$name}' must still tag");
+        }
+    }
+
+    public function testEnglishProseNotTaggedSqlBuilder(): void
+    {
+        // "loaded from cache" carries the word FROM but no SQL statement
+        // shape — the old anywhere-keyword arm tagged it sql-builder.
+        $blocks  = $this->blocksFromCode('<?php function f($cache) { $m = "loaded from cache"; $cache->store($m); return $m; }');
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertNotContains('sql-builder', $cluster->patternTags);
+    }
+
+    public function testSwitchWithNonUniformArmsNotTaggedStateMachine(): void
+    {
+        $blocks  = $this->blocksFromCode('<?php function h($s) { switch ($s) { case "a": doA(); doB(); break; case "b": exit(1); } }');
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertNotContains('state-machine', $cluster->patternTags);
+    }
+
+    public function testSwitchWithDifferingCallArmsNotTaggedStateMachine(): void
+    {
+        // Uniform statement count, different methods → different shape.
+        $blocks  = $this->blocksFromCode('<?php function h($s) { switch ($s) { case 1: sendA(); break; case 2: sendB(); break; } }');
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertNotContains('state-machine', $cluster->patternTags);
+    }
+
+    public function testSwitchWithNonLiteralArmsNotTaggedStateMachine(): void
+    {
+        // Arms conditioned on call results, not state literals.
+        $blocks  = $this->blocksFromCode('<?php function h($s) { switch ($s) { case checkA(): one(); break; case checkB(): one(); break; } }');
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertNotContains('state-machine', $cluster->patternTags);
+    }
+
+    public function testUrlOnlyConfigBodyNotTaggedHttpCall(): void
+    {
+        // Example URL sitting in a config body while the only candidate
+        // call (file_get_contents) reads a local path: the URL was never
+        // an argument of the call, so this is not HTTP (output-021).
+        $blocks  = $this->blocksFromCode('<?php function cfg() { $api = "https://api.example.com/v1"; return [$api, file_get_contents("/etc/defaults")]; }');
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertNotContains('http-call', $cluster->patternTags);
+    }
+
+    public function testHttpCallRejectsVariableUrlArgument(): void
+    {
+        // $client->get($url) — verb call present, but the URL literal is
+        // assigned elsewhere, not passed as the call's argument.
+        $blocks  = $this->blocksFromCode('<?php function f($client) { $url = "https://example.com"; return $client->get($url); }');
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertNotContains('http-call', $cluster->patternTags);
+    }
+
+    public function testHeaderDocblockMatchesTagEmissionInventory(): void
+    {
+        $ref  = new \ReflectionClass(PatternRecognizer::class);
+        $doc  = (string)$ref->getDocComment();
+        $tag  = $ref->getMethod('tag');
+        $src  = implode('', array_slice(
+            (array)file($ref->getFileName()),
+            $tag->getStartLine() - 1,
+            $tag->getEndLine() - $tag->getStartLine() + 1
+        ));
+
+        $this->assertNotFalse(preg_match_all("/tags\\[\\] = '([a-z][a-z-]*)'/", $src, $emitted));
+        $this->assertNotEmpty($emitted[1]);
+        // Inventory lines are " *   tag          — description"; fixed
+        // 3-space indent keeps prose and continuation lines out.
+        preg_match_all('/^ \*   ([a-z][a-z-]+) +—/m', $doc, $documented);
+
+        $this->assertEqualsCanonicalizing(
+            $emitted[1],
+            $documented[1],
+            'header docblock inventory must equal the tags tag() emits'
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // output-064: per-tag detection scenarios (per CLAUDE.md mandate)
+    // ---------------------------------------------------------------
+
+    public function testSqlBuilderTagFromConcatAndQueryChain(): void
+    {
+        // The archetype: concatenated SQL feeding prepare/execute/fetch.
+        $blocks = $this->blocksFromCode(
+            '<?php function byName($db, $n) { $sql = "SELECT id FROM users WHERE name = " . $n; $stmt = $db->prepare($sql); $stmt->execute(); return $stmt->fetch(); }'
+        );
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('sql-builder', $cluster->patternTags);
+    }
+
+    public function testSqlBuilderTagFromUppercaseSqlLiteral(): void
+    {
+        // No concat here — the anchored literal arm must carry it.
+        $blocks = $this->blocksFromCode(
+            '<?php function all($conn) { return $conn->queryAll("SELECT * FROM reports WHERE enabled = 1"); }'
+        );
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('sql-builder', $cluster->patternTags);
+    }
+
+    public function testStateMachineTagFromUniformStateSwitch(): void
+    {
+        // Switch on a state whose arms share one body shape, varying
+        // only by the state literals (the documented promise).
+        $blocks = $this->blocksFromCode(
+            '<?php function step($state) { switch ($state) { case "idle": $this->go("running"); break; case "running": $this->go("idle"); break; } }'
+        );
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('state-machine', $cluster->patternTags);
+    }
+
+    public function testStateMachineTagFromConstMapSwitch(): void
+    {
+        // Class-constant state map; the default arm may differ in shape
+        // (a catch-all is not a state).
+        $blocks = $this->blocksFromCode(
+            '<?php function step($s) { switch ($s) { case self::IDLE: return "wait"; case self::RUNNING: return "go"; default: return "bad"; } }'
+        );
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('state-machine', $cluster->patternTags);
+    }
+
+    public function testStateMachineTagFromUniformMatchArms(): void
+    {
+        $blocks = $this->blocksFromCode(
+            '<?php function rank($s) { return match ($s) { "idle" => 1, "running" => 2, default => 0 }; }'
+        );
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('state-machine', $cluster->patternTags);
+    }
+
+    public function testQueryBuilderChainTag(): void
+    {
+        // Per-tag scenario for the query-builder entrypoint detector.
+        $blocks = $this->blocksFromCode(
+            '<?php function listAll($em) { $qb = $em->createQueryBuilder(); return $qb->select("u")->from("User", "u")->getQuery(); }'
+        );
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('query-builder-chain', $cluster->patternTags);
+    }
+
     /** @return list<\Phpdup\Extraction\Block> */
     private function blocksFromCode(string $code): array
     {

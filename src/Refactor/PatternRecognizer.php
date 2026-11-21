@@ -6,35 +6,76 @@ namespace Phpdup\Refactor;
 use PhpParser\Node;
 use PhpParser\NodeFinder;
 use Phpdup\Clustering\Cluster;
-use Phpdup\Refactor\Hole;
 
 /**
  * Tags clusters whose shape matches well-known refactor archetypes.
  *
  * Tags are advisory — they don't change clustering, just add a one-line
  * label in the report so a human can recognize "ah, this is a strategy
- * pattern" without staring at the AST.
+ * pattern" without staring at the AST.  They do feed
+ * SafetyScorer::TAG_DELTAS and surface as user-visible pattern claims
+ * (JSON `pattern_tags`, CLI/HTML chips), so every tag must be backed by
+ * evidence, never by the mere absence of an AST.
  *
- * When a cluster member's AST has not been loaded (`$m->ast === null`)
- * — which is the common case for large corpora — pattern detection
- * falls back to name-based heuristics: class name, method name, file
- * path, and namespace.  Framework-aware tags in particular rely
- * exclusively on these name signals so they work without AST material.
+ * AST policy (output-021 fail-closed law): detectors fall into two
+ * families.  *Name-based* detectors read only metadata that survives
+ * lazy parsing — class name, method name, file path, namespace, hole
+ * kinds — and work whether or not member ASTs are loaded.  *AST-based*
+ * detectors inspect statement shape and refuse to tag members whose
+ * AST was never materialised (`$m->ast === null` → no evidence → no
+ * tag, exactly like the `continue`-on-null guard used elsewhere).
  *
- * Implemented patterns (best-effort heuristics):
+ * Full tag inventory, matching what tag() emits:
  *
- *   sql-builder         — body contains string concatenation feeding a
- *                         method/function call whose name matches
- *                         /query|prepare|exec|fetch/i
- *   validation-chain    — sequence of if-then-throw or if-then-return
- *                         followed by a success path
- *   crud-handler        — name contains create/read/update/delete OR
- *                         insert/select/update/delete
- *   strategy            — single 'name' or 'call' hole; rest of body
- *                         identical
- *   config-driven       — only literal holes; a pure values-vary case
- *   state-machine       — switch/match where each arm has the same shape
- *                         varying only by a state literal
+ *   --- hole-shape based (no AST needed) ---
+ *   config-driven         — only literal holes; a pure values-vary case
+ *   strategy              — single 'name' or 'call' hole; rest of body
+ *                           identical
+ *   optional-segments     — at least one 'optional_block' hole
+ *
+ *   --- name-based (no AST needed) ---
+ *   crud-handler          — a whole name segment (camel/snake split)
+ *                           equals a CRUD verb: create/read/update/
+ *                           delete, insert/select/remove/fetch/find
+ *   controller-action     — class ends in `Controller` or file lives
+ *                           under Http/Controllers/ or Controller/
+ *   migration             — file under migrations/ and member `up`/`down`
+ *   eloquent-model        — namespace under \Models\, class not a
+ *                           controller/repository
+ *   repository-method     — class ends in `Repository`, member name
+ *                           starts with a repository verb
+ *   event-listener        — class ends in Listener/Subscriber/EventHandler
+ *   service-provider      — class ends in ServiceProvider/Bundle, member
+ *                           register/boot/build/configure
+ *
+ *   --- AST-based (require loaded member ASTs) ---
+ *   validation-chain      — sequence of if-then-throw or if-then-return
+ *                           followed by a success path
+ *   sql-builder           — string concatenation feeding a
+ *                           query|prepare|exec|fetch call, or a
+ *                           literal holding a real SQL statement
+ *                           (uppercase verb + FROM/INTO <table> — not
+ *                           English prose that merely contains "from")
+ *   state-machine         — switch/match over a state whose literal arms
+ *                           share one body shape, varying only by the
+ *                           state discriminator (≥2 literal arms)
+ *   query-builder-chain   — body calls createQueryBuilder/getQueryBuilder
+ *                           or a static table()/query() entrypoint
+ *   loop-map              — foreach whose body appends to an accumulator
+ *                           array (array_map-shaped)
+ *   loop-filter           — foreach starting with `if (...) continue`
+ *   sql-query             — a string literal starting with a SQL verb
+ *   http-call             — an HTTP-shaped call (verb MethodCall with
+ *                           args, or curl_/wp_remote_/file_get_contents)
+ *                           whose own arguments carry the URL
+ *   error-handler         — try/catch whose catch body logs, rethrows,
+ *                           or returns
+ *   builder-chain         — ≥3 chained method calls on one head
+ *   container-registration — a register/boot/configure-named method
+ *                           whose body actually calls bind/set/register/
+ *                           singleton/instance/extend/autowire
+ *   db-op                 — __DB_*__ synthetic calls or nodes carrying
+ *                           the phpdup.dbOp attribute
  */
 final class PatternRecognizer
 {
@@ -49,8 +90,8 @@ final class PatternRecognizer
         if ($this->isStateMachine($cluster))    $tags[] = 'state-machine';
         if ($this->hasOptionalSegments($cluster)) $tags[] = 'optional-segments';
         // Framework-aware tags (IX.A). Inferred from qualified-name
-        // patterns + member naming so they work even when the cluster
-        // members have unloaded ASTs.
+        // patterns + member naming, so the name-based ones work even
+        // when the cluster members have unloaded ASTs.
         if ($this->isControllerAction($cluster))     $tags[] = 'controller-action';
         if ($this->isMigration($cluster))            $tags[] = 'migration';
         if ($this->isEloquentModel($cluster))        $tags[] = 'eloquent-model';
@@ -97,12 +138,32 @@ final class PatternRecognizer
     {
         $verbs = ['create', 'read', 'update', 'delete', 'insert', 'select', 'remove', 'fetch', 'find'];
         foreach ($cluster->members as $m) {
-            $name = strtolower((string)$m->name);
-            foreach ($verbs as $v) {
-                if (str_contains($name, $v)) return true;
+            // Whole-segment match only: a camel/snake name segment must BE
+            // the verb. Bare substring matching tagged thread() as "read",
+            // preselect() as "select" and prefetch() as "fetch" (output-021).
+            foreach (self::nameSegments((string)$m->name) as $segment) {
+                if (in_array($segment, $verbs, true)) return true;
             }
         }
         return false;
+    }
+
+    /**
+     * Split a member name into lower-cased identifier segments at
+     * camelCase humps and underscores, so word boundary checks become
+     * exact segment equality ("findById" → find, by, id).
+     *
+     * @return list<string>
+     */
+    private static function nameSegments(string $name): array
+    {
+        $parts = preg_split('/(?<=[a-z0-9])(?=[A-Z])|_/', $name) ?: [];
+        $out   = [];
+        foreach ($parts as $p) {
+            $p = strtolower($p);
+            if ($p !== '') $out[] = $p;
+        }
+        return $out;
     }
 
     private function isValidationChain(Cluster $cluster): bool
@@ -147,11 +208,15 @@ final class PatternRecognizer
             });
             if ($concats && $calls) return true;
 
-            // also: any string contains SQL keywords
+            // Second arm: a literal holding an actual SQL statement —
+            // an uppercase verb plus a FROM/INTO <table> token. A bare
+            // keyword anywhere in a string is English prose, not SQL
+            // ("loaded from cache" used to qualify; output-021).
             $strings = $finder->findInstanceOf([$m->ast], Node\Scalar\String_::class);
             foreach ($strings as $s) {
                 /** @var Node\Scalar\String_ $s */
-                if (preg_match('/\b(SELECT|INSERT|UPDATE|DELETE|FROM|WHERE)\b/i', $s->value)) {
+                if (preg_match('/\b(SELECT|INSERT|UPDATE|DELETE)\b/', $s->value)
+                    && preg_match('/\b(FROM|INTO)\s+[A-Za-z_]\w*/', $s->value)) {
                     return true;
                 }
             }
@@ -159,17 +224,110 @@ final class PatternRecognizer
         return false;
     }
 
+    /**
+     * State-machine: a switch/match whose arms are state literals and
+     * whose bodies share one shape, varying only by the state
+     * discriminator. Presence of any switch alone is NOT evidence —
+     * tagging it lied about unconditionally-shaped members (output-021).
+     *
+     * Requirements per switch/match:
+     *  - at least two arms whose condition is a state literal
+     *    (string/int/float scalar or a constant fetch);
+     *  - every non-default arm body has the same structural signature
+     *    once literal values are abstracted (default/else arms may
+     *    differ — a catch-all is not a state).
+     */
     private function isStateMachine(Cluster $cluster): bool
     {
         $finder = new NodeFinder();
         foreach ($cluster->members as $m) {
             if ($m->ast === null) continue;
+
             $switches = $finder->findInstanceOf([$m->ast], Node\Stmt\Switch_::class);
-            if ($switches) return true;
+            foreach ($switches as $sw) {
+                /** @var Node\Stmt\Switch_ $sw */
+                $arms = [];
+                foreach ($sw->cases as $case) {
+                    if ($case->cond === null) continue; // default arm: not a state
+                    if (!self::isStateLiteral($case->cond)) { $arms = []; break; }
+                    $arms[] = self::signatureOf($case->stmts);
+                }
+                if (count($arms) >= 2 && count(array_unique($arms)) === 1) return true;
+            }
+
             $matches = $finder->findInstanceOf([$m->ast], Node\Expr\Match_::class);
-            if ($matches) return true;
+            foreach ($matches as $mt) {
+                /** @var Node\Expr\Match_ $mt */
+                $arms = [];
+                foreach ($mt->arms as $arm) {
+                    // v5 MatchArm: default arm has conds === null; empty array
+                    // also means "no state discriminator" — neither is a state.
+                    if (!$arm->conds) continue;
+                    $literals = true;
+                    foreach ($arm->conds as $cond) {
+                        if (!self::isStateLiteral($cond)) { $literals = false; break; }
+                    }
+                    if (!$literals) { $arms = []; break; }
+                    $arms[] = self::signatureOf($arm->body);
+                }
+                if (count($arms) >= 2 && count(array_unique($arms)) === 1) return true;
+            }
         }
         return false;
+    }
+
+    /** A switch/match arm condition that identifies a state value. */
+    private static function isStateLiteral(Node $n): bool
+    {
+        return $n instanceof Node\Scalar
+            || $n instanceof Node\Expr\ConstFetch
+            || ($n instanceof Node\Expr\ClassConstFetch && $n->name instanceof Node\Identifier);
+    }
+
+    /**
+     * Structural signature of a node subtree: node classes, child names
+     * and structure — literal STATE values (scalars, constant fetches)
+     * collapse to a placeholder so arms that differ only by their
+     * discriminator hash equal.
+     *
+     * @param Node|Node[] $nodes
+     */
+    private static function signatureOf(Node|array $nodes): string
+    {
+        if ($nodes instanceof Node) return self::signatureOfNode($nodes);
+        $out = '';
+        foreach ($nodes as $n) $out .= self::signatureOfNode($n);
+        return $out;
+    }
+
+    private static function signatureOfNode(Node $n): string
+    {
+        if ($n instanceof Node\Scalar)  return 'LIT';
+        if ($n instanceof Node\Expr\ConstFetch
+            || ($n instanceof Node\Expr\ClassConstFetch && $n->name instanceof Node\Identifier)) {
+            return 'LIT';
+        }
+        $parts = [get_class($n)];
+        foreach ($n->getSubNodeNames() as $name) {
+            $value = $n->{$name};
+            $parts[] = $name . '=' . self::signatureOfValue($value);
+        }
+        return '(' . implode(' ', $parts) . ')';
+    }
+
+    private static function signatureOfValue(mixed $v): string
+    {
+        if ($v instanceof Node)             return self::signatureOfNode($v);
+        if (is_array($v)) {
+            $out = '';
+            foreach ($v as $item) $out .= self::signatureOfValue($item);
+            return '[' . $out . ']';
+        }
+        if ($v === null)  return 'null';
+        if (is_bool($v))  return $v ? '1' : '0';
+        if (is_string($v)) return $v;
+        if (is_int($v) || is_float($v)) return (string)$v;
+        return 'x';
     }
 
     /**
@@ -287,11 +445,6 @@ final class PatternRecognizer
     }
 
     /**
-     * Query-builder chain: the body contains a method-call chain whose
-     * head is recognised as a Doctrine / Eloquent / DBAL builder
-     * entrypoint (`createQueryBuilder`, `DB::table`, `Model::query`).
-     */
-    /**
      * Loop-map: foreach (...) { $acc[] = ...; } — accumulator-style
      * loop body that's expressible as `array_map`.
      */
@@ -361,9 +514,12 @@ final class PatternRecognizer
     }
 
     /**
-     * HTTP call: a method call whose name matches GET/POST/PUT/PATCH/
-     * DELETE on a Guzzle / HttpClient-shaped object, or a function
-     * call whose name contains 'curl_', 'http_', 'wp_remote_'.
+     * HTTP call: a verb-shaped MethodCall with args (get/post/put/patch/
+     * delete/request/send) or a curl_ / wp_remote_ / file_get_contents
+     * function call — AND the URL must be an argument of that same call.
+     * A URL string floating anywhere in the body (config defaults
+     * carrying example URLs) is not evidence of an HTTP call
+     * (output-021).
      */
     private function isHttpCall(Cluster $cluster): bool
     {
@@ -385,18 +541,41 @@ final class PatternRecognizer
                 }
                 return false;
             });
-            // Methods named get/post are common; require an HTTP-shaped callee
-            // string to avoid false positives. As a quick heuristic, also look
-            // for a Url/Uri argument or variable name in the same block.
-            if (!empty($hits)) {
-                $hasUrl = $finder->find([$m->ast], static function (Node $n): bool {
-                    if ($n instanceof Node\Scalar\String_) {
-                        return (bool)preg_match('#^https?://#i', $n->value);
+            foreach ($hits as $hit) {
+                if (!$hit instanceof Node\Expr\MethodCall && !$hit instanceof Node\Expr\FuncCall) {
+                    continue;
+                }
+                foreach ($hit->args as $arg) {
+                    if ($arg instanceof Node\Arg && self::looksLikeUrl($arg->value)) {
+                        return true;
                     }
-                    return false;
-                });
-                if (!empty($hasUrl)) return true;
+                }
             }
+        }
+        return false;
+    }
+
+    /**
+     * Does this expression carry an http(s) URL? Direct string literals
+     * and concatenations whose literal part opens the URL count; a bare
+     * variable does not (we cannot know its value).
+     */
+    private static function looksLikeUrl(Node\Expr $e): bool
+    {
+        if ($e instanceof Node\Scalar\String_) {
+            return (bool)preg_match('#^https?://#i', $e->value);
+        }
+        if ($e instanceof Node\Scalar\InterpolatedString) {
+            foreach ($e->parts as $part) {
+                if ($part instanceof Node\InterpolatedStringPart
+                    && preg_match('#^https?://#i', $part->value)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if ($e instanceof Node\Expr\BinaryOp\Concat) {
+            return self::looksLikeUrl($e->left);
         }
         return false;
     }
@@ -457,8 +636,10 @@ final class PatternRecognizer
 
     /**
      * Container registration: cluster lives inside a method named
-     * register* / boot* / configureServices* and consists of `->bind(...)`
-     * / `->set(...)` / `->register(...)` calls.
+     * register* / boot* / configureServices* and its (loaded) body
+     * actually calls `->bind(...)` / `->set(...)` / `->register(...)`
+     * etc.  An unloaded AST gives no evidence — fail closed like the
+     * other AST-based detectors (output-021: it used to auto-yes).
      */
     private function isContainerRegistration(Cluster $cluster): bool
     {
@@ -468,7 +649,7 @@ final class PatternRecognizer
             if (!preg_match('/^(register|boot|configure)/', $name)) {
                 continue;
             }
-            if ($m->ast === null) return true; // strong signal from method name alone
+            if ($m->ast === null) continue; // no evidence, no tag
             $finder = new NodeFinder();
             $calls  = $finder->findInstanceOf([$m->ast], Node\Expr\MethodCall::class);
             foreach ($calls as $mc) {
@@ -482,6 +663,11 @@ final class PatternRecognizer
         return false;
     }
 
+    /**
+     * Query-builder chain: the body contains a method-call chain whose
+     * head is recognised as a Doctrine / Eloquent / DBAL builder
+     * entrypoint (`createQueryBuilder`, `DB::table`, `Model::query`).
+     */
     private function isQueryBuilderChain(Cluster $cluster): bool
     {
         $finder = new NodeFinder();
