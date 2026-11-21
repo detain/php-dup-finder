@@ -244,46 +244,24 @@ final class PreprocessStage implements CooperativeStageInterface
             );
         }
 
-        // Assign IDs (after collecting from all sources).
-        //
-        // CI-85 determinism: ids must not depend on arrival order. The old
-        // numbering used the global position in $blocks — an index that
-        // mixes cache-restored files (scan order) with worker-stream rows
-        // (completion timing), so the same corpus scanned under a different
-        // host, worker schedule, or sibling kind opt-in could hand a block
-        // `_9` here and `_10` there. That leaked byte-for-byte into report
-        // surfaces that embed ids (`template.id`, `evidence_diff.member`,
-        // `pairs[].blockA/B`) and into member ordering (clusters sort by
-        // strcmp of ids, medoid ties break on iteration order). Two fixes
-        // in one place, both content-derived:
-        //   1. sort $blocks canonically by (file, start, end, kind, name,
-        //      structuralHash) — the extraction position of a block is a
-        //      function of its source, so this order is host- and
-        //      schedule-independent (a shared absolute-path prefix does
-        //      not reorder anything within one root);
-        //   2. number each block by its rank WITHIN its 8-hex hash prefix
-        //      group instead of the global index, so adding or removing an
-        //      unrelated family (e.g. opting an extra kind into the run)
-        //      never renumbers the clones a stable cluster reports on.
-        // Uniqueness still holds: two blocks cannot share the full key
-        // (file, start, end, kind, name) — the extractor emits each
-        // traversable node once.
+        // Assign IDs (after collecting from all sources). CI-85 determinism:
+        // assignCanonicalIds() establishes a content-derived total order
+        // before any id is minted, and numbers blocks by rank WITHIN their
+        // hash-prefix family, so ids never depend on arrival order and
+        // unrelated families coming or going never renumber a stable
+        // cluster's clones. The method docblock carries the exact totality
+        // claim and its emit-symmetry caveat — r2 review corrected the
+        // false key-uniqueness statement the r1 comment baked in here.
         $state->debug($output, sprintf('preprocess: assigning IDs to %d blocks... [%s]', count($blocks), MemoryDebug::getMemoryUsage()));
-        usort($blocks, static fn (Block $a, Block $b): int => [
-            $a->file, $a->range->start, $a->range->end, $a->kind, $a->name ?? '', $a->structuralHash,
-        ] <=> [
-            $b->file, $b->range->start, $b->range->end, $b->kind, $b->name ?? '', $b->structuralHash,
-        ]);
-        $rankByPrefix = [];
+        $blocks = self::assignCanonicalIds($blocks);
+
+        // Item 5.1: repo/scope labels are run context, so they are
+        // (re)computed for every block here — cache-restored and freshly
+        // extracted alike — after the cache-save pass above. Nothing
+        // label-shaped therefore reaches the `.idx` blobs: a stale cache
+        // cannot serve a stale (or silently empty) label because the stamp
+        // always overwrites the default.
         foreach ($blocks as $b) {
-            $prefix = substr($b->structuralHash, 0, 8);
-            $b->id = $prefix . '_' . ($rankByPrefix[$prefix] = ($rankByPrefix[$prefix] ?? -1) + 1);
-            // Item 5.1: repo/scope labels are run context, so they are
-            // (re)computed for every block here — cache-restored and
-            // freshly extracted alike — after the cache-save pass above.
-            // Nothing label-shaped therefore reaches the `.idx` blobs:
-            // a stale cache cannot serve a stale (or silently empty)
-            // label because the stamp always overwrites the default.
             RepoLabels::stamp($b, $config->paths);
         }
         $state->debug($output, sprintf('preprocess: ID assignment complete, transitioning to next stage... [%s]', MemoryDebug::getMemoryUsage()));
@@ -311,6 +289,56 @@ final class PreprocessStage implements CooperativeStageInterface
     }
 
     /** @param list<Block> $blocks */
+    /**
+     * Canonical block ordering + content-derived ids (CI-85 T2, r2).
+     *
+     * Sort key: (file, range start, range end, kind, namespace, class,
+     * name, structuralHash) — the eight fields a report emits for a
+     * block, minus run-context (repo/scope are stamped later; id is what
+     * we are minting). Ids are then rank-within-hash8-prefix, which
+     * isolates families from each other's presence entirely.
+     *
+     * TOTALITY, stated honestly (r1 review killed the old claim): the key
+     * is NOT strictly total — two distinct nodes can share all eight
+     * fields (e.g. two byte-identical closures on one physical line of
+     * one method: reviewer craft "Tied"; a real, constructible shape).
+     * What makes determinism survive such an orbit is EMIT-SYMMETRY:
+     * every downstream handle of a block is either its emitted fields or
+     * its id string, two tied blocks have byte-equal emitted fields (that
+     * is what the tie means), and the orbit's id labels ({prefix}_k and
+     * {prefix}_k+1, …) depend only on the orbit's POSITION in the sorted
+     * array — not on which physical block took which slot. So no report
+     * byte can observe the permutation. What the r1 six-key tuple DID leak
+     * was the class-asymmetric tie (same line, same method name in two
+     * classes): members[] rows embed `class`, so there the permutation WAS
+     * observable (reviewer seam flipped report md5s). namespace+class in
+     * the key close exactly that gap; the residual orbit is provably
+     * invisible. Physical-to-label binding inside an orbit rests on
+     * per-file emission contiguity (both collection paths flush a file's
+     * blocks together) + PHP>=8.0 stable usort — true today, immaterial
+     * to bytes; the permanent pin PreprocessStageIdDeterminismTest
+     * exercises both shapes under adversarial shuffles.
+     *
+     * @param list<Block> $blocks
+     * @return list<Block> the same blocks, canonically ordered, ids minted
+     */
+    private static function assignCanonicalIds(array $blocks): array
+    {
+        usort($blocks, static fn (Block $a, Block $b): int => [
+            $a->file, $a->range->start, $a->range->end, $a->kind,
+            $a->namespace ?? '', $a->class ?? '', $a->name ?? '', $a->structuralHash,
+        ] <=> [
+            $b->file, $b->range->start, $b->range->end, $b->kind,
+            $b->namespace ?? '', $b->class ?? '', $b->name ?? '', $b->structuralHash,
+        ]);
+        $rankByPrefix = [];
+        foreach ($blocks as $b) {
+            $prefix = substr($b->structuralHash, 0, 8);
+            $b->id = $prefix . '_' . ($rankByPrefix[$prefix] = ($rankByPrefix[$prefix] ?? -1) + 1);
+        }
+        return $blocks;
+    }
+
     private function printStats(OutputInterface $out, array $blocks): void
     {
         $kinds = [];
