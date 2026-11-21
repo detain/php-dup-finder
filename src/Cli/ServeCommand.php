@@ -76,13 +76,15 @@ final class ServeCommand extends SymfonyCommand
     private string $resultDir = '';
 
     /**
-     * Test seam for the ownership check on a pre-existing results directory
-     * (tests cannot chown without root). Null uses the real `fileowner()`
-     * check; a probe returning an error string forces startup refusal.
+     * Test seam supplying the OWNER uid of a pre-existing results directory
+     * (unit tests cannot chown without root). Null uses the real
+     * `fileowner()` stat; a probe returning a foreign uid exercises the real
+     * comparison and its refusal, and `false`/`null` exercises the
+     * fail-closed unstatable arm. The verdict itself is never seam-fed.
      *
-     * @var (callable(string): ?string)|null
+     * @var (callable(string): int|false|null)|null
      */
-    public $ownershipProbe = null;
+    public $ownerProbe = null;
 
     /** Why the last {@see prepareResultsDir()} refused startup ('' = none). */
     private string $resultsDirRefusal = '';
@@ -528,7 +530,7 @@ final class ServeCommand extends SymfonyCommand
     /**
      * Remove the results directory and everything the worker wrote into it,
      * so job results never outlive the serve process. Bounded to the
-     * pid-nonce directory this process owns — a second belt behind the
+     * pid-derived directory this process owns — a second belt behind the
      * startup ownership check; foreign or unexpected paths are left alone.
      */
     private function sweepResultDir(): void
@@ -560,7 +562,7 @@ final class ServeCommand extends SymfonyCommand
     }
 
     /**
-     * The pid-nonce results directory shared with the worker child.
+     * The pid-derived results directory shared with the worker child.
      */
     public static function resultDirPath(): string
     {
@@ -591,10 +593,7 @@ final class ServeCommand extends SymfonyCommand
         }
 
         if (is_dir($dir)) {
-            $probe = $this->ownershipProbe;
-            $error = $probe !== null
-                ? ($probe)($dir)
-                : $this->defaultOwnershipCheck($dir);
+            $error = $this->defaultOwnershipCheck($dir);
             if ($error !== null && $error !== '') {
                 $this->resultsDirRefusal = $error;
                 return null;
@@ -631,12 +630,15 @@ final class ServeCommand extends SymfonyCommand
     /**
      * Real ownership check: an existing results directory must belong to
      * this process's own user or startup is refused. Fail-closed: an
-     * unreadable owner counts as foreign.
+     * unreadable owner counts as foreign. The only seam here supplies the
+     * owner uid ({@see $ownerProbe}) — the comparison and both refusal
+     * messages run unseamed, so tests pin the load-bearing arm itself.
      */
     private function defaultOwnershipCheck(string $dir): ?string
     {
-        $owner = @fileowner($dir);
-        if ($owner === false) {
+        $probe = $this->ownerProbe;
+        $owner = $probe !== null ? ($probe)($dir) : @fileowner($dir);
+        if ($owner === false || $owner === null) {
             return "cannot stat the owner of results directory {$dir}";
         }
         if ($owner !== getmyuid()) {

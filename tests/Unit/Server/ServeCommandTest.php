@@ -125,7 +125,7 @@ final class ServeCommandTest extends TestCase
     public function testPrepareResultsDirTightensOwnedWorldReadableLeftover(): void
     {
         // An older release created the dir 0755; a leftover of our own must
-        // be adopted AND hardened, not refused (the pid-nonce is ours).
+        // be adopted AND hardened, not refused (the pid-derived path is ours).
         $dir = ServeCommand::resultDirPath();
         if (!is_dir($dir)) {
             mkdir($dir, 0755);
@@ -143,22 +143,47 @@ final class ServeCommandTest extends TestCase
 
     public function testPrepareResultsDirRefusesForeignOwnedDirectory(): void
     {
-        // Real-fileowner truth: the dir below is genuinely OURS, so first a
-        // plain prepare must accept it — then the injected probe stands in
-        // for foreign ownership (unit tests cannot chown without root), and
-        // the very same path must be refused.
+        // The seam below feeds only the OWNER uid — the real comparison and
+        // its refusal message (the load-bearing arm) run unseamed. The dir
+        // starts genuinely ours, so a plain prepare must accept it first;
+        // then a probe claiming uid 4242 (unit tests cannot chown without
+        // root) forces the very same path through the foreign branch.
         $command = new ServeCommand();
         $created = $command->prepareResultsDir();
         $this->assertNotNull($created);
         $this->s02ResultsDir = $created;
 
+        // Left world-readable, the exact state an adoption would "fix":
+        // a refusal must leave it byte-for-byte untouched.
+        chmod($created, 0755);
+        clearstatcache(true, $created);
+
         $foreign = new ServeCommand();
-        $foreign->ownershipProbe = static fn (string $dir): string =>
-            "results directory {$dir} is owned by uid 4242, not this process";
+        $foreign->ownerProbe = static fn (string $dir): int => 4242;
 
         $this->assertNull($foreign->prepareResultsDir());
         $this->assertStringContainsString('owned by uid 4242', $foreign->resultsDirRefusal());
         // Refusal must not delete or re-permission the foreign tree.
+        $this->assertDirectoryExists($created);
+        clearstatcache(true, $created);
+        $this->assertSame('755', substr(sprintf('%o', (int)fileperms($created)), -3));
+    }
+
+    public function testPrepareResultsDirFailClosedOnUnstatableOwner(): void
+    {
+        // The other half of the unseamed check: an owner that cannot be
+        // stat'ed counts as foreign — startup refuses instead of adopting
+        // blindly (real-world example: a stale NFS mount dying mid-stat).
+        $command = new ServeCommand();
+        $created = $command->prepareResultsDir();
+        $this->assertNotNull($created);
+        $this->s02ResultsDir = $created;
+
+        $unstatable = new ServeCommand();
+        $unstatable->ownerProbe = static fn (string $dir): false => false;
+
+        $this->assertNull($unstatable->prepareResultsDir());
+        $this->assertStringContainsString('cannot stat the owner', $unstatable->resultsDirRefusal());
         $this->assertDirectoryExists($created);
     }
 
@@ -174,8 +199,7 @@ final class ServeCommandTest extends TestCase
 
         $serve = new ServeCommand();
         $serve->setApplication(new Application('phpdup', '1.0.0'));
-        $serve->ownershipProbe = static fn (string $dir): string =>
-            "results directory {$dir} is owned by uid 4242, not this process";
+        $serve->ownerProbe = static fn (string $dir): int => 4242;
 
         $exitCode = $serve->run(
             new ArrayInput(['--host' => '127.0.0.1', '--port' => '18999']),
@@ -183,6 +207,19 @@ final class ServeCommandTest extends TestCase
         );
 
         $this->assertSame(1, $exitCode);
+
+        // If the refusal block ever regresses (returns 1 but still binds, or
+        // the guard is removed so execute() accept-loops forever), this
+        // connect flips red instead of hanging the suite: no listener was
+        // ever opened on the port we passed to the refused command.
+        $errno = 0;
+        $errstr = '';
+        $probe = @stream_socket_client('tcp://127.0.0.1:18999', $errno, $errstr, 2.0);
+        if ($probe !== false) {
+            fclose($probe);
+            $this->fail('a refused serve must never open the listener');
+        }
+        $this->assertStringContainsStringIgnoringCase('refused', $errstr);
     }
 
     public function testCleanupWorkerSweepsTheResultsDirectory(): void
@@ -212,7 +249,7 @@ final class ServeCommandTest extends TestCase
     public function testCleanupWorkerNeverSweepsAForeignPath(): void
     {
         // Belt behind the ownership check: even with the property hijacked to
-        // an unrelated directory, the sweep only touches the pid-nonce path.
+        // an unrelated directory, the sweep only touches the pid-derived path.
         $stray = sys_get_temp_dir() . '/phpdup-s02-stray-' . uniqid();
         mkdir($stray, 0700);
         file_put_contents($stray . '/keep.json', '{}');

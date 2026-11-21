@@ -710,9 +710,11 @@ final class ApplicationTest extends TestCase
     public function testWorkerRefusesPathTraversalJobIdAndWritesNothing(): void
     {
         $escape = 'phpdup-s02-escaped-' . uniqid();
-        // `resultDir/../../<escape>.json` resolves to sys_get_temp_dir() —
-        // pre-fix the unvalidated id escaped two levels up.
-        $evilId = '../../' . $escape;
+        // `resultDir/../<escape>.json` resolves to sys_get_temp_dir() — the
+        // very plane the fs assertions below inspect, so "writes nothing
+        // outside the results dir" is filesystem-proven (pre-fix the
+        // unvalidated id escaped one level up and landed beside the dir).
+        $evilId = '../' . $escape;
 
         [$client, $controller] = $this->makeWorkerPair();
         $ack = $this->workerAck($client, $controller, "RUN {$evilId} {\"paths\":[\"a.php\"]}\n");
