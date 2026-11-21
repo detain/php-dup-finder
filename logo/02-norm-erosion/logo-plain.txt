@@ -1,0 +1,6 @@
+✓strict  ✓default  ✓aggressive
+             #### #  # #### ###  #  # ####
+             #  # #  # #  # #  # #  # #  #
+             ###  #### ###  #  # #  # ###
+             #    #  # #    ###  ###  #
+AST duplicate-logic finder
