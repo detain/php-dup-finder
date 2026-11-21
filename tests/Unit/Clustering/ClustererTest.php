@@ -7,6 +7,7 @@ use PHPUnit\Framework\TestCase;
 use Phpdup\Clustering\Clusterer;
 use Phpdup\Clustering\MatchTier;
 use Phpdup\Clustering\Cluster;
+use Phpdup\Clustering\UnionFind;
 use Phpdup\Extraction\Block;
 use Phpdup\Extraction\BlockExtractor;
 use Phpdup\Fingerprint\NgramFingerprint;
@@ -497,5 +498,136 @@ final class ClustererTest extends TestCase
         } catch (\Error $e) {
             $this->assertStringContainsString('must not be accessed before initialization', $e->getMessage());
         }
+    }
+
+    /**
+     * Clusterer configured so any well-formed edge clusters (thresholds
+     * off) — paired with makeGuardIndex(), which carries ids 'A' and 'B'.
+     */
+    private function makeGuardClusterer(): Clusterer
+    {
+        return new Clusterer(
+            similarity: new JaccardSimilarity(),
+            tree: new TreeEditDistance(),
+            similarityThreshold: 0.0,
+            treeThreshold: 0.0,
+            maxDocumentFrequency: 1.0,
+            exactOnly: false,
+            optionalBlocksEnabled: false,
+        );
+    }
+
+    private function makeGuardIndex(): BlockIndex
+    {
+        $index = new BlockIndex();
+        $funcA = $this->parseFunction('<?php function a() { return 1; }');
+        $funcB = $this->parseFunction('<?php function b() { return 2; }');
+        $index->add($this->makeBlock('A', 'hash_a', ['gram_x' => 1], $funcA));
+        $index->add($this->makeBlock('B', 'hash_b', ['gram_x' => 1], $funcB));
+
+        return $index;
+    }
+
+    /**
+     * engine-049 pin (edges-loop seam): an externally supplied edge whose
+     * SECOND endpoint is absent from the index must fail loud with a
+     * RuntimeException naming the id — never the old shape: the unguarded
+     * `$this->parent[$x]` read in UnionFind::find() emitted an
+     * undefined-array-key warning (fatal here: phpunit failOnWarning=true)
+     * and/or a TypeError through the strict `: string` return, poisoning
+     * the forest with ""-keyed state. Catching RuntimeException cannot
+     * swallow an Error/TypeError — they are siblings of Exception, so a
+     * regression propagates and fails this test loudly.
+     */
+    public function testEdgeWithUnknownSecondEndpointThrowsRuntimeExceptionNamingId(): void
+    {
+        $clusterer = $this->makeGuardClusterer();
+        $index = $this->makeGuardIndex();
+
+        try {
+            $clusterer->cluster($index, [['A', 'GHOST', 0.95, MatchTier::Jaccard->value]]);
+            $this->fail('Expected RuntimeException for edge referencing unknown id GHOST');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('GHOST', $e->getMessage(), 'the exception must name the offending id');
+        }
+    }
+
+    /**
+     * engine-049 pin: symmetric endpoint — the unknown id in FIRST position
+     * is named just the same.
+     */
+    public function testEdgeWithUnknownFirstEndpointThrowsRuntimeExceptionNamingId(): void
+    {
+        $clusterer = $this->makeGuardClusterer();
+        $index = $this->makeGuardIndex();
+
+        try {
+            $clusterer->cluster($index, [['GHOST', 'B', 0.95, MatchTier::Jaccard->value]]);
+            $this->fail('Expected RuntimeException for edge referencing unknown id GHOST');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('GHOST', $e->getMessage(), 'the exception must name the offending id');
+        }
+    }
+
+    /**
+     * engine-049: the clean-throw layer — find() on an id that was never
+     * added throws LogicException naming it (no warning, no TypeError, no
+     * ""-keyed garbage path). Guards the primitive itself for any future
+     * caller that skips the cluster() seam.
+     */
+    public function testUnionFindFindOnUnknownIdThrowsLogicExceptionNamingId(): void
+    {
+        $uf = new UnionFind();
+        $uf->add('A');
+
+        $this->assertTrue($uf->contains('A'));
+        $this->assertFalse($uf->contains('GHOST'));
+
+        try {
+            $uf->find('GHOST');
+            $this->fail('Expected LogicException for find() on an id never added');
+        } catch (\LogicException $e) {
+            $this->assertStringContainsString('GHOST', $e->getMessage(), 'the exception must name the offending id');
+        }
+    }
+
+    /**
+     * engine-049: union() inherits the guard through find() and leaves the
+     * forest untouched — the impossible id was never inserted and the
+     * legitimate member keeps its own root.
+     */
+    public function testUnionFindUnionOnUnknownIdThrowsAndLeavesForestClean(): void
+    {
+        $uf = new UnionFind();
+        $uf->add('A');
+
+        try {
+            $uf->union('A', 'GHOST');
+            $this->fail('Expected LogicException for union() on an id never added');
+        } catch (\LogicException $e) {
+            $this->assertStringContainsString('GHOST', $e->getMessage());
+        }
+
+        $this->assertFalse($uf->contains('GHOST'), 'the failed union must not insert the impossible id');
+        $this->assertSame('A', $uf->find('A'), 'the existing component must be unchanged');
+    }
+
+    /**
+     * engine-049 positive control: the seam is inert for well-formed edge
+     * lists — ids resident in the index cluster exactly as before (this is
+     * the zero-golden-move argument: production edge stores are
+     * same-run-index resident, so no observable clustering path changes).
+     */
+    public function testSeamGuardInertForIndexResidentEdgeEndpoints(): void
+    {
+        $clusterer = $this->makeGuardClusterer();
+        $index = $this->makeGuardIndex();
+
+        $clusters = $clusterer->cluster($index, [['A', 'B', 0.95, MatchTier::Jaccard->value]]);
+
+        $this->assertCount(1, $clusters, 'the well-formed edge must cluster A and B, guard silent');
+        $ids = array_column($clusters[0]->members, 'id');
+        sort($ids);
+        $this->assertSame(['A', 'B'], $ids);
     }
 }

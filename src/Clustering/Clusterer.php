@@ -329,6 +329,7 @@ final class Clusterer
      * @param list<array{0:string,1:string,2:float,3:string}>|null $edges  pre-computed
      *        edges from a parallel scoring run; null means score serially.
      * @return list<Cluster>
+     * @throws \RuntimeException if a supplied edge references a block id absent from $index
      */
     public function cluster(BlockIndex $index, ?array $edges = null): array
     {
@@ -389,6 +390,27 @@ final class Clusterer
         // of scanning all O(k²) member pairs in a component of size k.
         $componentMinSim = [];
         foreach ($edges as [$aId, $bId, $sim, $tier]) {
+            // engine-049: externally supplied edges are a trust seam — the
+            // parallel pair-scoring path (and any future persistent edge
+            // store) hands these ids straight to the union-find. An id
+            // absent from the index used to hit UnionFind::find()'s
+            // unguarded `$this->parent[$x]` read: undefined-array-key
+            // warning, then a TypeError through the strict `: string`
+            // return, either way poisoning the forest with ""-keyed
+            // state. Fail loud at the seam instead — the documented
+            // style of this file (cf. the lone-residue LogicException in
+            // splitComponent()) — naming the offending id. The $uf is
+            // populated from $index immediately above, so contains() is
+            // exactly "present in the index"; well-formed edge lists
+            // (PairScoreWorker mints them from the same-run index today)
+            // never notice the guard, goldens included.
+            $unknown = !$uf->contains($aId) ? $aId : (!$uf->contains($bId) ? $bId : null);
+            if ($unknown !== null) {
+                throw new \RuntimeException(sprintf(
+                    'edge references unknown block id %s: every edge endpoint must be a block present in the index.',
+                    $unknown,
+                ));
+            }
             // Orientation-agnostic key, mirroring the buildPairsFromEdges
             // lookup (strcmp-canonical). An inverted arrival must not
             // silently vanish from $edgeMap: since item 1.4, Cluster::$pairs
@@ -839,8 +861,35 @@ final class UnionFind
         }
     }
 
+    /**
+     * engine-049: membership query for callers that validate ids before
+     * touching the forest — Clusterer::cluster() guards its externally
+     * supplied edge endpoints with this at the seam.
+     */
+    public function contains(string $x): bool
+    {
+        return isset($this->parent[$x]);
+    }
+
+    /**
+     * @throws \LogicException if $x was never added. The old shape read
+     *         `$this->parent[$x]` on an undefined key: an
+     *         undefined-array-key warning, then null→"" coercion through
+     *         the strict `: string` return (TypeError under
+     *         declare(strict_types=1)), and either way the forest got
+     *         poisoned with state keyed off the empty string. An
+     *         "impossible id" now fails loud like the rest of this file
+     *         instead of degrading to undefined behavior. union()
+     *         inherits the guard through its find() calls.
+     */
     public function find(string $x): string
     {
+        if (!isset($this->parent[$x])) {
+            throw new \LogicException(sprintf(
+                'UnionFind::find() called with id %s that was never added.',
+                $x,
+            ));
+        }
         while ($this->parent[$x] !== $x) {
             $this->parent[$x] = $this->parent[$this->parent[$x]];
             $x = $this->parent[$x];
