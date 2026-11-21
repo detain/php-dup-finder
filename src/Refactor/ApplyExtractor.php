@@ -363,6 +363,7 @@ final class ApplyExtractor
             {
             }
 
+            #[\Override]
             public function enterNode(Node $node): ?Node
             {
                 if ($this->found !== null) {
@@ -460,6 +461,7 @@ final class ApplyExtractor
             {
             }
 
+            #[\Override]
             public function enterNode(Node $node): ?Node
             {
                 if ($this->replaced) {

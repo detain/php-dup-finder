@@ -21,11 +21,13 @@ final class DbWriteIr extends IrNode
     ) {
     }
 
+    #[\Override]
     public function kind(): string
     {
         return 'db.write';
     }
 
+    #[\Override]
     public function scalar(): string
     {
         return $this->table . ':' . $this->predicate;

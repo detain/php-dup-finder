@@ -14,11 +14,13 @@ use Phpdup\Ir\IrNode;
  */
 final class VarIr extends IrNode
 {
+    #[\Override]
     public function kind(): string
     {
         return 'var';
     }
 
+    #[\Override]
     public function scalar(): string
     {
         return '__V';

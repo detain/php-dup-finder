@@ -217,6 +217,7 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
     ) {
     }
 
+    #[\Override]
     public function leaveNode(Node $node): ?Node
     {
         // Transform Match_ and Switch_ into a shared __MATCH__ synthetic
@@ -235,6 +236,7 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
         return null;
     }
 
+    #[\Override]
     public function enterNode(Node $node)
     {
         $this->canonicalizeVariables($node);

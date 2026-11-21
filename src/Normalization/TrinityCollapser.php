@@ -94,6 +94,7 @@ final class TrinityCollapser extends NodeVisitorAbstract
      * if/else branches, loop bodies, try/catch — anything with a
      * stmt list — gets the same scan.
      */
+    #[\Override]
     public function leaveNode(Node $node): ?Node
     {
         if (property_exists($node, 'stmts') && is_array($node->stmts ?? null)) {

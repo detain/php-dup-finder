@@ -36,11 +36,13 @@ final class RefactorStage implements CooperativeStageInterface
         $this->listener = $listener ?? new NullProgressListener();
     }
 
+    #[\Override]
     public function name(): Stage
     {
         return Stage::Refactoring;
     }
 
+    #[\Override]
     public function run(PipelineState $state, OutputInterface $output): void
     {
         foreach ($this->iter($state, $output) as $_) {
@@ -48,6 +50,7 @@ final class RefactorStage implements CooperativeStageInterface
         }
     }
 
+    #[\Override]
     public function iter(PipelineState $state, OutputInterface $output): \Generator
     {
         if (!$state->clusters) {

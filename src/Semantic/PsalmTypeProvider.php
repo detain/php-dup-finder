@@ -33,11 +33,13 @@ final class PsalmTypeProvider implements TypeProvider
         $this->index = $index;
     }
 
+    #[\Override]
     public function typeAt(string $file, int $line): ?string
     {
         return $this->index[$file][$line] ?? null;
     }
 
+    #[\Override]
     public function name(): string
     {
         return 'psalm';

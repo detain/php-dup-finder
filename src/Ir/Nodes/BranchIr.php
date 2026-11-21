@@ -28,11 +28,13 @@ final class BranchIr extends IrNode
     ) {
     }
 
+    #[\Override]
     public function kind(): string
     {
         return 'branch';
     }
 
+    #[\Override]
     public function children(): array
     {
         $out = [$this->condition, $this->then];

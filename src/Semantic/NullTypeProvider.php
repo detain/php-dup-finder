@@ -10,11 +10,13 @@ namespace Phpdup\Semantic;
  */
 final class NullTypeProvider implements TypeProvider
 {
+    #[\Override]
     public function typeAt(string $file, int $line): ?string
     {
         return null;
     }
 
+    #[\Override]
     public function name(): string
     {
         return 'null';

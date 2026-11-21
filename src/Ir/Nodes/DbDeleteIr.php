@@ -17,11 +17,13 @@ final class DbDeleteIr extends IrNode
     ) {
     }
 
+    #[\Override]
     public function kind(): string
     {
         return 'db.delete';
     }
 
+    #[\Override]
     public function scalar(): string
     {
         return $this->table . ':' . $this->predicate;

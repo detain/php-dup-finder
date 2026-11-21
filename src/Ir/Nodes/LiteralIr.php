@@ -15,11 +15,13 @@ final class LiteralIr extends IrNode
 {
     public function __construct(public readonly string $type) {}
 
+    #[\Override]
     public function kind(): string
     {
         return 'literal';
     }
 
+    #[\Override]
     public function scalar(): string
     {
         return $this->type;

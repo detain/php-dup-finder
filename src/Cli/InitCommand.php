@@ -17,6 +17,7 @@ use Symfony\Component\Console\Output\OutputInterface;
  */
 final class InitCommand extends Command
 {
+    #[\Override]
     protected function configure(): void
     {
         $this->setName('init')
@@ -47,6 +48,7 @@ HELP
             );
     }
 
+    #[\Override]
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $cwd = getcwd();

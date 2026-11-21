@@ -67,6 +67,7 @@ final class BlockAstLoader
             public function __construct(private readonly Block $block, private ?Node &$found)
             {
             }
+            #[\Override]
             public function enterNode(Node $node)
             {
                 if ($this->found !== null) {

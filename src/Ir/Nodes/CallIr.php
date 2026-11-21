@@ -23,16 +23,19 @@ final class CallIr extends IrNode
     ) {
     }
 
+    #[\Override]
     public function kind(): string
     {
         return 'call';
     }
 
+    #[\Override]
     public function scalar(): string
     {
         return $this->symbol;
     }
 
+    #[\Override]
     public function children(): array
     {
         return $this->args;

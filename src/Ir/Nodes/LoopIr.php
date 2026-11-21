@@ -21,11 +21,13 @@ final class LoopIr extends IrNode
     ) {
     }
 
+    #[\Override]
     public function kind(): string
     {
         return 'loop';
     }
 
+    #[\Override]
     public function children(): array
     {
         return [$this->body];

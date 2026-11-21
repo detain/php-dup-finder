@@ -23,6 +23,7 @@ use Phpdup\Clustering\Cluster;
 final class SolidAnalyzer implements ArchitecturalAnalyzer
 {
     /** @return list<Finding> */
+    #[\Override]
     public function analyze(Cluster $cluster): array
     {
         $out = [];

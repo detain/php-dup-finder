@@ -73,11 +73,13 @@ final class PhpdupModel implements Model, ProgressListener
         $this->iteratorFactory = $iteratorFactory;
     }
 
+    #[\Override]
     public function onStageStart(Stage $stage): void
     {
         $this->state->stage = $stage;
     }
 
+    #[\Override]
     public function onStageEnd(Stage $stage): void
     {
         $duration = match ($stage) {
@@ -89,6 +91,7 @@ final class PhpdupModel implements Model, ProgressListener
         $this->stageDurations[] = $duration;
     }
 
+    #[\Override]
     public function onFileScanned(int $scanned, int $total): void
     {
         // PipelineState already tracks this; surface to the dashboard via state.
@@ -98,6 +101,7 @@ final class PhpdupModel implements Model, ProgressListener
         $this->state->peakBytes = memory_get_peak_usage(true);
     }
 
+    #[\Override]
     public function onFilePreprocessed(int $processed, int $reused, int $errors): void
     {
         $this->state->processedFiles = $processed;
@@ -107,6 +111,7 @@ final class PhpdupModel implements Model, ProgressListener
         $this->state->peakBytes = memory_get_peak_usage(true);
     }
 
+    #[\Override]
     public function onPairScored(int $scored, int $total): void
     {
         $this->state->scoredPairs    = $scored;
@@ -115,6 +120,7 @@ final class PhpdupModel implements Model, ProgressListener
         $this->state->peakBytes = memory_get_peak_usage(true);
     }
 
+    #[\Override]
     public function onClusterRefactored(int $refactored, int $total): void
     {
         $this->state->refactoredClusters = $refactored;
@@ -122,6 +128,7 @@ final class PhpdupModel implements Model, ProgressListener
         $this->state->peakBytes = memory_get_peak_usage(true);
     }
 
+    #[\Override]
     public function init(): \Closure
     {
         $cmds = [$this->spinner->tick()];
@@ -137,6 +144,7 @@ final class PhpdupModel implements Model, ProgressListener
     }
 
     /** @return array{0: Model, 1: \Closure|null} */
+    #[\Override]
     public function update(Msg $msg): array
     {
         if ($msg instanceof WindowSizeMsg) {
@@ -232,6 +240,7 @@ final class PhpdupModel implements Model, ProgressListener
         return Cmd::tick(0.0, static fn() => new StagePumpedMsg());
     }
 
+    #[\Override]
     public function view(): View
     {
         return new View(
@@ -245,6 +254,7 @@ final class PhpdupModel implements Model, ProgressListener
      * {@see Cmd::tick} pump (see {@see scheduleNextPump()}), not the subscription
      * system, so the reconciler has nothing to manage here.
      */
+    #[\Override]
     public function subscriptions(): ?Subscriptions
     {
         return null;

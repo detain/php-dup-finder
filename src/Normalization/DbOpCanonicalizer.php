@@ -86,6 +86,7 @@ final class DbOpCanonicalizer extends NodeVisitorAbstract
         $traverser->traverse([$root]);
     }
 
+    #[\Override]
     public function leaveNode(Node $node): ?Node\Expr\FuncCall
     {
         // Static call: ClassName::method(...)

@@ -50,11 +50,13 @@ final class PreprocessStage implements CooperativeStageInterface
         }
     }
 
+    #[\Override]
     public function name(): Stage
     {
         return Stage::Preprocessing;
     }
 
+    #[\Override]
     public function run(PipelineState $state, OutputInterface $output): void
     {
         foreach ($this->iter($state, $output) as $_) {
@@ -71,6 +73,7 @@ final class PreprocessStage implements CooperativeStageInterface
      *
      * @return \Generator<Stage>
      */
+    #[\Override]
     public function iter(PipelineState $state, OutputInterface $output): \Generator
     {
         $config = $state->config;

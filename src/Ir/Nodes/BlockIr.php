@@ -18,11 +18,13 @@ final class BlockIr extends IrNode
     /** @param list<IrNode> $stmts */
     public function __construct(public readonly array $stmts = []) {}
 
+    #[\Override]
     public function kind(): string
     {
         return 'block';
     }
 
+    #[\Override]
     public function children(): array
     {
         return $this->stmts;

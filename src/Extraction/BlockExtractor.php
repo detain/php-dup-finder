@@ -91,6 +91,7 @@ final class BlockVisitor extends NodeVisitorAbstract
         $this->nodeCounts = new SplObjectStorage();
     }
 
+    #[\Override]
     public function enterNode(Node $node)
     {
         if ($node instanceof Stmt\Namespace_) {
@@ -143,6 +144,7 @@ final class BlockVisitor extends NodeVisitorAbstract
         return null;
     }
 
+    #[\Override]
     public function leaveNode(Node $node)
     {
         if ($node instanceof Stmt\Class_ || $node instanceof Stmt\Interface_ || $node instanceof Stmt\Trait_ || $node instanceof Stmt\Enum_) {

@@ -24,11 +24,13 @@ final class ScanningStage implements CooperativeStageInterface
         $this->listener = $listener ?? new NullProgressListener();
     }
 
+    #[\Override]
     public function name(): Stage
     {
         return Stage::Scanning;
     }
 
+    #[\Override]
     public function run(PipelineState $state, OutputInterface $output): void
     {
         foreach ($this->iter($state, $output) as $_) {
@@ -36,6 +38,7 @@ final class ScanningStage implements CooperativeStageInterface
         }
     }
 
+    #[\Override]
     public function iter(PipelineState $state, OutputInterface $output): \Generator
     {
         $config  = $state->config;

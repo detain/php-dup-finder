@@ -21,6 +21,7 @@ use Phpdup\Clustering\Cluster;
 final class DesignPatternAnalyzer implements ArchitecturalAnalyzer
 {
     /** @return list<Finding> */
+    #[\Override]
     public function analyze(Cluster $cluster): array
     {
         $out = [];

@@ -23,16 +23,19 @@ final class AssignIr extends IrNode
     ) {
     }
 
+    #[\Override]
     public function kind(): string
     {
         return 'assign';
     }
 
+    #[\Override]
     public function scalar(): string
     {
         return $this->target;
     }
 
+    #[\Override]
     public function children(): array
     {
         return [$this->rhs];

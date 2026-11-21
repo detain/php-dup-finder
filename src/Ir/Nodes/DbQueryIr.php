@@ -22,11 +22,13 @@ final class DbQueryIr extends IrNode
     ) {
     }
 
+    #[\Override]
     public function kind(): string
     {
         return 'db.query';
     }
 
+    #[\Override]
     public function scalar(): string
     {
         return $this->verb . ':' . $this->table;

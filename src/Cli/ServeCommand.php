@@ -75,6 +75,7 @@ final class ServeCommand extends SymfonyCommand
     /**
      * Configure the `serve` command and its CLI options.
      */
+    #[\Override]
     protected function configure(): void
     {
         $this->setName('serve')
@@ -126,6 +127,7 @@ final class ServeCommand extends SymfonyCommand
     /**
      * Run the accept loop until the server socket is closed.
      */
+    #[\Override]
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $host = (string)$input->getOption('host');

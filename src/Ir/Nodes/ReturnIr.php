@@ -13,11 +13,13 @@ final class ReturnIr extends IrNode
 {
     public function __construct(public readonly ?IrNode $expr = null) {}
 
+    #[\Override]
     public function kind(): string
     {
         return 'return';
     }
 
+    #[\Override]
     public function children(): array
     {
         return $this->expr !== null ? [$this->expr] : [];

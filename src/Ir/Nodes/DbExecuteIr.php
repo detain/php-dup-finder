@@ -21,11 +21,13 @@ final class DbExecuteIr extends IrNode
     ) {
     }
 
+    #[\Override]
     public function kind(): string
     {
         return 'db.execute';
     }
 
+    #[\Override]
     public function scalar(): string
     {
         return $this->detail;

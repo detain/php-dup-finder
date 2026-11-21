@@ -71,6 +71,7 @@ final class MlPairClient implements PairScorer
      *         disabled, the URL is rejected, or the service returns
      *         malformed data.
      */
+    #[\Override]
     public function score(Block $a, Block $b): ?array
     {
         if ($this->baseUrl === '') {

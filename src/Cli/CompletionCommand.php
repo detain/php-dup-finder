@@ -31,6 +31,7 @@ final class CompletionCommand extends SymfonyCommand
     /** @var list<string> */
     private const SUPPORTED_SHELLS = ['bash', 'fish', 'zsh'];
 
+    #[\Override]
     protected function configure(): void
     {
         $this->setName('completion')
@@ -49,6 +50,7 @@ final class CompletionCommand extends SymfonyCommand
             );
     }
 
+    #[\Override]
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $rawShell = $input->getArgument('shell');

@@ -49,6 +49,7 @@ class UpdateCommand extends SymfonyCommand
      */
     private const VERIFICATION_KEY = 'REPLACE_WITH_REAL_PUBLIC_KEY';
 
+    #[\Override]
     protected function configure(): void
     {
         $this->setName('self:update')
@@ -104,6 +105,7 @@ HELP
             );
     }
 
+    #[\Override]
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $io = new SymfonyStyle($input, $output);

@@ -55,11 +55,13 @@ final class ReportStage implements StageInterface
         private readonly ?string $refactorTestsDir = null,
     ) {}
 
+    #[\Override]
     public function name(): Stage
     {
         return Stage::Reporting;
     }
 
+    #[\Override]
     public function run(PipelineState $state, OutputInterface $output): void
     {
         // 0.6: the old guard was `if (!$state->blocks) return;` which masked

@@ -24,6 +24,7 @@ final class AntiPatternAnalyzer implements ArchitecturalAnalyzer
     public const PRIMITIVE_TYPES = ['int', 'float', 'string', 'bool', 'mixed'];
 
     /** @return list<Finding> */
+    #[\Override]
     public function analyze(Cluster $cluster): array
     {
         $out = [];

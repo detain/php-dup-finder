@@ -30,11 +30,13 @@ final class DbReadIr extends IrNode
     ) {
     }
 
+    #[\Override]
     public function kind(): string
     {
         return 'db.read';
     }
 
+    #[\Override]
     public function scalar(): string
     {
         return $this->table . ':' . $this->predicate;
