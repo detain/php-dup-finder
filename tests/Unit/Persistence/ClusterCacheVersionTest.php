@@ -24,6 +24,13 @@ use Phpdup\Util\LineRange;
  * byte-for-byte must still be refused, and the same payload stamped
  * with the live version must load. A version constant with no gate
  * would fail the first assertion.
+ *
+ * shell-S18 (header-before-payload): the gate now reads the live
+ * version stamp from the framed header's parser_version line. The
+ * forge helper below emits the post-S18 on-wire shape. The pre-S18
+ * raw-serialize envelope cannot carry any stamp this loader trusts — a
+ * blob in the legacy format misses wholesale (one-time self-healing
+ * invalidation), which the last test pins separately.
  */
 final class ClusterCacheVersionTest extends TestCase
 {
@@ -80,19 +87,24 @@ final class ClusterCacheVersionTest extends TestCase
     }
 
     /**
+     * Write the post-S18 on-wire shape: plain-text meta header lines,
+     * blank-line terminator, then the length-framed cluster payload
+     * (the same framing CacheBlob/AstCache use).
+     *
      * @param list<Block>  $blocks
      * @param list<Cluster> $clusters
      */
     private function forgePayload(string $parserVersion, string $configKey, array $blocks, array $clusters): void
     {
+        $payload = serialize(['clusters' => $clusters]);
         file_put_contents(
             $this->tmp . '/clusters.idx',
-            serialize([
-                'parser_version' => $parserVersion,
-                'config_key'     => $configKey,
-                'corpus_hash'    => $this->corpusHash($blocks),
-                'clusters'       => $clusters,
-            ]),
+            "PHPDUP-CCACHE1\n"
+            . 'parser_version:' . $parserVersion . "\n"
+            . 'config_key:'     . $configKey      . "\n"
+            . 'corpus_hash:'    . $this->corpusHash($blocks) . "\n"
+            . "\n"
+            . strlen($payload) . ':' . $payload,
         );
     }
 
@@ -164,12 +176,40 @@ final class ClusterCacheVersionTest extends TestCase
         $cache = new ClusterCache($this->tmp, 'cfg');
         $cache->save($blocks, [new Cluster('C1', $blocks, 1.0, true)]);
 
-        $payload = unserialize(
-            (string) file_get_contents($this->tmp . '/clusters.idx'),
-            ['allowed_classes' => \Phpdup\Persistence\SerializedClassAllowList::blockCacheClasses()],
-        );
-        $this->assertSame('cluster-cache-v4', $payload['parser_version'],
+        // shell-S18: the live version stamp rides the plain-text header,
+        // readable without touching the framed payload at all.
+        $prefix = (string) file_get_contents($this->tmp . '/clusters.idx', false, null, 0, 4096);
+        $this->assertStringStartsWith("PHPDUP-CCACHE1\n", $prefix);
+        $this->assertStringContainsString("parser_version:cluster-cache-v4\n", $prefix,
             'item 4.4 / phpver-fix re-pin: fresh snapshots must carry the v4 (id-free corpus) marker');
+    }
+
+    public function testPreS18RawFormatBlobMissesWholesale(): void
+    {
+        $blocks = [$this->block('a', 'h1')];
+        $cluster = new Cluster('Cfeedface', $blocks, 1.0, true);
+
+        // The exact pre-S18 envelope: raw serialize() of meta+clusters,
+        // stamped v4, keys matching. The format magic refuses it before
+        // any of that is consulted — one-time invalidation, then heal.
+        file_put_contents(
+            $this->tmp . '/clusters.idx',
+            serialize([
+                'parser_version' => 'cluster-cache-v4',
+                'config_key'     => 'cfg-current',
+                'corpus_hash'    => $this->corpusHash($blocks),
+                'clusters'       => [$cluster],
+            ]),
+        );
+
+        $cache = new ClusterCache($this->tmp, 'cfg-current');
+        $this->assertNull($cache->load($blocks),
+            'legacy raw-serialize blobs must clean-miss even when every field matches (no trusted meta to read)');
+
+        $cache->save($blocks, [$cluster]);
+        $loaded = (new ClusterCache($this->tmp, 'cfg-current'))->load($blocks);
+        $this->assertNotNull($loaded, 'legacy miss must be one-time: the rewrite heals the snapshot');
+        $this->assertSame('Cfeedface', $loaded[0]->id);
     }
 
     public function testRoundTripPreservesMedoidIdAcrossTheCacheBoundary(): void
