@@ -561,7 +561,7 @@ final class PatternRecognizer
      * MethodCall and FuncCall shapes land here — the two node kinds
      * share the Arg list type (output-042 consolidation).
      *
-     * @param array<Node\Arg|Node\VariadicPlaceholder> $args
+     * @param array<Node\Arg|Node\ArgPlaceholder|Node\VariadicPlaceholder> $args
      */
     private static function argsCarryUrl(array $args): bool
     {
