@@ -132,7 +132,7 @@ Full reference: [`docs/CLI.md`](docs/CLI.md)
 - [Programmatic use](docs/CLI.md#programmatic-use) — use the pipeline from PHP
 - [Examples](docs/CLI.md#examples) — threshold-gated, CRUD, optional segments, strategy dispatch
 - [Static analysis & validation](docs/CLI.md#static-analysis--config-validation) — PHPStan, Psalm, `--validate-config`
-- [Benchmarks](docs/CLI.md#benchmarks) — comparative suite, feature matrix, internal scaling
+- [Benchmarks](bench/README.md) — comparative harness, feature matrix, committed raw results (`bench/results/`)
 - [Architecture](docs/CLI.md#architecture) — module map
 - [Testing](docs/CLI.md#testing) — PHPUnit suites, coverage
 - [Performance](docs/CLI.md#performance) — complexity, caches

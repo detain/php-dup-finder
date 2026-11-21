@@ -1,0 +1,66 @@
+{
+    "corpus": "Fixtures",
+    "corpus_arg": "tests/Fixtures",
+    "corpus_php_files": 20,
+    "host": "myadmin1.interserver.net",
+    "php_version": "8.3.37",
+    "phpdup_sha": "6ac5809c9b51fca7e06a862f705553743dcb4a93",
+    "timeout_s": 120,
+    "fairness_notes": [
+        "phpdup runs --min-impact 0 --max-df 0.5 --no-cache --no-incremental: max-df 0.5 is 50x the production default (0.01, src/Cli/Config.php), so the candidate-pair volume timed here is NOT the production workload.",
+        "phpcpd runs --fuzzy --min-lines 5 --min-tokens 50; pmd-cpd runs cpd --minimum-tokens 50. Different tools under different floors count different workloads: wall times are per-tool work profiles, not a like-for-like race.",
+        "Single-shot samples: no repeats, no variance, whatever host load applies at run time. Treat as order-of-magnitude only.",
+        "Competitor counts are duplicate PAIRS from structured XML plus the transitive-closure family count (same normalization bench/run.php applies); phpdup emits pipeline clusters directly."
+    ],
+    "rows": [
+        {
+            "tool": "phpdup",
+            "status": "ok",
+            "error": null,
+            "wall_s": 0.967,
+            "peak_mb": 83.3,
+            "count": 18,
+            "unit": "pipeline clusters",
+            "extra": {
+                "member_groups": 18
+            },
+            "argv": [
+                "php",
+                "<repo>/bin/phpdup",
+                "analyze",
+                "tests/Fixtures",
+                "--json",
+                "<tmp>/phpdup-cmp-phpdup-1041036-61b17638",
+                "--plain",
+                "--min-impact",
+                "0",
+                "--max-df",
+                "0.5",
+                "--no-cache",
+                "--no-incremental"
+            ]
+        },
+        {
+            "tool": "phpcpd",
+            "status": "not installed",
+            "error": null,
+            "wall_s": null,
+            "peak_mb": null,
+            "count": null,
+            "unit": "n/a",
+            "extra": [],
+            "argv": null
+        },
+        {
+            "tool": "pmd-cpd",
+            "status": "not installed",
+            "error": null,
+            "wall_s": null,
+            "peak_mb": null,
+            "count": null,
+            "unit": "n/a",
+            "extra": [],
+            "argv": null
+        }
+    ]
+}

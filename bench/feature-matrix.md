@@ -2,8 +2,16 @@
 
 Hand-curated comparison of PHP duplicate-detection tools. The matrix
 is intentionally honest — phpdup is not the best tool in every cell.
-For raw wall-time and memory numbers see `bench/results/latest.md`;
-for detection-rate scoring see `bench/results/detection-rate.md`.
+
+**Numbers policy (once-S85):** every measured figure below cites a raw
+artifact committed under `bench/results/` (recording host/PHP/git sha
+inside the JSON; single-shot, see its fairness notes). Figures that no
+committed run backs are labelled *not measured* — never stated as
+numbers. For raw wall-time and memory data see
+`bench/results/s85-comparative-tests-fixtures.md` (+ `.json`);
+`bench/run-all.sh` regenerates working renderings at
+`bench/results/latest.md` / `detection-rate.md` (uncommitted unless
+labeled and force-committed with the claims they back).
 
 Tools evaluated:
 
@@ -55,7 +63,7 @@ N/A = not applicable.
 | Per-directory config overrides          | ✓ (.phpdup.json) | ✗ | ✗ | ✗ | ✗ |
 | Project profiles (Laravel, Symfony, …)  | ✓      | ✗      | ✗       | ✗     | ✗      |
 | Auto-tune by corpus size                | ✓      | ✗      | ✗       | ✗     | ✗      |
-| Memory footprint (small corpus)         | medium-low (~60 MB) | very low (~50 MB) | medium (JVM warmup) | medium-high (V8 heap) | medium |
+| Memory footprint (small corpus) | ~83 MB peak (measured, committed run above) | not measured (no committed run; binary absent on recording host) | medium (JVM warmup) | medium-high (V8 heap) | medium |
 | Memory footprint (multi-MLOC)           | medium (lazy AST + incremental) | low | high | high | medium |
 | PHP 8.x support                         | ✓ (8.1+) | partial (no PHP 8.2+ tokens beyond v6) | ✓ via Java | ✓ | partial |
 | Maintenance status                      | active | **archived 2023** | active | active | sporadic |
@@ -81,20 +89,34 @@ N/A = not applicable.
 - Live workflow. `--watch` + TUI is for the inner-loop developer who
   wants feedback as they refactor; nothing else covers this.
 - Honesty. phpdup ships a synthetic-fuzz ground-truth scorer
-  (`bench/score.php`) and publishes precision/recall — the others
-  publish neither.
+  (`bench/score.php`, family-granular and containment-aware) and an
+  audit-truth scorer (`bench/score-audit.php`) that separates
+  **line-evidence detections from file-level grazes** and gates
+  unverified truth tokens out of every denominator (once-106).
+  Comparative rows show `timeout` / `exit-N` / `not installed` as
+  themselves — never as a 0.00 measurement (once-107) — and every
+  published figure cites a raw JSON committed under `bench/results/`.
+  The other tools publish no such numbers at all.
 
 **Where phpdup loses:**
 
 - Pure speed for exact clones. phpcpd's tokenizer is dead simple
   and beats phpdup's AST + APTED pipeline on raw wall time when all
-  you want is "is anything copy-pasted verbatim?". On `tests/Fixtures`
-  phpcpd finishes in ~120 ms vs phpdup's ~380 ms — small absolute
-  numbers, but a real ratio. Use `phpdup --exact-only` to close most
-  of that gap.
-- Cold-start RSS for tiny inputs. phpcpd peaks ~50 MB; phpdup peaks
-  ~60–80 MB because it loads php-parser, Symfony Console, and the
-  whole pipeline scaffolding.
+  you want is "is anything copy-pasted verbatim?". Use
+  `phpdup --exact-only` to close most of that gap. (The previously
+  cited "phpcpd ~120 ms vs phpdup ~380 ms" figures were **removed as
+  phantom** — no committed run ever backed them and phpcpd is not
+  installed on the recording host. The only measured figure on record
+  is phpdup's own cold run: **0.97 s wall, 83.3 MB peak, 18 pipeline
+  clusters** on `tests/Fixtures` (20 PHP files) — see
+  `bench/results/s85-comparative-tests-fixtures.json`. A like-for-like
+  phpcpd column needs a `bench/run-all.sh` run with the phar fetched;
+  until such a raw JSON is committed, no phpcpd number belongs here.)
+- Cold-start RSS for tiny inputs. phpdup peaks ~83 MB because it loads
+  php-parser, Symfony Console, and the whole pipeline scaffolding
+  (measured: 83.3 MB on `tests/Fixtures`, committed run above). The
+  former "phpcpd peaks ~50 MB; phpdup peaks ~60–80 MB" row was phantom
+  and is dropped; measure phpcpd via a committed run before restating.
 - Mature IDE integration. PMD has a JetBrains plugin going back over
   a decade; phpdup has none yet. If your team already lives inside
   PhpStorm's PMD inspections, that's a real lock-in.
