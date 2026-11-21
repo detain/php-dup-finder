@@ -228,6 +228,7 @@ final class MicroFixtureAuditTest extends TestCase
             exclude: Config::defaults([])->exclude,
             maxDocumentFrequency: 0.9,
             minClusterImpact: 1,
+            workers: 1,
             lazyAst: false,
         );
         $state = new PipelineState($config);
