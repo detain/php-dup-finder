@@ -88,7 +88,27 @@ final class CliReporterHonestyTest extends TestCase
         (new CliReporter(CliReporter::VERBOSITY_SUMMARY_ONLY))
             ->render($this->report($cluster, $config), $out);
 
-        $this->assertStringNotContainsString('no node at the hole path', $out->fetch());
+        $rendered = $out->fetch();
+        $this->assertStringNotContainsString('no node at the hole path', $rendered);
+        $this->assertStringNotContainsString('placement:', $rendered);
+    }
+
+    public function testPlacementAdviceRendersInFullDetailOnly(): void
+    {
+        $cluster = $this->pairCluster();
+
+        // FULL path (default constructor): the advisor line names the shape.
+        $rendered = $this->render($cluster, 1.0);
+        $this->assertStringContainsString('placement: parameterized_function', $rendered);
+        // Single scan root, no cross-repo evidence → no fabricated bracket.
+        $this->assertStringNotContainsString('[shared host:', $rendered);
+
+        // CLUSTERS one-liner mode must stay terse — no advice prose.
+        $config = new Config(paths: [$this->tmp], exclude: [], maxHoleCoverage: 1.0);
+        $out = new BufferedOutput(OutputInterface::VERBOSITY_NORMAL, decorated: false);
+        (new CliReporter(CliReporter::VERBOSITY_CLUSTERS))
+            ->render($this->report($cluster, $config), $out);
+        $this->assertStringNotContainsString('placement:', $out->fetch());
     }
 
     // ── fixtures ────────────────────────────────────────────────────────────

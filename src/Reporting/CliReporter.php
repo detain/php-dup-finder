@@ -7,6 +7,7 @@ use Phpdup\Clustering\Cluster;
 use Phpdup\Cli\Config;
 use Phpdup\Refactor\Hole;
 use Phpdup\Refactor\HoleCoverage;
+use Phpdup\Refactor\PlacementAdvisor;
 use Phpdup\Util\CountPhrase;
 use SugarCraft\Core\Util\Color;
 use SugarCraft\Cli\Banner;
@@ -47,6 +48,8 @@ final class CliReporter
         $theme = $decorated ? Theme::ansi() : Theme::plain();
         $width = self::terminalWidth();
         $clusters = $report->clusters;
+        // One advisor per render so composer manifests are read once (item 5.3).
+        $advisor = new PlacementAdvisor($report->config->paths);
 
         $out->writeln('');
         $out->writeln(Banner::title('phpdup', sprintf(
@@ -97,7 +100,7 @@ final class CliReporter
         }
 
         for ($i = 0; $i < $shown; $i++) {
-            $this->renderCluster($i + 1, $clusters[$i], $report->config, $theme, $width, $decorated, $out);
+            $this->renderCluster($i + 1, $clusters[$i], $report->config, $advisor, $theme, $width, $decorated, $out);
         }
 
         $this->renderTrailer($report, $clusters, $theme, $out);
@@ -183,7 +186,7 @@ final class CliReporter
         $out->writeln($table->render());
     }
 
-    private function renderCluster(int $num, Cluster $c, Config $config, Theme $theme, int $width, bool $decorated, OutputInterface $out): void
+    private function renderCluster(int $num, Cluster $c, Config $config, PlacementAdvisor $advisor, Theme $theme, int $width, bool $decorated, OutputInterface $out): void
     {
         $out->writeln('');
         $headLabel = sprintf(
@@ -261,6 +264,16 @@ final class CliReporter
                 ));
             }
         }
+
+        // Item 5.3: placement advice — where the extraction belongs, said
+        // even for zero-hole clusters (a verbatim 'move' still needs a host).
+        $placement = $advisor->advise($c);
+        $whereLine = sprintf('placement: %s — %s', $placement['shape'], $placement['rationale']);
+        if ($placement['host_packages'] !== null && $placement['host_packages'] !== []) {
+            $whereLine .= ' [shared host: ' . implode(', ', $placement['host_packages']) . ']';
+        }
+        $out->writeln('');
+        $out->writeln('  ' . ($decorated ? $theme->muted->render($whereLine) : $whereLine));
 
         if ($c->patternTags) {
             $out->writeln('');

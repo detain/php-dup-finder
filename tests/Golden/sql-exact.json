@@ -1,6 +1,6 @@
 {
     "phpdup_version": "0.1.0",
-    "schema_version": "1.5",
+    "schema_version": "1.6",
     "summary": {
         "files": 1,
         "blocks": 3,
@@ -113,7 +113,14 @@
             },
             "hole_coverage": 0.029,
             "re_expressed": false,
-            "hole_fragment": null
+            "hole_fragment": null,
+            "placement": {
+                "shape": "data_table",
+                "rationale": "Every hole is a literal (3 distinct observed values) \u2014 the pair differs by data, not control flow; a lookup table plus one driver function replaces the cluster. Shared namespace root: Fixtures\\Sql.",
+                "same_host": false,
+                "lca_namespace": "Fixtures\\Sql",
+                "host_packages": null
+            }
         }
     ],
     "declared_twins": []

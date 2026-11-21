@@ -44,10 +44,10 @@ final class JsonReporterEvidenceTest extends TestCase
         $keys    = array_keys($payload['clusters'][0]);
 
         // Everything through `scope` must keep its exact 1.4 position, and
-        // the six 1.5 keys append after it.
+        // the six 1.5 keys plus the 1.6 `placement` key append after it.
         $this->assertSame('scope', $keys[14], '1.4 shape occupies indices 0..14');
         $this->assertSame(
-            ['template', 'source', 'evidence_diff', 'hole_coverage', 're_expressed', 'hole_fragment'],
+            ['template', 'source', 'evidence_diff', 'hole_coverage', 're_expressed', 'hole_fragment', 'placement'],
             array_slice($keys, 15),
         );
         $this->assertSame(JsonSchemaSpec::SCHEMA_VERSION, $payload['schema_version']);

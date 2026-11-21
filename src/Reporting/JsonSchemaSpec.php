@@ -23,6 +23,17 @@ namespace Phpdup\Reporting;
 final class JsonSchemaSpec
 {
     /**
+     * 1.6 (minor, additive): item 5.3 placement advice. Every cluster gains
+     * one TRAILING key `placement` — {shape, rationale, same_host,
+     * lca_namespace, host_packages} classifying where the extraction should
+     * live ('move' | 'expression_function' | 'data_table' |
+     * 'defaulted_function' | 'parameterized_function'). host_packages is a
+     * sorted package-name list only when members span >=2 scan roots with
+     * parseable composer manifests; otherwise null with the reason folded
+     * into `rationale` (conservative mode — no canonical-usage probe
+     * exists, so placement answers host topology, never call dominance).
+     * All 1.5 fields keep name, type and position.
+     *
      * 1.5 (minor, additive): item 5.4 extraction-quality evidence. Every
      * cluster grows six TRAILING keys — `template` (canonical template
      * identity: the medoid when recorded, else members[0]), `source`
@@ -64,7 +75,7 @@ final class JsonSchemaSpec
      * files_without_blocks). Every 1.1 field keeps its name and type, so
      * 1.1 consumers parse 1.2 payloads untouched.
      */
-    public const SCHEMA_VERSION = '1.5';
+    public const SCHEMA_VERSION = '1.6';
 
     /**
      * Top-level shape of {@see JsonReporter::build()} output. This is
@@ -182,6 +193,7 @@ final class JsonSchemaSpec
             'hole_coverage'          => 'float|null  // 0..1 fraction of template AST inside hole subtrees — trailing (1.5)',
             're_expressed'           => 'bool  // hole_coverage > config max_hole_coverage (default 1.0: never) — trailing (1.5)',
             'hole_fragment'          => "?object  // {stmt_start,stmt_length,code,truncated} longest hole-free stmt run, set only when re_expressed — trailing (1.5)",
+            'placement'              => 'object  // {shape,rationale,same_host,lca_namespace,host_packages} — item 5.3, trailing (1.6); see placementShape()',
         ];
     }
 
@@ -206,6 +218,27 @@ final class JsonSchemaSpec
             'value_count'        => 'int',
             'degraded'           => 'bool  // trailing (1.5)',
             'present_in_members' => 'list<int>  // optional_block only',
+        ];
+    }
+
+    /**
+     * Item 5.3 — the placement sub-object every cluster carries since 1.6.
+     * shape is one of: 'move' | 'expression_function' | 'data_table' |
+     * 'defaulted_function' | 'parameterized_function'. host_packages is a
+     * sorted list only when members span >=2 scan roots with readable
+     * composer manifests; null means conservative mode (reason folded
+     * into rationale).
+     *
+     * @return array<string,string> field-name = doc
+     */
+    public static function placementShape(): array
+    {
+        return [
+            'shape'         => "string  // 'move'|'expression_function'|'data_table'|'defaulted_function'|'parameterized_function'",
+            'rationale'     => 'string  // sentences; folds in any host-package degradation reason',
+            'same_host'     => 'bool  // all members share one namespaced class',
+            'lca_namespace' => "string  // longest common namespace prefix, '' when none",
+            'host_packages' => 'list<string>|null  // sorted require∪require-dev intersection across >=2 roots; null = conservative mode',
         ];
     }
 }

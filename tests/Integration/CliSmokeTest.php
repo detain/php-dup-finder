@@ -289,7 +289,7 @@ final class CliSmokeTest extends TestCase
         $this->assertSame(0, $run['exit'], $run['combined']);
 
         $decoded = json_decode((string) file_get_contents($this->tmp . '/r.json'), true);
-        $this->assertSame('1.5', $decoded['schema_version']);
+        $this->assertSame('1.6', $decoded['schema_version']);
         $this->assertSame(JsonSchemaSpec::SCHEMA_VERSION, $decoded['schema_version']);
         $this->assertSame(array_keys(JsonSchemaSpec::summaryShape()), array_keys($decoded['summary']));
         // Item 4.3: `declared_twins` is the trailing top-level key and
@@ -752,7 +752,7 @@ final class CliSmokeTest extends TestCase
 
         $decoded = json_decode((string) file_get_contents($this->tmp . '/r.json'), true);
         $s = $decoded['summary'];
-        $this->assertSame('1.5', $decoded['schema_version']);
+        $this->assertSame('1.6', $decoded['schema_version']);
         $this->assertSame(20, $s['files_scanned']);
         $this->assertSame(0, $s['parse_errors'], 'the fixture corpus must parse cleanly');
         $this->assertSame(15, $s['clusters'], 'planted fixture clones must keep being found (re-pin only WITH fixture changes)');

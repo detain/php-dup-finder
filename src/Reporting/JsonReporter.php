@@ -8,6 +8,7 @@ use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
 use Phpdup\Refactor\Hole;
 use Phpdup\Refactor\HoleCoverage;
+use Phpdup\Refactor\PlacementAdvisor;
 use Phpdup\Util\Num;
 use PhpParser\Node;
 use PhpParser\PrettyPrinter\Standard as PrettyPrinter;
@@ -46,6 +47,7 @@ final class JsonReporter
     /** @return array<string, mixed> */
     public function build(Report $report): array
     {
+        $advisor = new PlacementAdvisor($report->config->paths);
         return [
             'phpdup_version' => '0.1.0',
             'schema_version' => JsonSchemaSpec::SCHEMA_VERSION,
@@ -78,7 +80,10 @@ final class JsonReporter
                 'tree_threshold'       => Num::json($report->config->treeThreshold),
                 'min_cluster_impact'   => $report->config->minClusterImpact,
             ],
-            'clusters' => array_map(fn(Cluster $c) => $this->clusterPayload($c, $report->config), $report->clusters),
+            // Item 5.3: one advisor per build() so composer manifests are
+            // read once per run; it evaluates post-RefactorStage state
+            // (holes + labels) only — never reloads unloaded member ASTs.
+            'clusters' => array_map(fn(Cluster $c) => $this->clusterPayload($c, $report->config, $advisor), $report->clusters),
             // Item 4.3: the declared-twin claim-vs-reality table —
             // trailing-additive key, schema '1.2' → '1.3'. Producers
             // without the analyzer pass emit [] (the key is always
@@ -88,7 +93,7 @@ final class JsonReporter
     }
 
     /** @return array<string, mixed> */
-    private function clusterPayload(Cluster $c, Config $config): array
+    private function clusterPayload(Cluster $c, Config $config, PlacementAdvisor $advisor): array
     {
         // One coverage measurement per cluster, reused by the three keys
         // that depend on it (item 5.4 walking an AST twice would only
@@ -179,6 +184,9 @@ final class JsonReporter
             'hole_coverage' => $coverage === null ? null : Num::json($coverage),
             're_expressed'  => $reExpressed,
             'hole_fragment' => $reExpressed ? $this->fragmentPayload($c) : null,
+            // Item 5.3: trailing-additive placement advice — where the
+            // extraction should live, classified from holes + labels only.
+            'placement'     => $advisor->advise($c),
         ];
     }
 
