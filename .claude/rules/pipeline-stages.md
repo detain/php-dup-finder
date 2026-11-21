@@ -12,3 +12,4 @@ paths:
 - Notify progress via `$this->listener->onXxx(...)` (see `src/Pipeline/ProgressListener.php`); accept `?ProgressListener` in the constructor and fall back to `NullProgressListener` when null.
 - Append the stage in `src/Cli/Command.php::execute()`'s `$buildPipeline` closure in canonical order: Scanning → Preprocessing → Clustering → Refactoring → Reporting. Update `Stage` enum if introducing a new phase.
 - Track per-stage timing as `$state->timings['<short>'] = microtime(true) - $t0;`.
+- File accounting must balance: `$state->reusedFiles + $state->processedFiles + $state->skippedFiles + $state->parseErrors` equals the scanned file count — `PreprocessStage` puts every fresh file in exactly one bucket, and `ReportStage` short-circuits only when `$state->files === []`.
