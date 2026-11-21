@@ -26,6 +26,14 @@ consume, so you don't have to roll your own report parsing.
 job (PHPStan + Psalm) on 8.3. The 8.1/8.2 legs were dropped: every required
 `sugarcraft/*` package (and phpdup itself) declares `"php": "^8.3"`, so
 `composer install` cannot resolve below 8.3 — those legs could never pass.
+The 8.5 leg needs a dev-resolvable toolchain: Psalm is pinned `6.20.9`, whose
+`require.php` includes `~8.5.0` (the previous `6.0.0` pin capped at `~8.4.0`
+and blocked the whole 8.5 install), and PHPStan's `^2.1` resolves to ≥ 2.1.32,
+the first release with full PHP 8.5 support. Golden snapshots regenerate with
+`serialize_precision=-1` pinned in `phpunit.xml` and whole-number score fields
+emitted as JSON ints (`Num::json`), so snapshot bytes are box- and
+version-independent; finding ids hash member paths relative to the configured
+scan roots, so the same cluster mints the same id on any machine.
 
 A maintained composite action lives at `.github/actions/phpdup/action.yml` in
 this repo. From your workflow:

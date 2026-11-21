@@ -52,11 +52,13 @@ jobs:
 
       - name: Run test suite
         if: ${{ ! matrix.primary }}
-        run: vendor/bin/phpunit
+        # --display-deprecations: the 8.4 legs reported 2 deprecations with
+        # only position markers ('DD' ~#744/745); naming them needs the text.
+        run: vendor/bin/phpunit --display-deprecations
 
       - name: Run test suite with coverage
         if: ${{ matrix.primary }}
-        run: vendor/bin/phpunit --coverage-clover coverage.xml --coverage-text
+        run: vendor/bin/phpunit --display-deprecations --coverage-clover coverage.xml --coverage-text
 
       - name: Smoke-test CLI on fixtures (accounting contract)
         # Genuinely strict (0.4): exit code alone was false confidence —
