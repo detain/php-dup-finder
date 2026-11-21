@@ -153,6 +153,37 @@ final class ApplyExtractorTest extends TestCase
         unlink($tmpFile);
     }
 
+    public function testBodyVariableProjectionIsTheDeclaredParameterNotAVariableVariable(): void
+    {
+        // r2 N-1 family: suggestedName carries the display sigil
+        // ('$threshold'). Fed raw into Variable() it printed `$$threshold`
+        // — legal syntax that silently addressed a variable-variable instead
+        // of the extracted function's own parameter.
+        $parser = new AstParser();
+        $stmts  = $parser->parseCode('<?php function test($threshold) { if ($threshold > 0) { return 1; } }');
+        $func   = $stmts[0];
+        $this->assertInstanceOf(Node\Stmt\Function_::class, $func);
+
+        $hole = new \Phpdup\Refactor\Hole('__P0', 'identifier', ['$a', '$b']);
+        $hole->suggestedName = '$threshold';
+
+        $ext  = new ApplyExtractor();
+        $refl = new \ReflectionMethod($ext, 'setNodeAtPath');
+        $refl->setAccessible(true);
+        $refl->invoke(
+            $ext,
+            $func,
+            ['stmts', 0, 'cond', 'left'],
+            new Variable(\Phpdup\Refactor\CodeParam::bareName($hole->suggestedName, $hole->placeholder))
+        );
+
+        $printer = new \PhpParser\PrettyPrinter\Standard();
+        $code    = $printer->prettyPrint([$func]);
+        $this->assertStringNotContainsString('$$', $code, 'no variable-variables in generated bodies');
+        $this->assertStringContainsString('function test($threshold)', $code);
+        $this->assertStringContainsString('$threshold > 0', $code, 'body addresses the declared parameter');
+    }
+
     public function testSetNodeAtPathReplacesDeepNestedNode(): void
     {
         $parser = new AstParser();

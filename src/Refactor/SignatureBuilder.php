@@ -36,55 +36,23 @@ final class SignatureBuilder
         $required = [];
         $optional = [];
         foreach ($cluster->holes as $hole) {
-            $type = $this->displayType($hole->inferredType);
+            $type = CodeParam::typeText($hole->inferredType);
+            // Code-domain projection of the display name (CodeParam owns the
+            // '$'-boundary; byte-identical for the sigil-carrying names the
+            // synthesizer actually mints, so signatures stay stable).
+            $var = CodeParam::varName($hole->suggestedName, $hole->placeholder);
             if ($hole->kind === 'optional_block') {
                 // Optional segment → default-false bool. PHP requires defaulted
                 // params at the end of the parameter list, so collect them
                 // separately and append after the required ones.
-                $optional[] = sprintf('    bool %s = false,', $hole->suggestedName);
+                $optional[] = sprintf('    bool %s = false,', $var);
             } else {
-                $required[] = sprintf('    %s%s,', $type ? $type . ' ' : '', $hole->suggestedName);
+                $required[] = sprintf('    %s%s,', $type ? $type . ' ' : '', $var);
             }
         }
         $params = array_merge($required, $optional);
         $body = $params ? "\n" . implode("\n", $params) . "\n" : '';
         $cluster->signature = "function {$name}({$body}): mixed";
-    }
-
-    private function displayType(string $t): string
-    {
-        if ($t === 'class-string') {
-            return 'string';
-        }
-
-        if ($t === 'null') {
-            return 'mixed';
-        }
-
-        $parts = explode('|', $t);
-
-        $hasNull = in_array('null', $parts, true);
-        $nonNullParts = array_values(array_diff($parts, ['null']));
-
-        foreach ($nonNullParts as $i => $part) {
-            if ($part === 'class-string') {
-                $nonNullParts[$i] = 'string';
-            }
-        }
-
-        if ($hasNull && count($nonNullParts) === 1) {
-            return '?' . $nonNullParts[0];
-        }
-
-        if ($hasNull) {
-            return 'mixed';
-        }
-
-        if ($nonNullParts !== $parts) {
-            return implode('|', $nonNullParts);
-        }
-
-        return $t;
     }
 
     private function suggestFunctionName(Cluster $cluster): string

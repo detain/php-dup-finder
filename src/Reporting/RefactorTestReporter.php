@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Phpdup\Reporting;
 
 use Phpdup\Clustering\Cluster;
+use Phpdup\Refactor\CodeParam;
 use Phpdup\Refactor\Hole;
 
 /**
@@ -14,6 +15,10 @@ use Phpdup\Refactor\Hole;
  * test bodies are intentionally `markTestIncomplete()` placeholders
  * — a human still needs to fill in the expected behaviour, but the
  * scaffolding (provider rows + signature + naming) is done.
+ *
+ * The parameter header is CODE, so it projects Hole display fields
+ * through CodeParam (sigil passthrough + code-safe types) instead of
+ * re-prepending `$` — review r2 N-1 cured the 128/159 `$$arg` skeletons.
  */
 final class RefactorTestReporter
 {
@@ -95,10 +100,14 @@ PHP;
             return '';
         }
         $params = [];
+        $used = [];
         foreach ($holes as $h) {
-            $name = $h->suggestedName !== '' ? $h->suggestedName : $h->placeholder;
-            $type = $h->inferredType !== '' ? $h->inferredType : 'mixed';
-            $params[] = "{$type} \${$name}";
+            $name = CodeParam::uniqueWithin(
+                CodeParam::varName($h->suggestedName, $h->placeholder),
+                $used
+            );
+            $type = CodeParam::typeText($h->inferredType) ?: 'mixed';
+            $params[] = "{$type} {$name}";
         }
         return implode(', ', $params);
     }

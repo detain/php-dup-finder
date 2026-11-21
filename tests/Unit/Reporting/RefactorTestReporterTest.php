@@ -188,6 +188,99 @@ final class RefactorTestReporterTest extends TestCase
         $this->assertStringNotContainsString('<missing>', $skeleton);
     }
 
+    // ── r2 N-1: the header is CODE — ugly display fields must project sanely ──
+
+    public function testSigilCarryingSuggestedNamesRenderSingleDollarHeaders(): void
+    {
+        $cluster = $this->clusterWithThreeHoles();
+        // Exactly what ParameterSynthesizer actually mints in production:
+        // names WITH the sigil and PHPDoc spellings for the type.
+        $cluster->holes[0]->suggestedName = '$threshold';
+        $cluster->holes[0]->inferredType  = 'int';
+        $cluster->holes[1]->suggestedName = '$arg';
+        $cluster->holes[1]->inferredType  = 'class-string';
+        $cluster->holes[2]->suggestedName = '$value';
+        $cluster->holes[2]->inferredType  = 'callable|string';
+
+        $skeleton = (new RefactorTestReporter())->buildTest($cluster);
+
+        $this->assertStringContainsString(
+            'int $threshold, string $arg, callable|string $value',
+            $skeleton,
+            'sigil passthrough + code-safe type mapping',
+        );
+        $this->assertStringNotContainsString('$$', $skeleton);
+        $this->assertStringNotContainsString('class-string $', $skeleton);
+        $this->assertLintClean($skeleton);
+    }
+
+    public function testCleanNameHeaderBytesAreUnchangedFromLegacyFormat(): void
+    {
+        $cluster = $this->clusterWithThreeHoles();
+        $cluster->holes[0]->suggestedName = '$threshold';
+        $cluster->holes[0]->inferredType  = 'int';
+        $cluster->holes[1]->suggestedName = '$value';
+        $cluster->holes[1]->inferredType  = 'string';
+
+        $skeleton = (new RefactorTestReporter())->buildTest($cluster);
+        // The pre-fix render for ALREADY-VALID inputs was "{$type} \${$name}";
+        // the projector must reproduce it byte-for-byte.
+        $this->assertMatchesRegularExpression(
+            '/public function testAbstractionMatchesEachMember\(int \$threshold, string \$value, mixed \$__P2\): void/',
+            $skeleton,
+        );
+    }
+
+    public function testThisBindingFallsBackToPlaceholderAndStaysLintClean(): void
+    {
+        $cluster = $this->clusterWithThreeHoles();
+        $cluster->holes[0]->suggestedName = '$this'; // PHP's one forbidden binding
+
+        $skeleton = (new RefactorTestReporter())->buildTest($cluster);
+        $this->assertStringNotContainsString('$this,', $skeleton);
+        $this->assertStringContainsString('mixed $__P0', $skeleton);
+        $this->assertLintClean($skeleton);
+    }
+
+    public function testPlainClassVariableNameIsLegalAndStaysUntouched(): void
+    {
+        // Measured truth, not folklore: the corpus deaths at token "class"
+        // came from the TYPE class-string, never from a variable called
+        // $class — that is a perfectly legal PHP parameter binding.
+        $cluster = $this->clusterWithThreeHoles();
+        $cluster->holes[0]->suggestedName = '$class';
+        $cluster->holes[0]->inferredType  = 'object';
+
+        $skeleton = (new RefactorTestReporter())->buildTest($cluster);
+        $this->assertStringContainsString('object $class', $skeleton);
+        $this->assertLintClean($skeleton);
+    }
+
+    public function testSanitizerCollisionsGetDeterministicPositionalSuffixes(): void
+    {
+        $cluster = $this->clusterWithThreeHoles();
+        $cluster->holes[0]->suggestedName = '$foo.bar';
+        $cluster->holes[1]->suggestedName = '$foo-bar'; // both sanitize to foo_bar
+
+        $skeleton = (new RefactorTestReporter())->buildTest($cluster);
+        $this->assertStringContainsString('mixed $foo_bar, mixed $foo_bar_2', $skeleton);
+        $this->assertLintClean($skeleton);
+    }
+
+    private function assertLintClean(string $skeleton): void
+    {
+        $tmpFile = sys_get_temp_dir() . '/phpdup_r2pin_' . uniqid() . '.php';
+        try {
+            file_put_contents($tmpFile, $skeleton);
+            $result = shell_exec('php -l ' . escapeshellarg($tmpFile) . ' 2>&1');
+            $this->assertStringContainsString('No syntax errors', $result ?? '', 'skeleton must parse');
+        } finally {
+            @unlink($tmpFile);
+        }
+    }
+
+    // ── fixtures ────────────────────────────────────────────────────────────
+
     private function clusterWithThreeHoles(): Cluster
     {
         $blocks = [$this->blk('test1.php'), $this->blk('test2.php')];

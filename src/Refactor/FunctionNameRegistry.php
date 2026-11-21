@@ -36,6 +36,11 @@ use Phpdup\Clustering\Cluster;
  * MUST NOT be made static or cached across cycles: Watch and Server re-run
  * the pipeline in the same process, and cross-run claims would smuggle
  * another cycle's ordering into this payload's names.
+ *
+ * Known gap (review n-2, disclosed not wired): the `phpdup serve` JSON
+ * path builds its payload without running ReportStage, so Server responses
+ * carry neither this name resolution nor the 5.3 placement advice. Wiring
+ * the server plumbing is a separate work item (see wave-5 HANDOFF).
  */
 final class FunctionNameRegistry
 {

@@ -102,7 +102,7 @@ final class ApplyExtractor
         // For each hole path, navigate to that position in the cloned AST and replace.
         foreach ($pathKeyToHole as $pathKey => $hole) {
             $path = $cluster->holePaths[$hole->placeholder];
-            $this->setNodeAtPath($root, $path, new Node\Expr\Variable($hole->suggestedName));
+            $this->setNodeAtPath($root, $path, new Node\Expr\Variable(CodeParam::bareName($hole->suggestedName, $hole->placeholder)));
         }
 
         return $root;
@@ -435,8 +435,9 @@ final class ApplyExtractor
                 // Optional blocks become a literal false (default value).
                 $args[] = new Node\Arg(new Node\Scalar\LNumber(0));
             } else {
-                // Use the suggested name as a variable.
-                $args[] = new Node\Arg(new Node\Expr\Variable($hole->suggestedName));
+                // Code-domain name (declaration, body rewrites and these
+                // call-site args must agree — CodeParam owns the '$'-boundary).
+                $args[] = new Node\Arg(new Node\Expr\Variable(CodeParam::bareName($hole->suggestedName, $hole->placeholder)));
             }
         }
 

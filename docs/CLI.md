@@ -78,6 +78,8 @@ for the full JSON-Schema-compatible spec.
 | `--sort KEY[:asc\|desc]`                   | `impact:desc` | Cluster sort. Keys: `impact`, `members`, `block-size`, `lines`, `similarity`, `confidence`, `name`, `file`, `id`. Aliases: `size`/`count` → `members`. Direction may also be given as a leading `-` (desc) or `+` (asc), e.g. `-members`, `+lines`. |
 | `--stats`                                  | off     | Print pipeline stage timings, block-kind histogram, and worker info after the report.  |
 
+Naming posture for the generated-code surfaces (`--apply`, `--refactor-patch`, `--refactor-tests`): the first cluster to claim a function name keeps it verbatim — including ungainly-but-legal names such as `__construct` — and later collisions gain a suffix derived from their content cluster id.
+
 ### What the file counters mean
 
 `analyze` buckets **every scanned file into exactly one** category. The
