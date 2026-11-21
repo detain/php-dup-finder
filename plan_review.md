@@ -50,985 +50,11 @@ Read **only** this section plus `plan_review.queue.tsv`. Step details exist sole
 
 ## Step catalogue
 
-Order below = queue order (shortest-first ready schedule, prerequisites never violated). Ranks match `plan_review.queue.tsv` rows 1:1. Order re-derived by Kahn (est_min, id) min-heap at Phase-5 round 1.
-
-### output-S10 — ArchitecturalAnalyzer: delete phantom registry {@see}
-
-- **Queue rank:** 1 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~5 min)
-- **Covers:** php-dup-finder-output-062
-- **Prereqs:** none
-
-- Covers: 062
-- Files: `src/Architecture/ArchitecturalAnalyzer.php`
-- Size: MM (5 min)
-- Prereqs: none.
-- Acceptance: `grep -n "ArchitecturalAnalyzerRegistry" src/` → zero; docblock matches CLAUDE.md recipe (ReportStage::run() array); GATE.
-
-### output-S04 — GitLab SAST timestamp: RFC3339 Z
-
-- **Queue rank:** 2 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~10 min)
-- **Covers:** php-dup-finder-output-049
-- **Prereqs:** none
-
-- Covers: 049
-- Files: `src/Reporting/GitLabSastReporter.php`, `tests/Unit/Reporting/GitLabSastReporterTest.php`
-- Size: MM (10 min)
-- Prereqs: none. Conflicts: file also in S02/S03 (adjacent lines; serial note only).
-- Acceptance: `--filter GitLabSastReporterTest` — updated pin asserts `dateLastModified` matches `/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/`; GATE.
-
-### shell-S38 — Phpdup facade: empty-paths guard
-
-- **Queue rank:** 3 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~10 min)
-- **Covers:** php-dup-finder-shell-044
-- **Prereqs:** none
-
-**Files:** src/Phpdup.php, tests/Unit/PhpdupTest.php
-**Shared resources:** published-library surface (behavior change for programmatic users — throwing on empty vs silent empty report; disclose in report; docs/CLI.md NOT affected since this is the lib path — but docs/adr or README lib example? check at lane time, report-only).
-**Acceptance:**
-- Unit: `(new Phpdup())->paths([])->run()` and `(new Phpdup())->run()` → InvalidArgumentException with actionable message; `paths(['src'])` happy path unchanged; CLI exit 2 path (Command.php:196-202) untouched and green.
-
-### output-S08 — BenchmarkResultsRenderer: markdown cell escape
-
-- **Queue rank:** 4 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~15 min)
-- **Covers:** php-dup-finder-output-057
-- **Prereqs:** none
-
-- Covers: 057
-- Files: `src/Testing/BenchmarkResultsRenderer.php`, `tests/Unit/Bench/BenchmarkResultsRendererTest.php`
-- Size: MM (15 min)
-- Prereqs: none.
-- Acceptance: `--filter BenchmarkResultsRenderer` — name containing `|` renders `\|` and table column count holds; GATE.
-
-### shell-S29 — DebugLogger destructor: safe-close
-
-- **Queue rank:** 5 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~15 min)
-- **Covers:** php-dup-finder-shell-020
-- **Prereqs:** none
-
-**Files:** src/Pipeline/DebugLogger.php, tests/Unit/Pipeline/DebugLoggerTest.php (new — no current file)
-**Shared resources:** none.
-**Acceptance:**
-- Probe: `bin/phpdup analyze src --debug-log=/proc/definitely-not-writable/x.log` → run completes, exit 0 with findings (was: exit 255 at shutdown), warning surfaced; unit: destructor with `handle===false` does not fatal (is_resource guard + handle=nullafter close state machine).
-
-### once-S69 — --debug-log unwritable path closed
-
-- **Queue rank:** 6 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~10 min)
-- **Covers:** php-dup-finder-once-079
-- **Prereqs:** shell-S29 (safe-close core)
-
-**Files:** src/Pipeline/DebugLogger.php, tests/Unit/Pipeline/PipelineTest.php
-**Acceptance:** probe: --debug-log /nonexistent/x.log → one clear error line, no fopen warning spam, exit 2 (usage posture per shell ruling) and NO post-report TypeError 255; destructor close guarded (shell-S29 verify census).
-
-### engine-S35 — MemoryDebug labels emalloc bytes as "RSS" (mixed metrics)
-
-- **Queue rank:** 7 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~20 min)
-- **Covers:** php-dup-finder-engine-045
-- **Prereqs:** none
-
-- **Files:** `src/Util/MemoryDebug.php:8-16`, grep consumers (Clusterer :214/220/245/290, Tui,
-  Command --stats) for label-format assertions in tests (`tests/Unit/Cli/CliStatsTest` or wherever
-  stats strings are pinned — update pins).
-- **Shared resources:** --stats output text (TUI panel line + docs/media GIF prose unchanged —
-  report-only if docs quote the exact label).
-- **Acceptance:** debug line uses `emalloc=` / `peak_alloc=` (or both true-RSS consistently — pick
-  per finding, one metric per label, disclose); any test matching the old "RSS" token updated;
-  `bin/phpdup analyze src --stats` eyeball + full green.
-
-### output-S06 — PlacementAdvisor: single-file scan roots; dead import
-
-- **Queue rank:** 8 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~20 min)
-- **Covers:** php-dup-finder-output-051
-- **Prereqs:** none
-
-- Covers: 051
-- Files: `src/Refactor/PlacementAdvisor.php`, `tests/Unit/Refactor/PlacementAdvisorTest.php`
-- Size: MM (20 min)
-- Prereqs: none. Conflicts: file also in S19 (charset gate).
-- Acceptance: `--filter PlacementAdvisorTest` — regression case: root == file itself yields no "does not resolve under any configured scan root" note; `grep -n "use Phpdup.Cli.Config" src/Refactor/PlacementAdvisor.php` gone (or load-bearing docblock rewritten); GATE.
-
-### output-S11 — pickBestSeed docblock truth + is_finite threshold guards
-
-- **Queue rank:** 9 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~25 min)
-- **Covers:** php-dup-finder-output-056
-- **Prereqs:** none
-
-- Covers: 056
-- Files: `src/Refactor/AntiUnifier.php` (docblock :158-161 only), `src/Reporting/CoherenceAnalyzer.php` (:31), `src/Reporting/Ranker.php`, `src/Cli/Config.php` (range checks → `!is_finite()`), tests: `tests/Unit/Reporting/CoherenceAnalyzerTest.php`, `tests/Unit/Cli/ConfigTest.php` (or existing config-validation suite)
-- Size: MM (25 min)
-- Prereqs: none — but the AntiUnifier docblock edit must re-check position after S25/S26/S30 (serial lock note).
-- Conflicts: Config.php is shell/shared (six-edit-site rule NOT triggered — no new keys, only tightening validation of existing range fields).
-- Acceptance: `--filter ConfigTest` NAN/NAN-inf rejected with descriptive error (exit 2 path observable via `bin/phpdup analyze --config` with `{"similarity_threshold": NaN}` → invalid, per exit contract); CoherenceAnalyzer test passes; docblock no longer promises unimplemented margin; GATE.
-
-
-- **Phase-4 Outside merge:** shell's (output) row — Ranker.php:42-43 minSafety range re-throw duplicates the CLI-side admission contract; drop the crash leg here (shell-S24 removes its surface).
-
-### engine-S27 — AstParser::parseFile silently nulls on unreadable files (no $lastError)
-
-- **Queue rank:** 10 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~30 min)
-- **Covers:** php-dup-finder-engine-026
-- **Prereqs:** none
-
-- **Files:** `src/Parsing/AstParser.php:29-36`, `tests/Unit/Parsing/AstParserTest.php` (NEW).
-- **Shared resources:** caller PreprocessWorker :169-171 message quality improves without change;
-  FileScanner skipNotes path is shell group (do not edit).
-- **Acceptance:** unit: parseFile('/nonexistent') and a chmod-000 file → null AND `lastError` set
-  with the path; docblock claim now true; suites green (root user caveat: chmod-000 is readable by
-  root — use a nonexistent/deleted-file variant if the runner is root).
-
-### engine-S36 — BlockIndex duplicate-id invariant unenforced
-
-- **Queue rank:** 11 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~30 min)
-- **Covers:** php-dup-finder-engine-047
-- **Prereqs:** none
-
-- **Files:** `src/Index/BlockIndex.php:25-30`, `tests/Unit/Index/BlockIndexTest.php` (NEW).
-- **Shared resources:** none.
-- **Acceptance:** unit: add() with colliding id + different object → LogicException naming the id
-  (or deterministic skip — pick loud); re-add same object tolerated/idempotent; three-view
-  (byId/all/byHash) consistency asserted; Clusterer/Pipeline suites green.
-
-### once-S59 — GitLab SAST timestamps deterministic + honest window
-
-- **Queue rank:** 12 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~30 min)
-- **Covers:** php-dup-finder-once-066
-- **Prereqs:** output-S04 (Z format core)
-
-**Files:** src/Reporting/GitLabSastReporter.php, tests/Unit/Reporting/GitLabSastReporterTest.php
-**Shared resources:** w/ S38 Timeseries clock story.
-**Acceptance:** two runs over identical synthetic Report → byte-identical (fixed-clock test helper, no wall clock in golden-less path); start==end only when report duration truly zero; carries from pipeline metadata (where report has none, field omitted honestly not fabricated).
-
-### once-S82 — Root-doc archive + tracked-junk untrack
-
-- **Queue rank:** 13 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~30 min)
-- **Covers:** php-dup-finder-once-102
-- **Prereqs:** none
-
-**Files:** plan.md, findings.md, prompt.md
-**Shared resources:** [OWNER: git-rm vs move to docs/archive/ — default rm]; improve_logic*.md owner-file constraint: contradiction row is REPORT-ONLY (S80 packet rider), never edited here.
-**Acceptance:** June-era trio archived/removed per ruling (git ls-files zero); README/AGENTS references to the trio (grep) die first. The `.claude/settings.json` nvm-path portability and `.claude/scheduled_tasks.lock` untrack legs became OWNER ACTIONS at Phase-5 r1 (I3/D3a — caliber paths, lanes never edit them): rows recorded in the once-S80 packet + ## Owner decisions.
-
-### output-S01 — psalm baseline re-derive + staleness detector on
-
-- **Queue rank:** 14 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~30 min)
-- **Covers:** php-dup-finder-output-013
-- **Prereqs:** none
-
-- Covers: 013
-- Files: `psalm-baseline.xml`, `psalm.xml`, `src/Refactor/PatternRecognizer.php` (verify-only; nothing to code-fix — entries are dead)
-- Size: MM (30 min)
-- Prereqs: none — but schedule FIRST for its file, and Phase-4 should fold the engine's out-of-group dead entries (BlockExtractor ×2, FileScanner ×1) into this same re-baseline rather than a second lane.
-- Conflicts: psalm-baseline.xml single-writer (ledger row).
-- Acceptance: `vendor/bin/psalm` rc=0; `vendor/bin/psalm --no-cache` with stub baseline re-run per CONV-01 shows remaining entries all live; psalm.xml `findUnusedBaselineEntry="true"` and psalm still rc=0; entry count drops 14→5; phpstan untouched, GATE.
-
-
-- **Phase-4 Outside merge (formalized):** engine's psalm-baseline dead entries (BlockExtractor ×2, FileScanner ×1) fold into THIS single tree-wide re-baseline — Phase-4 ruling: no second baseline lane.
-
-### output-S09 — FuzzCorpusGenerator: template-name validation + var_export values
-
-- **Queue rank:** 15 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~30 min)
-- **Covers:** php-dup-finder-output-061
-- **Prereqs:** none
-
-- Covers: 061
-- Files: `src/Testing/FuzzCorpusGenerator.php`, matching test under `tests/Unit/` (locate; extend if present)
-- Size: MM (30 min)
-- Prereqs: none. Conflicts: file also in S23 (write fail-loud).
-- Acceptance: generator test — plan template key `../x` throws fail-loud; a hole `value` containing `'); system('id'); //` lands quoted via var_export; generated file `php -l` clean; `tests/Fuzz/DetectionRateTest.php` still green (`--testsuite Fuzz`); GATE.
-
-### output-S12 — CoherenceAnalyzer: symmetric pairs once
-
-- **Queue rank:** 16 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~30 min)
-- **Covers:** php-dup-finder-output-027
-- **Prereqs:** none
-
-- Covers: 027
-- Files: `src/Reporting/CoherenceAnalyzer.php`, `tests/Unit/Reporting/CoherenceAnalyzerTest.php`
-- Size: MM (30 min)
-- Prereqs: none; serial with S11 (same file, tiny).
-- Acceptance: `--filter CoherenceAnalyzerTest` — existing outlier sets unchanged (pin before/after on same fixtures), call counter or assert via JaccardSimilarity spy: similarity() invocations halve; full `--testsuite Unit` green; goldens byte-identical; GATE.
-
-### output-S13 — BaselineStore: hoist array_flip out of the compare loop
-
-- **Queue rank:** 17 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~30 min)
-- **Covers:** php-dup-finder-output-029
-- **Prereqs:** none
-
-- Covers: 029
-- Files: `src/Reporting/BaselineStore.php`, `tests/Unit/Reporting/BaselineStoreTest.php`
-- Size: MM (30 min)
-- Prereqs: none.
-- Acceptance: `--filter BaselineStoreTest` — verdicts identical on existing fixtures; added test with ≥2 baseline entries × ≥2 current entries passes; no behavior change observable in reports (goldens byte-identical); GATE.
-
-### output-S17 — one safeSlug helper for seven copy-pasted sites
-
-- **Queue rank:** 18 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~35 min)
-- **Covers:** php-dup-finder-output-063
-- **Prereqs:** none
-
-- Covers: 063
-- Files: `src/Reporting/Slug.php` (new; or `Cluster::safeSlug()` — planning call, keep in Reporting to avoid Cluster mutation), `src/Reporting/DiffReporter.php`, `src/Reporting/RefactorPatchReporter.php`, `src/Reporting/RefactorTestReporter.php`, `src/Refactor/ApplyExtractor.php`, `tests/Unit/Reporting/SlugTest.php` (new)
-- Size: MM (35 min)
-- Prereqs: none functionally; execute AFTER S44 (or before S36/S43) to minimize ApplyExtractor patch-window conflicts; behavior-preserving so safe anywhere.
-- Acceptance: `grep -cn "preg_replace('/\[^a-zA-Z0-9_-\]/', '_', "` src → 0; SlugTest round-trips current legacy ids byte-identically (`F`+hex unchanged); generated artifact filenames in existing reporter/apply tests unchanged; goldens byte-identical; GATE.
-
-### shell-S06 — JobQueue: bounded memory for retained payloads
-
-- **Queue rank:** 19 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~35 min)
-- **Covers:** php-dup-finder-shell-048
-- **Prereqs:** none
-
-**Files:** src/Server/JobQueue.php, tests/Unit/Server/JobQueueTest.php
-**Shared resources:** none beyond JobQueue.php; job-status JSON shape in /api/jobs responses keeps byte-compat (S09 documents routes — statuses unchanged).
-**Acceptance:**
-- Unit: enqueue N pending jobs with large `paths` payloads → queue stores size+digest, not raw arrays (memory test: 100 × 16MiB-shape payloads retained < fixed budget, or payloads evicted while id/status survive — posture chosen by the lane, pinned by test); `peek`/`complete` paths still deliver the payload to the result writer (S01/S08 consumers unaffected — payloads fetched from the job, so if the async leg needs paths AFTER enqueue, the digest must carry enough info or the leg must snapshot the dispatch at 202 time: prove whichever posture via test).
-- Existing JobQueueTest green.
-
-### output-S14 — ClusterSort: Schwartzian decorate-sort-undecorate
-
-- **Queue rank:** 20 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~40 min)
-- **Covers:** php-dup-finder-output-030
-- **Prereqs:** none
-
-- Covers: 030
-- Files: `src/Reporting/ClusterSort.php`, `tests/Unit/Reporting/ClusterSortTest.php`
-- Size: MM (40 min)
-- Prereqs: none.
-- Acceptance: `--filter ClusterSortTest` — order byte-identical across all sort keys vs a fixture ordering pin (including ties — comparator tie semantics preserved; PHP usort stability notes respected); project() call-count test (spied subclass or counter static) equals N; GATE.
-
-### output-S16 — BenchmarkScoreCalculator: straddling tolerance buckets
-
-- **Queue rank:** 21 of 247
-- **Severity mix:** medium=1
-- **Size:** HH (~40 min)
-- **Covers:** php-dup-finder-output-032
-- **Prereqs:** none
-
-- Covers: 032
-- Files: `src/Testing/BenchmarkScoreCalculator.php`, new `tests/Unit/Bench/BenchmarkScoreCalculatorTest.php`
-- Size: HH (40 min)
-- Prereqs: none.
-- Acceptance: `--filter BenchmarkScoreCalculatorTest` — explicit pair (line 99 vs 101, tol 2) matches; pairs >tol apart still do NOT match (no bucket inflation); existing bench consumers unchanged: Integration/`--filter EndToEndTest` + whatever test drives `bin/phpdup bench` (grep); GATE.
-
-
-- **Phase-4 note:** once-S09 (benchmark family-granular recall) consumes this tolerance-bucket core — it depends on output-S16.
-
-### output-S21 — Severity routing for SARIF/Checkstyle labels + consumer list refresh
-
-- **Queue rank:** 22 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~40 min)
-- **Covers:** php-dup-finder-output-037
-- **Prereqs:** none
-
-- Covers: 037
-- Files: `src/Reporting/Severity.php` (new `sarifLevel`/`checkstyleCategory` routing or extension of forImpact/forScore contract), `src/Reporting/SarifReporter.php:92`, `src/Reporting/CheckstyleReporter.php:41``src/Reporting/Severity.php:23-24` docblock list, `tests/Unit/Reporting/{SarifReporterTest,CheckstyleReporterTest}.php`
-- Size: MM (40 min)
-- Prereqs: none. Conflicts: — (caliber row routed to once-S80 packet at Phase-5 r1).
-- Acceptance: `grep -n "'warning'" src/Reporting/{Sarif,Checkstyle}Reporter.php` → only via Severity:: calls; reporter tests pin level mapping for exact/near clusters unchanged vs old inline logic (byte-identical outputs on fixtures); docblock list matches `grep -rn "Severity::" src/Reporting/`; GATE.
-- **Phase-5 r1 (I3/D3a):** desired `.claude/rules/reporting-patterns.md:17` consumer-list text → once-S80 packet rider — lane edits no caliber file.
-
-### shell-S20 — FileScanner symlink containment
-
-- **Queue rank:** 23 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~40 min)
-- **Covers:** php-dup-finder-shell-006
-- **Prereqs:** none
-
-**Files:** src/Scanning/FileScanner.php, tests/Unit/Scanning/FileScannerTest.php
-**Shared resources:** behavior change visible to all scan consumers (pipeline, serve — S01's confinement now has belt AND braces); docs/CLI.md scan-behavior rider (report row, edited in S24's doc pass? No: docs/CLI.md writer chain is S24→S28; add this rider to S24's list as a doc-only sentence); symlink-in-tree scans drop out-of-root PHP from results (user-visible: disclose).
-**Acceptance:**
-- Unit: root containing a symlinked dir/file pointing outside → target never yielded, skip note recorded (FileScanner::skipNotes()); symlink to a target INSIDE root still yields (canonicalize-compare posture); FileWatcher's same hazard (:320) handled in S33, not here.
-- Probe: temp tree with `ln -s /etc` — `bin/phpdup analyze $tmp` reports only in-root files; combined S01 check: serve-side exfil route (finding 001's "Verified" repro) now blocked twice over.
-
-
-- **Phase-4 Outside merge:** this step IS the durable root-cause fix for output's '(shell, root-cause) FileScanner FOLLOW_SYMLINKS :63' row — output-S38 (read-side half) and output-S52 (write-side half) depend on this landing; record the skipNotes posture output-S38 mirrors.
-
-### shell-S21 — globToRegex: nested-quantifier ReDoS coalescing
-
-- **Queue rank:** 24 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~40 min)
-- **Covers:** php-dup-finder-shell-030
-- **Prereqs:** shell-S20 (same file; compile region independent but chain the writers)
-
-**Files:** src/Scanning/FileScanner.php, tests/Unit/Scanning/FileScannerTest.php, tests/Unit/Cli/ExcludeSemanticsTest.php
-**Shared resources:** exclude-regex semantics for patterns with adjacent `**/` segments (coalesced `(?:[^/]+/)*` form must accept the SAME language — equivalence table in test).
-**Acceptance:**
-- Unit: pattern equivalence matrix (`**/x`, `a/**/**/b`, `**/**/vendor/**` etc.) pre/post compile match the same paths incl. edge cases (root-relative, empty segments); a 45-level adversarial path against `**/**/**/…` excludes matches in <10ms (time-boxed CI-safe); preg_match returns int, never silent false from backtrack-limit blowout (raise pcre.backtrack_limit? no — the compiled regex must not need it: assert `preg_last_error()` PREG_NO_ERROR after the run).
-- ExcludeSemanticsTest + FileScannerTest green.
-
-### once-S78 — Hostile exclude pattern cannot wedge the scanner
-
-- **Queue rank:** 25 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~10 min)
-- **Covers:** php-dup-finder-once-095
-- **Prereqs:** shell-S21 (bounded compiler port)
-
-**Files:** src/Scanning/FileScanner.php, tests/Unit/Scanning/FileScannerTest.php
-**Acceptance:** ReDoS probe (classic `(a+)+$`-style + unbounded ** chains) via --exclude + hostile .phpdup.json on /tmp: scan completes under fixed seconds budget; sugar-ignore parity test ported.
-
-### shell-S36 — UpdateCommand: honest download completion
-
-- **Queue rank:** 26 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~40 min)
-- **Covers:** php-dup-finder-shell-017
-- **Prereqs:** none
-
-**Files:** src/Cli/UpdateCommand.php, tests/Unit/Cli/UpdateCommandTest.php
-**Shared resources:** self-update surface (never run `phpdup update` against the checkout in tests — mock transport / local file server only, hard rule).
-**Acceptance:**
-- Unit (test seam over stream resource): mid-read `fread === false` before EOF → downloadFile false; Content-Length=1000 but 500 written → false + byte-count error; fwrite partial (returns < strlen) → false or resume-loop (lane choice, pinned); happy path unchanged.
-- Caller (:235) refuses signature/hot-swap when downloadFile false (assert no report-file rename onto a torn phar).
-- UpdateCommandTest green.
-
-### engine-S12 — Block::$canonical guard is statically dead / fatal for unnormalized blocks
-
-- **Queue rank:** 27 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-engine-023
-- **Prereqs:** none
-
-- **Files:** `src/Clustering/Clusterer.php` (:231-242, :237 site), `tests/Unit/Clustering/ClustererTest.php`
-  (new pin). Preferred fix = honest `isset()` guard (zero Block.php change). The alternate nullable-
-  property fix (`public ?Node $canonical = null` in `src/Extraction/Block.php`) is DISCOURAGED inside
-  this step: it makes every `$b->canonical` consumer across src/ (Refactor, Reporting, Parallel, Tui)
-  possibly-null for phpstan → repo-wide annotation churn and cross-group collision with S18; if the
-  executor prefers it, it becomes its own follow-up with those audits.
-- **Shared resources:** none if isset chosen; Block.php docblock if not.
-- **Acceptance:** unit feeding an unnormalized Block (never through Normalizer) into
-  `generateCandidatePairs` → skipped, no `Error` fatal; existing 'Typed property' grep proves the
-  fatal previously possible; `--filter Clusterer` green; phpstan still level-6 clean without
-  baseline additions.
-
-### engine-S13 — UnionFind answers "impossible id" with undefined behavior
-
-- **Queue rank:** 28 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-engine-049
-- **Prereqs:** engine-S12 (Clusterer file chain).
-
-- **Files:** `src/Clustering/Clusterer.php` (edges loop :382-408 + `final class UnionFind` :818+),
-  `tests/Unit/Clustering/ClustererTest.php`.
-- **Shared resources:** none.
-- **Acceptance:** unit: edge referencing an id absent from the index → RuntimeException naming the
-  id (or `find` throws LogicException per fix option) under `declare(strict_types=1)` — no
-  undefined-key warning, no TypeError (phpunit failOnWarning=true makes the old shape fail loudly
-  too — pin both the guard and the clean throw).
-
-### engine-S28 — PluginRegistry constructs arbitrary autoloadable classes before the interface check
-
-- **Queue rank:** 29 of 247
-- **Severity mix:** medium=1 low=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-engine-021, php-dup-finder-engine-022
-- **Prereqs:** none
-
-- **Files:** `src/Normalization/PluginRegistry.php:44-50`, `tests/Unit/Normalization/PluginRegistryTest.php`,
-  (autoloadable fixture class under `tests/Fixtures/` — engine-safe new file).
-- **Shared resources:** the untrusted-config policy layer belongs to the once group (Outside row) —
-  this step is mechanism-only (`is_subclass_of` gate before `new`, try/catch(\Throwable) wrap →
-  RuntimeException naming the config entry).
-- **Acceptance:** unit: fixture class with a side-effecting (marker-writing) argumentless
-  constructor → marker file NEVER created, descriptive RuntimeException; constructor requiring
-  args → wrapped RuntimeException naming the FQCN, not a bare ArgumentCountError; non-plugin
-  behavior otherwise unchanged; `--filter PluginRegistry` green.
-
-### engine-S32 — --low-memory 32-bit XOR-folded gram keys: collision bound + docblock claim
-
-- **Queue rank:** 30 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-engine-042
-- **Prereqs:** none
-
-- **Files:** `src/Fingerprint/CompactNgramBag.php:30-38`, `src/Fingerprint/NgramFingerprint.php:74-79`
-  (comment), `tests/Unit/Fingerprint/CompactNgramBagTest.php`, `tests/Integration/FingerprintModeAcceptanceTest.php`.
-- **Shared resources:** low-memory bag values are persisted in cached blocks (same roster concern
-  as S18/S25 — if S18 already bumped versions, piggyback; else bump).
-- **Acceptance:** unit: pack/unpack 64-bit positive key equality for high-bit digests; fold-collision
-  pair from the doc's example now distinct; ≪1% claim corrected to corpus-wide birthday math or
-  obsolete (keys 64-bit); `--filter 'CompactNgram|FingerprintMode'` green.
-
-### engine-S37 — SqlTableExtractor: bracket residue + string-unaware CTE paren walker
-
-- **Queue rank:** 31 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-engine-048
-- **Prereqs:** none
-
-- **Files:** `src/Normalization/SqlTableExtractor.php` (cleanIdentifier :130-190,
-  stripLeadingCte :82-110), `tests/Unit/Normalization/SqlTableExtractorTest.php`.
-  land independently, values-only).
-- **Shared resources:** none.
-- **Acceptance:** unit table: `FROM [users],` → rejected-or-cleaned, never leaked `[users]` (reject
-  regex extended to `[]"\`); CTE body containing `'a(b'` → prefix strip still correct (string-span
-  skip or balance gate); null-ish degrade preserved otherwise; suites green.
-
-### engine-S38 — IdentifierIds::strip regex hot path (compounds S09)
-
-- **Queue rank:** 32 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-engine-053
-- **Prereqs:** none
-
-- **Files:** `src/Util/IdentifierIds.php:44-53`, `tests/Unit/Util/IdentifierIdsTest.php`.
-- **Shared resources:** none — stream VALUES must be identical (fingerprint stability); assert.
-- **Acceptance:** property unit: old preg vs new str_ends_with/ctype walk equal on random +
-  adversarial token lists (`N9N9`, digits-only, unicode); micro-bench disclosed; Apted suites green.
-
-### output-S07 — CliReporter cheapness: totals once, table rows batched
-
-- **Queue rank:** 33 of 247
-- **Severity mix:** low=2
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-output-054, php-dup-finder-output-060
-- **Prereqs:** none
-
-- Covers: 054, 060
-- Files: `src/Reporting/CliReporter.php`, `tests/Unit/Reporting/CliReporterVerbosityTest.php`, `tests/Unit/Reporting/CliReporterHonestyTest.php`
-- Size: MM (45 min)
-- Prereqs: none — but keep ahead of S19 (same file, scrub pass).
-- Conflicts: CliReporter also in S11 (threshold guards adjacent), S19, S27 (absence render).
-- Acceptance: `--filter CliReporter` (both suites) — CLI render bytes for a synthetic Report identical before/after (capture-and-diff in test); new test asserts clusters==N table via one `rows()` call (reflection or output byte-equality against old shape); GATE.
-
-### output-S15 — MutationTester: probe accounting, honest clean verdicts
-
-- **Queue rank:** 34 of 247
-- **Severity mix:** medium=1
-- **Size:** HH (~45 min)
-- **Covers:** php-dup-finder-output-031
-- **Prereqs:** none
-
-- Covers: 031
-- Files: `src/Validation/MutationTester.php`, `tests/Unit/Validation/MutationTesterTest.php` (new — class currently has zero test coverage)
-- Size: HH (45 min)
-- Prereqs: none.
-- Acceptance: `--filter MutationTesterTest` — cluster with N null-AST members yields reason string "X of Y probed (K unprobed: AST not loaded)" and NO clean verdict when K>0; all-unprobed ⇒ refusal verdict, not `[]`; GATE.
-
-### shell-S14 — Fork-zone APTED parity: thread `--ted-weights` into PairScoreWorker
-
-- **Queue rank:** 35 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-shell-004
-- **Prereqs:** none
-
-**Files:** src/Parallel/PairScoreWorker.php, src/Pipeline/Stages/ClusterStage.php, tests/Unit/Parallel/PairScoreWorkerTedParityTest.php (new), tests/Unit/Clustering/TedSizeGateTest.php (ctor call check only)
-**Shared resources:** ClusterStage.php file (chains before S30/S37); new scalar ctor param must honor Socketpair Law (string model id — fine); golden suite runs default weights → MUST stay byte-identical.
-**Acceptance:**
-- New parity test: small fixture corpus, non-default `--ted-weights` model, scorePairs forked (workers>1, ≥64 pairs forced via fixture or injected) vs `workers:1` → identical edge list; RED before the threading, GREEN after (mutation-proof in report).
-- Probes: `bin/phpdup analyze <corpus> --ted-weights=<alt> --workers=1 --json /tmp/a.json` vs `--workers=4 --json /tmp/b.json` → `diff` identical.
-- Golden suite byte-identical; phpstan/psalm clean.
-
-### once-S25 — --ted-weights fork-path closure + Clusterer docblock truth
-
-- **Queue rank:** 36 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~15 min)
-- **Covers:** php-dup-finder-once-028
-- **Prereqs:** shell-S14 (PairScoreWorker wiring core)
-
-**Files:** src/Clustering/Clusterer.php, src/Parallel/PairScoreWorker.php, tests/Unit/Clustering/ClustererTest.php
-**Shared resources:** PairScoreWorker after shell chains.
-**Acceptance:** serial-vs-fork byte-identity test with non-default weights (shell-S14 owns parity; this step adds the weights-specific case + fixes 'mirrored byte-for-byte' docblock at Clusterer:718 to cite the real mirror).
-
-
-- **Phase-4 Outside merge:** shell's (engine) row — the Clusterer.php:723 serial scoring path gets the fork/serial parity test that shell-S14 ships for the worker side; add the weights-specific serial case here (this step already owns the Clusterer docblock truth fix).
-
-### shell-S23 — `--diff-base`: argv-safe git invocation, per-root repo, honest failure
-
-- **Queue rank:** 37 of 247
-- **Severity mix:** high=1 low=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-shell-003, php-dup-finder-shell-040
-- **Prereqs:** none
-
-**Files:** src/Pipeline/Stages/ScanningStage.php, src/Cli/Command.php, tests/Unit/Pipeline/Stages/ScanningStageTest.php
-**Shared resources:** Command.php :667-670 scanError-return site (S24/S34 chain behind this); git-subprocess posture report-only in CI (no fixture git repos needed in-repo — tests use tmp init'd repos; keep hermetic); exit-code note: git failure now aborts EARLY (was: full run then exit 2 — same exit code, different timing; CLI.md table unchanged).
-**Acceptance:**
-- Probe: `--diff-base='--output=/tmp/S23PWNED'` → NO file created (neither `/tmp/S23PWNED` nor `..HEAD` variant), exit 2 with clean message (`--` separator makes git refuse the ref).
-- Unit: scanError set → stage aborts pipeline BEFORE extraction (assert no "scanning → N files → analyzing" continuation; early-exit posture); `2>&1` removed — git's stderr no longer parsed as filenames (feed a warning-producing ref: assert error surfaced via scanError, list unaffected); multi-root + diff-base → per-root `git -C` or documented refusal (lane choice, pinned by test).
-- ScanningStageTest green; `--diff-base=HEAD~1` happy-path probe on a temp git repo unchanged.
-
-### once-S34 — --diff-base honors named roots, repo-relative git, unicode, empty cohort
-
-- **Queue rank:** 38 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-once-038
-- **Prereqs:** shell-S23 (git -C + argv-safe core)
-
-**Files:** src/Cli/Command.php, src/Scanning/FileScanner.php, tests/Unit/Scanning/FileScannerTest.php
-**Shared resources:** FileScanner late chain; CLI.md diff-base rows.
-**Acceptance:** git fixture in /tmp: analyze named-root subdir w/ --diff-base HEAD~1 → cohort = changed files under that root only (was FULL scan), `core.quotePath=true` unicode filename maps and is diffed, empty changed-cohort → exit 2 + message.
-
-### shell-S32 — Register the six orphan db-aware symbol packs
-
-- **Queue rank:** 39 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-shell-037
-- **Prereqs:** none
-
-**Files:** src/Cli/ProjectProfileDetector.php, tests/Unit/Cli/ProjectProfileDetectorTest.php
-**Shared resources:** profiles/db-aware-*.json files (read-only here); AGENTS.md packs list already claims parity (no edit — caliber-managed; report row if drift found); add-db-symbol-pack skill ritual (composer-package signal + KNOWN_PROFILES ordering) governs the fix.
-**Acceptance:**
-- Unit: each of db-aware-laravel/-codeigniter/-laminas/-yii/-myadmin/-myadmin-orm detected from its composer marker in a fixture; KNOWN_PROFILES count 23→29 with set-equality pin against `listAvailable()` scan of profiles/ (kills the class permanently); `--profile=auto` on a laravel-marker tmp dir → db-aware-laravel applied (probe exit 0 + profile-mention in debug or JSON).
-- ProjectProfileDetectorTest green.
-
-### output-S02 — shared Json::encode helper; kill false-into-string encode class
-
-- **Queue rank:** 40 of 247
-- **Severity mix:** high=1
-- **Size:** HH (~60 min)
-- **Covers:** php-dup-finder-output-012
-- **Prereqs:** none
-
-- Covers: 012
-- Phase-5 r1 (I10/D4): `tests/Golden/` token stripped — this lane is verify-only (`goldens byte-identical (GATE; no UPDATE_SNAPSHOTS run)` in acceptance); any witnessed movement regens under the regen-window law, disclosed.
-- Files: `src/Util/Json.php` (new), `src/Reporting/JsonReporter.php`, `src/Reporting/SarifReporter.php`, `src/Reporting/GitLabSastReporter.php`, `src/Reporting/TimeseriesReporter.php`, `tests/Unit/Util/JsonTest.php` (new)
-- Size: HH (60 min)
-- Prereqs: none.
-- Conflicts: JsonReporter/Sarif/GitLab/Timeseries also in S03/S05/S20/S22/S38/S41 — schedule S02 early (mechanical).
-- Acceptance: unit `--filter JsonTest` (invalid UTF-8 and unencodable resources: throws named exception, never returns false/empty); `grep -n "json_encode" src/Reporting/{Json,Sarif,GitLabSast,Timeseries}Reporter.php` shows only `Json::encode(`; Timeseries reporter with a hostile-utf8 name emits either a substituted record or a named error — not an empty line; goldens byte-identical (GATE; no UPDATE_SNAPSHOTS run). If Command maps the new exception to a `phpdup:` error line, that's a (xg: src/Cli/Command.php) row — otherwise generic exit 1 is acceptable for now.
-
-### once-S52 — SARIF $schema URL that resolves
-
-- **Queue rank:** 41 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~10 min)
-- **Covers:** php-dup-finder-once-058
-- **Prereqs:** output-S02
-
-**Files:** src/Reporting/SarifReporter.php, tests/Unit/Reporting/SarifReporterTest.php
-**Acceptance:** constant swapped to docs.oasis-open.org errata path; test asserts URL shape; fetchability verified once (web probe row in report; no network in test).
-
-### output-S03 — central Version constant, five drifted literals gone
-
-- **Queue rank:** 42 of 247
-- **Severity mix:** medium=1
-- **Size:** HH (~45 min)
-- **Covers:** php-dup-finder-output-038
-- **Prereqs:** output-S02  *(Phase-4 adjustment; see Merged & re-routed)*
-
-- Covers: 038
-- Files: `src/Util/Version.php` (new), `src/Reporting/JsonReporter.php`, `src/Reporting/TimeseriesReporter.php`, `src/Reporting/SarifReporter.php`, `src/Reporting/GitLabSastReporter.php`, `src/Reporting/CheckstyleReporter.php`, `tests/Unit/Util/VersionTest.php` (new), `docs/JETBRAINS_PLUGIN.md` (version-cell truth if it cites 0.x)
-- Size: HH (45 min)
-- Prereqs: S02 (same reporter files, encode shape first).
-- Conflicts: (xg: shell src/Cli/UpdateCommand.php:487 '0.0.0' fallback — Outside row) — the central constant should feed it; report as collected row.
-- Acceptance: `grep -rn "'0\.1\.0'\|'0\.2\.0'\|\"phpdup-0" src/` → zero hits; VersionTest asserts all five payloads carry `Version::STRING` on one synthetic Report; goldens: `phpdup_version` is absent from golden files (verified) → byte-identical; GATE.
-
-### output-S05 — TimeseriesReporter: packed-refs sha, repo-root derivation, UTC stamps
-
-- **Queue rank:** 43 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-output-050
-- **Prereqs:** output-S02  *(Phase-4 adjustment; see Merged & re-routed)*
-
-- Covers: 050
-- Files: `src/Reporting/TimeseriesReporter.php`, `tests/Unit/Reporting/TimeseriesReporterTest.php`
-- Size: MM (45 min)
-- Prereqs: S02.
-- Conflicts: (xg: engine UTC-in-artifacts law — Outside row; report-only rider here). Config::paths availability at this call site confirmed during implementation; constructor may need the roots passed → ReportStage wiring row (xg).
-- Acceptance: `--filter TimeseriesReporterTest` — new tests against a fixture repo with `git pack-refs --all` resolve the sha; run from a non-root cwd still resolves via scan root; emitted `timestamp`/`commit_ts` fields end in `Z` or `+00:00`; GATE.
-
-
-- **Phase-4 merge (law):** engine/determinism out-of-group row — 'timestamps inside golden/serial artifacts must be UTC' — this step ships the Timeseries half; the law is recorded in ## Program laws for every artifact-touching lane (once-S59 carries the GitLab-clock half).
-
-### once-S38 — Non-UTF-8 end-to-end (no 255 in any JSON family member)
-
-- **Queue rank:** 44 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~15 min)
-- **Covers:** php-dup-finder-once-042
-- **Prereqs:** output-S02 (Util/Json core), output-S05
-
-**Files:** src/Reporting/TimeseriesReporter.php, tests/Unit/Reporting/TimeseriesReporterTest.php, tests/Integration/CliSmokeTest.php
-**Shared resources:** Timeseries w/ S101.
-**Acceptance:** /tmp fixture w/ Latin-1 bytes in filename AND content: json/sarif/gitlab/timeseries runs exit 0/1-by-contract (never 255), emitted JSON parses strict; Timeseries no-blank-line-on-encode-false pin (or full failure honest).
-
-### shell-S15 — Preprocess streaming: generator task, per-file yield
-
-- **Queue rank:** 45 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~60 min)
-- **Covers:** php-dup-finder-shell-008
-- **Prereqs:** none
-
-**Files:** src/Pipeline/Stages/PreprocessStage.php, src/Parallel/PreprocessWorker.php, tests/Unit/Pipeline/Stages/PreprocessStageTest.php, tests/Unit/Parallel/PreprocessWorkerIsolationTest.php
-**Shared resources:** PreprocessStage.php + PreprocessWorker.php file locks; runStreaming contract (already proven with generator tasks by the pair-score path — mirror ClusterStage.php:362-371 shape); YIELD_EVERY=32 repaint semantics preserved.
-**Acceptance:**
-- Unit: chunk of k files, child task generator yields per file/sub-batch — first record observable before the chunk's last file is processed (arrival-order pin like PERF's early-arrival metric, expressed deterministically); PreprocessWorker `process()` keeps its array API for serial callers OR gains a generator twin (lane choice — both callers checked).
-- Full Unit suite green; Golden byte-identical (records identical, only arrival order changes).
-- Lane report: RSS/wall delta note (PERF measured 24.4% early-arrival with generator) — report-only, no CI assert.
-
-### shell-S16 — `low_memory`: per-dir capture + both cache keys
-
-- **Queue rank:** 46 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-shell-027
-- **Prereqs:** shell-S15 (both rewrites sit in the toolFor/process region :100-143)
-
-**Files:** src/Parallel/PreprocessWorker.php, src/Pipeline/Stages/PreprocessStage.php, tests/Unit/Parallel/PreprocessWorkerIsolationTest.php, tests/Unit/Persistence/IndexStoreTest.php
-**Shared resources:** IndexStore cache-key change (invalidates existing on-disk caches once — expected, documented in report; pairs with S18's format change story); ConfigLoader/Config per-dir admit stays (flag stays admitted).
-**Acceptance:**
-- Unit: per-dir `.phpdup.json` with `low_memory:true` on subdir B only → files in B fingerprint with compact bags, A files with 64-bit (assert via tool identity or fingerprint shape) — RED before the capture fix.
-- Unit: corpus cached under `--low-memory`, re-run without → MISS (config-key includes lowMemory; same for toolFor sprintf key).
-- No PARSER_VERSION bump if key-namespace route taken (precedent: fingerprint_id_mode comment) — state choice in report.
-
-### shell-S17 — Per-dir override hot path: memoized effectiveFor / group-keyed tooling
-
-- **Queue rank:** 47 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-shell-035
-- **Prereqs:** shell-S16 (same :100-124 key region settled first; Config.php chains: S22/S27 edit it later — this goes first among Config writers here)
-
-**Files:** src/Cli/Config.php, src/Parallel/PreprocessWorker.php, tests/Unit/Cli/PerDirectoryConfigTest.php, tests/Unit/Parallel/PreprocessWorkerIsolationTest.php
-**Shared resources:** Config.php file lock (S22/S27 follow here); memo must not break the 60-field withOverrides semantics (derived Configs are value-identical per dir); no behavior delta allowed.
-**Acceptance:**
-- Unit: same-directory files reuse one derived Config / one tooling key (counter via test seam: withOverrides-invocation count == distinct matched groups, not file count); outputs byte-identical to pre-change run (probe `--json` diff on a per-dir fixture corpus).
-- Full Unit green; Golden byte-identical; lane report cites the ~2ms/file elimination (report-only perf note).
-
-### engine-S30 — ShapeletSketch fallbackPopcount: wrong, undocumented ext-bcmath, duplicate of BloomFilter's table
-
-- **Queue rank:** 48 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~75 min)
-- **Covers:** php-dup-finder-engine-038
-- **Prereqs:** none
-
-- **Files:** `src/Fingerprint/ShapeletSketch.php:76-113`, `src/Index/BloomFilter.php:104-136`
-  (popcount hoisted to a shared `src/Util` helper — new small file + both classes call it),
-  `tests/Unit/Fingerprint/ShapeletSketchTest.php`, `tests/Unit/Index/BloomFilterTest.php`.
-- **Shared resources:** none (sketch VALUES on gmp hosts unchanged; non-gmp hosts get corrected —
-  no composer.json edit: bcmath branch deleted, not declared).
-- **Acceptance:** unit: table popcount == gmp path on edge vectors (63-bit, 64-bit high-bit set,
-  zero); `extension_loaded('gmp')` hoisted (static lookup); docblock SWAR lie replaced; full suites
-  green on this host (gmp present) and a forced-fallback unit (call the table path directly).
-
-### once-S10 — PHP floor + extension truth in composer/README/CI
-
-- **Queue rank:** 49 of 247
-- **Severity mix:** high=2
-- **Size:** HH (~90 min)
-- **Covers:** php-dup-finder-once-012, php-dup-finder-once-013
-- **Prereqs:** engine-S30 (bcmath branch deletion outcome), output-S01 (psalm pin truth)
-
-**Files:** composer.json, README.md, .github/workflows/ci.yml
-**Shared resources:** composer.json serial S10→S11; ci.yml serial S10→S11→S56→S93→S13; AGENTS/CLAUDE stale 8.1-floor prose → REPORT-ONLY rows (S80 packet); psalm 6.20.9 docs truth also touches docs/RELEASE.md row (S05 window — coordinate append).
-**Acceptance:** `composer validate` passes; ext matrix: gmp demoted to suggest + guarded fallback verified (php -d disable_functions-free run WITHOUT gmp completes notify fixture — /tmp probe), bcmath declared-or-dropped per engine-S30, mbstring declared, react/promise + psr/log declared explicitly, curl help row removed (never used); README badge `php-8.3` matches `^8.3`; ci installs gmp+mbstring; docs grep: no 'psalm 6.0.0' or 'PHP 8.1' version claims left outside historical notes.
-
-
-- **Phase-4 Outside merge:** output's (once, DOCSYNC) row — composer.json `^8.3` vs CLAUDE.md/AGENTS.md 'PHP 8.1 floor' — this step owns the manifest truth; doc prose rides the S80 packet.
-
-### once-S40 — Windows path portability at the boundary
-
-- **Queue rank:** 50 of 247
-- **Severity mix:** high=1
-- **Size:** HH (~90 min)
-- **Covers:** php-dup-finder-once-044
-- **Prereqs:** shell-S20, shell-S21, output-S13
-
-**Files:** src/Scanning/FileScanner.php, src/Util/PathCanonical.php, src/Reporting/FindingId.php, src/Reporting/BaselineStore.php, tests/Unit/Scanning/FileScannerTest.php
-**Shared resources:** FindingId w/ engine rulings (S31 context); ids/baselines cross-run portability note to S50.
-**Acceptance:** unit-level: relpath maps `\` and drive-prefixed forms → canonical forward-slash ids; underRoots comparison separator+case normalized; fabricated CWD-separator probe on /tmp; a stated MANUAL Windows row (owner box) since no runner — behaviour proven via separator-injection units, not claims.
-
-### output-S25 — AntiUnifier seed trials: drop wasted clone, carry best trial forward
-
-- **Queue rank:** 51 of 247
-- **Severity mix:** high=1
-- **Size:** HH (~90 min)
-- **Covers:** php-dup-finder-output-014
-- **Prereqs:** none
-
-- Covers: 014
-- Files: `src/Refactor/AntiUnifier.php` (pickBestSeed :165-190, trialUnifyHoleCount :204-217, unify :107-127), `tests/Unit/Refactor/AntiUnifierTest.php`
-- Size: HH (90 min)
-- Prereqs: none — start of the AntiUnifier serial chain (S25→S26→S27→S28→S30; S49 later consumes).
-- Acceptance: `--filter AntiUnifierTest` — chosen seed + hole set identical to pre-change on all fixture clusters (pin); trial path no longer calls `Normalizer::deepClone` (`grep` structure check + spy); unify() walks ≤1 full extra pass; goldens byte-identical; GATE.
-
-### shell-S26 — Per-dir discovery: honor excludes, degrade malformed configs; config-file size cap + throwing JSON
-
-- **Queue rank:** 52 of 247
-- **Severity mix:** high=1 medium=1
-- **Size:** HH (~90 min)
-- **Covers:** php-dup-finder-shell-010, php-dup-finder-shell-029
-- **Prereqs:** none
-
-**Files:** src/Cli/ConfigLoader.php, tests/Unit/Cli/PerDirectoryConfigTest.php, tests/Unit/Cli/ConfigLoaderTest.php
-**Shared resources:** .phpdup.json discovery contract (malformed-file THROW → skip-note is a user-visible behavior change — disclose; a subdir file that USED to exit 2 now warns and continues — S31's docs and S24's exit-table pass must reflect); FileScanner exclude-prune pattern reuse (:86-90); 5.8× discovery-measure improvement report-only.
-**Acceptance:**
-- Unit: excluded dir (default `**/vendor/**`) containing a stale-key or broken `.phpdup.json` → never read (no throw, scan proceeds); included dir with broken JSON → skip note on STDERR + run continues (was: throw → exit 2); discovery skips unreadable dirs.
-- Unit: 2MB root phpdup.json → refused with size-cap error, exit 2; deep-nesting JSON → error message names the real JsonException (JSON_THROW_ON_ERROR at both :25 and :435 legs).
-- Perf probe (report-only): discovery wall on a 25k-entry tree ≤ FileScanner-class cost.
-
-### shell-S22 — Per-dir override admit-list: drop path/ref-bearing keys
-
-- **Queue rank:** 53 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-shell-026
-- **Prereqs:** shell-S26 (ConfigLoader same-file chain: discovery robustness lands first; also S10's workers-bound leg touched :685-690 — no region overlap with this step's :530-562, ordering only), shell-S17 (Config::withOverrides settled there before keys are removed from it)
-
-**Files:** src/Cli/ConfigLoader.php, src/Cli/Config.php, tests/Unit/Cli/PerDirOverrideBeltTest.php, tests/Unit/Cli/PerDirectoryConfigTest.php, docs/config-schema.json (per-dir section note)
-**Shared resources:** belt law (shapeOverrides-emitted == withOverrides-consumed: remove from BOTH sides or the belt test flips red); docs/config-schema.json per-dir notes (S31 re-derives the root mirror test after); .phpdup.json discovery-path contract.
-**Acceptance:**
-- Unit: per-dir `.phpdup.json` carrying `diff_base`/`baseline`/`baseline_out`/`debug_log` → RuntimeException "root-only" family message, exit 2 (same posture as fingerprint_id_mode refusals :443-499); keys removed from the derived-Config copy in Config::withOverrides; PerDirOverrideBeltTest updated to pin the new emitted-set.
-- Probe: planted subdir config with `debug_log` → `bin/phpdup analyze . → exit 2` naming the file and key.
-
-
-- **Phase-4 Outside merge:** ENGINE-SEC out-of-group 2 (debug_log/baseline/baseline_out/diff_base admitted per-dir) — this step's root-only refusal IS the fix; the confinement-check half lands via shell-S23 (diff_base git injection) + output-S52 (write confinement) + once-S29.
-
-### shell-S24 — Runtime option validation: invalid flags exit 2, numeric garbage rejected
-
-- **Queue rank:** 54 of 247
-- **Severity mix:** medium=2
-- **Size:** MM (~60 min)
-- **Covers:** php-dup-finder-shell-013, php-dup-finder-shell-014
-- **Prereqs:** shell-S23 (Command.php execute-tail region first writer), shell-S22 (ConfigLoader :134/:209 coerce region after admit-list)
-
-**Files:** src/Cli/Command.php, src/Cli/ConfigLoader.php, tests/Unit/Cli/NumericFlagCoercionTest.php, tests/Unit/Cli/CliDefaultShadowingTest.php, tests/Integration/CliSmokeTest.php, docs/CLI.md (exit-code table section)
-**Shared resources:** docs/CLI.md "Exit codes" + flags tables (first writer; S28/S25 follow); exit-contract: paths that printed an error line + exited 0 now exit 2 — pure contract tightening toward the documented rule (no doc-table CHANGE needed, but CLI.md flag rows' wording "errors are fatal" rider where flagged); Ranker.php:42 re-throw (Outside/output) loses its crash surface via this step — note for merge.
-**Acceptance:**
-- Probes (exact, against `php bin/phpdup`): `--stage=blah` → exit 2 + error line (was 0 + full run); `--pager=banana` → 2; `--theme=nope` → 2; `--min-safety=2.0` → 2 BEFORE the pipeline runs (was: crash-1 after; assert short run time); `--limit=abc --min-safety=hot --max-memory=banana` → 2 (was 0); `--optional-blocks-containment=hot` → 2.
-- NumericFlagCoercionTest extended to the four flags (they join NUMERIC_KEYS or the coerce helper); valid values still pass; `--workers banana` unchanged.
-- Full Unit green; Golden byte-identical.
-
-### once-S49 — --limit docs + closure (0 = unlimited)
-
-- **Queue rank:** 55 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~10 min)
-- **Covers:** php-dup-finder-once-054
-- **Prereqs:** shell-S24
-
-**Files:** docs/CLI.md, tests/Unit/Cli/NumericFlagCoercionTest.php
-**Shared resources:** CLI.md window.
-**Acceptance:** validation fence (shell) confirmed; `--limit 0` documented 'show all', `--limit 1` shows exactly 1 cluster in CLI + JSON output.
-
-### once-S20 — Exit-2 admission closure for all four runtime options
-
-- **Queue rank:** 56 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~15 min)
-- **Covers:** php-dup-finder-once-023
-- **Prereqs:** shell-S24 (core validator)
-
-**Files:** src/Cli/Command.php, src/Reporting/Ranker.php, tests/Unit/Cli/NumericFlagCoercionTest.php
-**Shared resources:** Command.php leg; NumericFlagCoercionTest shared w/ S49.
-**Acceptance:** probe each: `--stage bogus`, `--pager 7`, `--profile nope`, `--theme nope`, `--min-safety 9`, `--limit abc` → exit 2 single clean error (was exit 0/1/trace); --min-safety validated at Config/Ranker boundary before use (no RuntimeException leak).
-
-### once-S19 — Default command: `phpdup src/` works; broken-form error text fixed
-
-- **Queue rank:** 57 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~40 min)
-- **Covers:** php-dup-finder-once-022
-- **Prereqs:** shell-S24
-
-**Files:** bin/phpdup, docs/CLI.md, README.md, tests/Unit/Cli/CliDefaultShadowingTest.php
-**Shared resources:** bin/phpdup shared w/ S30 (version stamp) — serialize S19 → S30; README quickstart row w/ S12/S95.
-**Acceptance:** `bin/phpdup src --json /tmp/o.json` runs analyze (setDefaultCommand enable=true, no-args falls to help not error); missing-path hint suggests valid form (verify vs shell-S24 wording); subcommand table lists init/serve/update.
-
-### shell-S27 — `apply` key: validate, then consume or drop (decide in-lane, record)
-
-- **Queue rank:** 58 of 247
-- **Severity mix:** medium=1 low=1
-- **Size:** MM (~40 min)
-- **Covers:** php-dup-finder-shell-015, php-dup-finder-shell-053
-- **Prereqs:** shell-S22 (shapeOverrides final admit list), shell-S24 (Command parseRuntimeOptions validation idiom lands first)
-
-**Files:** src/Cli/ConfigLoader.php, src/Cli/Config.php, src/Cli/Command.php, tests/Unit/Cli/ConfigLoaderTest.php, tests/Unit/Cli/PerDirOverrideBeltTest.php (if admitted-set shifts), docs/config-schema.json (if key kept — then add its property)
-**Shared resources:** validate() bool-legs family (:734-790); Command.php:220 catch-class widening (`\TypeError` → exit 2 — a class-level rule: any future ctor TypeError is a usage error; check no legitimate runtime TypeErrors were expected to crash raw — grep catches); key kept-vs-dropped is a §6-style decision row — implementer picks the validated+consumed posture (validate bool leg + `flag OR config` consumption in parseRuntimeOptions) since dropping a shipped key is breaking; S31 pins schema afterwards.
-**Acceptance:**
-- Probes: config file `"apply":"yes"` → `--validate-config` exit 2 (was 0 "config OK"); same file on a run → exit 2 with clean message (was: raw TypeError exit 255). `"apply":true` in config alone → apply-mode active (if consumed posture) — pin the chosen semantics in a unit; CLI flag still overrides.
-- Command.php:220-style catch converts a deliberate ctor TypeError fixture to exit 2 (unit).
-- Full Unit green; psalm baseline unchanged.
-
-### shell-S28 — Wire `--dry-run`; fill grouped-help gaps
-
-- **Queue rank:** 59 of 247
-- **Severity mix:** low=2
-- **Size:** MM (~30 min)
-- **Covers:** php-dup-finder-shell-039, php-dup-finder-shell-055
-- **Prereqs:** shell-S24, shell-S27 (same :529-530 apply/dry-run neighborhood; validation posture final)
-
-**Files:** src/Cli/Command.php, docs/CLI.md, tests/Unit/Cli/CliDefaultShadowingTest.php
-**Shared resources:** docs/CLI.md (adds the missing `--dry-run` flag row — table writer, batch with remaining riders from S24/S25); help-builder :167-173 list vs configure() parity (S55); apply plumbing already exists one layer below (RefactorPatchReporter dryRun arg).
-**Acceptance:**
-- Probe: `--help` grouped "Output / reports" block contains `--pager` and `--debug-log`; `bin/phpdup analyze --dry-run <path>` accepted; with apply posture active, dry-run=true keeps preview (behavior pin unit) and `--dry-run=false` changes it (unit exercising the read).
-- docs/CLI.md has a `--dry-run` row with default + semantics; no exit-code change.
-
-
-- **Phase-4 Outside merge:** ENGINE-FUZZ-X02 — reconcile the lying `--no-cache` option text at Command.php:127 with the engine-S26 behavior that now ships (worker path truly disables writes).
-
-### once-S06 — Stop the TUI printing the full CLI report on the alt screen
-
-- **Queue rank:** 60 of 247
-- **Severity mix:** critical=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-once-006
-- **Prereqs:** shell-S27, shell-S28  *(Phase-4 adjustment; see Merged & re-routed)*
-
-**Files:** src/Cli/Command.php, src/Pipeline/Stages/ReportStage.php
-**Shared resources:** Command.php lock ledger; pager-suppression flag = shared seam with S76; ReportStage touched later by S72 — coordinate order S06→S36→S72.
-**Acceptance:** `--tui` run under `script -qec`: raw stdout (od-dumped PTY capture) contains no CLI report body / pager spawn (assert via `ps` census for pager absence); file reporters still write; exit 0.
-
-### once-S22 — --tui without TTY refuses; bogus theme no render
-
-- **Queue rank:** 61 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~20 min)
-- **Covers:** php-dup-finder-once-025
-- **Prereqs:** once-S06, shell-S24
-
-**Files:** src/Cli/Command.php, src/Tui/TuiRunner.php
-**Shared resources:** TuiRunner shared w/ S07 (serialize S07→S22→S75); Command leg.
-**Acceptance:** `bin/phpdup --tui ... | cat` → exit 2 early, zero alt-screen bytes in pipe (`od` proof), hint suggests default CLI; --theme bogus exit path (shell-S24) verified not reaching render.
-
-### once-S15 — One canonical --fail-on-impact semantic (gate honesty)
-
-- **Queue rank:** 62 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-once-018
-- **Prereqs:** shell-S24
-
-**Files:** .github/actions/phpdup/action.yml, src/Cli/Command.php, docs/CI.md, docs/CLI.md
-**Shared resources:** action.yml shared with S14; Command.php leg for gate; docs rows to S18/S95 window.
-**Acceptance:** single formula [OWNER: per-cluster max impact '>=' — recorded for Phase-5]: CLI and action.yml agree, gate name in outputs, jq missing → explicit fail (exit 1 runtime posture, not `&&`-chain 0); both docs say the same; probe: action step logic extracted to shell-less unit check with fixture JSON both sides.
-
-### once-S50 — Baseline: formula docs true, atomic writes, empty-file advice
-
-- **Queue rank:** 63 of 247
-- **Severity mix:** medium=2
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-once-055, php-dup-finder-once-056
-- **Prereqs:** output-S13, shell-S28
-
-**Files:** src/Reporting/BaselineStore.php, docs/CLI.md, tests/Unit/Reporting/BaselineStoreTest.php
-**Shared resources:** BaselineStore w/ S40 portability note; CLI.md example line.
-**Acceptance:** doc formula == sha256(underRoots path|structuralHash) (assert by recomputing one id in unit); `--baseline-file` empty or `[]` → actionable advice exit 2 (not 'not valid JSON' exit 1); write = tmp+rename+LOCK (concurrency unit two-writers no truncation); CLI.md baseline example never `cp` over user file.
-
-### shell-S25 — `--profile` failures fatal + auto-tune probe honors profile excludes
-
-- **Queue rank:** 64 of 247
-- **Severity mix:** high=1 low=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-shell-012, php-dup-finder-shell-043
-- **Prereqs:** shell-S24 (Command.php execute() region chain; shared failure-marker idiom from parseCliOverrides reused)
-
-**Files:** src/Cli/Command.php, src/Cli/AutoTuner.php, tests/Unit/Cli/AutoTunerTest.php, tests/Unit/Cli/ConfigLoaderTest.php (profile legs)
-**Shared resources:** Command.php; call-order change :209-219 (profile-before-tune) interacts with per-dir discovery? no; docs/CLI.md `--profile`/`--auto-tune` rows rider (report row; S28 batch-writes CLI.md).
-**Acceptance:**
-- Probes: `--profile=bogus` → exit 2 (was: error line + default run + exit 0); unreadable profile file path → exit 2; `--profile=auto` unaffected.
-- Unit: fixture with profile-excluded dir (laravel-style `vendor/` clone) sized to straddle the medium/large band → resolved band computed WITHOUT the excluded trees (assert exact_only flips accordingly); probe stays counting-only (stat budget — no third full walk: filesize only for candidates it must read, or reuse discovery counts; lane note).
-- AutoTunerTest + Unit green.
-
-
-- **Phase-4 Outside merge:** ENGINE-PDDETECT out-of-group 2 — AutoTuner tiny-corpus tier (:71) relaxes max_df to 0.5 which stays dead for N ≤ 3: floor the tier's candidate generation the same way engine-S01 floors candidatesFor (max(2, …)), same file, one lane.
-
-### once-S07 — TUI surfaces pipeline errors and exits non-zero
-
-- **Queue rank:** 65 of 247
-- **Severity mix:** critical=1
-- **Size:** HH (~60 min)
-- **Covers:** php-dup-finder-once-007
-- **Prereqs:** once-S06
-
-**Files:** src/Tui/TuiRunner.php, src/Tui/PhpdupModel.php, tests/Unit/Tui/TuiRunnerTest.php, tests/Unit/Tui/PhpdupModelTest.php
-**Shared resources:** PhpdupModel chain (S07→S61→S62→S63→S72→S96); toast-queue consumer seam; error exit-class row to S95.
-**Acceptance:** injected throw at ClusterStage in unit → run() returns 1 (was 0); error panel/reason visible (model state assertion, not pixels); budget-exceeded shows remedy line consistent with CLI's.
-
-### once-S16 — Profile registry: disk == registry == docs, bogus --profile exits 2
-
-- **Queue rank:** 66 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~60 min)
-- **Covers:** php-dup-finder-once-019
-- **Prereqs:** shell-S32 (register 6 orphans), shell-S25 (--profile fatal)
-
-**Files:** src/Cli/ProjectProfileDetector.php, profiles/, src/Cli/Command.php, docs/CLI.md, tests/Unit/Cli/ProjectProfileDetectorTest.php
-**Shared resources:** profiles/ dir shared S100 (db-pack hygiene) — serialize S16 → S100; help list rows into S18's CLI.md window; ghost myadmin adjudication row [DECISION: add pack or drop KNOWN entry].
-**Acceptance:** generated-from-disk: test asserts set-equality glob(profiles/*.json names ∪ db-aware-*) vs KNOWN_PROFILES ∪ help output ∪ docs/CLI.md list; `--profile bogus` exit 2 (closure re-check of shell-S25); no UNPROFILED success path.
-
-### once-S18 — docs/CLI.md: every registered flag, drop the false 'full reference'
-
-- **Queue rank:** 67 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~60 min)
-- **Covers:** php-dup-finder-once-021
-- **Prereqs:** shell-S28
-
-**Files:** docs/CLI.md, tests/Unit/Cli/DocFlagParityTest.php
-**Shared resources:** CLI.md once-chain (S18 first once writer after shell; later legs S24/S26/S27/S29/S34/S37/S49/S50/S83).
-**Acceptance:** new parity test reflects `Command::configure()` (+ ServeCommand) vs docs/CLI.md flag list — 15 named flags + serve flags land; [OWNER: hand rows + parity test (chosen default) vs generated doc]; claim sentence honest.
-
-### once-S26 — Auto-tuner reads effective config, never overrides user values
-
-- **Queue rank:** 68 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~60 min)
-- **Covers:** php-dup-finder-once-030
-- **Prereqs:** shell-S25 (profile excludes honored)
-
-**Files:** src/Cli/AutoTuner.php, src/Cli/Command.php, tests/Unit/Cli/AutoTunerTest.php
-**Shared resources:** Command.php leg; help text precedence row (S18/S95 window).
-**Acceptance:** unit: explicit min_block_size stays; tuner sees applied excludes; narration no longer '8→8' no-op on a tuned tree; --auto-tune help states precedence honestly.
+Order below = queue order (severity-first ready schedule: ready steps owning a CRITICAL finding pop first, then shortest-first; prerequisites never violated). Ranks match `plan_review.queue.tsv` rows 1:1. Order re-derived by severity-first Kahn (pop-key (CRITICAL-ownership, est_min, id)) at the Phase-5 owner-decision pass, per owner ruling D1(b); previously Kahn (est_min, id) min-heap at Phase-5 round 1.
 
 ### engine-S01 — Near-dup candidate generation is dead below 200 blocks (critical)
 
-- **Queue rank:** 69 of 247
+- **Queue rank:** 1 of 247
 - **Severity mix:** critical=1
 - **Size:** HH (~120 min)
 - **Covers:** php-dup-finder-engine-001
@@ -1050,9 +76,1350 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 - **Phase-4 Outside merge:** ENGINE-PDDETECT out-of-group 1 (golden governance) — the optional-near-dups re-pin must be a separate disclosed diff in this lane; never let it silently re-pin behind another step's UPDATE_SNAPSHOTS.
 
-### engine-S07 — TrinityCollapser fabricates UPSERT for never-saved mutates (high)
+### engine-S02a — Role-swap exact-clone lie + Param double-rename in Normalizer — half A: writer-side sentinel redesign — canonicalizeNames per-arm/positional key sentinels, kills the engine-055 double-rename, `__V0` alias guard, Normalizer unit pins.
+
+- **Queue rank:** 2 of 247
+- **Severity mix:** critical=1 low=1
+- **Size:** HH (~150 min)
+- **Covers:** php-dup-finder-engine-002, php-dup-finder-engine-055
+- **Prereqs:** none  *(Phase-5 r1 split; see Merged & re-routed)*
+
+> **Half A (Phase-5 r1, I5/D2a):** this half owns: writer-side sentinel redesign — canonicalizeNames per-arm/positional key sentinels, kills the engine-055 double-rename, `__V0` alias guard, Normalizer unit pins. Sibling: engine-S02b — together the two legs replace engine-S02 (300 min). Header lines + locks above govern this half; the parent detail preserved below describes the whole fix, and prose references to engine-S02 denote the leg pair. Execute only the legs assigned to this half.
+
+- **Files:** `src/Normalization/Normalizer.php` (canonicalizeNames :445-498, canonicalizeVariables
+  :399-420, call site :85-88), `tests/Unit/Normalization/NormalizerTest.php`,
+  `tests/Unit/Normalization/NormalizerBareReturnTest.php` (slot renumbering ripples),
+  `tests/Golden/*.json` (regen if streams shift), `src/Clustering/Clusterer.php` ONLY if the
+  "demote permutation-dependent pairs" variant is chosen (badge/similarity cap in the scoring tier —
+  if so, this step joins the Clusterer chain after S15).
+- **Shared resources:** tests/Golden (aggressive-mode canonical streams change → all three
+  snapshots may move; GOLDEN-MOVES-likely); `MatchTier`/`Cluster::$pairs` semantics if the
+  role-swapped badge path is chosen; MatchTier.php enum roster.
+- **Fix shape:** one coherent redesign: key rename sentinels per-arm/positionally (not corpus-free
+  first occurrence), which also kills the 055 double-rename. Decide with S03/S04 (same file): keep
+  the design inside Normalizer to avoid the Clusterer coupling.
+- **Acceptance:** unit: branch-role-swapped if/else pair from the finding no longer canonicalizes to
+  byte-identical streams (or scores <1 / carries the badge); Param/body slots agree (user var `x`
+  gets ONE sentinel in Param and body); a user variable literally named `__V0` cannot alias the
+  generated space; `vendor/bin/phpunit --testsuite Unit --filter Normalizer` green; Golden suite
+  green after regen with disclosed per-snapshot diff.
+
+### engine-S02b — Role-swap exact-clone lie + Param double-rename in Normalizer — half B: GOLDEN-STEP re-pin leg — regenerate the three goldens with disclosed per-snapshot diffs once the writer bytes settle; owns the `tests/Golden/` token.
+
+- **Queue rank:** 3 of 247
+- **Severity mix:** critical=1 low=1
+- **Size:** HH (~150 min)
+- **Covers:** php-dup-finder-engine-002, php-dup-finder-engine-055
+- **Prereqs:** engine-S02a  *(Phase-5 r1 split; see Merged & re-routed)*
+
+> **Half B (Phase-5 r1, I5/D2a):** this half owns: GOLDEN-STEP re-pin leg — regenerate the three goldens with disclosed per-snapshot diffs once the writer bytes settle; owns the `tests/Golden/` token. Sibling: engine-S02a — together the two legs replace engine-S02 (300 min). Header lines + locks above govern this half; the parent detail preserved below describes the whole fix, and prose references to engine-S02 denote the leg pair. Execute only the legs assigned to this half.
+
+- **Files:** `src/Normalization/Normalizer.php` (canonicalizeNames :445-498, canonicalizeVariables
+  :399-420, call site :85-88), `tests/Unit/Normalization/NormalizerTest.php`,
+  `tests/Unit/Normalization/NormalizerBareReturnTest.php` (slot renumbering ripples),
+  `tests/Golden/*.json` (regen if streams shift), `src/Clustering/Clusterer.php` ONLY if the
+  "demote permutation-dependent pairs" variant is chosen (badge/similarity cap in the scoring tier —
+  if so, this step joins the Clusterer chain after S15).
+- **Shared resources:** tests/Golden (aggressive-mode canonical streams change → all three
+  snapshots may move; GOLDEN-MOVES-likely); `MatchTier`/`Cluster::$pairs` semantics if the
+  role-swapped badge path is chosen; MatchTier.php enum roster.
+- **Fix shape:** one coherent redesign: key rename sentinels per-arm/positionally (not corpus-free
+  first occurrence), which also kills the 055 double-rename. Decide with S03/S04 (same file): keep
+  the design inside Normalizer to avoid the Clusterer coupling.
+- **Acceptance:** unit: branch-role-swapped if/else pair from the finding no longer canonicalizes to
+  byte-identical streams (or scores <1 / carries the badge); Param/body slots agree (user var `x`
+  gets ONE sentinel in Param and body); a user variable literally named `__V0` cannot alias the
+  generated space; `vendor/bin/phpunit --testsuite Unit --filter Normalizer` green; Golden suite
+  green after regen with disclosed per-snapshot diff.
+
+### engine-S23a — Cache blob integrity: serialize crash guard, nested decode validation, TokenCache parity, perms — half A: crash guard + nested decode + framing/seal + AstCache perms + shared helper home + AstCacheTest + 10k-depth exit 0.
+
+- **Queue rank:** 4 of 247
+- **Severity mix:** critical=1 medium=3
+- **Size:** HH (~150 min)
+- **Covers:** php-dup-finder-engine-004, php-dup-finder-engine-017, php-dup-finder-engine-018, php-dup-finder-engine-020
+- **Prereqs:** none  *(Phase-5 r1 split; see Merged & re-routed)*
+
+> **Half A (Phase-5 r1, I5/D2a):** this half owns: crash guard + nested decode + framing/seal + AstCache perms + shared helper home + AstCacheTest + 10k-depth exit 0. Sibling: engine-S23b — together the two legs replace engine-S23 (270 min). Header lines + locks above govern this half; the parent detail preserved below describes the whole fix, and prose references to engine-S23 denote the leg pair. Execute only the legs assigned to this half.
+
+- **Files:** `src/Parsing/AstCache.php` (put :86 try/catch + depth skip; get :58-70 recursive Node
+  validation + TypeError→miss + length-framing/seal; mkdir 0700; chmod 0600 on writes),
+  `src/Parsing/TokenCache.php` (mirror loop via the new shared helper; mkdir/perms), shared helper
+  new location (either `src/Parsing/` private helper or small `src/Util/` class — decide in-step),
+  `tests/Unit/Parsing/AstCacheTest.php` (NEW — none exists today),
+  `tests/Unit/Parsing/TokenCacheTest.php`, `tests/Unit/Persistence/SerializedClassAllowListTest.php`
+  (allow-list interplay only).
+  while the class is alive — if the catalog later deletes it, the removal just takes the helper's
+  second call site with it).
+- **Shared resources:** blob framing = storage-format change → bump the cache key/version marker
+  (AstCache VERSION token or filename scheme) → interacts with S24 (keyFor) and S25 — keep the
+  marker line trivially mergeable; `declare(strict_types=1)` fatal surfaces under failOnNotice.
+- **Acceptance:** depth fuzz: generating a 10k-deep array-literal file and analyzing with cache ON →
+  run exits 0 (was rc=255 fatal at AstCache.php:86), file simply uncached; unit battery: truncated
+  blob→miss, appended-garbage→miss (framing), nested-`__PHP_Incomplete_Class` blob (SEC nested.txt
+  shape)→miss not fatal, TokenCache tampered→miss; stat modes: fresh cache dir 0700, blobs 0600
+  under umask 002; full Unit+Integration green.
+
+### engine-S23b — Cache blob integrity: serialize crash guard, nested decode validation, TokenCache parity, perms — half B: TokenCache parity via the shared helper + tampered→miss + 0700/0600 census under umask 002 + allow-list interplay re-run.
+
+- **Queue rank:** 5 of 247
+- **Severity mix:** critical=1 medium=3
+- **Size:** HH (~120 min)
+- **Covers:** php-dup-finder-engine-004, php-dup-finder-engine-017, php-dup-finder-engine-018, php-dup-finder-engine-020
+- **Prereqs:** engine-S23a  *(Phase-5 r1 split; see Merged & re-routed)*
+
+> **Half B (Phase-5 r1, I5/D2a):** this half owns: TokenCache parity via the shared helper + tampered→miss + 0700/0600 census under umask 002 + allow-list interplay re-run. Sibling: engine-S23a — together the two legs replace engine-S23 (270 min). Header lines + locks above govern this half; the parent detail preserved below describes the whole fix, and prose references to engine-S23 denote the leg pair. Execute only the legs assigned to this half.
+
+- **Files:** `src/Parsing/AstCache.php` (put :86 try/catch + depth skip; get :58-70 recursive Node
+  validation + TypeError→miss + length-framing/seal; mkdir 0700; chmod 0600 on writes),
+  `src/Parsing/TokenCache.php` (mirror loop via the new shared helper; mkdir/perms), shared helper
+  new location (either `src/Parsing/` private helper or small `src/Util/` class — decide in-step),
+  `tests/Unit/Parsing/AstCacheTest.php` (NEW — none exists today),
+  `tests/Unit/Parsing/TokenCacheTest.php`, `tests/Unit/Persistence/SerializedClassAllowListTest.php`
+  (allow-list interplay only).
+  while the class is alive — if the catalog later deletes it, the removal just takes the helper's
+  second call site with it).
+- **Shared resources:** blob framing = storage-format change → bump the cache key/version marker
+  (AstCache VERSION token or filename scheme) → interacts with S24 (keyFor) and S25 — keep the
+  marker line trivially mergeable; `declare(strict_types=1)` fatal surfaces under failOnNotice.
+- **Acceptance:** depth fuzz: generating a 10k-deep array-literal file and analyzing with cache ON →
+  run exits 0 (was rc=255 fatal at AstCache.php:86), file simply uncached; unit battery: truncated
+  blob→miss, appended-garbage→miss (framing), nested-`__PHP_Incomplete_Class` blob (SEC nested.txt
+  shape)→miss not fatal, TokenCache tampered→miss; stat modes: fresh cache dir 0700, blobs 0600
+  under umask 002; full Unit+Integration green.
+
+### engine-S06a — `--db-aware` name-only folding fabricates EXACT DB clones (critical) — half A: receiver-evidence gate — folding the get/all/save tier out of pure-name matching (store-vs-logger evidence), CustomDbSymbols + DbOpCanonicalizer pins.
+
+- **Queue rank:** 6 of 247
+- **Severity mix:** critical=1
+- **Size:** HH (~160 min)
+- **Covers:** php-dup-finder-engine-003
+- **Prereqs:** none  *(Phase-5 r1 split; see Merged & re-routed)*
+
+> **Half A (Phase-5 r1, I5/D2a):** this half owns: receiver-evidence gate — folding the get/all/save tier out of pure-name matching (store-vs-logger evidence), CustomDbSymbols + DbOpCanonicalizer pins. Sibling: engine-S06b — together the two legs replace engine-S06 (300 min). Header lines + locks above govern this half; the parent detail preserved below describes the whole fix, and prose references to engine-S06 denote the leg pair. Execute only the legs assigned to this half.
+
+- **Files:** `src/Normalization/DbOpCanonicalizer.php` (rewriteMethodCall :149-190,
+  buildSynthetic :241-266), `src/Normalization/DbOpRegistry.php` (METHOD_OPS :58-123),
+  `tests/Unit/Normalization/DbOpCanonicalizerTest.php`, `tests/Unit/Normalization/CustomDbSymbolsTest.php`,
+  `tests/Unit/Normalization/DbOpRegistryTest.php`; possible new registry entry shape →
+  `profiles/db-aware-*.json` + `docs/config-schema.json` (cross-group roster — see conflicts).
+- **Shared resources:** if receiver-evidence config keys are admitted, the PerDirOverrideBeltTest
+  emit/consume invariant (admitted key must be consumed or consciously banked) and docs/config-schema.json
+  come into play; db-aware symbol packs are shared with the cli/shell group (ProjectProfileDetector).
+- **Fix shape:** receiver evidence before folding generic names (`get/all/save` out of pure-name
+  tier); retain sorted-column-set signature in synthetic args for QUERY/EXECUTE so "same table,
+  different columns" is near-dup not type-1.
+- **Acceptance:** the finding's two repros: two different `exec('UPDATE users SET …')` payloads no
+  longer EXACT (unit asserts differing synthetic streams); `$this->store->get` vs `$this->logger->get`
+  not folded without DB evidence; genuine same-payload DB clones still cluster; `--filter 'DbOp|Custom'`
+  green; goldens unmoved (dbAware defaults false).
+
+### engine-S06b — `--db-aware` name-only folding fabricates EXACT DB clones (critical) — half B: column-set synthetic signature + registry entry shape + profiles/docs/config-schema rows + DbOpRegistryTest; closes both repros.
+
+- **Queue rank:** 7 of 247
+- **Severity mix:** critical=1
+- **Size:** HH (~140 min)
+- **Covers:** php-dup-finder-engine-003
+- **Prereqs:** engine-S06a  *(Phase-5 r1 split; see Merged & re-routed)*
+
+> **Half B (Phase-5 r1, I5/D2a):** this half owns: column-set synthetic signature + registry entry shape + profiles/docs/config-schema rows + DbOpRegistryTest; closes both repros. Sibling: engine-S06a — together the two legs replace engine-S06 (300 min). Header lines + locks above govern this half; the parent detail preserved below describes the whole fix, and prose references to engine-S06 denote the leg pair. Execute only the legs assigned to this half.
+
+- **Files:** `src/Normalization/DbOpCanonicalizer.php` (rewriteMethodCall :149-190,
+  buildSynthetic :241-266), `src/Normalization/DbOpRegistry.php` (METHOD_OPS :58-123),
+  `tests/Unit/Normalization/DbOpCanonicalizerTest.php`, `tests/Unit/Normalization/CustomDbSymbolsTest.php`,
+  `tests/Unit/Normalization/DbOpRegistryTest.php`; possible new registry entry shape →
+  `profiles/db-aware-*.json` + `docs/config-schema.json` (cross-group roster — see conflicts).
+- **Shared resources:** if receiver-evidence config keys are admitted, the PerDirOverrideBeltTest
+  emit/consume invariant (admitted key must be consumed or consciously banked) and docs/config-schema.json
+  come into play; db-aware symbol packs are shared with the cli/shell group (ProjectProfileDetector).
+- **Fix shape:** receiver evidence before folding generic names (`get/all/save` out of pure-name
+  tier); retain sorted-column-set signature in synthetic args for QUERY/EXECUTE so "same table,
+  different columns" is near-dup not type-1.
+- **Acceptance:** the finding's two repros: two different `exec('UPDATE users SET …')` payloads no
+  longer EXACT (unit asserts differing synthetic streams); `$this->store->get` vs `$this->logger->get`
+  not folded without DB evidence; genuine same-payload DB clones still cluster; `--filter 'DbOp|Custom'`
+  green; goldens unmoved (dbAware defaults false).
+
+### shell-S01 — Async serve: enforce `--serve-root` confinement + crash-proof request handling
+
+- **Queue rank:** 8 of 247
+- **Severity mix:** critical=3
+- **Size:** HH (~160 min)
+- **Covers:** php-dup-finder-once-001, php-dup-finder-shell-001, php-dup-finder-shell-002
+- **Prereqs:** none
+
+**Files:** src/Server/Application.php, src/Server/AnalysisWorker.php, src/Cli/ServeCommand.php, bin/phpdup-worker, tests/Unit/Server/ApplicationTest.php, tests/Unit/Cli/ServeCommandTest.php
+**Shared resources:** docs/SERVER.md confinement wording becomes true (row check; full restatement in S09); ServeCommand.php + AnalysisWorker.php file locks (chain head); Socketpair Law — serveRoot travels as the THIRD argv token of the `bin/phpdup-worker <sock> <dir> [<serve-root>]` spawn string (escapeshellarg'd), never as serialized state.
+**Acceptance:**
+- Unit: `validatePaths` non-string element (`{"paths":[123]}`) → 400 array result, no TypeError; enqueue of payload with absolute path outside serve root → 400 with no job minted; worker process handed the same payload refuses (defense-in-depth leg) — tests in ApplicationTest.
+- Live probe (one-shot PTY or background + curl): `serve --serve-root=$PWD` + `POST /jobs {"paths":["/etc"]}` → 400 (was 202 + served result); `POST /analyze {"paths":[123]}` → 400 and `GET /healthz` still 200 immediately after (daemon alive — was exit 255).
+- Both docblock promises (Application.php:50-52, ServeCommand.php:39-40) now match code.
+
+
+- **Phase-4 merge (absorbs once-S01):** once-001 (async POST /jobs bypasses serve-root confinement). shell-S01's confinement + worker-side defense legs ARE the once-001 fix; the once annotator confirmed identical acceptance probes.
+
+- **Phase-4 Outside merge:** ENGINE-SEC out-of-group 4 (serve job payloads setting ml_pair_url) — add an admission leg: enumerate which config fields the `RUN <jobId> <configJson>` frame accepts; any ml_pair_url admission must run through engine-S19's fail-closed gate (cross-ref once-S54). Also carries once-001 (merged; worker re-validation is this step's defense-in-depth leg).
+
+### output-S10 — ArchitecturalAnalyzer: delete phantom registry {@see}
+
+- **Queue rank:** 9 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~5 min)
+- **Covers:** php-dup-finder-output-062
+- **Prereqs:** none
+
+- Covers: 062
+- Files: `src/Architecture/ArchitecturalAnalyzer.php`
+- Size: MM (5 min)
+- Prereqs: none.
+- Acceptance: `grep -n "ArchitecturalAnalyzerRegistry" src/` → zero; docblock matches CLAUDE.md recipe (ReportStage::run() array); GATE.
+
+### output-S04 — GitLab SAST timestamp: RFC3339 Z
+
+- **Queue rank:** 10 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~10 min)
+- **Covers:** php-dup-finder-output-049
+- **Prereqs:** none
+
+- Covers: 049
+- Files: `src/Reporting/GitLabSastReporter.php`, `tests/Unit/Reporting/GitLabSastReporterTest.php`
+- Size: MM (10 min)
+- Prereqs: none. Conflicts: file also in S02/S03 (adjacent lines; serial note only).
+- Acceptance: `--filter GitLabSastReporterTest` — updated pin asserts `dateLastModified` matches `/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/`; GATE.
+
+### shell-S38 — Phpdup facade: empty-paths guard
+
+- **Queue rank:** 11 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~10 min)
+- **Covers:** php-dup-finder-shell-044
+- **Prereqs:** none
+
+**Files:** src/Phpdup.php, tests/Unit/PhpdupTest.php
+**Shared resources:** published-library surface (behavior change for programmatic users — throwing on empty vs silent empty report; disclose in report; docs/CLI.md NOT affected since this is the lib path — but docs/adr or README lib example? check at lane time, report-only).
+**Acceptance:**
+- Unit: `(new Phpdup())->paths([])->run()` and `(new Phpdup())->run()` → InvalidArgumentException with actionable message; `paths(['src'])` happy path unchanged; CLI exit 2 path (Command.php:196-202) untouched and green.
+
+### output-S08 — BenchmarkResultsRenderer: markdown cell escape
+
+- **Queue rank:** 12 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~15 min)
+- **Covers:** php-dup-finder-output-057
+- **Prereqs:** none
+
+- Covers: 057
+- Files: `src/Testing/BenchmarkResultsRenderer.php`, `tests/Unit/Bench/BenchmarkResultsRendererTest.php`
+- Size: MM (15 min)
+- Prereqs: none.
+- Acceptance: `--filter BenchmarkResultsRenderer` — name containing `|` renders `\|` and table column count holds; GATE.
+
+### shell-S29 — DebugLogger destructor: safe-close
+
+- **Queue rank:** 13 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~15 min)
+- **Covers:** php-dup-finder-shell-020
+- **Prereqs:** none
+
+**Files:** src/Pipeline/DebugLogger.php, tests/Unit/Pipeline/DebugLoggerTest.php (new — no current file)
+**Shared resources:** none.
+**Acceptance:**
+- Probe: `bin/phpdup analyze src --debug-log=/proc/definitely-not-writable/x.log` → run completes, exit 0 with findings (was: exit 255 at shutdown), warning surfaced; unit: destructor with `handle===false` does not fatal (is_resource guard + handle=nullafter close state machine).
+
+### once-S69 — --debug-log unwritable path closed
+
+- **Queue rank:** 14 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~10 min)
+- **Covers:** php-dup-finder-once-079
+- **Prereqs:** shell-S29 (safe-close core)
+
+**Files:** src/Pipeline/DebugLogger.php, tests/Unit/Pipeline/PipelineTest.php
+**Acceptance:** probe: --debug-log /nonexistent/x.log → one clear error line, no fopen warning spam, exit 2 (usage posture per shell ruling) and NO post-report TypeError 255; destructor close guarded (shell-S29 verify census).
+
+### engine-S35 — MemoryDebug labels emalloc bytes as "RSS" (mixed metrics)
+
+- **Queue rank:** 15 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~20 min)
+- **Covers:** php-dup-finder-engine-045
+- **Prereqs:** none
+
+- **Files:** `src/Util/MemoryDebug.php:8-16`, grep consumers (Clusterer :214/220/245/290, Tui,
+  Command --stats) for label-format assertions in tests (`tests/Unit/Cli/CliStatsTest` or wherever
+  stats strings are pinned — update pins).
+- **Shared resources:** --stats output text (TUI panel line + docs/media GIF prose unchanged —
+  report-only if docs quote the exact label).
+- **Acceptance:** debug line uses `emalloc=` / `peak_alloc=` (or both true-RSS consistently — pick
+  per finding, one metric per label, disclose); any test matching the old "RSS" token updated;
+  `bin/phpdup analyze src --stats` eyeball + full green.
+
+### output-S06 — PlacementAdvisor: single-file scan roots; dead import
+
+- **Queue rank:** 16 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~20 min)
+- **Covers:** php-dup-finder-output-051
+- **Prereqs:** none
+
+- Covers: 051
+- Files: `src/Refactor/PlacementAdvisor.php`, `tests/Unit/Refactor/PlacementAdvisorTest.php`
+- Size: MM (20 min)
+- Prereqs: none. Conflicts: file also in S19 (charset gate).
+- Acceptance: `--filter PlacementAdvisorTest` — regression case: root == file itself yields no "does not resolve under any configured scan root" note; `grep -n "use Phpdup.Cli.Config" src/Refactor/PlacementAdvisor.php` gone (or load-bearing docblock rewritten); GATE.
+
+### output-S11 — pickBestSeed docblock truth + is_finite threshold guards
+
+- **Queue rank:** 17 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~25 min)
+- **Covers:** php-dup-finder-output-056
+- **Prereqs:** none
+
+- Covers: 056
+- Files: `src/Refactor/AntiUnifier.php` (docblock :158-161 only), `src/Reporting/CoherenceAnalyzer.php` (:31), `src/Reporting/Ranker.php`, `src/Cli/Config.php` (range checks → `!is_finite()`), tests: `tests/Unit/Reporting/CoherenceAnalyzerTest.php`, `tests/Unit/Cli/ConfigTest.php` (or existing config-validation suite)
+- Size: MM (25 min)
+- Prereqs: none — but the AntiUnifier docblock edit must re-check position after S25/S26/S30 (serial lock note).
+- Conflicts: Config.php is shell/shared (six-edit-site rule NOT triggered — no new keys, only tightening validation of existing range fields).
+- Acceptance: `--filter ConfigTest` NAN/NAN-inf rejected with descriptive error (exit 2 path observable via `bin/phpdup analyze --config` with `{"similarity_threshold": NaN}` → invalid, per exit contract); CoherenceAnalyzer test passes; docblock no longer promises unimplemented margin; GATE.
+
+
+- **Phase-4 Outside merge:** shell's (output) row — Ranker.php:42-43 minSafety range re-throw duplicates the CLI-side admission contract; drop the crash leg here (shell-S24 removes its surface).
+
+### engine-S27 — AstParser::parseFile silently nulls on unreadable files (no $lastError)
+
+- **Queue rank:** 18 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~30 min)
+- **Covers:** php-dup-finder-engine-026
+- **Prereqs:** none
+
+- **Files:** `src/Parsing/AstParser.php:29-36`, `tests/Unit/Parsing/AstParserTest.php` (NEW).
+- **Shared resources:** caller PreprocessWorker :169-171 message quality improves without change;
+  FileScanner skipNotes path is shell group (do not edit).
+- **Acceptance:** unit: parseFile('/nonexistent') and a chmod-000 file → null AND `lastError` set
+  with the path; docblock claim now true; suites green (root user caveat: chmod-000 is readable by
+  root — use a nonexistent/deleted-file variant if the runner is root).
+
+### engine-S36 — BlockIndex duplicate-id invariant unenforced
+
+- **Queue rank:** 19 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~30 min)
+- **Covers:** php-dup-finder-engine-047
+- **Prereqs:** none
+
+- **Files:** `src/Index/BlockIndex.php:25-30`, `tests/Unit/Index/BlockIndexTest.php` (NEW).
+- **Shared resources:** none.
+- **Acceptance:** unit: add() with colliding id + different object → LogicException naming the id
+  (or deterministic skip — pick loud); re-add same object tolerated/idempotent; three-view
+  (byId/all/byHash) consistency asserted; Clusterer/Pipeline suites green.
+
+### once-S59 — GitLab SAST timestamps deterministic + honest window
+
+- **Queue rank:** 20 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~30 min)
+- **Covers:** php-dup-finder-once-066
+- **Prereqs:** output-S04 (Z format core)
+
+**Files:** src/Reporting/GitLabSastReporter.php, tests/Unit/Reporting/GitLabSastReporterTest.php
+**Shared resources:** w/ S38 Timeseries clock story.
+**Acceptance:** two runs over identical synthetic Report → byte-identical (fixed-clock test helper, no wall clock in golden-less path); start==end only when report duration truly zero; carries from pipeline metadata (where report has none, field omitted honestly not fabricated).
+
+### once-S82 — Root-doc archive + tracked-junk untrack
+
+- **Queue rank:** 21 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~30 min)
+- **Covers:** php-dup-finder-once-102
+- **Prereqs:** none
+
+**Files:** plan.md, findings.md, prompt.md
+**Shared resources:** [OWNER: git-rm vs move to docs/archive/ — default rm]; improve_logic*.md owner-file constraint: contradiction row is REPORT-ONLY (S80 packet rider), never edited here.
+**Acceptance:** June-era trio archived/removed per ruling (git ls-files zero); README/AGENTS references to the trio (grep) die first. The `.claude/settings.json` nvm-path portability and `.claude/scheduled_tasks.lock` untrack legs became OWNER ACTIONS at Phase-5 r1 (I3/D3a — caliber paths, lanes never edit them): rows recorded in the once-S80 packet + ## Owner decisions.
+
+### output-S01 — psalm baseline re-derive + staleness detector on
+
+- **Queue rank:** 22 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~30 min)
+- **Covers:** php-dup-finder-output-013
+- **Prereqs:** none
+
+- Covers: 013
+- Files: `psalm-baseline.xml`, `psalm.xml`, `src/Refactor/PatternRecognizer.php` (verify-only; nothing to code-fix — entries are dead)
+- Size: MM (30 min)
+- Prereqs: none — but schedule FIRST for its file, and Phase-4 should fold the engine's out-of-group dead entries (BlockExtractor ×2, FileScanner ×1) into this same re-baseline rather than a second lane.
+- Conflicts: psalm-baseline.xml single-writer (ledger row).
+- Acceptance: `vendor/bin/psalm` rc=0; `vendor/bin/psalm --no-cache` with stub baseline re-run per CONV-01 shows remaining entries all live; psalm.xml `findUnusedBaselineEntry="true"` and psalm still rc=0; entry count drops 14→5; phpstan untouched, GATE.
+
+
+- **Phase-4 Outside merge (formalized):** engine's psalm-baseline dead entries (BlockExtractor ×2, FileScanner ×1) fold into THIS single tree-wide re-baseline — Phase-4 ruling: no second baseline lane.
+
+### output-S09 — FuzzCorpusGenerator: template-name validation + var_export values
+
+- **Queue rank:** 23 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~30 min)
+- **Covers:** php-dup-finder-output-061
+- **Prereqs:** none
+
+- Covers: 061
+- Files: `src/Testing/FuzzCorpusGenerator.php`, matching test under `tests/Unit/` (locate; extend if present)
+- Size: MM (30 min)
+- Prereqs: none. Conflicts: file also in S23 (write fail-loud).
+- Acceptance: generator test — plan template key `../x` throws fail-loud; a hole `value` containing `'); system('id'); //` lands quoted via var_export; generated file `php -l` clean; `tests/Fuzz/DetectionRateTest.php` still green (`--testsuite Fuzz`); GATE.
+
+### output-S12 — CoherenceAnalyzer: symmetric pairs once
+
+- **Queue rank:** 24 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~30 min)
+- **Covers:** php-dup-finder-output-027
+- **Prereqs:** none
+
+- Covers: 027
+- Files: `src/Reporting/CoherenceAnalyzer.php`, `tests/Unit/Reporting/CoherenceAnalyzerTest.php`
+- Size: MM (30 min)
+- Prereqs: none; serial with S11 (same file, tiny).
+- Acceptance: `--filter CoherenceAnalyzerTest` — existing outlier sets unchanged (pin before/after on same fixtures), call counter or assert via JaccardSimilarity spy: similarity() invocations halve; full `--testsuite Unit` green; goldens byte-identical; GATE.
+
+### output-S13 — BaselineStore: hoist array_flip out of the compare loop
+
+- **Queue rank:** 25 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~30 min)
+- **Covers:** php-dup-finder-output-029
+- **Prereqs:** none
+
+- Covers: 029
+- Files: `src/Reporting/BaselineStore.php`, `tests/Unit/Reporting/BaselineStoreTest.php`
+- Size: MM (30 min)
+- Prereqs: none.
+- Acceptance: `--filter BaselineStoreTest` — verdicts identical on existing fixtures; added test with ≥2 baseline entries × ≥2 current entries passes; no behavior change observable in reports (goldens byte-identical); GATE.
+
+### output-S17 — one safeSlug helper for seven copy-pasted sites
+
+- **Queue rank:** 26 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~35 min)
+- **Covers:** php-dup-finder-output-063
+- **Prereqs:** none
+
+- Covers: 063
+- Files: `src/Reporting/Slug.php` (new; or `Cluster::safeSlug()` — planning call, keep in Reporting to avoid Cluster mutation), `src/Reporting/DiffReporter.php`, `src/Reporting/RefactorPatchReporter.php`, `src/Reporting/RefactorTestReporter.php`, `src/Refactor/ApplyExtractor.php`, `tests/Unit/Reporting/SlugTest.php` (new)
+- Size: MM (35 min)
+- Prereqs: none functionally; execute AFTER S44 (or before S36/S43) to minimize ApplyExtractor patch-window conflicts; behavior-preserving so safe anywhere.
+- Acceptance: `grep -cn "preg_replace('/\[^a-zA-Z0-9_-\]/', '_', "` src → 0; SlugTest round-trips current legacy ids byte-identically (`F`+hex unchanged); generated artifact filenames in existing reporter/apply tests unchanged; goldens byte-identical; GATE.
+
+### shell-S06 — JobQueue: bounded memory for retained payloads
+
+- **Queue rank:** 27 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~35 min)
+- **Covers:** php-dup-finder-shell-048
+- **Prereqs:** none
+
+**Files:** src/Server/JobQueue.php, tests/Unit/Server/JobQueueTest.php
+**Shared resources:** none beyond JobQueue.php; job-status JSON shape in /api/jobs responses keeps byte-compat (S09 documents routes — statuses unchanged).
+**Acceptance:**
+- Unit: enqueue N pending jobs with large `paths` payloads → queue stores size+digest, not raw arrays (memory test: 100 × 16MiB-shape payloads retained < fixed budget, or payloads evicted while id/status survive — posture chosen by the lane, pinned by test); `peek`/`complete` paths still deliver the payload to the result writer (S01/S08 consumers unaffected — payloads fetched from the job, so if the async leg needs paths AFTER enqueue, the digest must carry enough info or the leg must snapshot the dispatch at 202 time: prove whichever posture via test).
+- Existing JobQueueTest green.
+
+### output-S14 — ClusterSort: Schwartzian decorate-sort-undecorate
+
+- **Queue rank:** 28 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~40 min)
+- **Covers:** php-dup-finder-output-030
+- **Prereqs:** none
+
+- Covers: 030
+- Files: `src/Reporting/ClusterSort.php`, `tests/Unit/Reporting/ClusterSortTest.php`
+- Size: MM (40 min)
+- Prereqs: none.
+- Acceptance: `--filter ClusterSortTest` — order byte-identical across all sort keys vs a fixture ordering pin (including ties — comparator tie semantics preserved; PHP usort stability notes respected); project() call-count test (spied subclass or counter static) equals N; GATE.
+
+### output-S16 — BenchmarkScoreCalculator: straddling tolerance buckets
+
+- **Queue rank:** 29 of 247
+- **Severity mix:** medium=1
+- **Size:** HH (~40 min)
+- **Covers:** php-dup-finder-output-032
+- **Prereqs:** none
+
+- Covers: 032
+- Files: `src/Testing/BenchmarkScoreCalculator.php`, new `tests/Unit/Bench/BenchmarkScoreCalculatorTest.php`
+- Size: HH (40 min)
+- Prereqs: none.
+- Acceptance: `--filter BenchmarkScoreCalculatorTest` — explicit pair (line 99 vs 101, tol 2) matches; pairs >tol apart still do NOT match (no bucket inflation); existing bench consumers unchanged: Integration/`--filter EndToEndTest` + whatever test drives `bin/phpdup bench` (grep); GATE.
+
+
+- **Phase-4 note:** once-S09 (benchmark family-granular recall) consumes this tolerance-bucket core — it depends on output-S16.
+
+### once-S09 — Benchmark scoring: ground truth per family, competitor closure
+
+- **Queue rank:** 30 of 247
+- **Severity mix:** critical=1 high=1
+- **Size:** DD (~240 min)
+- **Covers:** php-dup-finder-once-009, php-dup-finder-once-053
+- **Prereqs:** output-S16 (tolerance buckets core)
+
+**Files:** src/Testing/BenchmarkScoreCalculator.php, bench/run.php, bench/score.php, bench/corpora, tests/Unit/Bench/BenchmarkScoreCalculatorTest.php
+**Shared resources:** bench/* lock w/ S85/S86; README benchmark claims + feature-matrix numbers republished by S85 (this step only fixes math); GT format (bench/corpora) schema note to S86.
+**Acceptance:** synthetic perfect detector scores 1.0 (unit); single-clone-per-family GT → family-granular recall; competitor pair-only GT gets transitive closure so pairwise tools score >0 on families; negative controls pin precision ≤0.5 when injected; tolerance unit asserts the advertised ±2-line rule (not floor(len/2)); real-corpus re-score is manual row feeding S85 commit.
+
+### output-S21 — Severity routing for SARIF/Checkstyle labels + consumer list refresh
+
+- **Queue rank:** 31 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~40 min)
+- **Covers:** php-dup-finder-output-037
+- **Prereqs:** none
+
+- Covers: 037
+- Files: `src/Reporting/Severity.php` (new `sarifLevel`/`checkstyleCategory` routing or extension of forImpact/forScore contract), `src/Reporting/SarifReporter.php:92`, `src/Reporting/CheckstyleReporter.php:41``src/Reporting/Severity.php:23-24` docblock list, `tests/Unit/Reporting/{SarifReporterTest,CheckstyleReporterTest}.php`
+- Size: MM (40 min)
+- Prereqs: none. Conflicts: — (caliber row routed to once-S80 packet at Phase-5 r1).
+- Acceptance: `grep -n "'warning'" src/Reporting/{Sarif,Checkstyle}Reporter.php` → only via Severity:: calls; reporter tests pin level mapping for exact/near clusters unchanged vs old inline logic (byte-identical outputs on fixtures); docblock list matches `grep -rn "Severity::" src/Reporting/`; GATE.
+- **Phase-5 r1 (I3/D3a):** desired `.claude/rules/reporting-patterns.md:17` consumer-list text → once-S80 packet rider — lane edits no caliber file.
+
+### shell-S20 — FileScanner symlink containment
+
+- **Queue rank:** 32 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~40 min)
+- **Covers:** php-dup-finder-shell-006
+- **Prereqs:** none
+
+**Files:** src/Scanning/FileScanner.php, tests/Unit/Scanning/FileScannerTest.php
+**Shared resources:** behavior change visible to all scan consumers (pipeline, serve — S01's confinement now has belt AND braces); docs/CLI.md scan-behavior rider (report row, edited in S24's doc pass? No: docs/CLI.md writer chain is S24→S28; add this rider to S24's list as a doc-only sentence); symlink-in-tree scans drop out-of-root PHP from results (user-visible: disclose).
+**Acceptance:**
+- Unit: root containing a symlinked dir/file pointing outside → target never yielded, skip note recorded (FileScanner::skipNotes()); symlink to a target INSIDE root still yields (canonicalize-compare posture); FileWatcher's same hazard (:320) handled in S33, not here.
+- Probe: temp tree with `ln -s /etc` — `bin/phpdup analyze $tmp` reports only in-root files; combined S01 check: serve-side exfil route (finding 001's "Verified" repro) now blocked twice over.
+
+
+- **Phase-4 Outside merge:** this step IS the durable root-cause fix for output's '(shell, root-cause) FileScanner FOLLOW_SYMLINKS :63' row — output-S38 (read-side half) and output-S52 (write-side half) depend on this landing; record the skipNotes posture output-S38 mirrors.
+
+### shell-S21 — globToRegex: nested-quantifier ReDoS coalescing
+
+- **Queue rank:** 33 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~40 min)
+- **Covers:** php-dup-finder-shell-030
+- **Prereqs:** shell-S20 (same file; compile region independent but chain the writers)
+
+**Files:** src/Scanning/FileScanner.php, tests/Unit/Scanning/FileScannerTest.php, tests/Unit/Cli/ExcludeSemanticsTest.php
+**Shared resources:** exclude-regex semantics for patterns with adjacent `**/` segments (coalesced `(?:[^/]+/)*` form must accept the SAME language — equivalence table in test).
+**Acceptance:**
+- Unit: pattern equivalence matrix (`**/x`, `a/**/**/b`, `**/**/vendor/**` etc.) pre/post compile match the same paths incl. edge cases (root-relative, empty segments); a 45-level adversarial path against `**/**/**/…` excludes matches in <10ms (time-boxed CI-safe); preg_match returns int, never silent false from backtrack-limit blowout (raise pcre.backtrack_limit? no — the compiled regex must not need it: assert `preg_last_error()` PREG_NO_ERROR after the run).
+- ExcludeSemanticsTest + FileScannerTest green.
+
+### once-S78 — Hostile exclude pattern cannot wedge the scanner
+
+- **Queue rank:** 34 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~10 min)
+- **Covers:** php-dup-finder-once-095
+- **Prereqs:** shell-S21 (bounded compiler port)
+
+**Files:** src/Scanning/FileScanner.php, tests/Unit/Scanning/FileScannerTest.php
+**Acceptance:** ReDoS probe (classic `(a+)+$`-style + unbounded ** chains) via --exclude + hostile .phpdup.json on /tmp: scan completes under fixed seconds budget; sugar-ignore parity test ported.
+
+### shell-S36 — UpdateCommand: honest download completion
+
+- **Queue rank:** 35 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~40 min)
+- **Covers:** php-dup-finder-shell-017
+- **Prereqs:** none
+
+**Files:** src/Cli/UpdateCommand.php, tests/Unit/Cli/UpdateCommandTest.php
+**Shared resources:** self-update surface (never run `phpdup update` against the checkout in tests — mock transport / local file server only, hard rule).
+**Acceptance:**
+- Unit (test seam over stream resource): mid-read `fread === false` before EOF → downloadFile false; Content-Length=1000 but 500 written → false + byte-count error; fwrite partial (returns < strlen) → false or resume-loop (lane choice, pinned); happy path unchanged.
+- Caller (:235) refuses signature/hot-swap when downloadFile false (assert no report-file rename onto a torn phar).
+- UpdateCommandTest green.
+
+### once-S05 — Update signature integrity rebuild (fail open → fail closed)
+
+- **Queue rank:** 36 of 247
+- **Severity mix:** critical=1
+- **Size:** HH (~150 min)
+- **Covers:** php-dup-finder-once-005
+- **Prereqs:** shell-S36 (download completion)
+
+**Files:** src/Cli/UpdateCommand.php, .github/workflows/release.yml, docs/RELEASE.md, tests/Unit/Cli/UpdateCommandTest.php
+**Shared resources:** release.yml chain (S05→S11→S12); docs/RELEASE.md content rewrite (file exists NOW — findings-era 'absent' note corrected); [OWNER: generate asymmetric keypair + secret custody]; phar-stub key separation note to S102 (XP-09).
+**Acceptance:** HMAC secret env moved to the SIGN step (proof: CI round-trip job signs artifact then verifies via UpdateCommand code-path, exit 0 on good / 1 on tamper); placeholder VERIFICATION_KEY → verification REFUSES (explicit error) instead of passing; raw-vs-base64 key forms identical both sides; `--allow-unsigned` deleted or confined to `--dev-allow-unsigned` with loud stderr; sha256 no longer trusted from same response as artifact (pin to signed manifest).
+
+### engine-S12 — Block::$canonical guard is statically dead / fatal for unnormalized blocks
+
+- **Queue rank:** 37 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-engine-023
+- **Prereqs:** none
+
+- **Files:** `src/Clustering/Clusterer.php` (:231-242, :237 site), `tests/Unit/Clustering/ClustererTest.php`
+  (new pin). Preferred fix = honest `isset()` guard (zero Block.php change). The alternate nullable-
+  property fix (`public ?Node $canonical = null` in `src/Extraction/Block.php`) is DISCOURAGED inside
+  this step: it makes every `$b->canonical` consumer across src/ (Refactor, Reporting, Parallel, Tui)
+  possibly-null for phpstan → repo-wide annotation churn and cross-group collision with S18; if the
+  executor prefers it, it becomes its own follow-up with those audits.
+- **Shared resources:** none if isset chosen; Block.php docblock if not.
+- **Acceptance:** unit feeding an unnormalized Block (never through Normalizer) into
+  `generateCandidatePairs` → skipped, no `Error` fatal; existing 'Typed property' grep proves the
+  fatal previously possible; `--filter Clusterer` green; phpstan still level-6 clean without
+  baseline additions.
+
+### engine-S13 — UnionFind answers "impossible id" with undefined behavior
+
+- **Queue rank:** 38 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-engine-049
+- **Prereqs:** engine-S12 (Clusterer file chain).
+
+- **Files:** `src/Clustering/Clusterer.php` (edges loop :382-408 + `final class UnionFind` :818+),
+  `tests/Unit/Clustering/ClustererTest.php`.
+- **Shared resources:** none.
+- **Acceptance:** unit: edge referencing an id absent from the index → RuntimeException naming the
+  id (or `find` throws LogicException per fix option) under `declare(strict_types=1)` — no
+  undefined-key warning, no TypeError (phpunit failOnWarning=true makes the old shape fail loudly
+  too — pin both the guard and the clean throw).
+
+### engine-S26 — `--no-cache` must actually disable AST disk-cache writes on the preprocess path
+
+- **Queue rank:** 39 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-engine-019
+- **Prereqs:** engine-S23b (same-file knowledge; also S25's policy makes the escape-hatch fix
+
+- **Files:** `src/Parallel/PreprocessWorker.php:86` (construct `new AstCache('')` when cache
+  disabled — `isEnabled()` :34-37 already no-ops), threading source (`src/Pipeline/Stages/PreprocessStage.php`
+  constructor area, possibly `Config` if the worker needs a flag — cross-group shell files, minimal edit),
+  `tests/Unit/Parallel/PreprocessWorkerIsolationTest.php`.
+  coherent). NOT Command.php help-text (shell group's FUZZ-X02 row — do not touch :127).
+- **Shared resources:** none.
+- **Acceptance:** unit: worker with cache disabled leaves the cache dir byte-empty (no new files)
+  yet completes fingerprinting from fresh parses; mirror of SEC-02 proof: decoy planted + `--no-cache`
+  → decoy NOT served end-to-end; `--filter PreprocessWorker` + Pipeline suites green.
+
+### engine-S28 — PluginRegistry constructs arbitrary autoloadable classes before the interface check
+
+- **Queue rank:** 40 of 247
+- **Severity mix:** medium=1 low=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-engine-021, php-dup-finder-engine-022
+- **Prereqs:** none
+
+- **Files:** `src/Normalization/PluginRegistry.php:44-50`, `tests/Unit/Normalization/PluginRegistryTest.php`,
+  (autoloadable fixture class under `tests/Fixtures/` — engine-safe new file).
+- **Shared resources:** the untrusted-config policy layer belongs to the once group (Outside row) —
+  this step is mechanism-only (`is_subclass_of` gate before `new`, try/catch(\Throwable) wrap →
+  RuntimeException naming the config entry).
+- **Acceptance:** unit: fixture class with a side-effecting (marker-writing) argumentless
+  constructor → marker file NEVER created, descriptive RuntimeException; constructor requiring
+  args → wrapped RuntimeException naming the FQCN, not a bare ArgumentCountError; non-plugin
+  behavior otherwise unchanged; `--filter PluginRegistry` green.
+
+### engine-S32 — --low-memory 32-bit XOR-folded gram keys: collision bound + docblock claim
+
+- **Queue rank:** 41 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-engine-042
+- **Prereqs:** none
+
+- **Files:** `src/Fingerprint/CompactNgramBag.php:30-38`, `src/Fingerprint/NgramFingerprint.php:74-79`
+  (comment), `tests/Unit/Fingerprint/CompactNgramBagTest.php`, `tests/Integration/FingerprintModeAcceptanceTest.php`.
+- **Shared resources:** low-memory bag values are persisted in cached blocks (same roster concern
+  as S18/S25 — if S18 already bumped versions, piggyback; else bump).
+- **Acceptance:** unit: pack/unpack 64-bit positive key equality for high-bit digests; fold-collision
+  pair from the doc's example now distinct; ≪1% claim corrected to corpus-wide birthday math or
+  obsolete (keys 64-bit); `--filter 'CompactNgram|FingerprintMode'` green.
+
+### engine-S37 — SqlTableExtractor: bracket residue + string-unaware CTE paren walker
+
+- **Queue rank:** 42 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-engine-048
+- **Prereqs:** none
+
+- **Files:** `src/Normalization/SqlTableExtractor.php` (cleanIdentifier :130-190,
+  stripLeadingCte :82-110), `tests/Unit/Normalization/SqlTableExtractorTest.php`.
+  land independently, values-only).
+- **Shared resources:** none.
+- **Acceptance:** unit table: `FROM [users],` → rejected-or-cleaned, never leaked `[users]` (reject
+  regex extended to `[]"\`); CTE body containing `'a(b'` → prefix strip still correct (string-span
+  skip or balance gate); null-ish degrade preserved otherwise; suites green.
+
+### engine-S38 — IdentifierIds::strip regex hot path (compounds S09)
+
+- **Queue rank:** 43 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-engine-053
+- **Prereqs:** none
+
+- **Files:** `src/Util/IdentifierIds.php:44-53`, `tests/Unit/Util/IdentifierIdsTest.php`.
+- **Shared resources:** none — stream VALUES must be identical (fingerprint stability); assert.
+- **Acceptance:** property unit: old preg vs new str_ends_with/ctype walk equal on random +
+  adversarial token lists (`N9N9`, digits-only, unicode); micro-bench disclosed; Apted suites green.
+
+### engine-S39 — SerializedClassAllowList auto-trusts the entire PhpParser\ prefix
+
+- **Queue rank:** 44 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-engine-058
+- **Prereqs:** engine-S23b (AstCache/TokenCache real-blob tests re-run after tightening; the
+
+- **Files:** `src/Persistence/SerializedClassAllowList.php:52-85`,
+  `tests/Unit/Persistence/SerializedClassAllowListTest.php`.
+  filter must not break legitimate decode).
+- **Shared resources:** this list is consumed by both caches AND WorkerPool fork transport
+  (shell-group audit memo notes it) — tightening affects all three; run Parsing + Parallel suites.
+- **Acceptance:** unit: allowed set = `is_subclass_of(PhpParser\Node)` + Token (+ whatever real
+  blobs need — enumerate, e.g. Attribute classes; document any widening explicitly); new test
+  fails if any allowed class declares `__destruct|__wakeup|__unserialize`; end-to-end cached analyze
+  (cold+warm) and a `--workers 2` run still pass.
+
+### output-S07 — CliReporter cheapness: totals once, table rows batched
+
+- **Queue rank:** 45 of 247
+- **Severity mix:** low=2
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-output-054, php-dup-finder-output-060
+- **Prereqs:** none
+
+- Covers: 054, 060
+- Files: `src/Reporting/CliReporter.php`, `tests/Unit/Reporting/CliReporterVerbosityTest.php`, `tests/Unit/Reporting/CliReporterHonestyTest.php`
+- Size: MM (45 min)
+- Prereqs: none — but keep ahead of S19 (same file, scrub pass).
+- Conflicts: CliReporter also in S11 (threshold guards adjacent), S19, S27 (absence render).
+- Acceptance: `--filter CliReporter` (both suites) — CLI render bytes for a synthetic Report identical before/after (capture-and-diff in test); new test asserts clusters==N table via one `rows()` call (reflection or output byte-equality against old shape); GATE.
+
+### output-S15 — MutationTester: probe accounting, honest clean verdicts
+
+- **Queue rank:** 46 of 247
+- **Severity mix:** medium=1
+- **Size:** HH (~45 min)
+- **Covers:** php-dup-finder-output-031
+- **Prereqs:** none
+
+- Covers: 031
+- Files: `src/Validation/MutationTester.php`, `tests/Unit/Validation/MutationTesterTest.php` (new — class currently has zero test coverage)
+- Size: HH (45 min)
+- Prereqs: none.
+- Acceptance: `--filter MutationTesterTest` — cluster with N null-AST members yields reason string "X of Y probed (K unprobed: AST not loaded)" and NO clean verdict when K>0; all-unprobed ⇒ refusal verdict, not `[]`; GATE.
+
+### shell-S14 — Fork-zone APTED parity: thread `--ted-weights` into PairScoreWorker
+
+- **Queue rank:** 47 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-shell-004
+- **Prereqs:** none
+
+**Files:** src/Parallel/PairScoreWorker.php, src/Pipeline/Stages/ClusterStage.php, tests/Unit/Parallel/PairScoreWorkerTedParityTest.php (new), tests/Unit/Clustering/TedSizeGateTest.php (ctor call check only)
+**Shared resources:** ClusterStage.php file (chains before S30/S37); new scalar ctor param must honor Socketpair Law (string model id — fine); golden suite runs default weights → MUST stay byte-identical.
+**Acceptance:**
+- New parity test: small fixture corpus, non-default `--ted-weights` model, scorePairs forked (workers>1, ≥64 pairs forced via fixture or injected) vs `workers:1` → identical edge list; RED before the threading, GREEN after (mutation-proof in report).
+- Probes: `bin/phpdup analyze <corpus> --ted-weights=<alt> --workers=1 --json /tmp/a.json` vs `--workers=4 --json /tmp/b.json` → `diff` identical.
+- Golden suite byte-identical; phpstan/psalm clean.
+
+### once-S25 — --ted-weights fork-path closure + Clusterer docblock truth
+
+- **Queue rank:** 48 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~15 min)
+- **Covers:** php-dup-finder-once-028
+- **Prereqs:** shell-S14 (PairScoreWorker wiring core)
+
+**Files:** src/Clustering/Clusterer.php, src/Parallel/PairScoreWorker.php, tests/Unit/Clustering/ClustererTest.php
+**Shared resources:** PairScoreWorker after shell chains.
+**Acceptance:** serial-vs-fork byte-identity test with non-default weights (shell-S14 owns parity; this step adds the weights-specific case + fixes 'mirrored byte-for-byte' docblock at Clusterer:718 to cite the real mirror).
+
+
+- **Phase-4 Outside merge:** shell's (engine) row — the Clusterer.php:723 serial scoring path gets the fork/serial parity test that shell-S14 ships for the worker side; add the weights-specific serial case here (this step already owns the Clusterer docblock truth fix).
+
+### shell-S23 — `--diff-base`: argv-safe git invocation, per-root repo, honest failure
+
+- **Queue rank:** 49 of 247
+- **Severity mix:** high=1 low=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-shell-003, php-dup-finder-shell-040
+- **Prereqs:** none
+
+**Files:** src/Pipeline/Stages/ScanningStage.php, src/Cli/Command.php, tests/Unit/Pipeline/Stages/ScanningStageTest.php
+**Shared resources:** Command.php :667-670 scanError-return site (S24/S34 chain behind this); git-subprocess posture report-only in CI (no fixture git repos needed in-repo — tests use tmp init'd repos; keep hermetic); exit-code note: git failure now aborts EARLY (was: full run then exit 2 — same exit code, different timing; CLI.md table unchanged).
+**Acceptance:**
+- Probe: `--diff-base='--output=/tmp/S23PWNED'` → NO file created (neither `/tmp/S23PWNED` nor `..HEAD` variant), exit 2 with clean message (`--` separator makes git refuse the ref).
+- Unit: scanError set → stage aborts pipeline BEFORE extraction (assert no "scanning → N files → analyzing" continuation; early-exit posture); `2>&1` removed — git's stderr no longer parsed as filenames (feed a warning-producing ref: assert error surfaced via scanError, list unaffected); multi-root + diff-base → per-root `git -C` or documented refusal (lane choice, pinned by test).
+- ScanningStageTest green; `--diff-base=HEAD~1` happy-path probe on a temp git repo unchanged.
+
+### once-S34 — --diff-base honors named roots, repo-relative git, unicode, empty cohort
+
+- **Queue rank:** 50 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-once-038
+- **Prereqs:** shell-S23 (git -C + argv-safe core)
+
+**Files:** src/Cli/Command.php, src/Scanning/FileScanner.php, tests/Unit/Scanning/FileScannerTest.php
+**Shared resources:** FileScanner late chain; CLI.md diff-base rows.
+**Acceptance:** git fixture in /tmp: analyze named-root subdir w/ --diff-base HEAD~1 → cohort = changed files under that root only (was FULL scan), `core.quotePath=true` unicode filename maps and is diffed, empty changed-cohort → exit 2 + message.
+
+### shell-S32 — Register the six orphan db-aware symbol packs
+
+- **Queue rank:** 51 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-shell-037
+- **Prereqs:** none
+
+**Files:** src/Cli/ProjectProfileDetector.php, tests/Unit/Cli/ProjectProfileDetectorTest.php
+**Shared resources:** profiles/db-aware-*.json files (read-only here); AGENTS.md packs list already claims parity (no edit — caliber-managed; report row if drift found); add-db-symbol-pack skill ritual (composer-package signal + KNOWN_PROFILES ordering) governs the fix.
+**Acceptance:**
+- Unit: each of db-aware-laravel/-codeigniter/-laminas/-yii/-myadmin/-myadmin-orm detected from its composer marker in a fixture; KNOWN_PROFILES count 23→29 with set-equality pin against `listAvailable()` scan of profiles/ (kills the class permanently); `--profile=auto` on a laravel-marker tmp dir → db-aware-laravel applied (probe exit 0 + profile-mention in debug or JSON).
+- ProjectProfileDetectorTest green.
+
+### output-S02 — shared Json::encode helper; kill false-into-string encode class
+
+- **Queue rank:** 52 of 247
+- **Severity mix:** high=1
+- **Size:** HH (~60 min)
+- **Covers:** php-dup-finder-output-012
+- **Prereqs:** none
+
+- Covers: 012
+- Phase-5 r1 (I10/D4): `tests/Golden/` token stripped — this lane is verify-only (`goldens byte-identical (GATE; no UPDATE_SNAPSHOTS run)` in acceptance); any witnessed movement regens under the regen-window law, disclosed.
+- Files: `src/Util/Json.php` (new), `src/Reporting/JsonReporter.php`, `src/Reporting/SarifReporter.php`, `src/Reporting/GitLabSastReporter.php`, `src/Reporting/TimeseriesReporter.php`, `tests/Unit/Util/JsonTest.php` (new)
+- Size: HH (60 min)
+- Prereqs: none.
+- Conflicts: JsonReporter/Sarif/GitLab/Timeseries also in S03/S05/S20/S22/S38/S41 — schedule S02 early (mechanical).
+- Acceptance: unit `--filter JsonTest` (invalid UTF-8 and unencodable resources: throws named exception, never returns false/empty); `grep -n "json_encode" src/Reporting/{Json,Sarif,GitLabSast,Timeseries}Reporter.php` shows only `Json::encode(`; Timeseries reporter with a hostile-utf8 name emits either a substituted record or a named error — not an empty line; goldens byte-identical (GATE; no UPDATE_SNAPSHOTS run). If Command maps the new exception to a `phpdup:` error line, that's a (xg: src/Cli/Command.php) row — otherwise generic exit 1 is acceptable for now.
+
+### once-S52 — SARIF $schema URL that resolves
+
+- **Queue rank:** 53 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~10 min)
+- **Covers:** php-dup-finder-once-058
+- **Prereqs:** output-S02
+
+**Files:** src/Reporting/SarifReporter.php, tests/Unit/Reporting/SarifReporterTest.php
+**Acceptance:** constant swapped to docs.oasis-open.org errata path; test asserts URL shape; fetchability verified once (web probe row in report; no network in test).
+
+### output-S03 — central Version constant, five drifted literals gone
+
+- **Queue rank:** 54 of 247
+- **Severity mix:** medium=1
+- **Size:** HH (~45 min)
+- **Covers:** php-dup-finder-output-038
+- **Prereqs:** output-S02  *(Phase-4 adjustment; see Merged & re-routed)*
+
+- Covers: 038
+- Files: `src/Util/Version.php` (new), `src/Reporting/JsonReporter.php`, `src/Reporting/TimeseriesReporter.php`, `src/Reporting/SarifReporter.php`, `src/Reporting/GitLabSastReporter.php`, `src/Reporting/CheckstyleReporter.php`, `tests/Unit/Util/VersionTest.php` (new), `docs/JETBRAINS_PLUGIN.md` (version-cell truth if it cites 0.x)
+- Size: HH (45 min)
+- Prereqs: S02 (same reporter files, encode shape first).
+- Conflicts: (xg: shell src/Cli/UpdateCommand.php:487 '0.0.0' fallback — Outside row) — the central constant should feed it; report as collected row.
+- Acceptance: `grep -rn "'0\.1\.0'\|'0\.2\.0'\|\"phpdup-0" src/` → zero hits; VersionTest asserts all five payloads carry `Version::STRING` on one synthetic Report; goldens: `phpdup_version` is absent from golden files (verified) → byte-identical; GATE.
+
+### output-S05 — TimeseriesReporter: packed-refs sha, repo-root derivation, UTC stamps
+
+- **Queue rank:** 55 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-output-050
+- **Prereqs:** output-S02  *(Phase-4 adjustment; see Merged & re-routed)*
+
+- Covers: 050
+- Files: `src/Reporting/TimeseriesReporter.php`, `tests/Unit/Reporting/TimeseriesReporterTest.php`
+- Size: MM (45 min)
+- Prereqs: S02.
+- Conflicts: (xg: engine UTC-in-artifacts law — Outside row; report-only rider here). Config::paths availability at this call site confirmed during implementation; constructor may need the roots passed → ReportStage wiring row (xg).
+- Acceptance: `--filter TimeseriesReporterTest` — new tests against a fixture repo with `git pack-refs --all` resolve the sha; run from a non-root cwd still resolves via scan root; emitted `timestamp`/`commit_ts` fields end in `Z` or `+00:00`; GATE.
+
+
+- **Phase-4 merge (law):** engine/determinism out-of-group row — 'timestamps inside golden/serial artifacts must be UTC' — this step ships the Timeseries half; the law is recorded in ## Program laws for every artifact-touching lane (once-S59 carries the GitLab-clock half).
+
+### once-S38 — Non-UTF-8 end-to-end (no 255 in any JSON family member)
+
+- **Queue rank:** 56 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~15 min)
+- **Covers:** php-dup-finder-once-042
+- **Prereqs:** output-S02 (Util/Json core), output-S05
+
+**Files:** src/Reporting/TimeseriesReporter.php, tests/Unit/Reporting/TimeseriesReporterTest.php, tests/Integration/CliSmokeTest.php
+**Shared resources:** Timeseries w/ S101.
+**Acceptance:** /tmp fixture w/ Latin-1 bytes in filename AND content: json/sarif/gitlab/timeseries runs exit 0/1-by-contract (never 255), emitted JSON parses strict; Timeseries no-blank-line-on-encode-false pin (or full failure honest).
+
+### shell-S02 — Worker results dir + job-id hardening
+
+- **Queue rank:** 57 of 247
+- **Severity mix:** medium=2
+- **Size:** MM (~60 min)
+- **Covers:** php-dup-finder-shell-021, php-dup-finder-shell-022
+- **Prereqs:** shell-S01 (same spawn/processJob regions; worker ctor shape just changed)
+
+**Files:** src/Cli/ServeCommand.php, src/Server/AnalysisWorker.php, tests/Unit/Server/ServeCommandTest.php, tests/Unit/Server/ApplicationTest.php
+**Shared resources:** /tmp surface (`phpdup-results-<pid>`, `phpdup-worker-<pid>.sock`); docs/SERVER.md results-path row (rider; restated in S09); 052(c) roll-up leg deferred to S39.
+**Acceptance:**
+- Results dir created 0700; pre-existing foreign-owned dir of the same name → refuse at startup with an error (exit 1 runtime posture, not silent adoption); `stat -c %a` = 700 on a live serve run's results dir.
+- Unit: jobId not matching the queue's own `/^[0-9a-f]{16}$/` mint format → write refused + error ack (no `../../` path escape: assert the `RUN <evil-id>` line writes nothing outside resultDir); `file_put_contents` failure → ack not "OK" (worker reports failure).
+- cleanupWorker sweeps the results dir (unit: after shutdown handler, dir gone).
+
+
+- **Phase-4 note:** ENGINE-SEC out-of-group-1's phpdoc-worker socket-pair confirmation leg rides shell-S39(c) (bind race) + engine-S39 (allow-list).
+
+### shell-S07 — Worker request line: bounded read
+
+- **Queue rank:** 58 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~15 min)
+- **Covers:** php-dup-finder-shell-049
+- **Prereqs:** shell-S02 (processJob socket-read region; jobId check lands there first)
+
+**Files:** src/Server/AnalysisWorker.php, tests/Unit/Server/ApplicationTest.php
+**Shared resources:** cap must align with Application::MAX_BODY_BYTES scale (same constant story; S08 changes ack timing on this file after).
+**Acceptance:**
+- Unit: feed a line of cap+1 bytes on a socketpair → worker replies error, does not buffer it whole, stays alive for the next valid job.
+- `stream_get_line`/`fgets` maxlen visible in code; no regression of the 022 jobId validation.
+
+### shell-S03 — SIGINT/SIGTERM on `phpdup serve`: reap worker, clean /tmp, exit 130
+
+- **Queue rank:** 59 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-shell-016
+- **Prereqs:** shell-S02 (cleanupWorker/result-dir region shared; S02's sweep is what the signal path must now trigger)
+
+**Files:** src/Cli/ServeCommand.php, src/Server/AnalysisWorker.php, bin/phpdup-worker, tests/Unit/Server/ServeCommandTest.php
+**Shared resources:** ServeCommand accept loop :185-198 (S04 extends it next); worker self-exit needs a parent-liveness check (getmypid ppid poll) — no new wire.
+**Acceptance:**
+- Live probe: start `phpdup serve`, record pids, `kill -INT` the server → server exits 130, `pgrep -f phpdup-worker` shows the child gone within ~1s, socket + results dir removed (was: orphaned worker + litter).
+- `pcntl_signal(SIGINT/SIGTERM)` installed; `pcntl_signal_dispatch()` runs on EVERY accept-loop iteration including the 30s-timeout `continue` path (assert by code inspection + a unit that the dispatch sits before `continue`).
+- Worker self-exits when its parent dies (kill server hard with -9 → orphan worker terminates within one poll interval).
+- If pcntl unavailable: graceful no-op + doc note (same posture as WorkerPool fallbacks).
+
+### shell-S04 — Per-client read timeout: one stalled client must not freeze the daemon
+
+- **Queue rank:** 60 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~40 min)
+- **Covers:** php-dup-finder-shell-007
+- **Prereqs:** shell-S03 (accept-loop region serialization)
+
+**Files:** src/Cli/ServeCommand.php, tests/Unit/Server/ServeCommandTest.php
+**Shared resources:** request-deadline constant (documented in S09's SERVER.md pass).
+**Acceptance:**
+- Probe: client A opens the socket, sends bytes but never completes the request; client B's `GET /healthz` returns 200 within the timeout window + margin (was: blocked until A closes).
+- `stream_set_timeout` + `stream_get_meta_data()['timed_out']` checked in BOTH read loops (header loop and body loop); timed-out client gets a 408 (or clean close — pick one, pin it in a test) and the loop continues.
+- Unit: a fake stream fixture that stalls → handleClient path returns within configured bound (hermetic, no wall-clock sleeps >2s so CI stays green).
+
+### once-S43 — serve concurrency posture decided; /healthz immune to slow-loris
+
+- **Queue rank:** 61 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~40 min)
+- **Covers:** php-dup-finder-once-047
+- **Prereqs:** shell-S04
+
+**Files:** src/Cli/ServeCommand.php, docs/SERVER.md
+**Shared resources:** [OWNER: keep serial + documented backlog vs worker-per-conn — default keep-serial]; SERVER.md concurrency section w/ S97.
+**Acceptance:** listen backlog set + documented; manual probe: stalling one client (netcat half-open) → GET /healthz still 200 within 1 s; documented known-serial limitation + sizing guidance row.
+
+### shell-S05 — HTTP framing: anchored Content-Length, duplicate rejection, LF leniency, no chunked
+
+- **Queue rank:** 62 of 247
+- **Severity mix:** medium=1 low=1
+- **Size:** MM (~50 min)
+- **Covers:** php-dup-finder-shell-033, php-dup-finder-shell-047
+- **Prereqs:** shell-S04 (same raw-request read/parse region :228-265)
+
+**Files:** src/Cli/ServeCommand.php, tests/Unit/Server/ServeCommandTest.php
+**Shared resources:** MAX_BODY_BYTES semantics in Application::jsonBody stays authority (cross-check only, no edit).
+**Acceptance:**
+- Unit: `X-Content-Length: 999999999` ahead of real `Content-Length: 12` → gate uses the real one (no 413 hijack); two headers with DIFFERENT Content-Length values → 400; `Content-Lengthings:` does not match the anchored regex.
+- Probe: `printf 'GET /healthz HTTP/1.1\n\n' | (one-shot PTY nc)` → 200 immediately (bare-LF accepted, was hang-until-close); a request with `Transfer-Encoding: chunked` → 400 with explanatory body.
+- extractHeaders duplicate policy (reject-on-conflict for Content-Length, documented last-wins for others) pinned by a test.
+
+### shell-S15 — Preprocess streaming: generator task, per-file yield
+
+- **Queue rank:** 63 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~60 min)
+- **Covers:** php-dup-finder-shell-008
+- **Prereqs:** none
+
+**Files:** src/Pipeline/Stages/PreprocessStage.php, src/Parallel/PreprocessWorker.php, tests/Unit/Pipeline/Stages/PreprocessStageTest.php, tests/Unit/Parallel/PreprocessWorkerIsolationTest.php
+**Shared resources:** PreprocessStage.php + PreprocessWorker.php file locks; runStreaming contract (already proven with generator tasks by the pair-score path — mirror ClusterStage.php:362-371 shape); YIELD_EVERY=32 repaint semantics preserved.
+**Acceptance:**
+- Unit: chunk of k files, child task generator yields per file/sub-batch — first record observable before the chunk's last file is processed (arrival-order pin like PERF's early-arrival metric, expressed deterministically); PreprocessWorker `process()` keeps its array API for serial callers OR gains a generator twin (lane choice — both callers checked).
+- Full Unit suite green; Golden byte-identical (records identical, only arrival order changes).
+- Lane report: RSS/wall delta note (PERF measured 24.4% early-arrival with generator) — report-only, no CI assert.
+
+### shell-S16 — `low_memory`: per-dir capture + both cache keys
+
+- **Queue rank:** 64 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-shell-027
+- **Prereqs:** shell-S15 (both rewrites sit in the toolFor/process region :100-143)
+
+**Files:** src/Parallel/PreprocessWorker.php, src/Pipeline/Stages/PreprocessStage.php, tests/Unit/Parallel/PreprocessWorkerIsolationTest.php, tests/Unit/Persistence/IndexStoreTest.php
+**Shared resources:** IndexStore cache-key change (invalidates existing on-disk caches once — expected, documented in report; pairs with S18's format change story); ConfigLoader/Config per-dir admit stays (flag stays admitted).
+**Acceptance:**
+- Unit: per-dir `.phpdup.json` with `low_memory:true` on subdir B only → files in B fingerprint with compact bags, A files with 64-bit (assert via tool identity or fingerprint shape) — RED before the capture fix.
+- Unit: corpus cached under `--low-memory`, re-run without → MISS (config-key includes lowMemory; same for toolFor sprintf key).
+- No PARSER_VERSION bump if key-namespace route taken (precedent: fingerprint_id_mode comment) — state choice in report.
+
+### shell-S17 — Per-dir override hot path: memoized effectiveFor / group-keyed tooling
+
+- **Queue rank:** 65 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-shell-035
+- **Prereqs:** shell-S16 (same :100-124 key region settled first; Config.php chains: S22/S27 edit it later — this goes first among Config writers here)
+
+**Files:** src/Cli/Config.php, src/Parallel/PreprocessWorker.php, tests/Unit/Cli/PerDirectoryConfigTest.php, tests/Unit/Parallel/PreprocessWorkerIsolationTest.php
+**Shared resources:** Config.php file lock (S22/S27 follow here); memo must not break the 60-field withOverrides semantics (derived Configs are value-identical per dir); no behavior delta allowed.
+**Acceptance:**
+- Unit: same-directory files reuse one derived Config / one tooling key (counter via test seam: withOverrides-invocation count == distinct matched groups, not file count); outputs byte-identical to pre-change run (probe `--json` diff on a per-dir fixture corpus).
+- Full Unit green; Golden byte-identical; lane report cites the ~2ms/file elimination (report-only perf note).
+
+### engine-S30 — ShapeletSketch fallbackPopcount: wrong, undocumented ext-bcmath, duplicate of BloomFilter's table
+
+- **Queue rank:** 66 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~75 min)
+- **Covers:** php-dup-finder-engine-038
+- **Prereqs:** none
+
+- **Files:** `src/Fingerprint/ShapeletSketch.php:76-113`, `src/Index/BloomFilter.php:104-136`
+  (popcount hoisted to a shared `src/Util` helper — new small file + both classes call it),
+  `tests/Unit/Fingerprint/ShapeletSketchTest.php`, `tests/Unit/Index/BloomFilterTest.php`.
+- **Shared resources:** none (sketch VALUES on gmp hosts unchanged; non-gmp hosts get corrected —
+  no composer.json edit: bcmath branch deleted, not declared).
+- **Acceptance:** unit: table popcount == gmp path on edge vectors (63-bit, 64-bit high-bit set,
+  zero); `extension_loaded('gmp')` hoisted (static lookup); docblock SWAR lie replaced; full suites
+  green on this host (gmp present) and a forced-fallback unit (call the table path directly).
+
+### engine-S24 — Cache key honesty (parser version + PHP major) and sha1_file memoization
+
+- **Queue rank:** 67 of 247
+- **Severity mix:** medium=1 low=1
+- **Size:** HH (~90 min)
+- **Covers:** php-dup-finder-engine-016, php-dup-finder-engine-050
+- **Prereqs:** engine-S23b (file chain).
+
+- **Files:** `src/Parsing/AstCache.php` (VERSION :24 / keyFor :89-99: derive marker from
+  `Composer\InstalledVersions::getPrettyVersion('nikic/php-parser')` + `PHP_VERSION_ID` major;
+  path→sha1 memo), `src/Parsing/TokenCache.php` (same memo/derivation),
+  `tests/Unit/Parsing/AstCacheTest.php`, `tests/Unit/Parsing/TokenCacheTest.php`,
+  `tests/Unit/Extraction/BlockAstLoaderTest.php` (consumer).
+- **Shared resources:** key change invalidates all existing caches (acceptable — correctness goal);
+  AGENTS.md/CLAUDE.md prose repeats the false promise → caliber-managed files, do NOT edit: emit a
+  report-only closeout row.
+- **Acceptance:** unit: keyFor output contains `nikic/php-parser` pretty version + PHP major; second
+  keyFor() on same path does not re-hash (memo — assert via file mtime touch after first call: blob
+  still matches / counter seam); cache written by a "5.0"-labeled key is not read by a "5.9"-labeled
+  run (two-marker identity unit); suites green.
+
+### once-S10 — PHP floor + extension truth in composer/README/CI
+
+- **Queue rank:** 68 of 247
+- **Severity mix:** high=2
+- **Size:** HH (~90 min)
+- **Covers:** php-dup-finder-once-012, php-dup-finder-once-013
+- **Prereqs:** engine-S30 (bcmath branch deletion outcome), output-S01 (psalm pin truth)
+
+**Files:** composer.json, README.md, .github/workflows/ci.yml
+**Shared resources:** composer.json serial S10→S11; ci.yml serial S10→S11→S56→S93→S13; AGENTS/CLAUDE stale 8.1-floor prose → REPORT-ONLY rows (S80 packet); psalm 6.20.9 docs truth also touches docs/RELEASE.md row (S05 window — coordinate append).
+**Acceptance:** `composer validate` passes; ext matrix: gmp demoted to suggest + guarded fallback verified (php -d disable_functions-free run WITHOUT gmp completes notify fixture — /tmp probe), bcmath declared-or-dropped per engine-S30, mbstring declared, react/promise + psr/log declared explicitly, curl help row removed (never used); README badge `php-8.3` matches `^8.3`; ci installs gmp+mbstring; docs grep: no 'psalm 6.0.0' or 'PHP 8.1' version claims left outside historical notes.
+
+
+- **Phase-4 Outside merge:** output's (once, DOCSYNC) row — composer.json `^8.3` vs CLAUDE.md/AGENTS.md 'PHP 8.1 floor' — this step owns the manifest truth; doc prose rides the S80 packet.
+
+### once-S40 — Windows path portability at the boundary
+
+- **Queue rank:** 69 of 247
+- **Severity mix:** high=1
+- **Size:** HH (~90 min)
+- **Covers:** php-dup-finder-once-044
+- **Prereqs:** shell-S20, shell-S21, output-S13
+
+**Files:** src/Scanning/FileScanner.php, src/Util/PathCanonical.php, src/Reporting/FindingId.php, src/Reporting/BaselineStore.php, tests/Unit/Scanning/FileScannerTest.php
+**Shared resources:** FindingId w/ engine rulings (S31 context); ids/baselines cross-run portability note to S50.
+**Acceptance:** unit-level: relpath maps `\` and drive-prefixed forms → canonical forward-slash ids; underRoots comparison separator+case normalized; fabricated CWD-separator probe on /tmp; a stated MANUAL Windows row (owner box) since no runner — behaviour proven via separator-injection units, not claims.
+
+### output-S25 — AntiUnifier seed trials: drop wasted clone, carry best trial forward
 
 - **Queue rank:** 70 of 247
+- **Severity mix:** high=1
+- **Size:** HH (~90 min)
+- **Covers:** php-dup-finder-output-014
+- **Prereqs:** none
+
+- Covers: 014
+- Files: `src/Refactor/AntiUnifier.php` (pickBestSeed :165-190, trialUnifyHoleCount :204-217, unify :107-127), `tests/Unit/Refactor/AntiUnifierTest.php`
+- Size: HH (90 min)
+- Prereqs: none — start of the AntiUnifier serial chain (S25→S26→S27→S28→S30; S49 later consumes).
+- Acceptance: `--filter AntiUnifierTest` — chosen seed + hole set identical to pre-change on all fixture clusters (pin); trial path no longer calls `Normalizer::deepClone` (`grep` structure check + spy); unify() walks ≤1 full extra pass; goldens byte-identical; GATE.
+
+### shell-S26 — Per-dir discovery: honor excludes, degrade malformed configs; config-file size cap + throwing JSON
+
+- **Queue rank:** 71 of 247
+- **Severity mix:** high=1 medium=1
+- **Size:** HH (~90 min)
+- **Covers:** php-dup-finder-shell-010, php-dup-finder-shell-029
+- **Prereqs:** none
+
+**Files:** src/Cli/ConfigLoader.php, tests/Unit/Cli/PerDirectoryConfigTest.php, tests/Unit/Cli/ConfigLoaderTest.php
+**Shared resources:** .phpdup.json discovery contract (malformed-file THROW → skip-note is a user-visible behavior change — disclose; a subdir file that USED to exit 2 now warns and continues — S31's docs and S24's exit-table pass must reflect); FileScanner exclude-prune pattern reuse (:86-90); 5.8× discovery-measure improvement report-only.
+**Acceptance:**
+- Unit: excluded dir (default `**/vendor/**`) containing a stale-key or broken `.phpdup.json` → never read (no throw, scan proceeds); included dir with broken JSON → skip note on STDERR + run continues (was: throw → exit 2); discovery skips unreadable dirs.
+- Unit: 2MB root phpdup.json → refused with size-cap error, exit 2; deep-nesting JSON → error message names the real JsonException (JSON_THROW_ON_ERROR at both :25 and :435 legs).
+- Perf probe (report-only): discovery wall on a 25k-entry tree ≤ FileScanner-class cost.
+
+### shell-S22 — Per-dir override admit-list: drop path/ref-bearing keys
+
+- **Queue rank:** 72 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-shell-026
+- **Prereqs:** shell-S26 (ConfigLoader same-file chain: discovery robustness lands first; also S10's workers-bound leg touched :685-690 — no region overlap with this step's :530-562, ordering only), shell-S17 (Config::withOverrides settled there before keys are removed from it)
+
+**Files:** src/Cli/ConfigLoader.php, src/Cli/Config.php, tests/Unit/Cli/PerDirOverrideBeltTest.php, tests/Unit/Cli/PerDirectoryConfigTest.php, docs/config-schema.json (per-dir section note)
+**Shared resources:** belt law (shapeOverrides-emitted == withOverrides-consumed: remove from BOTH sides or the belt test flips red); docs/config-schema.json per-dir notes (S31 re-derives the root mirror test after); .phpdup.json discovery-path contract.
+**Acceptance:**
+- Unit: per-dir `.phpdup.json` carrying `diff_base`/`baseline`/`baseline_out`/`debug_log` → RuntimeException "root-only" family message, exit 2 (same posture as fingerprint_id_mode refusals :443-499); keys removed from the derived-Config copy in Config::withOverrides; PerDirOverrideBeltTest updated to pin the new emitted-set.
+- Probe: planted subdir config with `debug_log` → `bin/phpdup analyze . → exit 2` naming the file and key.
+
+
+- **Phase-4 Outside merge:** ENGINE-SEC out-of-group 2 (debug_log/baseline/baseline_out/diff_base admitted per-dir) — this step's root-only refusal IS the fix; the confinement-check half lands via shell-S23 (diff_base git injection) + output-S52 (write confinement) + once-S29.
+
+### shell-S24 — Runtime option validation: invalid flags exit 2, numeric garbage rejected
+
+- **Queue rank:** 73 of 247
+- **Severity mix:** medium=2
+- **Size:** MM (~60 min)
+- **Covers:** php-dup-finder-shell-013, php-dup-finder-shell-014
+- **Prereqs:** shell-S23 (Command.php execute-tail region first writer), shell-S22 (ConfigLoader :134/:209 coerce region after admit-list)
+
+**Files:** src/Cli/Command.php, src/Cli/ConfigLoader.php, tests/Unit/Cli/NumericFlagCoercionTest.php, tests/Unit/Cli/CliDefaultShadowingTest.php, tests/Integration/CliSmokeTest.php, docs/CLI.md (exit-code table section)
+**Shared resources:** docs/CLI.md "Exit codes" + flags tables (first writer; S28/S25 follow); exit-contract: paths that printed an error line + exited 0 now exit 2 — pure contract tightening toward the documented rule (no doc-table CHANGE needed, but CLI.md flag rows' wording "errors are fatal" rider where flagged); Ranker.php:42 re-throw (Outside/output) loses its crash surface via this step — note for merge.
+**Acceptance:**
+- Probes (exact, against `php bin/phpdup`): `--stage=blah` → exit 2 + error line (was 0 + full run); `--pager=banana` → 2; `--theme=nope` → 2; `--min-safety=2.0` → 2 BEFORE the pipeline runs (was: crash-1 after; assert short run time); `--limit=abc --min-safety=hot --max-memory=banana` → 2 (was 0); `--optional-blocks-containment=hot` → 2.
+- NumericFlagCoercionTest extended to the four flags (they join NUMERIC_KEYS or the coerce helper); valid values still pass; `--workers banana` unchanged.
+- Full Unit green; Golden byte-identical.
+
+### once-S49 — --limit docs + closure (0 = unlimited)
+
+- **Queue rank:** 74 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~10 min)
+- **Covers:** php-dup-finder-once-054
+- **Prereqs:** shell-S24
+
+**Files:** docs/CLI.md, tests/Unit/Cli/NumericFlagCoercionTest.php
+**Shared resources:** CLI.md window.
+**Acceptance:** validation fence (shell) confirmed; `--limit 0` documented 'show all', `--limit 1` shows exactly 1 cluster in CLI + JSON output.
+
+### once-S20 — Exit-2 admission closure for all four runtime options
+
+- **Queue rank:** 75 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~15 min)
+- **Covers:** php-dup-finder-once-023
+- **Prereqs:** shell-S24 (core validator)
+
+**Files:** src/Cli/Command.php, src/Reporting/Ranker.php, tests/Unit/Cli/NumericFlagCoercionTest.php
+**Shared resources:** Command.php leg; NumericFlagCoercionTest shared w/ S49.
+**Acceptance:** probe each: `--stage bogus`, `--pager 7`, `--profile nope`, `--theme nope`, `--min-safety 9`, `--limit abc` → exit 2 single clean error (was exit 0/1/trace); --min-safety validated at Config/Ranker boundary before use (no RuntimeException leak).
+
+### once-S19 — Default command: `phpdup src/` works; broken-form error text fixed
+
+- **Queue rank:** 76 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~40 min)
+- **Covers:** php-dup-finder-once-022
+- **Prereqs:** shell-S24
+
+**Files:** bin/phpdup, docs/CLI.md, README.md, tests/Unit/Cli/CliDefaultShadowingTest.php
+**Shared resources:** bin/phpdup shared w/ S30 (version stamp) — serialize S19 → S30; README quickstart row w/ S12/S95.
+**Acceptance:** `bin/phpdup src --json /tmp/o.json` runs analyze (setDefaultCommand enable=true, no-args falls to help not error); missing-path hint suggests valid form (verify vs shell-S24 wording); subcommand table lists init/serve/update.
+
+### shell-S27 — `apply` key: validate, then consume or drop (decide in-lane, record)
+
+- **Queue rank:** 77 of 247
+- **Severity mix:** medium=1 low=1
+- **Size:** MM (~40 min)
+- **Covers:** php-dup-finder-shell-015, php-dup-finder-shell-053
+- **Prereqs:** shell-S22 (shapeOverrides final admit list), shell-S24 (Command parseRuntimeOptions validation idiom lands first)
+
+**Files:** src/Cli/ConfigLoader.php, src/Cli/Config.php, src/Cli/Command.php, tests/Unit/Cli/ConfigLoaderTest.php, tests/Unit/Cli/PerDirOverrideBeltTest.php (if admitted-set shifts), docs/config-schema.json (if key kept — then add its property)
+**Shared resources:** validate() bool-legs family (:734-790); Command.php:220 catch-class widening (`\TypeError` → exit 2 — a class-level rule: any future ctor TypeError is a usage error; check no legitimate runtime TypeErrors were expected to crash raw — grep catches); key kept-vs-dropped is a §6-style decision row — implementer picks the validated+consumed posture (validate bool leg + `flag OR config` consumption in parseRuntimeOptions) since dropping a shipped key is breaking; S31 pins schema afterwards.
+**Acceptance:**
+- Probes: config file `"apply":"yes"` → `--validate-config` exit 2 (was 0 "config OK"); same file on a run → exit 2 with clean message (was: raw TypeError exit 255). `"apply":true` in config alone → apply-mode active (if consumed posture) — pin the chosen semantics in a unit; CLI flag still overrides.
+- Command.php:220-style catch converts a deliberate ctor TypeError fixture to exit 2 (unit).
+- Full Unit green; psalm baseline unchanged.
+
+### shell-S28 — Wire `--dry-run`; fill grouped-help gaps
+
+- **Queue rank:** 78 of 247
+- **Severity mix:** low=2
+- **Size:** MM (~30 min)
+- **Covers:** php-dup-finder-shell-039, php-dup-finder-shell-055
+- **Prereqs:** shell-S24, shell-S27 (same :529-530 apply/dry-run neighborhood; validation posture final)
+
+**Files:** src/Cli/Command.php, docs/CLI.md, tests/Unit/Cli/CliDefaultShadowingTest.php
+**Shared resources:** docs/CLI.md (adds the missing `--dry-run` flag row — table writer, batch with remaining riders from S24/S25); help-builder :167-173 list vs configure() parity (S55); apply plumbing already exists one layer below (RefactorPatchReporter dryRun arg).
+**Acceptance:**
+- Probe: `--help` grouped "Output / reports" block contains `--pager` and `--debug-log`; `bin/phpdup analyze --dry-run <path>` accepted; with apply posture active, dry-run=true keeps preview (behavior pin unit) and `--dry-run=false` changes it (unit exercising the read).
+- docs/CLI.md has a `--dry-run` row with default + semantics; no exit-code change.
+
+
+- **Phase-4 Outside merge:** ENGINE-FUZZ-X02 — reconcile the lying `--no-cache` option text at Command.php:127 with the engine-S26 behavior that now ships (worker path truly disables writes).
+
+### once-S06 — Stop the TUI printing the full CLI report on the alt screen
+
+- **Queue rank:** 79 of 247
+- **Severity mix:** critical=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-once-006
+- **Prereqs:** shell-S27, shell-S28  *(Phase-4 adjustment; see Merged & re-routed)*
+
+**Files:** src/Cli/Command.php, src/Pipeline/Stages/ReportStage.php
+**Shared resources:** Command.php lock ledger; pager-suppression flag = shared seam with S76; ReportStage touched later by S72 — coordinate order S06→S36→S72.
+**Acceptance:** `--tui` run under `script -qec`: raw stdout (od-dumped PTY capture) contains no CLI report body / pager spawn (assert via `ps` census for pager absence); file reporters still write; exit 0.
+
+### once-S07 — TUI surfaces pipeline errors and exits non-zero
+
+- **Queue rank:** 80 of 247
+- **Severity mix:** critical=1
+- **Size:** HH (~60 min)
+- **Covers:** php-dup-finder-once-007
+- **Prereqs:** once-S06
+
+**Files:** src/Tui/TuiRunner.php, src/Tui/PhpdupModel.php, tests/Unit/Tui/TuiRunnerTest.php, tests/Unit/Tui/PhpdupModelTest.php
+**Shared resources:** PhpdupModel chain (S07→S61→S62→S63→S72→S96); toast-queue consumer seam; error exit-class row to S95.
+**Acceptance:** injected throw at ClusterStage in unit → run() returns 1 (was 0); error panel/reason visible (model state assertion, not pixels); budget-exceeded shows remedy line consistent with CLI's.
+
+### once-S22 — --tui without TTY refuses; bogus theme no render
+
+- **Queue rank:** 81 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~20 min)
+- **Covers:** php-dup-finder-once-025
+- **Prereqs:** once-S06, shell-S24
+
+**Files:** src/Cli/Command.php, src/Tui/TuiRunner.php
+**Shared resources:** TuiRunner shared w/ S07 (serialize S07→S22→S75); Command leg.
+**Acceptance:** `bin/phpdup --tui ... | cat` → exit 2 early, zero alt-screen bytes in pipe (`od` proof), hint suggests default CLI; --theme bogus exit path (shell-S24) verified not reaching render.
+
+### once-S15 — One canonical --fail-on-impact semantic (gate honesty)
+
+- **Queue rank:** 82 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-once-018
+- **Prereqs:** shell-S24
+
+**Files:** .github/actions/phpdup/action.yml, src/Cli/Command.php, docs/CI.md, docs/CLI.md
+**Shared resources:** action.yml shared with S14; Command.php leg for gate; docs rows to S18/S95 window.
+**Acceptance:** single formula [OWNER: per-cluster max impact '>=' — recorded for Phase-5]: CLI and action.yml agree, gate name in outputs, jq missing → explicit fail (exit 1 runtime posture, not `&&`-chain 0); both docs say the same; probe: action step logic extracted to shell-less unit check with fixture JSON both sides.
+
+### once-S50 — Baseline: formula docs true, atomic writes, empty-file advice
+
+- **Queue rank:** 83 of 247
+- **Severity mix:** medium=2
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-once-055, php-dup-finder-once-056
+- **Prereqs:** output-S13, shell-S28
+
+**Files:** src/Reporting/BaselineStore.php, docs/CLI.md, tests/Unit/Reporting/BaselineStoreTest.php
+**Shared resources:** BaselineStore w/ S40 portability note; CLI.md example line.
+**Acceptance:** doc formula == sha256(underRoots path|structuralHash) (assert by recomputing one id in unit); `--baseline-file` empty or `[]` → actionable advice exit 2 (not 'not valid JSON' exit 1); write = tmp+rename+LOCK (concurrency unit two-writers no truncation); CLI.md baseline example never `cp` over user file.
+
+### shell-S25 — `--profile` failures fatal + auto-tune probe honors profile excludes
+
+- **Queue rank:** 84 of 247
+- **Severity mix:** high=1 low=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-shell-012, php-dup-finder-shell-043
+- **Prereqs:** shell-S24 (Command.php execute() region chain; shared failure-marker idiom from parseCliOverrides reused)
+
+**Files:** src/Cli/Command.php, src/Cli/AutoTuner.php, tests/Unit/Cli/AutoTunerTest.php, tests/Unit/Cli/ConfigLoaderTest.php (profile legs)
+**Shared resources:** Command.php; call-order change :209-219 (profile-before-tune) interacts with per-dir discovery? no; docs/CLI.md `--profile`/`--auto-tune` rows rider (report row; S28 batch-writes CLI.md).
+**Acceptance:**
+- Probes: `--profile=bogus` → exit 2 (was: error line + default run + exit 0); unreadable profile file path → exit 2; `--profile=auto` unaffected.
+- Unit: fixture with profile-excluded dir (laravel-style `vendor/` clone) sized to straddle the medium/large band → resolved band computed WITHOUT the excluded trees (assert exact_only flips accordingly); probe stays counting-only (stat budget — no third full walk: filesize only for candidates it must read, or reuse discovery counts; lane note).
+- AutoTunerTest + Unit green.
+
+
+- **Phase-4 Outside merge:** ENGINE-PDDETECT out-of-group 2 — AutoTuner tiny-corpus tier (:71) relaxes max_df to 0.5 which stays dead for N ≤ 3: floor the tier's candidate generation the same way engine-S01 floors candidatesFor (max(2, …)), same file, one lane.
+
+### once-S16 — Profile registry: disk == registry == docs, bogus --profile exits 2
+
+- **Queue rank:** 85 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~60 min)
+- **Covers:** php-dup-finder-once-019
+- **Prereqs:** shell-S32 (register 6 orphans), shell-S25 (--profile fatal)
+
+**Files:** src/Cli/ProjectProfileDetector.php, profiles/, src/Cli/Command.php, docs/CLI.md, tests/Unit/Cli/ProjectProfileDetectorTest.php
+**Shared resources:** profiles/ dir shared S100 (db-pack hygiene) — serialize S16 → S100; help list rows into S18's CLI.md window; ghost myadmin adjudication row [DECISION: add pack or drop KNOWN entry].
+**Acceptance:** generated-from-disk: test asserts set-equality glob(profiles/*.json names ∪ db-aware-*) vs KNOWN_PROFILES ∪ help output ∪ docs/CLI.md list; `--profile bogus` exit 2 (closure re-check of shell-S25); no UNPROFILED success path.
+
+### once-S100 — db-aware pack hygiene (op disagreements + dup key)
+
+- **Queue rank:** 86 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~40 min)
+- **Covers:** php-dup-finder-once-125
+- **Prereqs:** engine-S06b (receiver evidence), once-S16 (registry=disk)
+
+**Files:** profiles/db-aware-laravel.json, profiles/db-aware-illuminate.json, profiles/db-aware-thinkorm.json, src/Normalization/DbOpRegistry.php, tests/Unit/Normalization/DbOpRegistryTest.php
+**Shared resources:** profiles/ shared w/ S16 (order S16→S100); BlockAstLoader matchesKind risk = AGENTS 4th-mirror row → REPORT-ONLY rider.
+**Acceptance:** delete-ish op classification identical in both packs (regression unit feeds same fixture, asserts same db-op tags); dup JSON key fixed; test asserts unique-key parse (json_decode err flag via JSON_THROW_ON_ERROR + manual scan); --db-aware loads ALL packs census unchanged + shared keys conflict-free.
+
+### once-S18 — docs/CLI.md: every registered flag, drop the false 'full reference'
+
+- **Queue rank:** 87 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~60 min)
+- **Covers:** php-dup-finder-once-021
+- **Prereqs:** shell-S28
+
+**Files:** docs/CLI.md, tests/Unit/Cli/DocFlagParityTest.php
+**Shared resources:** CLI.md once-chain (S18 first once writer after shell; later legs S24/S26/S27/S29/S34/S37/S49/S50/S83).
+**Acceptance:** new parity test reflects `Command::configure()` (+ ServeCommand) vs docs/CLI.md flag list — 15 named flags + serve flags land; [OWNER: hand rows + parity test (chosen default) vs generated doc]; claim sentence honest.
+
+### once-S26 — Auto-tuner reads effective config, never overrides user values
+
+- **Queue rank:** 88 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~60 min)
+- **Covers:** php-dup-finder-once-030
+- **Prereqs:** shell-S25 (profile excludes honored)
+
+**Files:** src/Cli/AutoTuner.php, src/Cli/Command.php, tests/Unit/Cli/AutoTunerTest.php
+**Shared resources:** Command.php leg; help text precedence row (S18/S95 window).
+**Acceptance:** unit: explicit min_block_size stays; tuner sees applied excludes; narration no longer '8→8' no-op on a tuned tree; --auto-tune help states precedence honestly.
+
+### engine-S07 — TrinityCollapser fabricates UPSERT for never-saved mutates (high)
+
+- **Queue rank:** 89 of 247
 - **Severity mix:** high=1
 - **Size:** HH (~120 min)
 - **Covers:** php-dup-finder-engine-005
@@ -1069,7 +1436,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S22 — PairFeatures recomputes all per-block features on every pair
 
-- **Queue rank:** 71 of 247
+- **Queue rank:** 90 of 247
 - **Severity mix:** medium=1
 - **Size:** HH (~120 min)
 - **Covers:** php-dup-finder-engine-033
@@ -1086,7 +1453,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S28 — per-dir exclude/exclude_reset: implement subtree skip or drop the keys
 
-- **Queue rank:** 72 of 247
+- **Queue rank:** 91 of 247
 - **Severity mix:** high=1
 - **Size:** HH (~120 min)
 - **Covers:** php-dup-finder-once-032
@@ -1096,9 +1463,126 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 **Shared resources:** [OWNER: implement-vs-drop]; CLI.md per-dir section; belt test PerDirOverrideBeltTest update either way.
 **Acceptance:** implement path: fixture tree w/ nested .phpdup.json `exclude` → nested dir skipped in scan census, `exclude_reset:true` re-roots; OR drop path: keys refuse with pointer to CLI (exit 2) + docs/schema rows removed; in BOTH cases no silent acceptance remains.
 
+### once-S85 — bench audit/comparative honesty + commit raw results
+
+- **Queue rank:** 92 of 247
+- **Severity mix:** medium=2
+- **Size:** HH (~120 min)
+- **Covers:** php-dup-finder-once-106, php-dup-finder-once-107
+- **Prereqs:** once-S09
+
+**Files:** bench/score-audit.php, bench/comparative.php, bench/feature-matrix.md, bench/results (new committed dir), README.md, docs/algorithms/clustering.md (numbers cited there)
+**Shared resources:** README benchmark claims (S12/S32 earlier rows stay); feature-matrix w/ S68 citations; corpus GT changes must precede (S86 after S85, or coordinate — results are scored on S86-pinned corpora? chose: S85 commits results from CURRENT corpus state + 'provenance' note; S86 re-pins corpus and RE-renders results — two commit events disclosed).
+**Acceptance:** recall splits ranged-vs-file-only (5/5 rangeless no longer count), verified:false tokens excluded from denominators, precision renamed honestly; comparative: no phantom matrix numbers (all recomputed from committed raw JSONs), --max-df fairness note (0.5=50× prod disclosed), timeouts shown as timeout not 0.00, 'Clusters' column unit-typed.
+
+### shell-S08 — Async dispatch protocol: ack-at-accept, no post-work blocking; sync-mode cache posture
+
+- **Queue rank:** 93 of 247
+- **Severity mix:** medium=1
+- **Size:** HH (~120 min)
+- **Covers:** php-dup-finder-shell-032
+- **Prereqs:** shell-S01, shell-S02, shell-S07 (all prior AnalysisWorker/Application regions stable; protocol change builds on the validated pipeline)
+
+**Files:** src/Server/AnalysisWorker.php, src/Server/Application.php, src/Cli/ServeCommand.php, tests/Unit/Server/ApplicationTest.php, tests/Unit/Cli/ServeCommandTest.php
+**Shared resources:** the one-line worker protocol changes shape (`OK <jobId>` moves from post-work to pre-work; completion signalled by result file appearing) — docs/SERVER.md route-behavior rows land in S09; phpdup-worker/bin surface re-checked by S35; Socketpair Law respected (scalars only).
+**Acceptance:**
+- Probe: submit an async job that takes >5s (fixture corpus) → queue reaches `completed` + result retrievable (was: `failed`/dispatch-failure split-brain while the result existed).
+- Unit: worker replies accept-ack before running; server never marks FAILED on a slow-but-successful job; a worker crash mid-job → job lands FAILED via result-file absence with a deadline (or explicit `ERR` frame — lane choice, pinned).
+- Sync `/analyze`: workers auto-nproc fork per request — clamp small payloads to serial (reuse S10's cap decision if it lands first; otherwise serial-by-default with a server flag). `useCache:false` becomes a server option (`--serve-cache` style) defaulting to current false; doc row in S09.
+- ApplicationTest + ServeCommandTest green.
+
+### once-S02 — Async job lifecycle actually completes (or fails honestly)
+
+- **Queue rank:** 94 of 247
+- **Severity mix:** critical=1
+- **Size:** HH (~90 min)
+- **Covers:** php-dup-finder-once-002
+- **Prereqs:** shell-S06 (bounded queue), shell-S08 (ack-at-accept protocol)
+
+**Files:** src/Server/Application.php, src/Server/JobQueue.php, tests/Unit/Server/JobQueueTest.php, tests/Unit/Server/ApplicationTest.php
+**Shared resources:** JobQueue.php lock w/ shell chain; MAX_JOCS eviction policy touches shell-S06 semantics; false-500 posture is an exit-class row for S95 docs.
+**Acceptance:** submitted fixture job transitions pending→running→done observed via GET /jobs/<id> (no 5 s fixed-fail); queue at cap evicts oldest with visible note, request never returns false-500 while alive; worker death reported via exit-status ack (not timeout lie); unit drives a fake worker both ways.
+
+### shell-S09 — Serve route contract: docs and docblocks match the 7 real routes
+
+- **Queue rank:** 95 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~30 min)
+- **Covers:** php-dup-finder-shell-046
+- **Prereqs:** shell-S01, shell-S02, shell-S03, shell-S04, shell-S05, shell-S08  *(Phase-4 adjustment; see Merged & re-routed)*
+
+**Files:** src/Cli/ServeCommand.php, src/Server/Application.php, docs/SERVER.md
+**Shared resources:** docs/SERVER.md single writer; route POST/GET table is the contract reviewers cite for S01/S05/S08 acceptance.
+**Acceptance:**
+- `docs/SERVER.md` route table lists exactly the implemented allow-list (all 7, or a lane decision to drop `/api/*` — if dropped, code deletion too); the phantom `POST /jobs/cleanup` sentence at :108 is gone (or the route exists — no third option); docblock at ServeCommand.php:21-27/45-53 + Application.php:50-52 byte-consistent with the table.
+- `grep -c '/api/jobs' docs/SERVER.md` > 0 iff routes kept.
+- **Phase-5 r1 (I3/D3a):** desired `.claude/rules/server-job-queue.md` "allow-list" text → rider row in the once-S80 packet; lane edits no caliber files.
+
+### once-S03 — buildSummary reads the right level; /analyze stops faking exactOnly
+
+- **Queue rank:** 96 of 247
+- **Severity mix:** critical=1 medium=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-once-003, php-dup-finder-once-065
+- **Prereqs:** once-S02, shell-S09
+
+**Files:** src/Server/Application.php, src/Server/AnalysisWorker.php, tests/Unit/Server/ApplicationTest.php
+**Shared resources:** docs/SERVER.md counters rows (S17 window); shared counter helper co-owned with S37 summary work (keep helper additive).
+**Acceptance:** sync job on notify fixture → summary block shows non-zero totals read from `$decoded['summary']`; /analyze + worker no longer force exactOnly (payload carries holes/signature fields asserted by key-existence tests); SERVER.md example output matches real bytes.
+
+### once-S57 — Quickstart serve example matches the loopback guard
+
+- **Queue rank:** 97 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~15 min)
+- **Covers:** php-dup-finder-once-063
+- **Prereqs:** shell-S09
+
+**Files:** docs/SERVER.md, README.md
+**Shared resources:** SERVER.md chain.
+**Acceptance:** quickstart shows default bind; explicit non-loopback exposure documented AS the guarded case w/ the token/--serve-root consequence (not the surprise first-run error); probe: quickstart lines run as-written succeed.
+
+### once-S17 — serve docs: real topology (routes, 413 body cap, playground truth)
+
+- **Queue rank:** 98 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~20 min)
+- **Covers:** php-dup-finder-once-020
+- **Prereqs:** shell-S09
+
+**Files:** docs/SERVER.md, docs/PLAYGROUND.md, src/Server/Application.php (docblocks only)
+**Shared resources:** SERVER.md append chain slot (after shell base, before S41/S42); 'synchronous demo' docblock lies → 'future' wording.
+**Acceptance:** every implemented route documented (/jobs, /jobs/{id}, /jobs/cleanup→removed or added, /api/jobs×3, score-batch pointer to S53) and every documented route returns non-404 (loopback probe census); MAX_BODY 16 MiB + 413 row present; playground paste story reads as aspiration.
+
+### shell-S35 — PHAR surface: InitCommand in stub + worker packaging decision
+
+- **Queue rank:** 99 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-shell-045
+- **Prereqs:** shell-S09 (SERVER.md final route/limitation rows — phar note lands beside them), shell-S03 (worker-spawn resolve path :354-357 stable after signal work)
+
+**Files:** build-phar.php, src/Cli/ServeCommand.php, docs/SERVER.md, tests/Unit/Cli/ServeCommandTest.php
+**Shared resources:** bin/ + build-phar.php PHAR surface (only step editing build-phar.php); phar build requires `php -d phar.readonly=0` (CI has a job — keep the step CI-green); S36 (self-update) hot-swaps the same artifact — no file overlap, posture awareness only.
+**Acceptance:**
+- `php -d phar.readonly=0 build-phar.php` → exit 0; `php phpdup.phar list` shows `init`; worker shipped (`php phpdup.phar serve` spawns async leg — or documented sync-only with a serve warning line; lane decision recorded in report + SERVER.md row matches).
+- Probe whichever posture: serve-from-phar smoke: POST /analyze returns same JSON as checkout-run (fixture tmp dir — phar confinement: note serve-root arg honored in S01's protocol).
+
+### once-S42 — Serve request trust: Host/Origin checks, CSRF text/plain refused
+
+- **Queue rank:** 100 of 247
+- **Severity mix:** high=1
+- **Size:** HH (~90 min)
+- **Covers:** php-dup-finder-once-046
+- **Prereqs:** once-S02, shell-S05, shell-S08  *(Phase-4 adjustment; see Merged & re-routed)*
+
+**Files:** src/Server/Application.php, src/Cli/ServeCommand.php, docs/SERVER.md
+**Shared resources:** SERVER.md security section grows (S71 owns final assembly); token posture coupling S71 [OWNER shared with S71].
+**Acceptance:** POST with `Origin: http://evil.test` → 403; Host header not loopback:port → 400; `text/plain` POST → refused pre-body; rebinding probe (Host: attacker-mapped→127.0.0.1) refused by Host allow-list — units driving Application directly.
+
 ### shell-S10 — WorkerPool child lifecycle: sentinel verification, exit-status inspection, bounded fork set
 
-- **Queue rank:** 73 of 247
+- **Queue rank:** 101 of 247
 - **Severity mix:** high=1 medium=2
 - **Size:** HH (~120 min)
 - **Covers:** php-dup-finder-shell-005, php-dup-finder-shell-028, php-dup-finder-shell-038
@@ -1112,9 +1596,21 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 - Cap: `--workers=100000` → effective children ≤ min(workers, 4·cpu) (assert chunk/child count), note in help/ConfigLoader message; ConfigLoader gains an upper-bound validation error or the pool clamps silently with a debug line (lane picks one, pinned).
 - Existing WorkerPoolTest/WireTest green.
 
+### once-S46 — Worker death mid-stream ≠ success
+
+- **Queue rank:** 102 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~10 min)
+- **Covers:** php-dup-finder-once-050
+- **Prereqs:** shell-S10 (sentinel/exit-status core), once-S02
+
+**Files:** src/Server/AnalysisWorker.php, tests/Unit/Server/AnalysisWorkerTest.php
+**Shared resources:** AnalysisWorker chain.
+**Acceptance:** fake worker emitting 23/40 records then EOF-without-__done + nonzero status → consumer reports failure exit and partial marker (was silent 0); status checked even on clean EOF.
+
 ### shell-S11 — Decode hot-path: memoized allow-list + cheap blocked-class detection
 
-- **Queue rank:** 74 of 247
+- **Queue rank:** 103 of 247
 - **Severity mix:** high=1 medium=1
 - **Size:** MM (~45 min)
 - **Covers:** php-dup-finder-shell-011, php-dup-finder-shell-034
@@ -1132,7 +1628,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### shell-S12 — WorkerPool cancellation: stall-aware cooperative abort
 
-- **Queue rank:** 75 of 247
+- **Queue rank:** 104 of 247
 - **Severity mix:** low=1
 - **Size:** MM (~40 min)
 - **Covers:** php-dup-finder-shell-041
@@ -1146,7 +1642,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S77 — CPU detection portable + workers ceiling + PHPDUP_WORKERS semantics
 
-- **Queue rank:** 76 of 247
+- **Queue rank:** 105 of 247
 - **Severity mix:** medium=2
 - **Size:** MM (~60 min)
 - **Covers:** php-dup-finder-once-093, php-dup-finder-once-110
@@ -1158,7 +1654,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### shell-S18 — Cache load order: header/metadata check BEFORE full unserialize
 
-- **Queue rank:** 77 of 247
+- **Queue rank:** 106 of 247
 - **Severity mix:** high=1
 - **Size:** HH (~120 min)
 - **Covers:** php-dup-finder-shell-009
@@ -1175,7 +1671,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### shell-S19 — Cache shape guards: recursive poisoning check + LOCK_EX
 
-- **Queue rank:** 78 of 247
+- **Queue rank:** 107 of 247
 - **Severity mix:** medium=1
 - **Size:** MM (~60 min)
 - **Covers:** php-dup-finder-shell-031
@@ -1193,7 +1689,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### shell-S30 — Cluster cache: cohort-order correctness + 5 missing key fields
 
-- **Queue rank:** 79 of 247
+- **Queue rank:** 108 of 247
 - **Severity mix:** medium=2
 - **Size:** MM (~60 min)
 - **Covers:** php-dup-finder-shell-018, php-dup-finder-shell-019
@@ -1208,7 +1704,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### shell-S31 — config-schema.json ↔ ConfigLoader $known parity test
 
-- **Queue rank:** 80 of 247
+- **Queue rank:** 109 of 247
 - **Severity mix:** medium=1
 - **Size:** MM (~45 min)
 - **Covers:** php-dup-finder-shell-036
@@ -1222,7 +1718,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S83 — Internal shorthand scrubbed from user-facing surfaces
 
-- **Queue rank:** 81 of 247
+- **Queue rank:** 110 of 247
 - **Severity mix:** medium=1
 - **Size:** MM (~45 min)
 - **Covers:** php-dup-finder-once-103
@@ -1232,9 +1728,127 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 **Shared resources:** help-text wrapping decision (300-600 char rows) = shared w/ S18 table width work; 'F1a/F1b' rows co-owned w/ S29 (S29 owns --help, S83 owns the rest — coordinate via this ledger line); PlacementAdvisor user strings after output-S06/S36 finalize.
 **Acceptance:** grep census: user-facing (help/docs/report strings) contain no (NN1)/p5a-m1/'item 1.1/§5a'/F1a/F1b/MAX_CANDIDATE_PAIRS-as-symbol; remedy text names flags+values not constants; help rows wrapped ≤ ~110ch; tests/Unit/Cli/CliDefaultShadowingTest-style probes green.
 
+### shell-S39 — Trust-posture roll-up: explicit decisions on allow-list, cache perms, socket race, error echoes
+
+- **Queue rank:** 111 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~60 min)
+- **Covers:** php-dup-finder-shell-052
+- **Prereqs:** engine-S39, shell-S01, shell-S02, shell-S08, shell-S11, shell-S18  *(Phase-4 adjustment; see Merged & re-routed)*
+
+**Files:** src/Persistence/SerializedClassAllowList.php, src/Persistence/IndexStore.php, src/Cli/Config.php, src/Server/Application.php, src/Server/AnalysisWorker.php, src/Cli/ServeCommand.php
+**Shared resources:** Config.php:74 default cache-dir location decision (in-tree `.phpdup-cache` → 0700 + configurable; moving the DEFAULT is breaking — posture: tighten perms, keep location, disclose); this is the LAST writer of Application.php/ServeCommand.php/WorkerPool(:260-283)/AnalysisWorker.php behavior after the chain (rebase onto all of them).
+**Acceptance (per leg, all four decided + landed or explicitly banked with reason in the report):**
+- (a) allow-list: explicit curated set replaces the composer-classmap sweep — SerializedClassAllowListTest pins the exact set (mutation-proof: a PhpParser node class removed from the curation → the wire test still passes ONLY because value-object set covers… no: assert nested-node decode still works; if curation shrinks the graph safety, that's S11's envelope — verify together).
+- (b) cache dirs: `stat -c %a` = 700 on fresh IndexStore dirs (was 0775); Config.php:74 posture documented.
+- (c) socket: bind under a temporary restrictive umask OR flock-then-chmod-with-verify before accept; race leg unit-reviewed + reported.
+- (d) 500/400 bodies: generic text + logged detail (ApplicationTest asserts message path-leak gone: an exception with an absolute path in its message → body contains none of it, while the debug log / STDERR keeps the detail).
+
+---
+
+### shell-S13 — writeRecord: linear partial-write handling
+
+- **Queue rank:** 112 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~25 min)
+- **Covers:** php-dup-finder-shell-050
+- **Prereqs:** shell-S12, shell-S39  *(Phase-4 adjustment; see Merged & re-routed)*
+
+**Files:** src/Parallel/WorkerPool.php, tests/Unit/Parallel/WorkerPoolTest.php
+**Shared resources:** none beyond WorkerPool.php.
+**Acceptance:**
+- Unit: large record (>2·pipe buffer) against a slow reader writes fully with correct bytes; implementation uses a fixed slice cursor (code review: no `substr` of the shrinking remainder per iteration); WorkerPoolWireTest (round-trips) green.
+
+### once-S45 — Forked workers: SIG_DFL reset before work (kill-switch real)
+
+- **Queue rank:** 113 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~30 min)
+- **Covers:** php-dup-finder-once-049
+- **Prereqs:** shell-S13 (chain tail)
+
+**Files:** src/Parallel/WorkerPool.php, tests/Unit/Parallel/WorkerPoolTest.php
+**Shared resources:** WorkerPool hot chain after shell; feeds once-S74/S77.
+**Acceptance:** unit/live: parent `kill -TERM <worker-pid>` → child dies 143 & pool marks death (was immortal handler-inherited hang); pcntl_async_signals off in child branch asserted via child probe output.
+
+### once-S44 — Death paths clean up: socket gone, worker reaped, no stale lock
+
+- **Queue rank:** 114 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~20 min)
+- **Covers:** php-dup-finder-once-048
+- **Prereqs:** once-S45, shell-S03, shell-S39  *(Phase-4 adjustment; see Merged & re-routed)*
+
+**Files:** src/Cli/ServeCommand.php, src/Server/AnalysisWorker.php, bin/phpdup-worker
+**Shared resources:** pid-file/flock in results dir (S71's sweep sees it).
+**Acceptance:** kill -9 then restart: stale socket auto-reclaimed (bind error path handled), `pgrep phpdup-worker` empty after second start; worker ppid-watchdog unit (fake ppid) exits.
+
+### once-S71 — serve tokens/stale results/security section (posture owner call)
+
+- **Queue rank:** 115 of 247
+- **Severity mix:** medium=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-once-085
+- **Prereqs:** shell-S02, shell-S39, once-S02
+
+**Files:** src/Cli/ServeCommand.php, src/Server/Application.php, docs/SERVER.md
+**Shared resources:** [OWNER: default-token vs documented-local-only]; SERVER.md security section final owner (S42 leg folded into S39's section by ledger: S71 LAST writer); results-dir sweep couples S44 pid-file.
+**Acceptance:** chosen posture implemented+documented: tokenless multi-user box probe (second uid simulated via chmod/read assertions) no longer serves arbitrary paths unauthenticated if token default (POST/GET 401 without token when enabled); stale /tmp/phpdup-results-* from dead pids pruned at startup (count assert); 0700 recheck.
+
+### once-S97 — serve odds: ::1 brackets, verbosity notes, healthz doc, redaction
+
+- **Queue rank:** 116 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~30 min)
+- **Covers:** php-dup-finder-once-122
+- **Prereqs:** once-S42, once-S71, shell-S05, shell-S39  *(Phase-4 adjustment; see Merged & re-routed)*
+
+**Files:** src/Server/Application.php, src/Cli/ServeCommand.php, docs/SERVER.md
+**Shared resources:** SERVER.md final append slot; exception-redaction leg w/ S71/S39.
+**Acceptance:** IPv6 bind --host ::1 probe: connect URL builds `tcp://[::1]:port` (unit + one-shot live); pcntl-absent serial fallback visible at DEFAULT verbosity (not only -vvv); raw-path exception bodies redacted (relative labels only — S39 seam); /healthz token note (if S71 default-token landed) in doc; predict+@unlink socket window closed (S44 pid-flock reused).
+
+### once-S64 — Cache durability: shape trust closed, empty-blob miss, prune policy
+
+- **Queue rank:** 117 of 247
+- **Severity mix:** medium=1
+- **Size:** HH (~90 min)
+- **Covers:** php-dup-finder-once-073
+- **Prereqs:** engine-S23b, engine-S24, shell-S18, shell-S19, shell-S39  *(Phase-4 adjustment; see Merged & re-routed)*
+
+**Files:** src/Persistence/ClusterCache.php, src/Persistence/IndexStore.php, tests/Unit/Persistence/ClusterCacheTest.php, src/Cli/Command.php (prune leg per ruling), docs/CLI.md
+**Shared resources:** [OWNER: prune flag vs TTL vs documented rm — default documented-rm if none]; dir-perm closure vs shell-S39.
+**Acceptance:** units: `serialize([])` blob → treated as MISS not permanent hit (today it hides file forever); nested stdClass envelope rejected (engine-S23 twin re-run for ClusterCache lane); LOCK_EX write verified concurrent (two-process fork test); cache dirs 0700 census; prune policy landed or documented verbatim.
+
+
+- **Phase-4 Outside merge:** ENGINE-SEC out-of-group 1's IndexStore/ClusterCache content-addressed trust half lands here (posture + empty-blob miss + prune decision), built on the shell-S18/S19 read path and engine-S23/S24 keys.
+
+### once-S73 — Sync fallback: loud refusal, not secret full-pipeline
+
+- **Queue rank:** 118 of 247
+- **Severity mix:** medium=1
+- **Size:** HH (~90 min)
+- **Covers:** php-dup-finder-once-088
+- **Prereqs:** shell-S08, shell-S35, once-S71
+
+**Files:** src/Server/Application.php, src/Cli/ServeCommand.php, docs/PLAYGROUND.md
+**Shared resources:** Application server chain (post S72 probe removal); playground story lands or dies here (final PLAYGROUND edit w/ S17 first).
+**Acceptance:** worker-missing deployment (/tmp read-only dir probe): jobs return honest 503 'async unavailable' + startup warning instead of inline-pipeline stall-then-maybe; fixed 5 s probe becomes startup-once; docs = shipped reality.
+
+### once-S74 — Wire framing caps + shared frame codec + fork-window/fd leaks
+
+- **Queue rank:** 119 of 247
+- **Severity mix:** medium=2
+- **Size:** HH (~90 min)
+- **Covers:** php-dup-finder-once-089, php-dup-finder-once-091
+- **Prereqs:** shell-S03, shell-S07, shell-S10, shell-S13, shell-S39  *(Phase-4 adjustment; see Merged & re-routed)*
+
+**Files:** src/Util/Framing.php (new, w/ UP-02), src/Parallel/WorkerPool.php, src/Server/AnalysisWorker.php, src/Cli/Command.php, tests/Unit/Parallel/WorkerPoolTest.php
+**Shared resources:** Util/Framing.php new file single-owner (engine-S34 AstSerializer stream is related but distinct — cite, don't collide); Command spawn leg (proc_open array form).
+**Acceptance:** oversize record / truncated frame → bounded read + explicit protocol error (no unbounded fgets memory: length-prefixed cap shared by worker AND serve reader); fork/bootstrap throw leaves zero children (pcntl_waitpid census) and no fd leak (/proc/self/fd count unit); worker stderr captured to log not @fclose-discard.
+
 ### shell-S33 — Watch mode: survive any pipeline Throwable; debounce + PHP filtering + no symlink follow
 
-- **Queue rank:** 82 of 247
+- **Queue rank:** 120 of 247
 - **Severity mix:** medium=2
 - **Size:** HH (~120 min)
 - **Covers:** php-dup-finder-shell-023, php-dup-finder-shell-024
@@ -1249,7 +1863,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S08 — Watch survives non-budget errors (closure)
 
-- **Queue rank:** 83 of 247
+- **Queue rank:** 121 of 247
 - **Severity mix:** critical=1
 - **Size:** MM (~15 min)
 - **Covers:** php-dup-finder-once-008
@@ -1261,7 +1875,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### shell-S40 — ReportStage/watch/TUI micro-costs
 
-- **Queue rank:** 84 of 247
+- **Queue rank:** 122 of 247
 - **Severity mix:** low=1
 - **Size:** MM (~40 min)
 - **Covers:** php-dup-finder-shell-051
@@ -1274,7 +1888,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### shell-S34 — Escape untrusted filesystem bytes at every terminal sink
 
-- **Queue rank:** 85 of 247
+- **Queue rank:** 123 of 247
 - **Severity mix:** medium=1
 - **Size:** MM (~45 min)
 - **Covers:** php-dup-finder-shell-025
@@ -1288,7 +1902,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### shell-S37 — Stage cancel-block reindent + yield-constant naming/rule reconciliation
 
-- **Queue rank:** 86 of 247
+- **Queue rank:** 124 of 247
 - **Severity mix:** low=2
 - **Size:** MM (~30 min)
 - **Covers:** php-dup-finder-shell-042, php-dup-finder-shell-054
@@ -1300,9 +1914,36 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 - `git diff -w` shows only real changes on the reindent hunks (whitespace-only claim); `grep -rn YIELD_INTERVAL src/` empty; the five blocks visually nested at correct depth; aborted-run accounting caveat documented in docs/ CLI-side note as desired-rule text for the once-S80 packet (or cancelledMidLoop flag — pin if chosen, then the summary line shows it).
 - Full Unit green, Golden byte-identical (no semantic change).
 
+### once-S23 — Cache-key completeness: every detection knob invalidates
+
+- **Queue rank:** 125 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-once-026
+- **Prereqs:** engine-S24, shell-S16, shell-S37  *(Phase-4 adjustment; see Merged & re-routed)*
+
+**Files:** src/Pipeline/Stages/ClusterStage.php, src/Pipeline/Stages/PreprocessStage.php, tests/Unit/Cli/CacheKeyKnobReplayTest.php
+**Shared resources:** ClusterStage/PreprocessStage both late in shell chains (S14→…→S37 / S15→…→S37) — once-leg after them; new test models FingerprintIdModeConfigTest precedent.
+**Acceptance:** warm cache then flip EACH of scorer/ir_threshold/ml_pair_*/ted_weights/low_memory/normalization_plugins/per-dir-overrides → report bytes change or cache-miss counted (no md5-identity across engine switch); unit test ships as the permanent fence.
+
+
+- **Phase-4 Outside merge:** ENGINE-CONV-04 — the IndexStore config-key serialize list at PreprocessStage.php:82-109 omits `normalizationPlugins` (violating the CLAUDE.md plugin contract); add the key + extend this step's knob-flip fence to cover it.
+
+### once-S75 — Signal contract: scoped handlers, second-SIGINT exits now
+
+- **Queue rank:** 126 of 247
+- **Severity mix:** medium=1
+- **Size:** HH (~75 min)
+- **Covers:** php-dup-finder-once-090
+- **Prereqs:** once-S07, once-S45, shell-S33  *(Phase-4 adjustment; see Merged & re-routed)*
+
+**Files:** src/Cli/SignalHandler.php, src/Cli/Command.php, src/Watch/WatchRunner.php, src/Tui/TuiRunner.php, tests/Unit/Cli/SignalHandlerTest.php
+**Shared resources:** SignalHandlerTest global-async flip = S93 test-hygiene dependency (S75 before S93); TuiRunner/WatchRunner shared w/ S07/S08/S47 (final signal pass).
+**Acceptance:** install() returns restorer; async mode set inside scope only (unit: pcntl_async_signals(false) after scope, handler restored); second SIGINT → exit 130 within one loop iteration incl watch+TUI (PTY probe: two ^C, capture exit); '130' doc row to S95.
+
 ### engine-S18a — Preprocess residency: int postings, gram interning, lowMemory default threshold — half A: int postings in NgramInvertedIndex.
 
-- **Queue rank:** 87 of 247
+- **Queue rank:** 127 of 247
 - **Severity mix:** high=1
 - **Size:** HH (~140 min)
 - **Covers:** php-dup-finder-engine-011
@@ -1331,65 +1972,9 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 - **Phase-4 Outside memos:** ENGINE-PERF out-of-group 2 (int-bag default-flip threading lands at the PreprocessStage/PreprocessWorker wiring layer = shell group; cross-group rows stay report-only here) + output's (engine) PERF-24 peak-RSS 382 MB memo is this residency line.
 
-### engine-S02a — Role-swap exact-clone lie + Param double-rename in Normalizer — half A: writer-side sentinel redesign — canonicalizeNames per-arm/positional key sentinels, kills the engine-055 double-rename, `__V0` alias guard, Normalizer unit pins.
-
-- **Queue rank:** 88 of 247
-- **Severity mix:** critical=1 low=1
-- **Size:** HH (~150 min)
-- **Covers:** php-dup-finder-engine-002, php-dup-finder-engine-055
-- **Prereqs:** none  *(Phase-5 r1 split; see Merged & re-routed)*
-
-> **Half A (Phase-5 r1, I5/D2a):** this half owns: writer-side sentinel redesign — canonicalizeNames per-arm/positional key sentinels, kills the engine-055 double-rename, `__V0` alias guard, Normalizer unit pins. Sibling: engine-S02b — together the two legs replace engine-S02 (300 min). Header lines + locks above govern this half; the parent detail preserved below describes the whole fix, and prose references to engine-S02 denote the leg pair. Execute only the legs assigned to this half.
-
-- **Files:** `src/Normalization/Normalizer.php` (canonicalizeNames :445-498, canonicalizeVariables
-  :399-420, call site :85-88), `tests/Unit/Normalization/NormalizerTest.php`,
-  `tests/Unit/Normalization/NormalizerBareReturnTest.php` (slot renumbering ripples),
-  `tests/Golden/*.json` (regen if streams shift), `src/Clustering/Clusterer.php` ONLY if the
-  "demote permutation-dependent pairs" variant is chosen (badge/similarity cap in the scoring tier —
-  if so, this step joins the Clusterer chain after S15).
-- **Shared resources:** tests/Golden (aggressive-mode canonical streams change → all three
-  snapshots may move; GOLDEN-MOVES-likely); `MatchTier`/`Cluster::$pairs` semantics if the
-  role-swapped badge path is chosen; MatchTier.php enum roster.
-- **Fix shape:** one coherent redesign: key rename sentinels per-arm/positionally (not corpus-free
-  first occurrence), which also kills the 055 double-rename. Decide with S03/S04 (same file): keep
-  the design inside Normalizer to avoid the Clusterer coupling.
-- **Acceptance:** unit: branch-role-swapped if/else pair from the finding no longer canonicalizes to
-  byte-identical streams (or scores <1 / carries the badge); Param/body slots agree (user var `x`
-  gets ONE sentinel in Param and body); a user variable literally named `__V0` cannot alias the
-  generated space; `vendor/bin/phpunit --testsuite Unit --filter Normalizer` green; Golden suite
-  green after regen with disclosed per-snapshot diff.
-
-### engine-S02b — Role-swap exact-clone lie + Param double-rename in Normalizer — half B: GOLDEN-STEP re-pin leg — regenerate the three goldens with disclosed per-snapshot diffs once the writer bytes settle; owns the `tests/Golden/` token.
-
-- **Queue rank:** 89 of 247
-- **Severity mix:** critical=1 low=1
-- **Size:** HH (~150 min)
-- **Covers:** php-dup-finder-engine-002, php-dup-finder-engine-055
-- **Prereqs:** engine-S02a  *(Phase-5 r1 split; see Merged & re-routed)*
-
-> **Half B (Phase-5 r1, I5/D2a):** this half owns: GOLDEN-STEP re-pin leg — regenerate the three goldens with disclosed per-snapshot diffs once the writer bytes settle; owns the `tests/Golden/` token. Sibling: engine-S02a — together the two legs replace engine-S02 (300 min). Header lines + locks above govern this half; the parent detail preserved below describes the whole fix, and prose references to engine-S02 denote the leg pair. Execute only the legs assigned to this half.
-
-- **Files:** `src/Normalization/Normalizer.php` (canonicalizeNames :445-498, canonicalizeVariables
-  :399-420, call site :85-88), `tests/Unit/Normalization/NormalizerTest.php`,
-  `tests/Unit/Normalization/NormalizerBareReturnTest.php` (slot renumbering ripples),
-  `tests/Golden/*.json` (regen if streams shift), `src/Clustering/Clusterer.php` ONLY if the
-  "demote permutation-dependent pairs" variant is chosen (badge/similarity cap in the scoring tier —
-  if so, this step joins the Clusterer chain after S15).
-- **Shared resources:** tests/Golden (aggressive-mode canonical streams change → all three
-  snapshots may move; GOLDEN-MOVES-likely); `MatchTier`/`Cluster::$pairs` semantics if the
-  role-swapped badge path is chosen; MatchTier.php enum roster.
-- **Fix shape:** one coherent redesign: key rename sentinels per-arm/positionally (not corpus-free
-  first occurrence), which also kills the 055 double-rename. Decide with S03/S04 (same file): keep
-  the design inside Normalizer to avoid the Clusterer coupling.
-- **Acceptance:** unit: branch-role-swapped if/else pair from the finding no longer canonicalizes to
-  byte-identical streams (or scores <1 / carries the badge); Param/body slots agree (user var `x`
-  gets ONE sentinel in Param and body); a user variable literally named `__V0` cannot alias the
-  generated space; `vendor/bin/phpunit --testsuite Unit --filter Normalizer` green; Golden suite
-  green after regen with disclosed per-snapshot diff.
-
 ### engine-S08a — AptedDistance flatten() size-sort erases statement order (high) — half A: flatten/orderedChildren fix + distance>0 + permuted<1.0000 pins + EditCostModel note (core APTED semantics).
 
-- **Queue rank:** 90 of 247
+- **Queue rank:** 128 of 247
 - **Severity mix:** high=1
 - **Size:** HH (~150 min)
 - **Covers:** php-dup-finder-engine-007
@@ -1413,7 +1998,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S08b — AptedDistance flatten() size-sort erases statement order (high) — half B: ClustererRunningMin tier pin + optional-near-dups regen-if-shift (GOLDEN token) + docs/algorithms consistency check.
 
-- **Queue rank:** 91 of 247
+- **Queue rank:** 129 of 247
 - **Severity mix:** high=1
 - **Size:** HH (~150 min)
 - **Covers:** php-dup-finder-engine-007
@@ -1437,7 +2022,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S19a — ML SSRF gate rebuild + response-size caps (high, demonstrated PoC) — half A: SSRF gate rebuild — canonical-literal-or-resolve, inet_pton matrices, unit refuse-list matrix.
 
-- **Queue rank:** 92 of 247
+- **Queue rank:** 130 of 247
 - **Severity mix:** high=1 medium=1
 - **Size:** HH (~150 min)
 - **Covers:** php-dup-finder-engine-012, php-dup-finder-engine-015
@@ -1463,7 +2048,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S19b — ML SSRF gate rebuild + response-size caps (high, demonstrated PoC) — half B: write-callback size caps + CURLOPT_RESOLVE/bindto pinning + oversized-body test + fail-open→fail-closed flip.
 
-- **Queue rank:** 93 of 247
+- **Queue rank:** 131 of 247
 - **Severity mix:** high=1 medium=1
 - **Size:** HH (~150 min)
 - **Covers:** php-dup-finder-engine-012, php-dup-finder-engine-015
@@ -1489,7 +2074,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S20 — ML remote numeric laundering + scoreBatch alignment
 
-- **Queue rank:** 94 of 247
+- **Queue rank:** 132 of 247
 - **Severity mix:** medium=2
 - **Size:** HH (~120 min)
 - **Covers:** php-dup-finder-engine-013, php-dup-finder-engine-014
@@ -1505,7 +2090,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S48 — ML verdict alignment closure + wire-shape docblock truth
 
-- **Queue rank:** 95 of 247
+- **Queue rank:** 133 of 247
 - **Severity mix:** high=1
 - **Size:** MM (~15 min)
 - **Covers:** php-dup-finder-once-052
@@ -1515,9 +2100,21 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 **Shared resources:** Ml/*.php chain.
 **Acceptance:** engine-S20's refusal units present and passing; docblock now states exact 11-field PairFeatures wire (assert fields-count == PairFeatures::WIRE_KEYS const — introduce const here); short/list responses degrade without creating edges.
 
+### once-S53 — ML sidecar API docs + wire-shape + reference sidecar
+
+- **Queue rank:** 134 of 247
+- **Severity mix:** medium=2
+- **Size:** MM (~60 min)
+- **Covers:** php-dup-finder-once-059, php-dup-finder-once-118
+- **Prereqs:** once-S48, engine-S19b, shell-S08
+
+**Files:** docs/SERVER.md, docs/ML.md, tools/ml-sidecar-example.php, src/Ml/MlPairClient.php (docblock)
+**Shared resources:** SERVER.md append slot (S17 window then S53); 118 annotated covered-by-reference (pointer row recorded, its legs live in 020→S17, 084→S54, 124→S99).
+**Acceptance:** POST /score-batch contract (request/response exact 11-field wire) documented; tools/ gains a runnable ~80-line reference sidecar (stdlib PHP, examples echo-canonical verdicts); ML.md release-id example == current schema version output (ML.md example uses real ids from a /tmp fixture run); 'Wiring—Today' narrative correct per class (MlClient status cites S89 adjudication).
+
 ### once-S54 — ml_pair_url: validate shape not DNS; opt-in private ranges
 
-- **Queue rank:** 96 of 247
+- **Queue rank:** 135 of 247
 - **Severity mix:** medium=3
 - **Size:** HH (~90 min)
 - **Covers:** php-dup-finder-once-076, php-dup-finder-once-083, php-dup-finder-once-084
@@ -1529,7 +2126,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S51 — config-schema.json completeness final check
 
-- **Queue rank:** 97 of 247
+- **Queue rank:** 136 of 247
 - **Severity mix:** medium=1
 - **Size:** MM (~10 min)
 - **Covers:** php-dup-finder-once-057
@@ -1541,7 +2138,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S21 — Serial ML path: per-pair DNS + fresh TCP/TLS handshakes
 
-- **Queue rank:** 98 of 247
+- **Queue rank:** 137 of 247
 - **Severity mix:** medium=1
 - **Size:** HH (~150 min)
 - **Covers:** php-dup-finder-engine-032
@@ -1561,137 +2158,9 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 - **Phase-4 Outside merge:** ENGINE-PERF out-of-group 1 — PairScoreWorker's individual-retry-after-batch-miss path inherits the per-pair DNS/handshake cost; the client-instance memo makes it pay only if the worker builds a fresh client per retry: verify one client per worker run (pin in tests/Unit/Parallel/PairScoreWorker* if reachable) and keep score()/scoreBatch() public API unchanged.
 
-### engine-S23a — Cache blob integrity: serialize crash guard, nested decode validation, TokenCache parity, perms — half A: crash guard + nested decode + framing/seal + AstCache perms + shared helper home + AstCacheTest + 10k-depth exit 0.
-
-- **Queue rank:** 99 of 247
-- **Severity mix:** critical=1 medium=3
-- **Size:** HH (~150 min)
-- **Covers:** php-dup-finder-engine-004, php-dup-finder-engine-017, php-dup-finder-engine-018, php-dup-finder-engine-020
-- **Prereqs:** none  *(Phase-5 r1 split; see Merged & re-routed)*
-
-> **Half A (Phase-5 r1, I5/D2a):** this half owns: crash guard + nested decode + framing/seal + AstCache perms + shared helper home + AstCacheTest + 10k-depth exit 0. Sibling: engine-S23b — together the two legs replace engine-S23 (270 min). Header lines + locks above govern this half; the parent detail preserved below describes the whole fix, and prose references to engine-S23 denote the leg pair. Execute only the legs assigned to this half.
-
-- **Files:** `src/Parsing/AstCache.php` (put :86 try/catch + depth skip; get :58-70 recursive Node
-  validation + TypeError→miss + length-framing/seal; mkdir 0700; chmod 0600 on writes),
-  `src/Parsing/TokenCache.php` (mirror loop via the new shared helper; mkdir/perms), shared helper
-  new location (either `src/Parsing/` private helper or small `src/Util/` class — decide in-step),
-  `tests/Unit/Parsing/AstCacheTest.php` (NEW — none exists today),
-  `tests/Unit/Parsing/TokenCacheTest.php`, `tests/Unit/Persistence/SerializedClassAllowListTest.php`
-  (allow-list interplay only).
-  while the class is alive — if the catalog later deletes it, the removal just takes the helper's
-  second call site with it).
-- **Shared resources:** blob framing = storage-format change → bump the cache key/version marker
-  (AstCache VERSION token or filename scheme) → interacts with S24 (keyFor) and S25 — keep the
-  marker line trivially mergeable; `declare(strict_types=1)` fatal surfaces under failOnNotice.
-- **Acceptance:** depth fuzz: generating a 10k-deep array-literal file and analyzing with cache ON →
-  run exits 0 (was rc=255 fatal at AstCache.php:86), file simply uncached; unit battery: truncated
-  blob→miss, appended-garbage→miss (framing), nested-`__PHP_Incomplete_Class` blob (SEC nested.txt
-  shape)→miss not fatal, TokenCache tampered→miss; stat modes: fresh cache dir 0700, blobs 0600
-  under umask 002; full Unit+Integration green.
-
-### engine-S23b — Cache blob integrity: serialize crash guard, nested decode validation, TokenCache parity, perms — half B: TokenCache parity via the shared helper + tampered→miss + 0700/0600 census under umask 002 + allow-list interplay re-run.
-
-- **Queue rank:** 100 of 247
-- **Severity mix:** critical=1 medium=3
-- **Size:** HH (~120 min)
-- **Covers:** php-dup-finder-engine-004, php-dup-finder-engine-017, php-dup-finder-engine-018, php-dup-finder-engine-020
-- **Prereqs:** engine-S23a  *(Phase-5 r1 split; see Merged & re-routed)*
-
-> **Half B (Phase-5 r1, I5/D2a):** this half owns: TokenCache parity via the shared helper + tampered→miss + 0700/0600 census under umask 002 + allow-list interplay re-run. Sibling: engine-S23a — together the two legs replace engine-S23 (270 min). Header lines + locks above govern this half; the parent detail preserved below describes the whole fix, and prose references to engine-S23 denote the leg pair. Execute only the legs assigned to this half.
-
-- **Files:** `src/Parsing/AstCache.php` (put :86 try/catch + depth skip; get :58-70 recursive Node
-  validation + TypeError→miss + length-framing/seal; mkdir 0700; chmod 0600 on writes),
-  `src/Parsing/TokenCache.php` (mirror loop via the new shared helper; mkdir/perms), shared helper
-  new location (either `src/Parsing/` private helper or small `src/Util/` class — decide in-step),
-  `tests/Unit/Parsing/AstCacheTest.php` (NEW — none exists today),
-  `tests/Unit/Parsing/TokenCacheTest.php`, `tests/Unit/Persistence/SerializedClassAllowListTest.php`
-  (allow-list interplay only).
-  while the class is alive — if the catalog later deletes it, the removal just takes the helper's
-  second call site with it).
-- **Shared resources:** blob framing = storage-format change → bump the cache key/version marker
-  (AstCache VERSION token or filename scheme) → interacts with S24 (keyFor) and S25 — keep the
-  marker line trivially mergeable; `declare(strict_types=1)` fatal surfaces under failOnNotice.
-- **Acceptance:** depth fuzz: generating a 10k-deep array-literal file and analyzing with cache ON →
-  run exits 0 (was rc=255 fatal at AstCache.php:86), file simply uncached; unit battery: truncated
-  blob→miss, appended-garbage→miss (framing), nested-`__PHP_Incomplete_Class` blob (SEC nested.txt
-  shape)→miss not fatal, TokenCache tampered→miss; stat modes: fresh cache dir 0700, blobs 0600
-  under umask 002; full Unit+Integration green.
-
-### engine-S26 — `--no-cache` must actually disable AST disk-cache writes on the preprocess path
-
-- **Queue rank:** 101 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-engine-019
-- **Prereqs:** engine-S23b (same-file knowledge; also S25's policy makes the escape-hatch fix
-
-- **Files:** `src/Parallel/PreprocessWorker.php:86` (construct `new AstCache('')` when cache
-  disabled — `isEnabled()` :34-37 already no-ops), threading source (`src/Pipeline/Stages/PreprocessStage.php`
-  constructor area, possibly `Config` if the worker needs a flag — cross-group shell files, minimal edit),
-  `tests/Unit/Parallel/PreprocessWorkerIsolationTest.php`.
-  coherent). NOT Command.php help-text (shell group's FUZZ-X02 row — do not touch :127).
-- **Shared resources:** none.
-- **Acceptance:** unit: worker with cache disabled leaves the cache dir byte-empty (no new files)
-  yet completes fingerprinting from fresh parses; mirror of SEC-02 proof: decoy planted + `--no-cache`
-  → decoy NOT served end-to-end; `--filter PreprocessWorker` + Pipeline suites green.
-
-### engine-S39 — SerializedClassAllowList auto-trusts the entire PhpParser\ prefix
-
-- **Queue rank:** 102 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-engine-058
-- **Prereqs:** engine-S23b (AstCache/TokenCache real-blob tests re-run after tightening; the
-
-- **Files:** `src/Persistence/SerializedClassAllowList.php:52-85`,
-  `tests/Unit/Persistence/SerializedClassAllowListTest.php`.
-  filter must not break legitimate decode).
-- **Shared resources:** this list is consumed by both caches AND WorkerPool fork transport
-  (shell-group audit memo notes it) — tightening affects all three; run Parsing + Parallel suites.
-- **Acceptance:** unit: allowed set = `is_subclass_of(PhpParser\Node)` + Token (+ whatever real
-  blobs need — enumerate, e.g. Attribute classes; document any widening explicitly); new test
-  fails if any allowed class declares `__destruct|__wakeup|__unserialize`; end-to-end cached analyze
-  (cold+warm) and a `--workers 2` run still pass.
-
-### engine-S24 — Cache key honesty (parser version + PHP major) and sha1_file memoization
-
-- **Queue rank:** 103 of 247
-- **Severity mix:** medium=1 low=1
-- **Size:** HH (~90 min)
-- **Covers:** php-dup-finder-engine-016, php-dup-finder-engine-050
-- **Prereqs:** engine-S23b (file chain).
-
-- **Files:** `src/Parsing/AstCache.php` (VERSION :24 / keyFor :89-99: derive marker from
-  `Composer\InstalledVersions::getPrettyVersion('nikic/php-parser')` + `PHP_VERSION_ID` major;
-  path→sha1 memo), `src/Parsing/TokenCache.php` (same memo/derivation),
-  `tests/Unit/Parsing/AstCacheTest.php`, `tests/Unit/Parsing/TokenCacheTest.php`,
-  `tests/Unit/Extraction/BlockAstLoaderTest.php` (consumer).
-- **Shared resources:** key change invalidates all existing caches (acceptable — correctness goal);
-  AGENTS.md/CLAUDE.md prose repeats the false promise → caliber-managed files, do NOT edit: emit a
-  report-only closeout row.
-- **Acceptance:** unit: keyFor output contains `nikic/php-parser` pretty version + PHP major; second
-  keyFor() on same path does not re-hash (memo — assert via file mtime touch after first call: blob
-  still matches / counter seam); cache written by a "5.0"-labeled key is not read by a "5.9"-labeled
-  run (two-marker identity unit); suites green.
-
-### once-S23 — Cache-key completeness: every detection knob invalidates
-
-- **Queue rank:** 104 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-once-026
-- **Prereqs:** engine-S24, shell-S16, shell-S37  *(Phase-4 adjustment; see Merged & re-routed)*
-
-**Files:** src/Pipeline/Stages/ClusterStage.php, src/Pipeline/Stages/PreprocessStage.php, tests/Unit/Cli/CacheKeyKnobReplayTest.php
-**Shared resources:** ClusterStage/PreprocessStage both late in shell chains (S14→…→S37 / S15→…→S37) — once-leg after them; new test models FingerprintIdModeConfigTest precedent.
-**Acceptance:** warm cache then flip EACH of scorer/ir_threshold/ml_pair_*/ted_weights/low_memory/normalization_plugins/per-dir-overrides → report bytes change or cache-miss counted (no md5-identity across engine switch); unit test ships as the permanent fence.
-
-
-- **Phase-4 Outside merge:** ENGINE-CONV-04 — the IndexStore config-key serialize list at PreprocessStage.php:82-109 omits `normalizationPlugins` (violating the CLAUDE.md plugin contract); add the key + extend this step's knob-flip fence to cover it.
-
 ### engine-S31a — Dead engine-class catalog: adjudication ledger + Semantic/Similarity/Index-signature batch
 
-- **Queue rank:** 105 of 247
+- **Queue rank:** 138 of 247
 - **Severity mix:** medium=2
 - **Size:** HH (~150 min)
 - **Covers:** php-dup-finder-engine-027, php-dup-finder-engine-028
@@ -1724,7 +2193,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S31b — Dead engine-class catalog execution batch B (BloomCandidateIndex, ExternalSort, BlockHeader, IrSimilarity)
 
-- **Queue rank:** 106 of 247
+- **Queue rank:** 139 of 247
 - **Severity mix:** low=1
 - **Size:** HH (~120 min)
 - **Covers:** php-dup-finder-engine-046
@@ -1742,7 +2211,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S31c — Dead engine-class catalog execution batch C (Normalization/Parsing/Ir/Semantic) + census close-out
 
-- **Queue rank:** 107 of 247
+- **Queue rank:** 140 of 247
 - **Severity mix:** low=1
 - **Size:** HH (~130 min)
 - **Covers:** php-dup-finder-engine-051
@@ -1765,7 +2234,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S32 — Type-4 / semantic-layer advert matches reality
 
-- **Queue rank:** 108 of 247
+- **Queue rank:** 141 of 247
 - **Severity mix:** high=1
 - **Size:** MM (~30 min)
 - **Covers:** php-dup-finder-once-036
@@ -1777,7 +2246,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S89 — Ml HTTP twin collapse (postJson duplication)
 
-- **Queue rank:** 109 of 247
+- **Queue rank:** 142 of 247
 - **Severity mix:** medium=1
 - **Size:** MM (~45 min)
 - **Covers:** php-dup-finder-once-112
@@ -1789,7 +2258,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S90 — Verdict parsing strict everywhere
 
-- **Queue rank:** 110 of 247
+- **Queue rank:** 143 of 247
 - **Severity mix:** medium=1
 - **Size:** MM (~20 min)
 - **Covers:** php-dup-finder-once-113
@@ -1800,7 +2269,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S92 — Response size caps both transports + deadline honesty
 
-- **Queue rank:** 111 of 247
+- **Queue rank:** 144 of 247
 - **Severity mix:** medium=1
 - **Size:** MM (~45 min)
 - **Covers:** php-dup-finder-once-115
@@ -1812,7 +2281,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S79 — Dead-doc citation sweep
 
-- **Queue rank:** 112 of 247
+- **Queue rank:** 145 of 247
 - **Severity mix:** medium=1
 - **Size:** MM (~60 min)
 - **Covers:** php-dup-finder-once-099
@@ -1822,21 +2291,9 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 **Shared resources:** config-schema + CI.md + gitlab shared windows (serialize AFTER S14's gitlab edit; docblock lines engine/output touched settle first).
 **Acceptance:** grep census: zero citations to deleted docs/plans/orm-db-semantic-dedup.md (re-point to docs/algorithms/* or drop the sentence), zero 'UPDATE_PLAN.md' refs (file absent) — each replaced with a live anchor or removed-with-meaning-preservation (20+ sites).
 
-### once-S05 — Update signature integrity rebuild (fail open → fail closed)
-
-- **Queue rank:** 113 of 247
-- **Severity mix:** critical=1
-- **Size:** HH (~150 min)
-- **Covers:** php-dup-finder-once-005
-- **Prereqs:** shell-S36 (download completion)
-
-**Files:** src/Cli/UpdateCommand.php, .github/workflows/release.yml, docs/RELEASE.md, tests/Unit/Cli/UpdateCommandTest.php
-**Shared resources:** release.yml chain (S05→S11→S12); docs/RELEASE.md content rewrite (file exists NOW — findings-era 'absent' note corrected); [OWNER: generate asymmetric keypair + secret custody]; phar-stub key separation note to S102 (XP-09).
-**Acceptance:** HMAC secret env moved to the SIGN step (proof: CI round-trip job signs artifact then verifies via UpdateCommand code-path, exit 0 on good / 1 on tamper); placeholder VERIFICATION_KEY → verification REFUSES (explicit error) instead of passing; raw-vs-base64 key forms identical both sides; `--allow-unsigned` deleted or confined to `--dev-allow-unsigned` with loud stderr; sha256 no longer trusted from same response as artifact (pin to signed manifest).
-
 ### output-S18 — path/format boundary hardening (patch, diff, JSON evidence, DOT, PlantUML, labels)
 
-- **Queue rank:** 114 of 247
+- **Queue rank:** 146 of 247
 - **Severity mix:** high=1 medium=1 low=1
 - **Size:** HH (~150 min)
 - **Covers:** php-dup-finder-output-011, php-dup-finder-output-047, php-dup-finder-output-052
@@ -1851,7 +2308,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### output-S20 — PrometheusReporter: aggregate-default series, per-cluster detail out of JSON/HTML
 
-- **Queue rank:** 115 of 247
+- **Queue rank:** 147 of 247
 - **Severity mix:** medium=1
 - **Size:** HH (~60 min)
 - **Covers:** php-dup-finder-output-026
@@ -1865,7 +2322,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### output-S19 — CliReporter terminal-escape scrub + composer package-name gate
 
-- **Queue rank:** 116 of 247
+- **Queue rank:** 148 of 247
 - **Severity mix:** medium=1
 - **Size:** HH (~90 min)
 - **Covers:** php-dup-finder-output-046
@@ -1880,7 +2337,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S21 — TUI-side control-char scrub (ViewState leg)
 
-- **Queue rank:** 117 of 247
+- **Queue rank:** 149 of 247
 - **Severity mix:** high=1
 - **Size:** MM (~30 min)
 - **Covers:** php-dup-finder-once-024
@@ -1892,7 +2349,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### output-S22 — formula-neutralization in Diff/RefactorPatch/RefactorTest metadata rows (or rule carve-out)
 
-- **Queue rank:** 118 of 247
+- **Queue rank:** 150 of 247
 - **Severity mix:** medium=1
 - **Size:** HH (~90 min)
 - **Covers:** php-dup-finder-output-035
@@ -1907,7 +2364,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S58 — CSV-injection defusing on every CSV surface
 
-- **Queue rank:** 119 of 247
+- **Queue rank:** 151 of 247
 - **Severity mix:** medium=1
 - **Size:** MM (~45 min)
 - **Covers:** php-dup-finder-once-064
@@ -1919,7 +2376,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S61 — TUI layout: clamps that clamp, cell-aware widths, per-region clipping
 
-- **Queue rank:** 120 of 247
+- **Queue rank:** 152 of 247
 - **Severity mix:** medium=1
 - **Size:** HH (~120 min)
 - **Covers:** php-dup-finder-once-070
@@ -1931,7 +2388,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S62 — 't' sort affordance wired or withdrawn
 
-- **Queue rank:** 121 of 247
+- **Queue rank:** 153 of 247
 - **Severity mix:** medium=1
 - **Size:** MM (~20 min)
 - **Covers:** php-dup-finder-once-071
@@ -1942,7 +2399,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S63 — TUI colors survive FlexBox sanitize (trusted-span seam)
 
-- **Queue rank:** 122 of 247
+- **Queue rank:** 154 of 247
 - **Severity mix:** medium=1
 - **Size:** HH (~90 min)
 - **Covers:** php-dup-finder-once-072
@@ -1952,73 +2409,9 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 **Shared resources:** [external constraint: sugar-core Sanitize::untrusted owned outside this repo — no core edit; ship wrapper/segment model here]; colors vs escapes coupling w/ S21 scrub.
 **Acceptance:** seam: theme styling applied at render-time outside the sanitized span (sugar Style composition), colors visible on >70% of previously-dead regions (PTY capture ANSI census up), control chars from S21 test STILL neutralized (both properties coexist — regression pair asserted).
 
-### engine-S06a — `--db-aware` name-only folding fabricates EXACT DB clones (critical) — half A: receiver-evidence gate — folding the get/all/save tier out of pure-name matching (store-vs-logger evidence), CustomDbSymbols + DbOpCanonicalizer pins.
-
-- **Queue rank:** 123 of 247
-- **Severity mix:** critical=1
-- **Size:** HH (~160 min)
-- **Covers:** php-dup-finder-engine-003
-- **Prereqs:** none  *(Phase-5 r1 split; see Merged & re-routed)*
-
-> **Half A (Phase-5 r1, I5/D2a):** this half owns: receiver-evidence gate — folding the get/all/save tier out of pure-name matching (store-vs-logger evidence), CustomDbSymbols + DbOpCanonicalizer pins. Sibling: engine-S06b — together the two legs replace engine-S06 (300 min). Header lines + locks above govern this half; the parent detail preserved below describes the whole fix, and prose references to engine-S06 denote the leg pair. Execute only the legs assigned to this half.
-
-- **Files:** `src/Normalization/DbOpCanonicalizer.php` (rewriteMethodCall :149-190,
-  buildSynthetic :241-266), `src/Normalization/DbOpRegistry.php` (METHOD_OPS :58-123),
-  `tests/Unit/Normalization/DbOpCanonicalizerTest.php`, `tests/Unit/Normalization/CustomDbSymbolsTest.php`,
-  `tests/Unit/Normalization/DbOpRegistryTest.php`; possible new registry entry shape →
-  `profiles/db-aware-*.json` + `docs/config-schema.json` (cross-group roster — see conflicts).
-- **Shared resources:** if receiver-evidence config keys are admitted, the PerDirOverrideBeltTest
-  emit/consume invariant (admitted key must be consumed or consciously banked) and docs/config-schema.json
-  come into play; db-aware symbol packs are shared with the cli/shell group (ProjectProfileDetector).
-- **Fix shape:** receiver evidence before folding generic names (`get/all/save` out of pure-name
-  tier); retain sorted-column-set signature in synthetic args for QUERY/EXECUTE so "same table,
-  different columns" is near-dup not type-1.
-- **Acceptance:** the finding's two repros: two different `exec('UPDATE users SET …')` payloads no
-  longer EXACT (unit asserts differing synthetic streams); `$this->store->get` vs `$this->logger->get`
-  not folded without DB evidence; genuine same-payload DB clones still cluster; `--filter 'DbOp|Custom'`
-  green; goldens unmoved (dbAware defaults false).
-
-### engine-S06b — `--db-aware` name-only folding fabricates EXACT DB clones (critical) — half B: column-set synthetic signature + registry entry shape + profiles/docs/config-schema rows + DbOpRegistryTest; closes both repros.
-
-- **Queue rank:** 124 of 247
-- **Severity mix:** critical=1
-- **Size:** HH (~140 min)
-- **Covers:** php-dup-finder-engine-003
-- **Prereqs:** engine-S06a  *(Phase-5 r1 split; see Merged & re-routed)*
-
-> **Half B (Phase-5 r1, I5/D2a):** this half owns: column-set synthetic signature + registry entry shape + profiles/docs/config-schema rows + DbOpRegistryTest; closes both repros. Sibling: engine-S06a — together the two legs replace engine-S06 (300 min). Header lines + locks above govern this half; the parent detail preserved below describes the whole fix, and prose references to engine-S06 denote the leg pair. Execute only the legs assigned to this half.
-
-- **Files:** `src/Normalization/DbOpCanonicalizer.php` (rewriteMethodCall :149-190,
-  buildSynthetic :241-266), `src/Normalization/DbOpRegistry.php` (METHOD_OPS :58-123),
-  `tests/Unit/Normalization/DbOpCanonicalizerTest.php`, `tests/Unit/Normalization/CustomDbSymbolsTest.php`,
-  `tests/Unit/Normalization/DbOpRegistryTest.php`; possible new registry entry shape →
-  `profiles/db-aware-*.json` + `docs/config-schema.json` (cross-group roster — see conflicts).
-- **Shared resources:** if receiver-evidence config keys are admitted, the PerDirOverrideBeltTest
-  emit/consume invariant (admitted key must be consumed or consciously banked) and docs/config-schema.json
-  come into play; db-aware symbol packs are shared with the cli/shell group (ProjectProfileDetector).
-- **Fix shape:** receiver evidence before folding generic names (`get/all/save` out of pure-name
-  tier); retain sorted-column-set signature in synthetic args for QUERY/EXECUTE so "same table,
-  different columns" is near-dup not type-1.
-- **Acceptance:** the finding's two repros: two different `exec('UPDATE users SET …')` payloads no
-  longer EXACT (unit asserts differing synthetic streams); `$this->store->get` vs `$this->logger->get`
-  not folded without DB evidence; genuine same-payload DB clones still cluster; `--filter 'DbOp|Custom'`
-  green; goldens unmoved (dbAware defaults false).
-
-### once-S100 — db-aware pack hygiene (op disagreements + dup key)
-
-- **Queue rank:** 125 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~40 min)
-- **Covers:** php-dup-finder-once-125
-- **Prereqs:** engine-S06b (receiver evidence), once-S16 (registry=disk)
-
-**Files:** profiles/db-aware-laravel.json, profiles/db-aware-illuminate.json, profiles/db-aware-thinkorm.json, src/Normalization/DbOpRegistry.php, tests/Unit/Normalization/DbOpRegistryTest.php
-**Shared resources:** profiles/ shared w/ S16 (order S16→S100); BlockAstLoader matchesKind risk = AGENTS 4th-mirror row → REPORT-ONLY rider.
-**Acceptance:** delete-ish op classification identical in both packs (regression unit feeds same fixture, asserts same db-op tags); dup JSON key fixed; test asserts unique-key parse (json_decode err flag via JSON_THROW_ON_ERROR + manual scan); --db-aware loads ALL packs census unchanged + shared keys conflict-free.
-
 ### engine-S18b — Preprocess residency: int postings, gram interning, lowMemory default threshold — half B: gram dictionary/int-bag default + Block.php docblocks + cache-version roster + RSS re-measure.
 
-- **Queue rank:** 126 of 247
+- **Queue rank:** 155 of 247
 - **Severity mix:** high=1
 - **Size:** HH (~160 min)
 - **Covers:** php-dup-finder-engine-011
@@ -2047,378 +2440,9 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 - **Phase-4 Outside memos:** ENGINE-PERF out-of-group 2 (int-bag default-flip threading lands at the PreprocessStage/PreprocessWorker wiring layer = shell group; cross-group rows stay report-only here) + output's (engine) PERF-24 peak-RSS 382 MB memo is this residency line.
 
-### shell-S01 — Async serve: enforce `--serve-root` confinement + crash-proof request handling
-
-- **Queue rank:** 127 of 247
-- **Severity mix:** critical=3
-- **Size:** HH (~160 min)
-- **Covers:** php-dup-finder-once-001, php-dup-finder-shell-001, php-dup-finder-shell-002
-- **Prereqs:** none
-
-**Files:** src/Server/Application.php, src/Server/AnalysisWorker.php, src/Cli/ServeCommand.php, bin/phpdup-worker, tests/Unit/Server/ApplicationTest.php, tests/Unit/Cli/ServeCommandTest.php
-**Shared resources:** docs/SERVER.md confinement wording becomes true (row check; full restatement in S09); ServeCommand.php + AnalysisWorker.php file locks (chain head); Socketpair Law — serveRoot travels as the THIRD argv token of the `bin/phpdup-worker <sock> <dir> [<serve-root>]` spawn string (escapeshellarg'd), never as serialized state.
-**Acceptance:**
-- Unit: `validatePaths` non-string element (`{"paths":[123]}`) → 400 array result, no TypeError; enqueue of payload with absolute path outside serve root → 400 with no job minted; worker process handed the same payload refuses (defense-in-depth leg) — tests in ApplicationTest.
-- Live probe (one-shot PTY or background + curl): `serve --serve-root=$PWD` + `POST /jobs {"paths":["/etc"]}` → 400 (was 202 + served result); `POST /analyze {"paths":[123]}` → 400 and `GET /healthz` still 200 immediately after (daemon alive — was exit 255).
-- Both docblock promises (Application.php:50-52, ServeCommand.php:39-40) now match code.
-
-
-- **Phase-4 merge (absorbs once-S01):** once-001 (async POST /jobs bypasses serve-root confinement). shell-S01's confinement + worker-side defense legs ARE the once-001 fix; the once annotator confirmed identical acceptance probes.
-
-- **Phase-4 Outside merge:** ENGINE-SEC out-of-group 4 (serve job payloads setting ml_pair_url) — add an admission leg: enumerate which config fields the `RUN <jobId> <configJson>` frame accepts; any ml_pair_url admission must run through engine-S19's fail-closed gate (cross-ref once-S54). Also carries once-001 (merged; worker re-validation is this step's defense-in-depth leg).
-
-### shell-S02 — Worker results dir + job-id hardening
-
-- **Queue rank:** 128 of 247
-- **Severity mix:** medium=2
-- **Size:** MM (~60 min)
-- **Covers:** php-dup-finder-shell-021, php-dup-finder-shell-022
-- **Prereqs:** shell-S01 (same spawn/processJob regions; worker ctor shape just changed)
-
-**Files:** src/Cli/ServeCommand.php, src/Server/AnalysisWorker.php, tests/Unit/Server/ServeCommandTest.php, tests/Unit/Server/ApplicationTest.php
-**Shared resources:** /tmp surface (`phpdup-results-<pid>`, `phpdup-worker-<pid>.sock`); docs/SERVER.md results-path row (rider; restated in S09); 052(c) roll-up leg deferred to S39.
-**Acceptance:**
-- Results dir created 0700; pre-existing foreign-owned dir of the same name → refuse at startup with an error (exit 1 runtime posture, not silent adoption); `stat -c %a` = 700 on a live serve run's results dir.
-- Unit: jobId not matching the queue's own `/^[0-9a-f]{16}$/` mint format → write refused + error ack (no `../../` path escape: assert the `RUN <evil-id>` line writes nothing outside resultDir); `file_put_contents` failure → ack not "OK" (worker reports failure).
-- cleanupWorker sweeps the results dir (unit: after shutdown handler, dir gone).
-
-
-- **Phase-4 note:** ENGINE-SEC out-of-group-1's phpdoc-worker socket-pair confirmation leg rides shell-S39(c) (bind race) + engine-S39 (allow-list).
-
-### shell-S07 — Worker request line: bounded read
-
-- **Queue rank:** 129 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~15 min)
-- **Covers:** php-dup-finder-shell-049
-- **Prereqs:** shell-S02 (processJob socket-read region; jobId check lands there first)
-
-**Files:** src/Server/AnalysisWorker.php, tests/Unit/Server/ApplicationTest.php
-**Shared resources:** cap must align with Application::MAX_BODY_BYTES scale (same constant story; S08 changes ack timing on this file after).
-**Acceptance:**
-- Unit: feed a line of cap+1 bytes on a socketpair → worker replies error, does not buffer it whole, stays alive for the next valid job.
-- `stream_get_line`/`fgets` maxlen visible in code; no regression of the 022 jobId validation.
-
-### shell-S03 — SIGINT/SIGTERM on `phpdup serve`: reap worker, clean /tmp, exit 130
-
-- **Queue rank:** 130 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-shell-016
-- **Prereqs:** shell-S02 (cleanupWorker/result-dir region shared; S02's sweep is what the signal path must now trigger)
-
-**Files:** src/Cli/ServeCommand.php, src/Server/AnalysisWorker.php, bin/phpdup-worker, tests/Unit/Server/ServeCommandTest.php
-**Shared resources:** ServeCommand accept loop :185-198 (S04 extends it next); worker self-exit needs a parent-liveness check (getmypid ppid poll) — no new wire.
-**Acceptance:**
-- Live probe: start `phpdup serve`, record pids, `kill -INT` the server → server exits 130, `pgrep -f phpdup-worker` shows the child gone within ~1s, socket + results dir removed (was: orphaned worker + litter).
-- `pcntl_signal(SIGINT/SIGTERM)` installed; `pcntl_signal_dispatch()` runs on EVERY accept-loop iteration including the 30s-timeout `continue` path (assert by code inspection + a unit that the dispatch sits before `continue`).
-- Worker self-exits when its parent dies (kill server hard with -9 → orphan worker terminates within one poll interval).
-- If pcntl unavailable: graceful no-op + doc note (same posture as WorkerPool fallbacks).
-
-### shell-S04 — Per-client read timeout: one stalled client must not freeze the daemon
-
-- **Queue rank:** 131 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~40 min)
-- **Covers:** php-dup-finder-shell-007
-- **Prereqs:** shell-S03 (accept-loop region serialization)
-
-**Files:** src/Cli/ServeCommand.php, tests/Unit/Server/ServeCommandTest.php
-**Shared resources:** request-deadline constant (documented in S09's SERVER.md pass).
-**Acceptance:**
-- Probe: client A opens the socket, sends bytes but never completes the request; client B's `GET /healthz` returns 200 within the timeout window + margin (was: blocked until A closes).
-- `stream_set_timeout` + `stream_get_meta_data()['timed_out']` checked in BOTH read loops (header loop and body loop); timed-out client gets a 408 (or clean close — pick one, pin it in a test) and the loop continues.
-- Unit: a fake stream fixture that stalls → handleClient path returns within configured bound (hermetic, no wall-clock sleeps >2s so CI stays green).
-
-### once-S43 — serve concurrency posture decided; /healthz immune to slow-loris
-
-- **Queue rank:** 132 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~40 min)
-- **Covers:** php-dup-finder-once-047
-- **Prereqs:** shell-S04
-
-**Files:** src/Cli/ServeCommand.php, docs/SERVER.md
-**Shared resources:** [OWNER: keep serial + documented backlog vs worker-per-conn — default keep-serial]; SERVER.md concurrency section w/ S97.
-**Acceptance:** listen backlog set + documented; manual probe: stalling one client (netcat half-open) → GET /healthz still 200 within 1 s; documented known-serial limitation + sizing guidance row.
-
-### shell-S05 — HTTP framing: anchored Content-Length, duplicate rejection, LF leniency, no chunked
-
-- **Queue rank:** 133 of 247
-- **Severity mix:** medium=1 low=1
-- **Size:** MM (~50 min)
-- **Covers:** php-dup-finder-shell-033, php-dup-finder-shell-047
-- **Prereqs:** shell-S04 (same raw-request read/parse region :228-265)
-
-**Files:** src/Cli/ServeCommand.php, tests/Unit/Server/ServeCommandTest.php
-**Shared resources:** MAX_BODY_BYTES semantics in Application::jsonBody stays authority (cross-check only, no edit).
-**Acceptance:**
-- Unit: `X-Content-Length: 999999999` ahead of real `Content-Length: 12` → gate uses the real one (no 413 hijack); two headers with DIFFERENT Content-Length values → 400; `Content-Lengthings:` does not match the anchored regex.
-- Probe: `printf 'GET /healthz HTTP/1.1\n\n' | (one-shot PTY nc)` → 200 immediately (bare-LF accepted, was hang-until-close); a request with `Transfer-Encoding: chunked` → 400 with explanatory body.
-- extractHeaders duplicate policy (reject-on-conflict for Content-Length, documented last-wins for others) pinned by a test.
-
-### shell-S08 — Async dispatch protocol: ack-at-accept, no post-work blocking; sync-mode cache posture
-
-- **Queue rank:** 134 of 247
-- **Severity mix:** medium=1
-- **Size:** HH (~120 min)
-- **Covers:** php-dup-finder-shell-032
-- **Prereqs:** shell-S01, shell-S02, shell-S07 (all prior AnalysisWorker/Application regions stable; protocol change builds on the validated pipeline)
-
-**Files:** src/Server/AnalysisWorker.php, src/Server/Application.php, src/Cli/ServeCommand.php, tests/Unit/Server/ApplicationTest.php, tests/Unit/Cli/ServeCommandTest.php
-**Shared resources:** the one-line worker protocol changes shape (`OK <jobId>` moves from post-work to pre-work; completion signalled by result file appearing) — docs/SERVER.md route-behavior rows land in S09; phpdup-worker/bin surface re-checked by S35; Socketpair Law respected (scalars only).
-**Acceptance:**
-- Probe: submit an async job that takes >5s (fixture corpus) → queue reaches `completed` + result retrievable (was: `failed`/dispatch-failure split-brain while the result existed).
-- Unit: worker replies accept-ack before running; server never marks FAILED on a slow-but-successful job; a worker crash mid-job → job lands FAILED via result-file absence with a deadline (or explicit `ERR` frame — lane choice, pinned).
-- Sync `/analyze`: workers auto-nproc fork per request — clamp small payloads to serial (reuse S10's cap decision if it lands first; otherwise serial-by-default with a server flag). `useCache:false` becomes a server option (`--serve-cache` style) defaulting to current false; doc row in S09.
-- ApplicationTest + ServeCommandTest green.
-
-### shell-S09 — Serve route contract: docs and docblocks match the 7 real routes
-
-- **Queue rank:** 135 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~30 min)
-- **Covers:** php-dup-finder-shell-046
-- **Prereqs:** shell-S01, shell-S02, shell-S03, shell-S04, shell-S05, shell-S08  *(Phase-4 adjustment; see Merged & re-routed)*
-
-**Files:** src/Cli/ServeCommand.php, src/Server/Application.php, docs/SERVER.md
-**Shared resources:** docs/SERVER.md single writer; route POST/GET table is the contract reviewers cite for S01/S05/S08 acceptance.
-**Acceptance:**
-- `docs/SERVER.md` route table lists exactly the implemented allow-list (all 7, or a lane decision to drop `/api/*` — if dropped, code deletion too); the phantom `POST /jobs/cleanup` sentence at :108 is gone (or the route exists — no third option); docblock at ServeCommand.php:21-27/45-53 + Application.php:50-52 byte-consistent with the table.
-- `grep -c '/api/jobs' docs/SERVER.md` > 0 iff routes kept.
-- **Phase-5 r1 (I3/D3a):** desired `.claude/rules/server-job-queue.md` "allow-list" text → rider row in the once-S80 packet; lane edits no caliber files.
-
-### once-S57 — Quickstart serve example matches the loopback guard
-
-- **Queue rank:** 136 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~15 min)
-- **Covers:** php-dup-finder-once-063
-- **Prereqs:** shell-S09
-
-**Files:** docs/SERVER.md, README.md
-**Shared resources:** SERVER.md chain.
-**Acceptance:** quickstart shows default bind; explicit non-loopback exposure documented AS the guarded case w/ the token/--serve-root consequence (not the surprise first-run error); probe: quickstart lines run as-written succeed.
-
-### once-S17 — serve docs: real topology (routes, 413 body cap, playground truth)
-
-- **Queue rank:** 137 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~20 min)
-- **Covers:** php-dup-finder-once-020
-- **Prereqs:** shell-S09
-
-**Files:** docs/SERVER.md, docs/PLAYGROUND.md, src/Server/Application.php (docblocks only)
-**Shared resources:** SERVER.md append chain slot (after shell base, before S41/S42); 'synchronous demo' docblock lies → 'future' wording.
-**Acceptance:** every implemented route documented (/jobs, /jobs/{id}, /jobs/cleanup→removed or added, /api/jobs×3, score-batch pointer to S53) and every documented route returns non-404 (loopback probe census); MAX_BODY 16 MiB + 413 row present; playground paste story reads as aspiration.
-
-### shell-S35 — PHAR surface: InitCommand in stub + worker packaging decision
-
-- **Queue rank:** 138 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-shell-045
-- **Prereqs:** shell-S09 (SERVER.md final route/limitation rows — phar note lands beside them), shell-S03 (worker-spawn resolve path :354-357 stable after signal work)
-
-**Files:** build-phar.php, src/Cli/ServeCommand.php, docs/SERVER.md, tests/Unit/Cli/ServeCommandTest.php
-**Shared resources:** bin/ + build-phar.php PHAR surface (only step editing build-phar.php); phar build requires `php -d phar.readonly=0` (CI has a job — keep the step CI-green); S36 (self-update) hot-swaps the same artifact — no file overlap, posture awareness only.
-**Acceptance:**
-- `php -d phar.readonly=0 build-phar.php` → exit 0; `php phpdup.phar list` shows `init`; worker shipped (`php phpdup.phar serve` spawns async leg — or documented sync-only with a serve warning line; lane decision recorded in report + SERVER.md row matches).
-- Probe whichever posture: serve-from-phar smoke: POST /analyze returns same JSON as checkout-run (fixture tmp dir — phar confinement: note serve-root arg honored in S01's protocol).
-
-### once-S53 — ML sidecar API docs + wire-shape + reference sidecar
-
-- **Queue rank:** 139 of 247
-- **Severity mix:** medium=2
-- **Size:** MM (~60 min)
-- **Covers:** php-dup-finder-once-059, php-dup-finder-once-118
-- **Prereqs:** once-S48, engine-S19b, shell-S08
-
-**Files:** docs/SERVER.md, docs/ML.md, tools/ml-sidecar-example.php, src/Ml/MlPairClient.php (docblock)
-**Shared resources:** SERVER.md append slot (S17 window then S53); 118 annotated covered-by-reference (pointer row recorded, its legs live in 020→S17, 084→S54, 124→S99).
-**Acceptance:** POST /score-batch contract (request/response exact 11-field wire) documented; tools/ gains a runnable ~80-line reference sidecar (stdlib PHP, examples echo-canonical verdicts); ML.md release-id example == current schema version output (ML.md example uses real ids from a /tmp fixture run); 'Wiring—Today' narrative correct per class (MlClient status cites S89 adjudication).
-
-### shell-S39 — Trust-posture roll-up: explicit decisions on allow-list, cache perms, socket race, error echoes
-
-- **Queue rank:** 140 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~60 min)
-- **Covers:** php-dup-finder-shell-052
-- **Prereqs:** engine-S39, shell-S01, shell-S02, shell-S08, shell-S11, shell-S18  *(Phase-4 adjustment; see Merged & re-routed)*
-
-**Files:** src/Persistence/SerializedClassAllowList.php, src/Persistence/IndexStore.php, src/Cli/Config.php, src/Server/Application.php, src/Server/AnalysisWorker.php, src/Cli/ServeCommand.php
-**Shared resources:** Config.php:74 default cache-dir location decision (in-tree `.phpdup-cache` → 0700 + configurable; moving the DEFAULT is breaking — posture: tighten perms, keep location, disclose); this is the LAST writer of Application.php/ServeCommand.php/WorkerPool(:260-283)/AnalysisWorker.php behavior after the chain (rebase onto all of them).
-**Acceptance (per leg, all four decided + landed or explicitly banked with reason in the report):**
-- (a) allow-list: explicit curated set replaces the composer-classmap sweep — SerializedClassAllowListTest pins the exact set (mutation-proof: a PhpParser node class removed from the curation → the wire test still passes ONLY because value-object set covers… no: assert nested-node decode still works; if curation shrinks the graph safety, that's S11's envelope — verify together).
-- (b) cache dirs: `stat -c %a` = 700 on fresh IndexStore dirs (was 0775); Config.php:74 posture documented.
-- (c) socket: bind under a temporary restrictive umask OR flock-then-chmod-with-verify before accept; race leg unit-reviewed + reported.
-- (d) 500/400 bodies: generic text + logged detail (ApplicationTest asserts message path-leak gone: an exception with an absolute path in its message → body contains none of it, while the debug log / STDERR keeps the detail).
-
----
-
-### shell-S13 — writeRecord: linear partial-write handling
-
-- **Queue rank:** 141 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~25 min)
-- **Covers:** php-dup-finder-shell-050
-- **Prereqs:** shell-S12, shell-S39  *(Phase-4 adjustment; see Merged & re-routed)*
-
-**Files:** src/Parallel/WorkerPool.php, tests/Unit/Parallel/WorkerPoolTest.php
-**Shared resources:** none beyond WorkerPool.php.
-**Acceptance:**
-- Unit: large record (>2·pipe buffer) against a slow reader writes fully with correct bytes; implementation uses a fixed slice cursor (code review: no `substr` of the shrinking remainder per iteration); WorkerPoolWireTest (round-trips) green.
-
-### once-S45 — Forked workers: SIG_DFL reset before work (kill-switch real)
-
-- **Queue rank:** 142 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~30 min)
-- **Covers:** php-dup-finder-once-049
-- **Prereqs:** shell-S13 (chain tail)
-
-**Files:** src/Parallel/WorkerPool.php, tests/Unit/Parallel/WorkerPoolTest.php
-**Shared resources:** WorkerPool hot chain after shell; feeds once-S74/S77.
-**Acceptance:** unit/live: parent `kill -TERM <worker-pid>` → child dies 143 & pool marks death (was immortal handler-inherited hang); pcntl_async_signals off in child branch asserted via child probe output.
-
-### once-S44 — Death paths clean up: socket gone, worker reaped, no stale lock
-
-- **Queue rank:** 143 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~20 min)
-- **Covers:** php-dup-finder-once-048
-- **Prereqs:** once-S45, shell-S03, shell-S39  *(Phase-4 adjustment; see Merged & re-routed)*
-
-**Files:** src/Cli/ServeCommand.php, src/Server/AnalysisWorker.php, bin/phpdup-worker
-**Shared resources:** pid-file/flock in results dir (S71's sweep sees it).
-**Acceptance:** kill -9 then restart: stale socket auto-reclaimed (bind error path handled), `pgrep phpdup-worker` empty after second start; worker ppid-watchdog unit (fake ppid) exits.
-
-### once-S75 — Signal contract: scoped handlers, second-SIGINT exits now
-
-- **Queue rank:** 144 of 247
-- **Severity mix:** medium=1
-- **Size:** HH (~75 min)
-- **Covers:** php-dup-finder-once-090
-- **Prereqs:** once-S07, once-S45, shell-S33  *(Phase-4 adjustment; see Merged & re-routed)*
-
-**Files:** src/Cli/SignalHandler.php, src/Cli/Command.php, src/Watch/WatchRunner.php, src/Tui/TuiRunner.php, tests/Unit/Cli/SignalHandlerTest.php
-**Shared resources:** SignalHandlerTest global-async flip = S93 test-hygiene dependency (S75 before S93); TuiRunner/WatchRunner shared w/ S07/S08/S47 (final signal pass).
-**Acceptance:** install() returns restorer; async mode set inside scope only (unit: pcntl_async_signals(false) after scope, handler restored); second SIGINT → exit 130 within one loop iteration incl watch+TUI (PTY probe: two ^C, capture exit); '130' doc row to S95.
-
-### once-S02 — Async job lifecycle actually completes (or fails honestly)
-
-- **Queue rank:** 145 of 247
-- **Severity mix:** critical=1
-- **Size:** HH (~90 min)
-- **Covers:** php-dup-finder-once-002
-- **Prereqs:** shell-S06 (bounded queue), shell-S08 (ack-at-accept protocol)
-
-**Files:** src/Server/Application.php, src/Server/JobQueue.php, tests/Unit/Server/JobQueueTest.php, tests/Unit/Server/ApplicationTest.php
-**Shared resources:** JobQueue.php lock w/ shell chain; MAX_JOCS eviction policy touches shell-S06 semantics; false-500 posture is an exit-class row for S95 docs.
-**Acceptance:** submitted fixture job transitions pending→running→done observed via GET /jobs/<id> (no 5 s fixed-fail); queue at cap evicts oldest with visible note, request never returns false-500 while alive; worker death reported via exit-status ack (not timeout lie); unit drives a fake worker both ways.
-
-### once-S46 — Worker death mid-stream ≠ success
-
-- **Queue rank:** 146 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~10 min)
-- **Covers:** php-dup-finder-once-050
-- **Prereqs:** shell-S10 (sentinel/exit-status core), once-S02
-
-**Files:** src/Server/AnalysisWorker.php, tests/Unit/Server/AnalysisWorkerTest.php
-**Shared resources:** AnalysisWorker chain.
-**Acceptance:** fake worker emitting 23/40 records then EOF-without-__done + nonzero status → consumer reports failure exit and partial marker (was silent 0); status checked even on clean EOF.
-
-### once-S03 — buildSummary reads the right level; /analyze stops faking exactOnly
-
-- **Queue rank:** 147 of 247
-- **Severity mix:** critical=1 medium=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-once-003, php-dup-finder-once-065
-- **Prereqs:** once-S02, shell-S09
-
-**Files:** src/Server/Application.php, src/Server/AnalysisWorker.php, tests/Unit/Server/ApplicationTest.php
-**Shared resources:** docs/SERVER.md counters rows (S17 window); shared counter helper co-owned with S37 summary work (keep helper additive).
-**Acceptance:** sync job on notify fixture → summary block shows non-zero totals read from `$decoded['summary']`; /analyze + worker no longer force exactOnly (payload carries holes/signature fields asserted by key-existence tests); SERVER.md example output matches real bytes.
-
-### once-S71 — serve tokens/stale results/security section (posture owner call)
-
-- **Queue rank:** 148 of 247
-- **Severity mix:** medium=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-once-085
-- **Prereqs:** shell-S02, shell-S39, once-S02
-
-**Files:** src/Cli/ServeCommand.php, src/Server/Application.php, docs/SERVER.md
-**Shared resources:** [OWNER: default-token vs documented-local-only]; SERVER.md security section final owner (S42 leg folded into S39's section by ledger: S71 LAST writer); results-dir sweep couples S44 pid-file.
-**Acceptance:** chosen posture implemented+documented: tokenless multi-user box probe (second uid simulated via chmod/read assertions) no longer serves arbitrary paths unauthenticated if token default (POST/GET 401 without token when enabled); stale /tmp/phpdup-results-* from dead pids pruned at startup (count assert); 0700 recheck.
-
-### once-S42 — Serve request trust: Host/Origin checks, CSRF text/plain refused
-
-- **Queue rank:** 149 of 247
-- **Severity mix:** high=1
-- **Size:** HH (~90 min)
-- **Covers:** php-dup-finder-once-046
-- **Prereqs:** once-S02, shell-S05, shell-S08  *(Phase-4 adjustment; see Merged & re-routed)*
-
-**Files:** src/Server/Application.php, src/Cli/ServeCommand.php, docs/SERVER.md
-**Shared resources:** SERVER.md security section grows (S71 owns final assembly); token posture coupling S71 [OWNER shared with S71].
-**Acceptance:** POST with `Origin: http://evil.test` → 403; Host header not loopback:port → 400; `text/plain` POST → refused pre-body; rebinding probe (Host: attacker-mapped→127.0.0.1) refused by Host allow-list — units driving Application directly.
-
-### once-S97 — serve odds: ::1 brackets, verbosity notes, healthz doc, redaction
-
-- **Queue rank:** 150 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~30 min)
-- **Covers:** php-dup-finder-once-122
-- **Prereqs:** once-S42, once-S71, shell-S05, shell-S39  *(Phase-4 adjustment; see Merged & re-routed)*
-
-**Files:** src/Server/Application.php, src/Cli/ServeCommand.php, docs/SERVER.md
-**Shared resources:** SERVER.md final append slot; exception-redaction leg w/ S71/S39.
-**Acceptance:** IPv6 bind --host ::1 probe: connect URL builds `tcp://[::1]:port` (unit + one-shot live); pcntl-absent serial fallback visible at DEFAULT verbosity (not only -vvv); raw-path exception bodies redacted (relative labels only — S39 seam); /healthz token note (if S71 default-token landed) in doc; predict+@unlink socket window closed (S44 pid-flock reused).
-
-### once-S64 — Cache durability: shape trust closed, empty-blob miss, prune policy
-
-- **Queue rank:** 151 of 247
-- **Severity mix:** medium=1
-- **Size:** HH (~90 min)
-- **Covers:** php-dup-finder-once-073
-- **Prereqs:** engine-S23b, engine-S24, shell-S18, shell-S19, shell-S39  *(Phase-4 adjustment; see Merged & re-routed)*
-
-**Files:** src/Persistence/ClusterCache.php, src/Persistence/IndexStore.php, tests/Unit/Persistence/ClusterCacheTest.php, src/Cli/Command.php (prune leg per ruling), docs/CLI.md
-**Shared resources:** [OWNER: prune flag vs TTL vs documented rm — default documented-rm if none]; dir-perm closure vs shell-S39.
-**Acceptance:** units: `serialize([])` blob → treated as MISS not permanent hit (today it hides file forever); nested stdClass envelope rejected (engine-S23 twin re-run for ClusterCache lane); LOCK_EX write verified concurrent (two-process fork test); cache dirs 0700 census; prune policy landed or documented verbatim.
-
-
-- **Phase-4 Outside merge:** ENGINE-SEC out-of-group 1's IndexStore/ClusterCache content-addressed trust half lands here (posture + empty-blob miss + prune decision), built on the shell-S18/S19 read path and engine-S23/S24 keys.
-
-### once-S73 — Sync fallback: loud refusal, not secret full-pipeline
-
-- **Queue rank:** 152 of 247
-- **Severity mix:** medium=1
-- **Size:** HH (~90 min)
-- **Covers:** php-dup-finder-once-088
-- **Prereqs:** shell-S08, shell-S35, once-S71
-
-**Files:** src/Server/Application.php, src/Cli/ServeCommand.php, docs/PLAYGROUND.md
-**Shared resources:** Application server chain (post S72 probe removal); playground story lands or dies here (final PLAYGROUND edit w/ S17 first).
-**Acceptance:** worker-missing deployment (/tmp read-only dir probe): jobs return honest 503 'async unavailable' + startup warning instead of inline-pipeline stall-then-maybe; fixed 5 s probe becomes startup-once; docs = shipped reality.
-
-### once-S74 — Wire framing caps + shared frame codec + fork-window/fd leaks
-
-- **Queue rank:** 153 of 247
-- **Severity mix:** medium=2
-- **Size:** HH (~90 min)
-- **Covers:** php-dup-finder-once-089, php-dup-finder-once-091
-- **Prereqs:** shell-S03, shell-S07, shell-S10, shell-S13, shell-S39  *(Phase-4 adjustment; see Merged & re-routed)*
-
-**Files:** src/Util/Framing.php (new, w/ UP-02), src/Parallel/WorkerPool.php, src/Server/AnalysisWorker.php, src/Cli/Command.php, tests/Unit/Parallel/WorkerPoolTest.php
-**Shared resources:** Util/Framing.php new file single-owner (engine-S34 AstSerializer stream is related but distinct — cite, don't collide); Command spawn leg (proc_open array form).
-**Acceptance:** oversize record / truncated frame → bounded read + explicit protocol error (no unbounded fgets memory: length-prefixed cap shared by worker AND serve reader); fork/bootstrap throw leaves zero children (pcntl_waitpid census) and no fd leak (/proc/self/fd count unit); worker stderr captured to log not @fclose-discard.
-
 ### engine-S09 — APTED per-pair recomputation + unpruned DP at gate sizes (high)
 
-- **Queue rank:** 154 of 247
+- **Queue rank:** 156 of 247
 - **Severity mix:** high=1
 - **Size:** HH (~180 min)
 - **Covers:** php-dup-finder-engine-009
@@ -2436,7 +2460,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S25 — Unsigned content-addressed cache inside scan roots (high, PoC-proven poisoning)
 
-- **Queue rank:** 155 of 247
+- **Queue rank:** 157 of 247
 - **Severity mix:** high=1
 - **Size:** HH (~180 min)
 - **Covers:** php-dup-finder-engine-006
@@ -2459,7 +2483,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S11 — Supply chain: audit floor + reproducible releases
 
-- **Queue rank:** 156 of 247
+- **Queue rank:** 158 of 247
 - **Severity mix:** high=2
 - **Size:** DD (~180 min)
 - **Covers:** php-dup-finder-once-014, php-dup-finder-once-015
@@ -2471,7 +2495,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S12 — Install paths that actually work (phar assets + composer story)
 
-- **Queue rank:** 157 of 247
+- **Queue rank:** 159 of 247
 - **Severity mix:** high=2
 - **Size:** MM (~60 min)
 - **Covers:** php-dup-finder-once-010, php-dup-finder-once-016
@@ -2483,7 +2507,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S91 — Update download truth (status codes, truncation, backup lifecycle)
 
-- **Queue rank:** 158 of 247
+- **Queue rank:** 160 of 247
 - **Severity mix:** medium=1
 - **Size:** MM (~45 min)
 - **Covers:** php-dup-finder-once-114
@@ -2495,7 +2519,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S14 — Ship CI integrations that can run: materialize the tool
 
-- **Queue rank:** 159 of 247
+- **Queue rank:** 161 of 247
 - **Severity mix:** high=1
 - **Size:** HH (~90 min)
 - **Covers:** php-dup-finder-once-017
@@ -2507,7 +2531,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S31 — Phar build integrity: shebang, contents, stub story, export-ignore
 
-- **Queue rank:** 160 of 247
+- **Queue rank:** 162 of 247
 - **Severity mix:** high=1 medium=3
 - **Size:** HH (~90 min)
 - **Covers:** php-dup-finder-once-035, php-dup-finder-once-096, php-dup-finder-once-097, php-dup-finder-once-098
@@ -2519,7 +2543,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S30 — Version identity single-sourced end to end
 
-- **Queue rank:** 161 of 247
+- **Queue rank:** 163 of 247
 - **Severity mix:** high=1
 - **Size:** MM (~30 min)
 - **Covers:** php-dup-finder-once-034
@@ -2534,7 +2558,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S56 — CI artifact gate: the built phar actually runs
 
-- **Queue rank:** 162 of 247
+- **Queue rank:** 164 of 247
 - **Severity mix:** medium=1
 - **Size:** MM (~45 min)
 - **Covers:** php-dup-finder-once-062
@@ -2546,7 +2570,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S99 — --pre meaningful, downgrade refused, update test seam real
 
-- **Queue rank:** 163 of 247
+- **Queue rank:** 165 of 247
 - **Severity mix:** low=1
 - **Size:** MM (~45 min)
 - **Covers:** php-dup-finder-once-124
@@ -2556,9 +2580,21 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 **Shared resources:** UpdateCommand chain final writer (S91→S99); --releases listing endpoint usage [OWNER: list-only vs remove --pre — default remove].
 **Acceptance:** downgrade attempt (target < current per version_compare, echo honest tag) → refuse w/ exit 2; if --pre kept: /releases endpoint lists prereleases correctly; UpdateCommandTest refactored to drive real execute() path w/ injected fake transport (109-367 covered); help prose = shipped behavior (no phantom tarball/public-key claims).
 
+### once-S86 — bench corpus supply chain + fuzz measures something
+
+- **Queue rank:** 166 of 247
+- **Severity mix:** medium=1
+- **Size:** HH (~90 min)
+- **Covers:** php-dup-finder-once-108
+- **Prereqs:** once-S11 (audit posture), engine-S01 (corpus floor relationship), once-S85 (results re-render)
+
+**Files:** bench/run-all.sh, bench/corpus-pins.txt, bench/corpora, tests/Fuzz/DetectionRateTest.php
+**Shared resources:** corpus GT format w/ S09; home-my pin staleness row [owner box — re-pull or note].
+**Acceptance:** run-all.sh pins phpcpd by version+SHA256 (verified at extract, mismatch aborts), npm `--ignore-scripts`; digest mismatch FAILS corpus materialization (advisory→enforced); GT absolute /home/sites paths → relative; DetectionRateTest asserts a real recall floor (non-vacuous: mutation check — break extractor, test reddens).
+
 ### once-S94 — Async serve actually tested end to end
 
-- **Queue rank:** 164 of 247
+- **Queue rank:** 167 of 247
 - **Severity mix:** medium=1
 - **Size:** DD (~180 min)
 - **Covers:** php-dup-finder-once-117
@@ -2570,7 +2606,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### output-S31 — PatternRecognizer tag honesty + missing per-tag scenarios
 
-- **Queue rank:** 165 of 247
+- **Queue rank:** 168 of 247
 - **Severity mix:** medium=1 low=2
 - **Size:** HH (~180 min)
 - **Covers:** php-dup-finder-output-021, php-dup-finder-output-052, php-dup-finder-output-064
@@ -2586,7 +2622,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### output-S32 — PatternRecognizer + SolidAnalyzer: one collecting visitor per member
 
-- **Queue rank:** 166 of 247
+- **Queue rank:** 169 of 247
 - **Severity mix:** medium=1
 - **Size:** HH (~150 min)
 - **Covers:** php-dup-finder-output-042
@@ -2600,7 +2636,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### output-S33 — analyzer honesty: mixed≠primitive, unions, God/Factory/Decorator claims, SRP verbs, twin line calc
 
-- **Queue rank:** 167 of 247
+- **Queue rank:** 170 of 247
 - **Severity mix:** medium=1 low=1
 - **Size:** HH (~120 min)
 - **Covers:** php-dup-finder-output-034, php-dup-finder-output-055
@@ -2614,7 +2650,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### output-S34 — DeclaredTwinAnalyzer: comment-level scan + shared maps, no full-AST deserialize per run
 
-- **Queue rank:** 168 of 247
+- **Queue rank:** 171 of 247
 - **Severity mix:** high=1 medium=1
 - **Size:** HH (~180 min)
 - **Covers:** php-dup-finder-output-017, php-dup-finder-output-028
@@ -2628,7 +2664,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S29 — IR lifter: elseif chain dropped when else present; switch/if token split-brain; catch-all laundering
 
-- **Queue rank:** 169 of 247
+- **Queue rank:** 172 of 247
 - **Severity mix:** medium=2 low=1
 - **Size:** HH (~210 min)
 - **Covers:** php-dup-finder-engine-024, php-dup-finder-engine-025, php-dup-finder-engine-041
@@ -2648,7 +2684,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S03 — Strict-mode leaks (match/switch + `__FN` wipe) and block-extractor gate honesty
 
-- **Queue rank:** 170 of 247
+- **Queue rank:** 173 of 247
 - **Severity mix:** medium=1 low=1
 - **Size:** DD (~240 min)
 - **Covers:** php-dup-finder-engine-036, php-dup-finder-engine-057
@@ -2672,7 +2708,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S04 — copyNode reflection cost + inert --low-memory pooling
 
-- **Queue rank:** 171 of 247
+- **Queue rank:** 174 of 247
 - **Severity mix:** high=1 medium=1
 - **Size:** DD (~240 min)
 - **Covers:** php-dup-finder-engine-008, php-dup-finder-engine-030
@@ -2694,7 +2730,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S05 — PHP-8.1-floor convention: drop return types on three leaveNode overrides
 
-- **Queue rank:** 172 of 247
+- **Queue rank:** 175 of 247
 - **Severity mix:** medium=1
 - **Size:** MM (~15 min)
 - **Covers:** php-dup-finder-engine-039
@@ -2709,7 +2745,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S24 — low-memory honesty + NormalizationPlugin per-mode execution
 
-- **Queue rank:** 173 of 247
+- **Queue rank:** 176 of 247
 - **Severity mix:** high=2
 - **Size:** HH (~75 min)
 - **Covers:** php-dup-finder-once-027, php-dup-finder-once-029
@@ -2721,7 +2757,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S16a — BlockAstLoader: O(B·file) walks + O(C·L) re-normalizations in the rebase pass — half A: single-walk findStrict + NodeTraverser::STOP_TRAVERSAL at match sites + batched span collection.
 
-- **Queue rank:** 174 of 247
+- **Queue rank:** 177 of 247
 - **Severity mix:** high=1 medium=2
 - **Size:** HH (~140 min)
 - **Covers:** php-dup-finder-engine-031, php-dup-finder-output-015, php-dup-finder-output-040
@@ -2744,7 +2780,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S16b — BlockAstLoader: O(B·file) walks + O(C·L) re-normalizations in the rebase pass — half B: spl_object_id candidate memo per pass + normalize()-count drops + census pins (memo over the final clone machinery).
 
-- **Queue rank:** 175 of 247
+- **Queue rank:** 178 of 247
 - **Severity mix:** high=1 medium=2
 - **Size:** HH (~140 min)
 - **Covers:** php-dup-finder-engine-031, php-dup-finder-output-015, php-dup-finder-output-040
@@ -2767,7 +2803,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S17a — Relocation-miss hard failure on a mainstream corpus (needs-repro) — half A: hint/anchor + escalation→always-skip+note in BlockAstLoader + unit pins (no opt-in flag).
 
-- **Queue rank:** 176 of 247
+- **Queue rank:** 179 of 247
 - **Severity mix:** medium=1
 - **Size:** HH (~140 min)
 - **Covers:** php-dup-finder-engine-040
@@ -2788,7 +2824,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S34a — AstSerializer prefix-free stream + property tests — half A
 
-- **Queue rank:** 177 of 247
+- **Queue rank:** 180 of 247
 - **Severity mix:** medium=1
 - **Size:** HH (~140 min)
 - **Covers:** php-dup-finder-engine-037
@@ -2802,7 +2838,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S17b — Relocation-miss hard failure on a mainstream corpus (needs-repro) — half B: vendor probe transcript + tests/Integration e2e + locate run exit 0.
 
-- **Queue rank:** 178 of 247
+- **Queue rank:** 181 of 247
 - **Severity mix:** medium=1
 - **Size:** HH (~160 min)
 - **Covers:** php-dup-finder-engine-040
@@ -2823,7 +2859,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S34b — Cache-identity roster bump + golden re-pin — half B
 
-- **Queue rank:** 179 of 247
+- **Queue rank:** 182 of 247
 - **Severity mix:** medium=1
 - **Size:** HH (~160 min)
 - **Covers:** php-dup-finder-engine-037
@@ -2837,7 +2873,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S87 — Duplicate/overlapping roots deduped; shuffle byte-identity fence
 
-- **Queue rank:** 180 of 247
+- **Queue rank:** 183 of 247
 - **Severity mix:** medium=1
 - **Size:** HH (~75 min)
 - **Covers:** php-dup-finder-once-109
@@ -2849,7 +2885,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S11 — Clusterer bookkeeping perf: edge buckets, medoid counters, strcmp/micro, dead var
 
-- **Queue rank:** 181 of 247
+- **Queue rank:** 184 of 247
 - **Severity mix:** medium=1 low=3
 - **Size:** DD (~240 min)
 - **Covers:** php-dup-finder-engine-029, php-dup-finder-engine-043, php-dup-finder-engine-044, php-dup-finder-engine-052
@@ -2870,7 +2906,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S14 — ContainmentSimilarity double-pass on the Jaccard-reject branch
 
-- **Queue rank:** 182 of 247
+- **Queue rank:** 185 of 247
 - **Severity mix:** medium=1
 - **Size:** MM (~60 min)
 - **Covers:** php-dup-finder-engine-035
@@ -2885,7 +2921,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S15 — Tier honesty: never-emitted MatchTier::Ted + TED-reject blocks lower lenses; exact-clone label loss
 
-- **Queue rank:** 183 of 247
+- **Queue rank:** 186 of 247
 - **Severity mix:** low=2
 - **Size:** HH (~150 min)
 - **Covers:** php-dup-finder-engine-054, php-dup-finder-engine-056
@@ -2910,7 +2946,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S10 — No wall-time/aggregate bound on the TED tier (high) + cap default review
 
-- **Queue rank:** 184 of 247
+- **Queue rank:** 187 of 247
 - **Severity mix:** high=1
 - **Size:** DD (~240 min)
 - **Covers:** php-dup-finder-engine-010
@@ -2938,7 +2974,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S102 — Residual audit: RefactorStage merge parity + PsalmTypeProvider per ruling
 
-- **Queue rank:** 185 of 247
+- **Queue rank:** 188 of 247
 - **Severity mix:** low=1
 - **Size:** MM (~45 min)
 - **Covers:** php-dup-finder-once-127
@@ -2952,7 +2988,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S33 — Candidate budget BEFORE pair materialization (scale guard real)
 
-- **Queue rank:** 186 of 247
+- **Queue rank:** 189 of 247
 - **Severity mix:** high=1
 - **Size:** HH (~150 min)
 - **Covers:** php-dup-finder-once-037
@@ -2964,7 +3000,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S68 — ADR/algorithms promise audit close-out + docs/algorithms rewrite
 
-- **Queue rank:** 187 of 247
+- **Queue rank:** 190 of 247
 - **Severity mix:** medium=2
 - **Size:** HH (~150 min)
 - **Covers:** php-dup-finder-once-078, php-dup-finder-once-105
@@ -2976,7 +3012,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### once-S80 — AGENTS.md/CLAUDE.md staleness → re-derivation packet (REPORT-ONLY)
 
-- **Queue rank:** 188 of 247
+- **Queue rank:** 191 of 247
 - **Severity mix:** medium=2
 - **Size:** HH (~105 min)
 - **Covers:** php-dup-finder-once-100, php-dup-finder-once-101
@@ -2988,7 +3024,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### engine-S33 — Walk the canonical tree once per block at preprocess (token-stream reuse)
 
-- **Queue rank:** 189 of 247
+- **Queue rank:** 192 of 247
 - **Severity mix:** medium=1
 - **Size:** DD (~240 min)
 - **Covers:** php-dup-finder-engine-034
@@ -3005,42 +3041,6 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 - **Acceptance:** differential test: structuralHash + ngram bag identical old-vs-new codepath on
   all fixtures + a generated property corpus; preprocess CPU disclosed on the /tmp corpus (20-40%
   claim checked, not CI-asserted); full suites green.
-
-### once-S09 — Benchmark scoring: ground truth per family, competitor closure
-
-- **Queue rank:** 190 of 247
-- **Severity mix:** critical=1 high=1
-- **Size:** DD (~240 min)
-- **Covers:** php-dup-finder-once-009, php-dup-finder-once-053
-- **Prereqs:** output-S16 (tolerance buckets core)
-
-**Files:** src/Testing/BenchmarkScoreCalculator.php, bench/run.php, bench/score.php, bench/corpora, tests/Unit/Bench/BenchmarkScoreCalculatorTest.php
-**Shared resources:** bench/* lock w/ S85/S86; README benchmark claims + feature-matrix numbers republished by S85 (this step only fixes math); GT format (bench/corpora) schema note to S86.
-**Acceptance:** synthetic perfect detector scores 1.0 (unit); single-clone-per-family GT → family-granular recall; competitor pair-only GT gets transitive closure so pairwise tools score >0 on families; negative controls pin precision ≤0.5 when injected; tolerance unit asserts the advertised ±2-line rule (not floor(len/2)); real-corpus re-score is manual row feeding S85 commit.
-
-### once-S85 — bench audit/comparative honesty + commit raw results
-
-- **Queue rank:** 191 of 247
-- **Severity mix:** medium=2
-- **Size:** HH (~120 min)
-- **Covers:** php-dup-finder-once-106, php-dup-finder-once-107
-- **Prereqs:** once-S09
-
-**Files:** bench/score-audit.php, bench/comparative.php, bench/feature-matrix.md, bench/results (new committed dir), README.md, docs/algorithms/clustering.md (numbers cited there)
-**Shared resources:** README benchmark claims (S12/S32 earlier rows stay); feature-matrix w/ S68 citations; corpus GT changes must precede (S86 after S85, or coordinate — results are scored on S86-pinned corpora? chose: S85 commits results from CURRENT corpus state + 'provenance' note; S86 re-pins corpus and RE-renders results — two commit events disclosed).
-**Acceptance:** recall splits ranged-vs-file-only (5/5 rangeless no longer count), verified:false tokens excluded from denominators, precision renamed honestly; comparative: no phantom matrix numbers (all recomputed from committed raw JSONs), --max-df fairness note (0.5=50× prod disclosed), timeouts shown as timeout not 0.00, 'Clusters' column unit-typed.
-
-### once-S86 — bench corpus supply chain + fuzz measures something
-
-- **Queue rank:** 192 of 247
-- **Severity mix:** medium=1
-- **Size:** HH (~90 min)
-- **Covers:** php-dup-finder-once-108
-- **Prereqs:** once-S11 (audit posture), engine-S01 (corpus floor relationship), once-S85 (results re-render)
-
-**Files:** bench/run-all.sh, bench/corpus-pins.txt, bench/corpora, tests/Fuzz/DetectionRateTest.php
-**Shared resources:** corpus GT format w/ S09; home-my pin staleness row [owner box — re-pull or note].
-**Acceptance:** run-all.sh pins phpcpd by version+SHA256 (verified at extract, mismatch aborts), npm `--ignore-scripts`; digest mismatch FAILS corpus materialization (advisory→enforced); GT absolute /home/sites paths → relative; DetectionRateTest asserts a real recall floor (non-vacuous: mutation check — break extractor, test reddens).
 
 ### once-S47 — Watcher coherence: recursive inotify, size-aware poll, exclude-honoring, debounced
 
@@ -3120,9 +3120,23 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 - Conflicts: sole SCHEMA_VERSION bump in group; only golden-mover that changes observed/present semantics (optional-near-dups.json WILL move — expected: `<absent>` strings replaced by MISSING encoding + present_in_members recomputed; diff must be limited to absence-representation keys — anything else = bug).
 - Acceptance: `grep -rn "'<absent>'" src/` → hits only in render-projection layer (reporters' display formatting) or zero; `bin/phpdup analyze tests/Fixtures/optional --json /tmp/j.json` + jq: `observed` entries never contain `<absent>`; `--filter CliReporter` shows honest absent cell (not raw sentinel); after `UPDATE_SNAPSHOTS=1 vendor/bin/phpunit --testsuite Golden`, `git diff --stat tests/Golden` reviewed line-by-line and justified; GATE with schema_version 1.7 in goldens.
 
-### once-S35 — Hole bookkeeping residuals: full-kind backfill + id-keyed remap
+### output-S35 — RefactorTestReporter: kill raw-quote passthrough (injection sink)
 
 - **Queue rank:** 199 of 247
+- **Severity mix:** critical=1
+- **Size:** HH (~60 min)
+- **Covers:** php-dup-finder-output-007
+- **Prereqs:** output-S18, output-S27  *(Phase-4 adjustment; see Merged & re-routed)*
+
+- Covers: 007 — CRITICAL
+- Files: `src/Reporting/RefactorTestReporter.php` (:139-166, especially :161), `tests/Unit/Reporting/RefactorTestReporterTest.php`, `tests/Integration/RefactorTestSkeletonCensusTest.php`
+- Size: HH (60 min)
+- Prereqs: S18 (ControlText scrub helper), S27 (canonical absence before repr rework).
+- Acceptance: re-run of SEC's shape: `bin/phpdup analyze /tmp/<hostile-fixture> --refactor-tests /tmp/<out> --min-impact 0 --max-df 0.5` → generated skeleton passes `php -l` and does NOT contain expression-shaped raw values (assert `'…touch('` never appears unquoted); unit pin: value `"'' . touch('/tmp/x') . ''"` emits as var_export'd string; census Integration test regenerates cleanly; note: same quote-class in ParameterSynthesizer:62 is typed via S28/S29 work (non-sink, report row). Goldens unaffected (skeletons not golden-fed); GATE.
+
+### once-S35 — Hole bookkeeping residuals: full-kind backfill + id-keyed remap
+
+- **Queue rank:** 200 of 247
 - **Severity mix:** high=1
 - **Size:** HH (~60 min)
 - **Covers:** php-dup-finder-once-039
@@ -3134,7 +3148,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### output-S28 — float repr via var_export (int/float typing honesty)
 
-- **Queue rank:** 200 of 247
+- **Queue rank:** 201 of 247
 - **Severity mix:** medium=1
 - **Size:** HH (~60 min)
 - **Covers:** php-dup-finder-output-025
@@ -3145,20 +3159,6 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 - Size: HH (60 min)
 - Prereqs: S27 (observed-value semantics settled; avoids double golden churn).
 - Acceptance: `--filter ParameterSynthesizerTest` — hole of `1.0` vs `1` classifies float-vs-int distinctly; `1.0E+25` reprs and types float (not mixed); repr stable under `php -d precision=14` and `=17` (test both via subproc or ini_set scope); goldens byte-identical expected (no float holes in the three corpora — VERIFY `grep -E '1\.0E|\.0"' tests/Golden/*.json` empty; if corpus floats exist, regen disclosed); GATE.
-
-### output-S35 — RefactorTestReporter: kill raw-quote passthrough (injection sink)
-
-- **Queue rank:** 201 of 247
-- **Severity mix:** critical=1
-- **Size:** HH (~60 min)
-- **Covers:** php-dup-finder-output-007
-- **Prereqs:** output-S18, output-S27  *(Phase-4 adjustment; see Merged & re-routed)*
-
-- Covers: 007 — CRITICAL
-- Files: `src/Reporting/RefactorTestReporter.php` (:139-166, especially :161), `tests/Unit/Reporting/RefactorTestReporterTest.php`, `tests/Integration/RefactorTestSkeletonCensusTest.php`
-- Size: HH (60 min)
-- Prereqs: S18 (ControlText scrub helper), S27 (canonical absence before repr rework).
-- Acceptance: re-run of SEC's shape: `bin/phpdup analyze /tmp/<hostile-fixture> --refactor-tests /tmp/<out> --min-impact 0 --max-df 0.5` → generated skeleton passes `php -l` and does NOT contain expression-shaped raw values (assert `'…touch('` never appears unquoted); unit pin: value `"'' . touch('/tmp/x') . ''"` emits as var_export'd string; census Integration test regenerates cleanly; note: same quote-class in ParameterSynthesizer:62 is typed via S28/S29 work (non-sink, report row). Goldens unaffected (skeletons not golden-fed); GATE.
 
 ### output-S36 — RefactorTestReporter: sanitized class name + bool optional rows
 
@@ -3320,107 +3320,9 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 - Conflicts: (xg: durable fix = FileScanner FOLLOW_SYMLINKS Outside row — this step is the defensive read-side half only); ReportStage wiring shared with S34/S42.
 - Acceptance: `--filter SourceTextStoreTest` — mtime/size revalidation, link divergence ⇒ skip + skip-note (mirrors FileScanner::skipNotes posture), one read per file per run (read-count spy over 30-cluster synthetic fixture: ≤ file count, not ≤ cluster×file); symlinked out-of-root member ⇒ its source NOT embedded in HTML/`.diff`/`.patch` (explicit unfetched marker, `grep` of output for out-of-root content empty); detectUnsafe invoked once per cluster (counter test); DiffReporter placeholders now behind `sourceAvailable`-style explicit posture — JSON values change only in previously-placeholdered cases (none in goldens → byte-identical); GATE.
 
-### output-S43 — RefactorPatchReporter: correct hunk header, distinct summary artifact, WritesReportFile trait
-
-- **Queue rank:** 213 of 247
-- **Severity mix:** medium=1
-- **Size:** HH (~60 min)
-- **Covers:** php-dup-finder-output-022
-- **Prereqs:** output-S17, output-S38  *(Phase-4 adjustment; see Merged & re-routed)*
-
-- Covers: 022
-- Files: `src/Reporting/RefactorPatchReporter.php` (:61-63, :76, :86, :106-114, :123, :136-139, :160), tests: `tests/Unit/Reporting/RefactorPatchReporterTest.php`
-- Size: HH (60 min)
-- Prereqs: S38 (trait+store ordering), S17 (slug site).
-- Conflicts: (xg: engine — ReportStage.php:283-284 `apply diff →` announcement must follow the new artifact names; that line is an Outside row — report for Phase-4).
-- Acceptance: `--filter RefactorPatchReporterTest` — emitted `@@ -0,0 +1,N @@` == actual added lines (multi-line signature fixture), `patch -p1 --dry-run` (or git apply --check) accepts a single-member patch; apply-mode summary lands as `apply-summary.md` (name decided in impl, pinned) not `.diff`; `grep -c "file_put_contents\|@mkdir" src/Reporting/RefactorPatchReporter.php` → 0 (all via trait); GATE.
-
-
-- **Phase-4 Outside merge:** engine's row 'ReportStage.php:283-284 prints `apply diff →` while the F1b branch writes a non-diff SUMMARY' — fix the announcement line to follow the new artifact names in this lane (files += src/Pipeline/Stages/ReportStage.php).
-
-### output-S41 — JsonReporter: cap before Differ; coverage tallies only when needed
-
-- **Queue rank:** 214 of 247
-- **Severity mix:** medium=1
-- **Size:** HH (~90 min)
-- **Covers:** php-dup-finder-output-044
-- **Prereqs:** output-S30, output-S38  *(Phase-4 adjustment; see Merged & re-routed)*
-
-- Covers: 044
-- Files: `src/Reporting/JsonReporter.php` (:101, :227, :240-260), `tests/Unit/Reporting/{JsonReporterTest,JsonReporterEvidenceTest}.php`
-- Size: HH (90 min)
-- Prereqs: S30 (pathKey cost — the finding notes 039's fix reduces the coverage cost; land after), S38 (source via store; cap windows from stored lines).
-- Acceptance: `--filter JsonReporter` — evidence bytes identical on all fixtures (byte-level pin vs pre-change on tests/Fixtures corpora — this is a cost-reduction, not a shape change); synthetic huge-file fixture completes with source windows sliced before diffing (no full-file Differ; counter test); `HoleCoverage::coverage` still emitted for all clusters by default (no shape change, no flag) OR moved behind the planning-flag decision — if behind flag: schema decision + S27 coordination; expected this step keeps emission and only optimizes. Goldens byte-identical; GATE.
-
-### output-S42 — ClusterScope: one spread computation per cluster per run
-
-- **Queue rank:** 215 of 247
-- **Severity mix:** low=1
-- **Size:** HH (~75 min)
-- **Covers:** php-dup-finder-output-059
-- **Prereqs:** output-S34, output-S38, output-S41  *(Phase-4 adjustment; see Merged & re-routed)*
-
-- Covers: 059
-- Files: `src/Reporting/ClusterScope.php` (memo side-map), consumers verified unchanged: `src/Reporting/Ranker.php`, `src/Reporting/SafetyScorer.php`, `src/Reporting/JsonReporter.php`, `src/Pipeline/Stages/ReportStage.php`
-- Size: HH (75 min)
-- Prereqs: S38 + S34 (ReportStage serial), after S41 (JsonReporter order).
-- Acceptance: `--filter ClusterScopeTest` — memoized results identical to fresh computes (per-run purity preserved per class docblock posture — memo must be request-scoped, not static-across-runs); walk counter test; JSON output byte-identical on fixture (no shape change); GATE.
-
-### output-S39 — HtmlReporter: batched writes + one shared Differ + capture-group branching
-
-- **Queue rank:** 216 of 247
-- **Severity mix:** medium=1
-- **Size:** HH (~120 min)
-- **Covers:** php-dup-finder-output-041
-- **Prereqs:** output-S27, output-S38  *(Phase-4 adjustment; see Merged & re-routed)*
-
-- Covers: 041
-- Files: `src/Reporting/HtmlReporter.php` (:23-37, :257-271, :293-345), `tests/Unit/Reporting/HtmlReporterTest.php`
-- Size: HH (120 min)
-- Prereqs: S38 (source reads via store), S27 (observed rendering settled), S19 (scrub posture if page text shares helper — pages escape via htmlspecialchars already; soft).
-- Acceptance: `--filter HtmlReporterTest` — HTML output bytes identical (full-page fixture diff before/after); Differ instance count == 1 per run (counter); N-cluster directory test writes same content with buffered/streaming writer; GATE.
-
-### output-S40 — HtmlReporter highlighter: token_get_all, single keyword source, .c class, sort-column contract
-
-- **Queue rank:** 217 of 247
-- **Severity mix:** low=1
-- **Size:** HH (~120 min)
-- **Covers:** php-dup-finder-output-053
-- **Prereqs:** output-S39  *(Phase-4 adjustment; see Merged & re-routed)*
-
-- Covers: 053
-- Files: `src/Reporting/HtmlReporter.php` (:293-345, :361-376, :572), `tests/Unit/Reporting/HtmlReporterTest.php`
-- Size: HH (120 min)
-- Prereqs: S39 (same file; batching settled).
-- Acceptance: `--filter HtmlReporterTest` — single-quoted strings with newlines tokenized atomically (fixture); `'use'` appears once in keyword source (`grep` assert + shared const single-list test); comment class `.c` now emitted (fixture comment renders wrapped); table sort test pins the column-index contract (JS contract documented + assertion on generated header markup); GATE.
-
-### once-S60 — Checkstyle/PlantUML/HTML non-UTF-8 + injection closure
-
-- **Queue rank:** 218 of 247
-- **Severity mix:** medium=3
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-once-067, php-dup-finder-once-068, php-dup-finder-once-069
-- **Prereqs:** output-S18, output-S40
-
-**Files:** src/Reporting/CheckstyleReporter.php, src/Reporting/PlantumlReporter.php, src/Reporting/HtmlReporter.php, tests/Unit/Reporting/CheckstyleReporterTest.php, tests/Unit/Reporting/GraphReportersTest.php, tests/Unit/Reporting/HtmlReporterTest.php
-**Shared resources:** HtmlReporter w/ S65/S84 — serialize S60 → S65 → S84.
-**Acceptance:** Latin-1 + `\001` fixtures: checkstyle document parses strict XML, empty-name bug gone; plantuml label injects nothing top-level (quote/newline closure re-check of output-S18 leg); html <pre class='src'> non-empty for Latin-1 file (ENT_SUBSTITUTE post token_get_all).
-
-### once-S84 — HTML affordances tell the truth
-
-- **Queue rank:** 219 of 247
-- **Severity mix:** medium=1
-- **Size:** HH (~60 min)
-- **Covers:** php-dup-finder-once-104
-- **Prereqs:** once-S60, output-S35, output-S39, output-S40  *(Phase-4 adjustment; see Merged & re-routed)*
-
-**Files:** src/Reporting/HtmlReporter.php, tests/Unit/Reporting/HtmlReporterTest.php
-**Shared resources:** HtmlReporter third writer (S60→S65→S84).
-**Acceptance:** copy-button label == payload preview truth; clipboard handler await+catch (failure visible); zero-cluster report renders honest empty-state row not empty tbody; null-signature members have no data-copy=''.
-
 ### output-S44a — ApplyExtractor: single-pass per-file rewrite, fail-loud, transaction + rollback, honest tallies — half A: single-pass per-file rewrite — group by file, one parse/prettyPrint, count-verify, `@`-swallow gone, diagnostics for the :332-351 silent returns.
 
-- **Queue rank:** 220 of 247
+- **Queue rank:** 213 of 247
 - **Severity mix:** critical=1
 - **Size:** HH (~150 min)
 - **Covers:** php-dup-finder-output-004
@@ -3437,7 +3339,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### output-S44b — ApplyExtractor: single-pass per-file rewrite, fail-loud, transaction + rollback, honest tallies — half B: transaction + rollback (snapshots restored byte-for-byte) + RefactorPatchReporter :99-113 honest tallies.
 
-- **Queue rank:** 221 of 247
+- **Queue rank:** 214 of 247
 - **Severity mix:** critical=1
 - **Size:** HH (~150 min)
 - **Covers:** php-dup-finder-output-004
@@ -3452,77 +3354,9 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 - Conflicts: opens the ApplyExtractor serial chain: S44→S45→S46→S47→S48→S49; the trait-write routing of apply's write sites lands in S54, which is sequenced after this chain (S54 prereqs include S49).
 - Acceptance: `--filter ApplyExtractorTest` — two members in one file: BOTH rewritten from a single parse (stale-range miss scenario now succeeds — explicit regression test); every silent return (`:332-334`, `:337-339`, `:343-345`, `:349-351`) now emits a diagnostic (assert message count/content); IO error on read or write throws (chmod-fixture); partial-failure leaves pre-first-write snapshots restored (rollback test via read-only dir or injected failure); RefactorPatch summary counts != appliedMembers unless verified. GATE; apply outputs not golden-fed → goldens byte-identical.
 
-### output-S47 — apply: fully-qualified call name + generated-file loading story; hint/apply share it
-
-- **Queue rank:** 222 of 247
-- **Severity mix:** critical=1
-- **Size:** HH (~90 min)
-- **Covers:** php-dup-finder-output-003
-- **Prereqs:** output-S43, output-S44b  *(Phase-4 adjustment; see Merged & re-routed)*
-
-- Covers: 003 — CRITICAL
-- Files: `src/Refactor/ApplyExtractor.php` (:444-447 name node + :68-73 generated file emission: bootstrap stub (`$outDir/Refactored/_autoload.php` or per-file `require` injection at rewrite sites — impl decision pinned in commit msg) or explicit emitted instructions), `src/Reporting/RefactorPatchReporter.php` (:227 hint text sourced from same name builder), tests: ApplyExtractorTest + RefactorPatchReporterTest hint/apply name-equality pin
-- Size: HH (90 min)
-- Prereqs: S44; S43 (hint region settled) — same-file serial.
-- Acceptance: `--filter ApplyExtractorTest RefactorPatchReporterTest` — namespaced member fixture: applied rewrite + require stub, then executing the rewritten file resolves the function (PDREF's `App2\Refactored\s7a` fatal scenario now calls `\Refactored\s7a` — run smoke: require stub, invoke, no undefined-function error); dry-run hint line and applied call text byte-equal for the same cluster; GATE.
-
-### output-S52 — apply write-side confinement: links refused, root-checked paths, chmod
-
-- **Queue rank:** 223 of 247
-- **Severity mix:** high=1
-- **Size:** HH (~90 min)
-- **Covers:** php-dup-finder-output-010
-- **Prereqs:** output-S44b  *(Phase-4 adjustment; see Merged & re-routed)*
-
-- Covers: 010 — HIGH
-- Files: `src/Refactor/ApplyExtractor.php` (write sites :70-73, :361 + entry: is_link refusal, realpath-under-configured-root, applyDir absolutization+realpath check, 0644 chmod generated), (xg: shell `src/Cli/Command.php:529-530` + Config/ConfigLoader root key plumbing — required for "explicitly configured root, never CWD-default")
-- Size: HH (90 min)
-- Prereqs: S44.
-- Acceptance: `--filter ApplyExtractorTest` — symlinked member file refused with diagnostic; member whose realpath escapes configured root refused; generated file mode 0644 (stat in test); applyDir symlink refused. Until the shell root-plumbing lands, constructor takes an explicit root (default ⇒ refuse all writes — fail-closed), which the test pins. GATE.
-
-### once-S101 — Timeseries/Prometheus/diff-path reporter odds
-
-- **Queue rank:** 224 of 247
-- **Severity mix:** low=1
-- **Size:** MM (~30 min)
-- **Covers:** php-dup-finder-once-126
-- **Prereqs:** output-S02, output-S03, output-S05, output-S20, output-S52  *(Phase-4 adjustment; see Merged & re-routed)*
-
-**Files:** src/Reporting/TimeseriesReporter.php, src/Reporting/PrometheusReporter.php, src/Reporting/JsonReporter.php (evidence diff join), src/Util/PathCanonical.php, tests/Unit/Reporting/{Timeseries,Prometheus,JsonReporter}Test.php
-**Shared resources:** Timeseries w/ S38; Util/PathCanonical w/ S40/S87 (last small leg).
-**Acceptance:** timeseries carries schema_version + no blank line on failure; Prometheus per-cluster id label gone (output-S20 aggregate default re-verify) — exposition parses; `--- a//abs` double-slash gone (join via PathCanonical); three unit pins.
-
-### output-S50 — detectUnsafe: AST-based, fail-closed on unreadable members
-
-- **Queue rank:** 225 of 247
-- **Severity mix:** high=1
-- **Size:** HH (~120 min)
-- **Covers:** php-dup-finder-output-008
-- **Prereqs:** output-S38, output-S44b  *(Phase-4 adjustment; see Merged & re-routed)*
-
-- Covers: 008 — HIGH
-- Files: `src/Reporting/RefactorPatchReporter.php` (:193-214 rewrite: parse via same pipeline/loader, NodeFinder for `$this`, closure `$this` binding, ArrowFunction, `Arg->byRef`, `Static_`, `Global_`, Yield, Break_/Continue_ under hoist; text-heuristics demoted to unverified⇒unsafe), `tests/Unit/Reporting/RefactorPatchReporterTest.php`
-- Size: HH (120 min)
-- Prereqs: S44 (tally/branch stable), S38 (member reads through store; unreadable ⇒ explicitly unsafe verdict memo).
-- Acceptance: `--filter RefactorPatchReporterTest` — unreadable-member file ⇒ cluster UNSAFE + reason (never silently safe); `bind($this, $x)` method ⇒ unsafe (PDREF repro fixture); `$this->` inside comment ⇒ NOT flagged; `fn() => $this->x` ⇒ flagged; comment-in-string false-positive case from old regex retired with pin; GATE.
-
-### output-S51 — F1b apply gate: hole-coverage floor, degraded refusal, exactness requirement, refusal reasons in summary
-
-- **Queue rank:** 226 of 247
-- **Severity mix:** medium=1
-- **Size:** HH (~90 min)
-- **Covers:** php-dup-finder-output-020
-- **Prereqs:** output-S26, output-S27, output-S50  *(Phase-4 adjustment; see Merged & re-routed)*
-
-- Covers: 020 — HIGH (gate-before-F1b)
-- Files: `src/Reporting/RefactorPatchReporter.php` (apply branch :78-107 add gates), `src/Refactor/HoleCoverage.php` (threshold semantics consumed), tests: RefactorPatchReporterTest (gate matrix: coverage-below ⇒ refuse; degraded-hole ⇒ refuse; near-dups (non-exact) ⇒ refuse)
-- Size: HH (90 min)
-- Prereqs: S26/S27 (degraded representation), S50 (gate stack), Config::maxHoleCoverage surface already exists (Config.php:248) — no new key, no six-edit-site.
-- Acceptance: `--filter RefactorPatchReporterTest` — engineered mostly-hole cluster and degraded cluster each produce named refusal reasons visible in summary; safe+exact+covered cluster still applies; GATE.
-
 ### output-S45 — apply call-sites: observed values, canonical param order, typed literals
 
-- **Queue rank:** 227 of 247
+- **Queue rank:** 215 of 247
 - **Severity mix:** critical=1
 - **Size:** DD (~240 min)
 - **Covers:** php-dup-finder-output-001
@@ -3536,7 +3370,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### output-S46 — apply declaration replacement: replace bodies, not declarations
 
-- **Queue rank:** 228 of 247
+- **Queue rank:** 216 of 247
 - **Severity mix:** critical=1
 - **Size:** HH (~150 min)
 - **Covers:** php-dup-finder-output-002
@@ -3548,47 +3382,9 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 - Prereqs: S44, S45 (call construction inside replacement first).
 - Acceptance: `--filter ApplyExtractorTest ApplyExtractionTest` — method-in-class fixture: rewritten file `php -l`-parses and class still declares the method (signature preserved, delegating body) — old behavior produced `unexpected token "return"`: assert no top-level Return_ in class body by AST check; file-scope function member: original function still callable after rewrite (delegation), later declarations survive include-time (exec smoke test); Closure member ⇒ refusal diagnostic, file untouched; GATE.
 
-### output-S37 — single-line signatures: SignatureBuilder + ApplyExtractor de-flatten + GOLDENS
-
-- **Queue rank:** 229 of 247
-- **Severity mix:** low=1
-- **Size:** HH (~90 min)
-- **Covers:** php-dup-finder-output-058
-- **Prereqs:** output-S27, output-S30, output-S44b, output-S45, output-S46  *(Phase-4 adjustment; see Merged & re-routed)*
-
-- Covers: 058 — GOLDEN-STEP (value bytes; NO schema bump — string field shape unchanged)
-- Files: `src/Refactor/SignatureBuilder.php` (:54-55), `src/Refactor/ApplyExtractor.php` (:263 collapse removal, :314-325 extractParameters simplification), tests: `tests/Unit/Refactor/SignatureBuilderTest.php`, `tests/Unit/Reporting/{JsonReporterTest,CliReporterHonestyTest}.php` (signature render pins), `tests/Golden/notify-exact.json`, `tests/Golden/sql-exact.json`, `tests/Golden/optional-near-dups.json` (signature lines reflow — expected-only-those-keys diff)
-- Size: HH (90 min)
-- Prereqs: S30 (SignatureBuilder path walk first), S44+S46 (ApplyExtractor rewrite chain has settled the call-construction; run this AFTER the apply wave to freeze one golden regen post-S27 — recorded ordering), S45 (the hole-order≠param-order regression test from output-001 must exist so flattening is provably order-safe).
-- Acceptance: `--filter SignatureBuilderTest` params `", "`-joined single line; docblock shows no multi-space artifact; `UPDATE_SNAPSHOTS=1 vendor/bin/phpunit --testsuite Golden` → diff limited to `"signature"` string values (asserted via `git diff -U0 tests/Golden | grep -v signature` containing only context/header lines); `extractParameters` greedy regex removed or simplified per plan; GATE.
-
-### once-S39 — docs/JETBRAINS_PLUGIN.md regenerated from shipped schema
-
-- **Queue rank:** 230 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-once-043
-- **Prereqs:** output-S27, output-S37, once-S37 (schema 1.8 final)
-
-**Files:** docs/JETBRAINS_PLUGIN.md
-**Shared resources:** JETBRAINS page exclusive here; exit-table merge w/ S95 cites this file.
-**Acceptance:** doc's schema_version, field list, example payload and exit-code table diffed against `JsonSchemaSpec::summaryShape()` + live fixture bytes — zero mismatch; stale '1.0' prose gone.
-
-### once-S13 — README ToC anchors vs final docs tree
-
-- **Queue rank:** 231 of 247
-- **Severity mix:** high=1
-- **Size:** MM (~45 min)
-- **Covers:** php-dup-finder-once-011
-- **Prereqs:** once-S17, once-S18, once-S24, once-S39, once-S41, once-S53, once-S57, once-S73  *(Phase-4 adjustment; see Merged & re-routed)*
-
-**Files:** README.md, .github/workflows/ci.yml
-**Shared resources:** ci.yml final slot (after S10→S11→S56→S93); README final content slot before S95.
-**Acceptance:** every ToC href resolves against post-wave docs/CLI.md + docs/*.md (local script or manual grep census: ~22 anchors now-to-be-live or removed); CI gets anchor-resolution leg (grep/awk over README links vs generated slug set of docs tree, fail-loud).
-
 ### output-S48 — hole placement correctness (setNodeAtPath) + extraction-failure honesty + pre-write re-parse guard
 
-- **Queue rank:** 232 of 247
+- **Queue rank:** 217 of 247
 - **Severity mix:** critical=1
 - **Size:** DD (~240 min)
 - **Covers:** php-dup-finder-output-005
@@ -3605,7 +3401,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### output-S49a — promote members' shared formal parameters into the abstraction — half A: intersected-params derivation in AntiUnifier + SignatureBuilder consumption.
 
-- **Queue rank:** 233 of 247
+- **Queue rank:** 218 of 247
 - **Severity mix:** critical=1
 - **Size:** HH (~150 min)
 - **Covers:** php-dup-finder-output-006
@@ -3621,7 +3417,7 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 
 ### output-S49b — promote members' shared formal parameters into the abstraction — half B: ApplyExtractor param list + call-site wiring + strict_types smoke + goldens zero-move check.
 
-- **Queue rank:** 234 of 247
+- **Queue rank:** 219 of 247
 - **Severity mix:** critical=1
 - **Size:** HH (~150 min)
 - **Covers:** php-dup-finder-output-006
@@ -3634,6 +3430,210 @@ Order below = queue order (shortest-first ready schedule, prerequisites never vi
 - Size: DD (300 min)
 - Prereqs: S45 (call-arg construction rewritten first), S48 (body construction stable), S26 (hole honesty).
 - Acceptance: `--filter ApplyExtractorTest` — PDREF S1-shape fixture (`send_user($value, $user)` with member param `$user`): generated function signature includes the intersected params; emitted call passes the member's own locals in positional order; non-intersecting params (name/type differ) NOT promoted (negative case); applied fixture executes under strict_types with same behavior as originals (smoke harness from S46 reused); goldens: cluster signatures gain params on fixtures WITH parameterized members — run Golden suite without UPDATE first to verify zero-move on current corpora (notify/sql members take params: expect signature VALUE changes only if extraction feeds signatures — it does not (goldens carry SignatureBuilder output on hole params; promotion changes hole/param split → possible value movement); if move, regen+disclose as golden-step addendum); GATE.
+
+### output-S43 — RefactorPatchReporter: correct hunk header, distinct summary artifact, WritesReportFile trait
+
+- **Queue rank:** 220 of 247
+- **Severity mix:** medium=1
+- **Size:** HH (~60 min)
+- **Covers:** php-dup-finder-output-022
+- **Prereqs:** output-S17, output-S38  *(Phase-4 adjustment; see Merged & re-routed)*
+
+- Covers: 022
+- Files: `src/Reporting/RefactorPatchReporter.php` (:61-63, :76, :86, :106-114, :123, :136-139, :160), tests: `tests/Unit/Reporting/RefactorPatchReporterTest.php`
+- Size: HH (60 min)
+- Prereqs: S38 (trait+store ordering), S17 (slug site).
+- Conflicts: (xg: engine — ReportStage.php:283-284 `apply diff →` announcement must follow the new artifact names; that line is an Outside row — report for Phase-4).
+- Acceptance: `--filter RefactorPatchReporterTest` — emitted `@@ -0,0 +1,N @@` == actual added lines (multi-line signature fixture), `patch -p1 --dry-run` (or git apply --check) accepts a single-member patch; apply-mode summary lands as `apply-summary.md` (name decided in impl, pinned) not `.diff`; `grep -c "file_put_contents\|@mkdir" src/Reporting/RefactorPatchReporter.php` → 0 (all via trait); GATE.
+
+
+- **Phase-4 Outside merge:** engine's row 'ReportStage.php:283-284 prints `apply diff →` while the F1b branch writes a non-diff SUMMARY' — fix the announcement line to follow the new artifact names in this lane (files += src/Pipeline/Stages/ReportStage.php).
+
+### output-S47 — apply: fully-qualified call name + generated-file loading story; hint/apply share it
+
+- **Queue rank:** 221 of 247
+- **Severity mix:** critical=1
+- **Size:** HH (~90 min)
+- **Covers:** php-dup-finder-output-003
+- **Prereqs:** output-S43, output-S44b  *(Phase-4 adjustment; see Merged & re-routed)*
+
+- Covers: 003 — CRITICAL
+- Files: `src/Refactor/ApplyExtractor.php` (:444-447 name node + :68-73 generated file emission: bootstrap stub (`$outDir/Refactored/_autoload.php` or per-file `require` injection at rewrite sites — impl decision pinned in commit msg) or explicit emitted instructions), `src/Reporting/RefactorPatchReporter.php` (:227 hint text sourced from same name builder), tests: ApplyExtractorTest + RefactorPatchReporterTest hint/apply name-equality pin
+- Size: HH (90 min)
+- Prereqs: S44; S43 (hint region settled) — same-file serial.
+- Acceptance: `--filter ApplyExtractorTest RefactorPatchReporterTest` — namespaced member fixture: applied rewrite + require stub, then executing the rewritten file resolves the function (PDREF's `App2\Refactored\s7a` fatal scenario now calls `\Refactored\s7a` — run smoke: require stub, invoke, no undefined-function error); dry-run hint line and applied call text byte-equal for the same cluster; GATE.
+
+### output-S37 — single-line signatures: SignatureBuilder + ApplyExtractor de-flatten + GOLDENS
+
+- **Queue rank:** 222 of 247
+- **Severity mix:** low=1
+- **Size:** HH (~90 min)
+- **Covers:** php-dup-finder-output-058
+- **Prereqs:** output-S27, output-S30, output-S44b, output-S45, output-S46  *(Phase-4 adjustment; see Merged & re-routed)*
+
+- Covers: 058 — GOLDEN-STEP (value bytes; NO schema bump — string field shape unchanged)
+- Files: `src/Refactor/SignatureBuilder.php` (:54-55), `src/Refactor/ApplyExtractor.php` (:263 collapse removal, :314-325 extractParameters simplification), tests: `tests/Unit/Refactor/SignatureBuilderTest.php`, `tests/Unit/Reporting/{JsonReporterTest,CliReporterHonestyTest}.php` (signature render pins), `tests/Golden/notify-exact.json`, `tests/Golden/sql-exact.json`, `tests/Golden/optional-near-dups.json` (signature lines reflow — expected-only-those-keys diff)
+- Size: HH (90 min)
+- Prereqs: S30 (SignatureBuilder path walk first), S44+S46 (ApplyExtractor rewrite chain has settled the call-construction; run this AFTER the apply wave to freeze one golden regen post-S27 — recorded ordering), S45 (the hole-order≠param-order regression test from output-001 must exist so flattening is provably order-safe).
+- Acceptance: `--filter SignatureBuilderTest` params `", "`-joined single line; docblock shows no multi-space artifact; `UPDATE_SNAPSHOTS=1 vendor/bin/phpunit --testsuite Golden` → diff limited to `"signature"` string values (asserted via `git diff -U0 tests/Golden | grep -v signature` containing only context/header lines); `extractParameters` greedy regex removed or simplified per plan; GATE.
+
+### once-S39 — docs/JETBRAINS_PLUGIN.md regenerated from shipped schema
+
+- **Queue rank:** 223 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-once-043
+- **Prereqs:** output-S27, output-S37, once-S37 (schema 1.8 final)
+
+**Files:** docs/JETBRAINS_PLUGIN.md
+**Shared resources:** JETBRAINS page exclusive here; exit-table merge w/ S95 cites this file.
+**Acceptance:** doc's schema_version, field list, example payload and exit-code table diffed against `JsonSchemaSpec::summaryShape()` + live fixture bytes — zero mismatch; stale '1.0' prose gone.
+
+### once-S13 — README ToC anchors vs final docs tree
+
+- **Queue rank:** 224 of 247
+- **Severity mix:** high=1
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-once-011
+- **Prereqs:** once-S17, once-S18, once-S24, once-S39, once-S41, once-S53, once-S57, once-S73  *(Phase-4 adjustment; see Merged & re-routed)*
+
+**Files:** README.md, .github/workflows/ci.yml
+**Shared resources:** ci.yml final slot (after S10→S11→S56→S93); README final content slot before S95.
+**Acceptance:** every ToC href resolves against post-wave docs/CLI.md + docs/*.md (local script or manual grep census: ~22 anchors now-to-be-live or removed); CI gets anchor-resolution leg (grep/awk over README links vs generated slug set of docs tree, fail-loud).
+
+### output-S41 — JsonReporter: cap before Differ; coverage tallies only when needed
+
+- **Queue rank:** 225 of 247
+- **Severity mix:** medium=1
+- **Size:** HH (~90 min)
+- **Covers:** php-dup-finder-output-044
+- **Prereqs:** output-S30, output-S38  *(Phase-4 adjustment; see Merged & re-routed)*
+
+- Covers: 044
+- Files: `src/Reporting/JsonReporter.php` (:101, :227, :240-260), `tests/Unit/Reporting/{JsonReporterTest,JsonReporterEvidenceTest}.php`
+- Size: HH (90 min)
+- Prereqs: S30 (pathKey cost — the finding notes 039's fix reduces the coverage cost; land after), S38 (source via store; cap windows from stored lines).
+- Acceptance: `--filter JsonReporter` — evidence bytes identical on all fixtures (byte-level pin vs pre-change on tests/Fixtures corpora — this is a cost-reduction, not a shape change); synthetic huge-file fixture completes with source windows sliced before diffing (no full-file Differ; counter test); `HoleCoverage::coverage` still emitted for all clusters by default (no shape change, no flag) OR moved behind the planning-flag decision — if behind flag: schema decision + S27 coordination; expected this step keeps emission and only optimizes. Goldens byte-identical; GATE.
+
+### output-S42 — ClusterScope: one spread computation per cluster per run
+
+- **Queue rank:** 226 of 247
+- **Severity mix:** low=1
+- **Size:** HH (~75 min)
+- **Covers:** php-dup-finder-output-059
+- **Prereqs:** output-S34, output-S38, output-S41  *(Phase-4 adjustment; see Merged & re-routed)*
+
+- Covers: 059
+- Files: `src/Reporting/ClusterScope.php` (memo side-map), consumers verified unchanged: `src/Reporting/Ranker.php`, `src/Reporting/SafetyScorer.php`, `src/Reporting/JsonReporter.php`, `src/Pipeline/Stages/ReportStage.php`
+- Size: HH (75 min)
+- Prereqs: S38 + S34 (ReportStage serial), after S41 (JsonReporter order).
+- Acceptance: `--filter ClusterScopeTest` — memoized results identical to fresh computes (per-run purity preserved per class docblock posture — memo must be request-scoped, not static-across-runs); walk counter test; JSON output byte-identical on fixture (no shape change); GATE.
+
+### output-S52 — apply write-side confinement: links refused, root-checked paths, chmod
+
+- **Queue rank:** 227 of 247
+- **Severity mix:** high=1
+- **Size:** HH (~90 min)
+- **Covers:** php-dup-finder-output-010
+- **Prereqs:** output-S44b  *(Phase-4 adjustment; see Merged & re-routed)*
+
+- Covers: 010 — HIGH
+- Files: `src/Refactor/ApplyExtractor.php` (write sites :70-73, :361 + entry: is_link refusal, realpath-under-configured-root, applyDir absolutization+realpath check, 0644 chmod generated), (xg: shell `src/Cli/Command.php:529-530` + Config/ConfigLoader root key plumbing — required for "explicitly configured root, never CWD-default")
+- Size: HH (90 min)
+- Prereqs: S44.
+- Acceptance: `--filter ApplyExtractorTest` — symlinked member file refused with diagnostic; member whose realpath escapes configured root refused; generated file mode 0644 (stat in test); applyDir symlink refused. Until the shell root-plumbing lands, constructor takes an explicit root (default ⇒ refuse all writes — fail-closed), which the test pins. GATE.
+
+### once-S101 — Timeseries/Prometheus/diff-path reporter odds
+
+- **Queue rank:** 228 of 247
+- **Severity mix:** low=1
+- **Size:** MM (~30 min)
+- **Covers:** php-dup-finder-once-126
+- **Prereqs:** output-S02, output-S03, output-S05, output-S20, output-S52  *(Phase-4 adjustment; see Merged & re-routed)*
+
+**Files:** src/Reporting/TimeseriesReporter.php, src/Reporting/PrometheusReporter.php, src/Reporting/JsonReporter.php (evidence diff join), src/Util/PathCanonical.php, tests/Unit/Reporting/{Timeseries,Prometheus,JsonReporter}Test.php
+**Shared resources:** Timeseries w/ S38; Util/PathCanonical w/ S40/S87 (last small leg).
+**Acceptance:** timeseries carries schema_version + no blank line on failure; Prometheus per-cluster id label gone (output-S20 aggregate default re-verify) — exposition parses; `--- a//abs` double-slash gone (join via PathCanonical); three unit pins.
+
+### output-S39 — HtmlReporter: batched writes + one shared Differ + capture-group branching
+
+- **Queue rank:** 229 of 247
+- **Severity mix:** medium=1
+- **Size:** HH (~120 min)
+- **Covers:** php-dup-finder-output-041
+- **Prereqs:** output-S27, output-S38  *(Phase-4 adjustment; see Merged & re-routed)*
+
+- Covers: 041
+- Files: `src/Reporting/HtmlReporter.php` (:23-37, :257-271, :293-345), `tests/Unit/Reporting/HtmlReporterTest.php`
+- Size: HH (120 min)
+- Prereqs: S38 (source reads via store), S27 (observed rendering settled), S19 (scrub posture if page text shares helper — pages escape via htmlspecialchars already; soft).
+- Acceptance: `--filter HtmlReporterTest` — HTML output bytes identical (full-page fixture diff before/after); Differ instance count == 1 per run (counter); N-cluster directory test writes same content with buffered/streaming writer; GATE.
+
+### output-S40 — HtmlReporter highlighter: token_get_all, single keyword source, .c class, sort-column contract
+
+- **Queue rank:** 230 of 247
+- **Severity mix:** low=1
+- **Size:** HH (~120 min)
+- **Covers:** php-dup-finder-output-053
+- **Prereqs:** output-S39  *(Phase-4 adjustment; see Merged & re-routed)*
+
+- Covers: 053
+- Files: `src/Reporting/HtmlReporter.php` (:293-345, :361-376, :572), `tests/Unit/Reporting/HtmlReporterTest.php`
+- Size: HH (120 min)
+- Prereqs: S39 (same file; batching settled).
+- Acceptance: `--filter HtmlReporterTest` — single-quoted strings with newlines tokenized atomically (fixture); `'use'` appears once in keyword source (`grep` assert + shared const single-list test); comment class `.c` now emitted (fixture comment renders wrapped); table sort test pins the column-index contract (JS contract documented + assertion on generated header markup); GATE.
+
+### once-S60 — Checkstyle/PlantUML/HTML non-UTF-8 + injection closure
+
+- **Queue rank:** 231 of 247
+- **Severity mix:** medium=3
+- **Size:** MM (~45 min)
+- **Covers:** php-dup-finder-once-067, php-dup-finder-once-068, php-dup-finder-once-069
+- **Prereqs:** output-S18, output-S40
+
+**Files:** src/Reporting/CheckstyleReporter.php, src/Reporting/PlantumlReporter.php, src/Reporting/HtmlReporter.php, tests/Unit/Reporting/CheckstyleReporterTest.php, tests/Unit/Reporting/GraphReportersTest.php, tests/Unit/Reporting/HtmlReporterTest.php
+**Shared resources:** HtmlReporter w/ S65/S84 — serialize S60 → S65 → S84.
+**Acceptance:** Latin-1 + `\001` fixtures: checkstyle document parses strict XML, empty-name bug gone; plantuml label injects nothing top-level (quote/newline closure re-check of output-S18 leg); html <pre class='src'> non-empty for Latin-1 file (ENT_SUBSTITUTE post token_get_all).
+
+### once-S84 — HTML affordances tell the truth
+
+- **Queue rank:** 232 of 247
+- **Severity mix:** medium=1
+- **Size:** HH (~60 min)
+- **Covers:** php-dup-finder-once-104
+- **Prereqs:** once-S60, output-S35, output-S39, output-S40  *(Phase-4 adjustment; see Merged & re-routed)*
+
+**Files:** src/Reporting/HtmlReporter.php, tests/Unit/Reporting/HtmlReporterTest.php
+**Shared resources:** HtmlReporter third writer (S60→S65→S84).
+**Acceptance:** copy-button label == payload preview truth; clipboard handler await+catch (failure visible); zero-cluster report renders honest empty-state row not empty tbody; null-signature members have no data-copy=''.
+
+### output-S50 — detectUnsafe: AST-based, fail-closed on unreadable members
+
+- **Queue rank:** 233 of 247
+- **Severity mix:** high=1
+- **Size:** HH (~120 min)
+- **Covers:** php-dup-finder-output-008
+- **Prereqs:** output-S38, output-S44b  *(Phase-4 adjustment; see Merged & re-routed)*
+
+- Covers: 008 — HIGH
+- Files: `src/Reporting/RefactorPatchReporter.php` (:193-214 rewrite: parse via same pipeline/loader, NodeFinder for `$this`, closure `$this` binding, ArrowFunction, `Arg->byRef`, `Static_`, `Global_`, Yield, Break_/Continue_ under hoist; text-heuristics demoted to unverified⇒unsafe), `tests/Unit/Reporting/RefactorPatchReporterTest.php`
+- Size: HH (120 min)
+- Prereqs: S44 (tally/branch stable), S38 (member reads through store; unreadable ⇒ explicitly unsafe verdict memo).
+- Acceptance: `--filter RefactorPatchReporterTest` — unreadable-member file ⇒ cluster UNSAFE + reason (never silently safe); `bind($this, $x)` method ⇒ unsafe (PDREF repro fixture); `$this->` inside comment ⇒ NOT flagged; `fn() => $this->x` ⇒ flagged; comment-in-string false-positive case from old regex retired with pin; GATE.
+
+### output-S51 — F1b apply gate: hole-coverage floor, degraded refusal, exactness requirement, refusal reasons in summary
+
+- **Queue rank:** 234 of 247
+- **Severity mix:** medium=1
+- **Size:** HH (~90 min)
+- **Covers:** php-dup-finder-output-020
+- **Prereqs:** output-S26, output-S27, output-S50  *(Phase-4 adjustment; see Merged & re-routed)*
+
+- Covers: 020 — HIGH (gate-before-F1b)
+- Files: `src/Reporting/RefactorPatchReporter.php` (apply branch :78-107 add gates), `src/Refactor/HoleCoverage.php` (threshold semantics consumed), tests: RefactorPatchReporterTest (gate matrix: coverage-below ⇒ refuse; degraded-hole ⇒ refuse; near-dups (non-exact) ⇒ refuse)
+- Size: HH (90 min)
+- Prereqs: S26/S27 (degraded representation), S50 (gate stack), Config::maxHoleCoverage surface already exists (Config.php:248) — no new key, no six-edit-site.
+- Acceptance: `--filter RefactorPatchReporterTest` — engineered mostly-hole cluster and degraded cluster each produce named refusal reasons visible in summary; safe+exact+covered cluster still applies; GATE.
 
 ### output-S53 — end-to-end apply regression suite (the coverage this group always lacked)
 
@@ -4081,7 +4081,7 @@ Steps marked [OWNER] in their bodies execute the recorded DEFAULT; once-S72 carr
 
 ## Validation (checks run at plan-build)
 
-- Kahn topological enumeration with (est_min, id) min-heap processed all 247/247 steps ⇒ prerequisite graph is acyclic; an independent three-colour DFS back-edge probe found zero cycles. (Re-run at Phase-5 r1 after the splits, the once-S81 absorb, and the once-S72→once-S96 edge.)
+- Kahn topological enumeration processed all 247/247 steps ⇒ prerequisite graph is acyclic; an independent three-colour DFS back-edge probe found zero cycles. (Re-run at Phase-5 r1 after the splits, the once-S81 absorb, and the once-S72→once-S96 edge.) Row order now follows owner ruling D1(b): severity-first Kahn — pop-key (CRITICAL-ownership, est_min, id) min-heap over the ready set, so every ready step whose Covers include a CRITICAL finding pops before any non-critical ready step, and otherwise the former shortest-first Kahn(est_min, id) law stands unchanged. Re-derived at the Phase-5 owner-decision pass: 0 prereq-order violations; the five critical roots (engine-S01, engine-S02a, engine-S23a, engine-S06a, shell-S01) and their critical-inheriting b-legs hold rows 1–8; once-S05 rides the slot immediately after its lone prereq shell-S36.
 - Every prereq ID exists in the queue (0 dangling). Every final prereq set contains only live steps (deleted/split IDs re-aimed: once-S01→shell-S01, engine-S31→S31c, and at Phase-5 r1 the 11 split parents→their -b legs — dependents per the Split rows above).
 - 304/304 consolidated findings covered by a step (output-052 deliberately spans two legs: output-S18 + output-S31; once-101 now rides once-S80 after the Phase-5 r1 absorb; each split finding rides both legs of its parent — the appendix marks the pairs). The appendix below is the ID→step map.
 - All est_min values are positive integers (total 21,005 min across 247 steps); bucket labels MM=123 HH=107 DD=17 are the annotation size classes carried per step (labels are not a threshold on est_min — e.g. 110–240 appear under MM/HH/DD alike at plan heritage; the queue numbers are the binding estimates).
@@ -4089,6 +4089,7 @@ Steps marked [OWNER] in their bodies execute the recorded DEFAULT; once-S72 carr
 - `tests/Golden/` overlap token is carried by the regen lanes ONLY (13 steps: engine-S01, engine-S02b, engine-S08b, once-S56, engine-S34b, engine-S15, engine-S10, output-S27, output-S28, once-S37, once-S55, output-S37, once-S93) — Phase-5 r1 I10 stripped it from verify-only once-S102 and kept it off both halves of splits except engine-S02b/engine-S08b/engine-S34b. Steps with no file writes lock `REPORT-ONLY` (only once-S80).
 - TUI serialization spine once-S07→once-S21→once-S22→once-S61→once-S62→once-S63→once-S72→once-S96 is eight steps with seven handoffs; the once-S72→once-S96 queue edge (added at Phase-5 r1, I11) makes the terminal handoff machine-enforced — other spine links ride shared locks + queue position.
 - Steps sharing a lock token but no prereq edge are deliberately unordered; the scheduler's lock-exclusion serializes them and per-body "Shared resources" notes carry any read-ordering intent. This is by design (Phase-5 r1 I11).
+- **Step-size ceiling (owner ruling D2(a)):** no step may carry `est_min` > 240 min — any such step must be split into 2–3 legs at a natural boundary before entering the queue (Split banner row + per-leg `Covers` carve so the 304/304 finding bijection still holds exactly + leg-specific locks ⊆ the parent's + dependents re-aimed at the leg that actually gates them + intra-leg prereq edges serializing same-file writers — the engine-S34a/S34b precedent). Census over the final queue: 0 rows exceed 240 min (max = 240, 13 rows) — the Phase-5 r1 splits already brought every former 270–360 min DD parent under the ceiling, so no further splits were required at the owner-decision pass.
 
 ## Coverage appendix (finding → owning step)
 
@@ -4427,3 +4428,22 @@ All 14 reviewer issues applied (fixed=14, skipped=0). Adaptations worth recordin
 - **I11:** encoded as one real queue edge once-S72→once-S96 (tsv + catalogue) plus a Validation sentence; the TUI spine is eight steps with seven handoffs — pairwise lock edges were not enumerated.
 - **D1 (severity-first ordering) NOT applied** — it is a `## Decisions for the user` row awaiting the owner ruling; the queue keeps the pure Kahn (est_min, id) order and the order note says so.
 - Mechanical re-checks at close: Kahn 247/247 acyclic; row order == Kahn order; catalogue block order == row order; 0 dangling prereqs; 5 tab-columns × 247 data rows; all statuses `pending`; tallies MM=123 HH=107 DD=17, total 21,005 min (splits preserve the parent sums; once-S80 +60 absorbs once-S81 −60); est/Size and Prereqs lines match their queue rows in all 247 blocks.
+
+## Fixer notes (Phase-5 owner decisions — D1, D2, r3 NIT-1)
+
+Owner ruling: "go with recommendations for all" (`## Decisions for the user`, reviews/plan-review.md).
+
+- **D1(b) applied:** queue order re-derived as severity-first Kahn (Validation, first bullet). All 247 tsv rows
+  re-emitted in the new order; every `**Queue rank:** n of 247` header and the catalogue block order renumbered to
+  match the queue 1:1; the queue-file header comment and the catalogue order note now state the severity-first law.
+  Prereqs, locks, Covers, severity mixes and est_min values are byte-unchanged.
+- **D2(a) applied:** the >240 min = must-split ceiling is codified in the Validation section. Re-derived census: zero
+  remaining steps violate it (Phase-5 r1 had already split all 11 >240 DD parents, issue I5) — no new splits were
+  needed, so M stays 247 and the Covers/appendix bijection is untouched by this decision.
+- **r3 NIT-1 applied:** `plan_review.queue.tsv` is committed alongside this note (previously untracked), closing the
+  durability gap the round-3 review flagged.
+- Re-checks at this pass: tsv rows == catalogue headers 1:1 and same order; 5 tab-columns × 247 data rows; est_min
+  positive ints, none > 240; all statuses `pending`; severity-first Kahn re-processes 247/247 reproducing the row
+  order exactly; 0 dangling prereqs and 0 prereq-order violations; all five critical roots inside the first wave
+  (rows 1–8) with no non-critical row ahead of them; `**Covers:**` headers vs coverage appendix re-run — 304/304
+  bijection exact; total still 21,005 min; `## Orchestrator instructions` and `## Program laws` byte-identical.
