@@ -17,11 +17,14 @@ use Phpdup\Persistence\IndexStore;
  * payload: parser_version / config_key / file_hash are validated from a
  * bounded plain-text header read, and the framed block list is opened
  * only when every gate passes. The "miss without deserializing" tests
- * below prove that ordering by hiding a large, VALID serialized block
- * list behind a mismatched header: a header-only miss returns in a
- * small fraction of the measured decode cost (self-calibrated per
- * box), and — because the poison decodes to a non-null block list — a
- * payload read would also flip the assertNull.
+ * below prove that ordering deterministically: they hide a large,
+ * VALID serialized block list behind a mismatched header, and — the
+ * poison decodes to a non-null block list — any load that reached the
+ * payload would return it, flipping the assertNull. The load-timing
+ * ratio round 1 paired with that arm flaked under suite-wide GC
+ * pressure and carried no coverage the assertNull lacks; the
+ * decode-cost story is pinned at the bench/report layer instead (the
+ * plan's report-only perf-probe bullet), per review r1 F-2.
  */
 final class IndexStoreTest extends TestCase
 {
@@ -125,32 +128,40 @@ final class IndexStoreTest extends TestCase
 
     public function testMalformedHeadersDegradeToMissNotError(): void
     {
-        $current = [
-            'file_hash'      => (string) sha1_file($this->sourceFile),
-            'parser_version' => self::LIVE_VERSION,
-            'config_key'     => 'cfg-key-1',
-        ];
-        $blocks0  = [];
-        $small    = serialize(['blocks' => $blocks0]);   // payload never reached on these paths — keep it tiny
-        $framed   = strlen($small) . ':' . $small;
-        $header   = $this->headerBytes($current);
-        $liveSha = $current['file_hash'];
+        $small  = serialize(['blocks' => []]);
+        $framed = strlen($small) . ':' . $small;
+
+        // %FH% is replaced per case with sha1_file() of THAT case's own
+        // temp source, so the framing and terminator cases clear every
+        // meta gate and die at exactly the branch their label names
+        // (review r1 F-3: with the setUp file's hash in every header,
+        // load() rejected at the file_hash compare before the payload —
+        // the unframe and terminator branches had zero coverage here).
+        // The live key lines also keep the non-colon and terminator
+        // branches attributable to each other instead of to the gates.
+        $liveHeader = "PHPDUP-IDX1\nfile_hash:%FH%\nparser_version:" . self::LIVE_VERSION . "\nconfig_key:cfg-key-1\n";
 
         $cases = [
             'truncated magic line only'  => 'PHPDUP-IDX1',
-            'no header terminator'       => $header[0] . "file_hash:$liveSha\nparser_version:" . self::LIVE_VERSION . "\nconfig_key:cfg-key-1",
-            'malformed line (no colon)'  => "PHPDUP-IDX1\nfile_hash:$liveSha\nbroken line\n\n$framed",
+            // Unterminated: the framed payload rides on its own line AFTER
+            // the last header line, so no blank line ever exists. Every
+            // parseable key is live — with the terminator branch mutated
+            // away, the case falls through to the payload read instead of
+            // being masked by a later gate.
+            'no header terminator'       => $liveHeader . $framed,
+            'malformed line (no colon)'  => $liveHeader . "broken line\n\n$framed",
             'missing required keys'      => "PHPDUP-IDX1\njunk_value\n\n$framed",
             'non-hex file_hash'          => "PHPDUP-IDX1\nfile_hash:not-a-sha\nparser_version:" . self::LIVE_VERSION . "\nconfig_key:cfg-key-1\n\n$framed",
-            'truncated framing (empty)'  => $header[0],
-            'appended bytes after frame' => $header[0] . $framed . 'GARBAGE',
+            'truncated framing (empty)'  => $liveHeader . "\n",
+            'appended bytes after frame' => $liveHeader . "\n" . $framed . 'GARBAGE',
         ];
 
-        foreach ($cases as $label => $bytes) {
+        foreach ($cases as $label => $template) {
             $dir = sys_get_temp_dir() . '/phpdup-store-malformed-' . $label;
             $src = sys_get_temp_dir() . '/phpdup-src-malformed-' . $label . '.php';
             file_put_contents($src, '<?php class B { public function g() { return 1; } }');
             mkdir($dir, 0o700, true);
+            $bytes = str_replace('%FH%', (string) sha1_file($src), $template);
             file_put_contents($dir . '/' . sha1($src) . '.idx', $bytes);
 
             $store = new IndexStore($dir, 'cfg-key-1');
@@ -274,14 +285,62 @@ final class IndexStoreTest extends TestCase
     }
 
     // ------------------------------------------------------------------
+    // shell-S18 fix r1: header skip contract + serialize fail-open (F-4, F-5)
+    // ------------------------------------------------------------------
+
+    public function testUnknownHeaderKeyIsSkippedAndColonlessLineStillMisses(): void
+    {
+        // The unknown-key SKIP is shell-S30's forward-compat promise
+        // ("extra key bytes ride the S18 header without breaking
+        // readers"); the colon rule is its boundary. Round 1 measured a
+        // skip→reject mutation leaving the whole filter green (F-4) —
+        // this pins both halves in both directions.
+        $blocks = $this->extract($this->sourceFile);
+        $store  = new IndexStore($this->cacheDir, 'cfg-key-1');
+        $store->save($this->sourceFile, $blocks);
+
+        $bytes = (string) file_get_contents($this->cacheFilePath());
+        $sep   = strpos($bytes, "\n\n");
+        $this->assertIsInt($sep, 'precondition: the saved header carries its terminator');
+
+        file_put_contents($this->cacheFilePath(),
+            substr($bytes, 0, $sep) . "\nfuture_key:whatever" . substr($bytes, $sep));
+        $loaded = $store->load($this->sourceFile);
+        $this->assertNotNull($loaded, 'an unknown header key must be skipped, not rejected');
+        $this->assertCount(count($blocks), $loaded);
+
+        file_put_contents($this->cacheFilePath(),
+            substr($bytes, 0, $sep) . "\nno colon here" . substr($bytes, $sep));
+        $this->assertNull($store->load($this->sourceFile),
+            'a colonless header line must still miss (skipping unknown KEYS is not skipping malformed LINES)');
+    }
+
+    public function testUnserializablePayloadFailsOpenWithoutWritingACacheFile(): void
+    {
+        // save()'s try/catch around serialize() is a fail-open arm: an
+        // unserializable shape must cache NOTHING, throw nothing, and
+        // leave the next lookup on a plain miss so the run re-processes
+        // (review r1 F-5 — nothing manufactured it before).
+        $store = new IndexStore($this->cacheDir, 'cfg-key-1');
+        $store->save($this->sourceFile, [function (): int { return 1; }]);
+
+        $this->assertFileDoesNotExist($this->cacheFilePath(),
+            'a failed serialize() must not leave a cache file behind');
+        $this->assertNull($store->load($this->sourceFile),
+            'nothing was cached, so the lookup must miss');
+    }
+
+    // ------------------------------------------------------------------
     // helpers
     // ------------------------------------------------------------------
 
     /**
      * Forge a framed cache file behind a mismatched header and prove the
-     * load returns fast — the block-list poison behind it must never be
-     * deserialized (shell-009: the old loader paid the full unserialize
-     * before consulting any gate).
+     * payload is never read: the block-list poison behind the header
+     * decodes to a non-null value, so any load that reached it would
+     * return it instead of missing (shell-009: the old loader paid the
+     * full unserialize before consulting any gate). Deterministic arms
+     * only — the timing ratio review r1 F-2 retired.
      *
      * @param array<string,string> $meta
      */
@@ -289,25 +348,16 @@ final class IndexStoreTest extends TestCase
     {
         $poison = self::poisonPayload();
 
-        // Self-calibrate the box: measure the decode the loader must AVOID.
-        $t0 = microtime(true);
+        // Non-vacuity precondition: the poison must be exactly what the
+        // loader refuses to touch — a VALID serialized block list.
         $decoded = @unserialize($poison);
-        $decodeMs = (microtime(true) - $t0) * 1000.0;
         $this->assertIsArray($decoded, 'poison payload must be a valid serialized block list');
-        $this->assertGreaterThan(15.0, $decodeMs,
-            'poison payload must cost measurable milliseconds to decode (test-env guard)');
 
         $this->forgeBlob($meta, $poison);
 
         $store = new IndexStore($this->cacheDir, 'cfg-key-1');
-        $t1 = microtime(true);
-        $result = $store->load($this->sourceFile);
-        $missMs = (microtime(true) - $t1) * 1000.0;
-
-        $this->assertNull($result,
+        $this->assertNull($store->load($this->sourceFile),
             'the poison payload decodes to a NON-null block list — a returned value proves the loader read the payload');
-        $this->assertLessThan($decodeMs / 3.0, $missMs,
-            sprintf('header-only miss (%.1fms) must not pay the payload decode cost (%.1fms)', $missMs, $decodeMs));
     }
 
     private function cacheFilePath(): string

@@ -17,9 +17,13 @@ use Phpdup\Util\LineRange;
  * a bounded plain-text header read, and the framed cluster set is
  * opened only when every gate passes. The "miss without deserializing"
  * tests hide a large, VALID serialized cluster list behind a mismatched
- * header — a header-only miss returns in a small fraction of the
- * measured decode cost, and because the poison decodes to a non-null
- * list, a returned value would also flip the assertNull.
+ * header and prove the ordering deterministically: the poison decodes
+ * to a non-null list, so any load that reached the payload would return
+ * it, flipping the assertNull. The load-timing ratio round 1 paired
+ * with that arm flaked under suite-wide GC pressure and carried no
+ * coverage the assertNull lacks; the decode-cost story is pinned at the
+ * bench/report layer instead (the plan's report-only perf-probe
+ * bullet), per review r1 F-2.
  */
 final class ClusterCacheTest extends TestCase
 {
@@ -146,8 +150,17 @@ final class ClusterCacheTest extends TestCase
 
         $cases = [
             'truncated magic line only'  => 'PHPDUP-CCACHE1',
-            'no header terminator'       => "PHPDUP-CCACHE1\nparser_version:" . self::LIVE_VERSION . "\nconfig_key:cfg-key-1",
-            'malformed line (no colon)'  => "PHPDUP-CCACHE1\nbroken line\n\n$framed",
+            // Unterminated, but with EVERY gate key live and the framed
+            // payload riding on its own line after the last header line:
+            // the unterminated branch is the branch that fires, and a
+            // mutation removing it drops the case through to the payload
+            // read (review r1 F-3 — the deliberately-absent corpus_hash
+            // used to catch it first, masking the branch under test).
+            'no header terminator'       => "PHPDUP-CCACHE1\nparser_version:" . self::LIVE_VERSION . "\nconfig_key:cfg-key-1\ncorpus_hash:" . $this->corpusHash($blocks) . "\n$framed",
+            // Live gate keys around the colonless line: a skip-instead-of-
+            // reject mutation decodes the payload and surfaces here, not
+            // under a second gate.
+            'malformed line (no colon)'  => "PHPDUP-CCACHE1\nparser_version:" . self::LIVE_VERSION . "\nconfig_key:cfg-key-1\ncorpus_hash:" . $this->corpusHash($blocks) . "\nbroken line\n\n$framed",
             'missing required keys'      => "PHPDUP-CCACHE1\njunk_value\n\n$framed",
             'header ok, empty framing'   => $goodHdr,
             'header ok, foreign framing' => $goodHdr . '999:short',
@@ -230,14 +243,69 @@ final class ClusterCacheTest extends TestCase
     }
 
     // ------------------------------------------------------------------
+    // shell-S18 fix r1: header skip contract + serialize fail-open (F-4, F-5)
+    // ------------------------------------------------------------------
+
+    public function testUnknownHeaderKeyIsSkippedAndColonlessLineStillMisses(): void
+    {
+        // The unknown-key SKIP is shell-S30's forward-compat promise
+        // ("extra key bytes ride the S18 header without breaking
+        // readers"); the colon rule is its boundary. Round 1 measured a
+        // skip-to-reject mutation leaving the whole filter green (F-4) —
+        // this pins both halves in both directions.
+        $blocks  = [$this->mkblock('a', 'h1')];
+        $cluster = new Cluster('C1', $blocks, 1.0, true);
+        $cache   = new ClusterCache($this->tmp, 'cfg-key-1');
+        $cache->save($blocks, [$cluster]);
+
+        $file  = $this->tmp . '/clusters.idx';
+        $bytes = (string) file_get_contents($file);
+        $sep   = strpos($bytes, "\n\n");
+        $this->assertIsInt($sep, 'precondition: the saved header carries its terminator');
+
+        file_put_contents($file, substr($bytes, 0, $sep) . "\nfuture_key:whatever" . substr($bytes, $sep));
+        $loaded = $cache->load($blocks);
+        $this->assertNotNull($loaded, 'an unknown header key must be skipped, not rejected');
+        $this->assertSame('C1', $loaded[0]->id);
+
+        file_put_contents($file, substr($bytes, 0, $sep) . "\nno colon here" . substr($bytes, $sep));
+        $this->assertNull($cache->load($blocks),
+            'a colonless header line must still miss (skipping unknown KEYS is not skipping malformed LINES)');
+    }
+
+    public function testUnserializablePayloadFailsOpenWithoutWritingACacheFile(): void
+    {
+        // save()'s try/catch around serialize() is a fail-open arm: an
+        // unserializable shape must cache NOTHING, throw nothing, and
+        // leave the next lookup on a plain miss so the run re-clusters
+        // (review r1 F-5 — nothing manufactured it before). A real
+        // Cluster carrying a Closure in its untyped $holes array is the
+        // shape that reaches the arm: the clone/strip loop copies the
+        // slot happily, serialize() is what refuses it.
+        $blocks  = [$this->mkblock('a', 'h1')];
+        $cluster = new Cluster('C1', $blocks, 1.0, true);
+        $cluster->holes = [function (): int { return 1; }];
+
+        $cache = new ClusterCache($this->tmp, 'cfg-key-1');
+        $cache->save($blocks, [$cluster]);
+
+        $this->assertFileDoesNotExist($this->tmp . '/clusters.idx',
+            'a failed serialize() must not leave a cache file behind');
+        $this->assertNull($cache->load($blocks),
+            'nothing was cached, so the lookup must miss');
+    }
+
+    // ------------------------------------------------------------------
     // helpers
     // ------------------------------------------------------------------
 
     /**
      * Forge a framed cache file behind a mismatched header and prove the
-     * load returns fast — the cluster-set poison behind it must never be
-     * deserialized (shell-009: the pre-S18 loader unserialized the whole
-     * cluster set before consulting any key).
+     * payload is never read: the cluster-set poison decodes to a
+     * non-null list, so any load that reached it would return it instead
+     * of missing (shell-009: the pre-S18 loader unserialized the whole
+     * cluster set before consulting any key). Deterministic arms only —
+     * the timing ratio review r1 F-2 retired.
      *
      * @param list<Block> $blocks
      * @param array<string,string> $meta
@@ -246,13 +314,10 @@ final class ClusterCacheTest extends TestCase
     {
         $poison = self::poisonPayload();
 
-        // Self-calibrate the box: measure the decode the loader must AVOID.
-        $t0 = microtime(true);
+        // Non-vacuity precondition: the poison must be exactly what the
+        // loader refuses to touch — a VALID serialized cluster list.
         $decoded = @unserialize($poison);
-        $decodeMs = (microtime(true) - $t0) * 1000.0;
         $this->assertIsArray($decoded, 'poison payload must be a valid serialized cluster list');
-        $this->assertGreaterThan(15.0, $decodeMs,
-            'poison payload must cost measurable milliseconds to decode (test-env guard)');
 
         $lines = ['PHPDUP-CCACHE1'];
         foreach ($meta as $key => $value) {
@@ -264,14 +329,8 @@ final class ClusterCacheTest extends TestCase
         );
 
         $cache = new ClusterCache($this->tmp, 'cfg-key-1');
-        $t1 = microtime(true);
-        $result = $cache->load($blocks);
-        $missMs = (microtime(true) - $t1) * 1000.0;
-
-        $this->assertNull($result,
+        $this->assertNull($cache->load($blocks),
             'the poison payload decodes to a NON-null cluster list — a returned value proves the loader read the payload');
-        $this->assertLessThan($decodeMs / 3.0, $missMs,
-            sprintf('header-only miss (%.1fms) must not pay the payload decode cost (%.1fms)', $missMs, $decodeMs));
     }
 
     /** Mirror of ClusterCache::hashCorpus (v4 token recipe: file|structuralHash). */
