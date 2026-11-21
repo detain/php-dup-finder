@@ -86,6 +86,24 @@ final class Clusterer
         // form — the property that keeps ids portable across machines
         // (golden snapshots are regenerated on runners, not laptops).
         private readonly array $scanRoots = [],
+        // Item 1.1 (§5a) R-4 guard. Un-numbering merges identifier
+        // variants, which concentrates gram postings: a pair whose
+        // numbered bags shared only rare grams can, after the merge,
+        // share ONLY grams that cross the max_df cutoff — and then the
+        // inverted index never proposes it, an edge that exists today
+        // silently disappears (measured: tests/Fixtures/{exact,optional}
+        // lose a real containment-accepted pair exactly this way). The
+        // guard re-projects the numbered mode's candidate stream into
+        // the un-numbered run: scoring stays fully un-numbered (all
+        // scores are monotone ≥, so every injected pair is at worst
+        // judged on better inputs), while candidate generation can
+        // never lose a pair that today's run even considered. The
+        // numbered bag species is recomputed here from $block->canonical
+        // (cheap, parent-side, once per run) because the live bags were
+        // already rewritten by the mode. Inert — byte-identical — when
+        // the mode is 'numbered'.
+        private readonly bool $unnumberedCandidateGuard = false,
+        private readonly int $candidateGuardNgramSize = 5,
     ) {
         if ($this->minSplitSize < 2) {
             throw new \InvalidArgumentException(sprintf(
@@ -181,6 +199,25 @@ final class Clusterer
         };
         $inverted->build($index, $progressCallback);
 
+        // §5a R-4 guard: build the numbered-bag projection once (parent
+        // side; workers only ever score the pair list produced below).
+        $guardInverted = null;
+        $guardIndex = null;
+        if ($this->unnumberedCandidateGuard) {
+            $guardIndex = new BlockIndex();
+            $fp = new \Phpdup\Fingerprint\NgramFingerprint($this->candidateGuardNgramSize);
+            foreach ($index->all() as $b) {
+                if ($b->canonical === null) {
+                    continue; // no tree to re-derive the numbered species from
+                }
+                $view = clone $b;
+                $view->ngramBag = $fp->fingerprint($b->canonical);
+                $guardIndex->add($view);
+            }
+            $guardInverted = new NgramInvertedIndex();
+            $guardInverted->build($guardIndex, $progressCallback);
+        }
+
         if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
             $output->writeln(sprintf('ngram-index: inverted index built [%s]', MemoryDebug::getMemoryUsage()));
             $output->writeln(sprintf('ngram-index: enumerating candidate pairs for %d blocks', $totalBlocks));
@@ -200,7 +237,19 @@ final class Clusterer
             if (count($seen) > self::SEEN_CAP) {
                 $seen = [];
             }
-            foreach ($inverted->candidatesFor($a, $this->maxDocumentFrequency) as $bid) {
+            $candidates = $inverted->candidatesFor($a, $this->maxDocumentFrequency);
+            if ($guardInverted !== null && $guardIndex !== null) {
+                $view = $guardIndex->get($a->id);
+                if ($view !== null) {
+                    $seenLocal = array_fill_keys($candidates, true);
+                    foreach ($guardInverted->candidatesFor($view, $this->maxDocumentFrequency) as $gid) {
+                        if (!isset($seenLocal[$gid])) {
+                            $candidates[] = $gid;
+                        }
+                    }
+                }
+            }
+            foreach ($candidates as $bid) {
                 $aId = $a->id;
                 $key = strcmp($aId, $bid) < 0 ? $aId . '|' . $bid : $bid . '|' . $aId;
                 if (isset($seen[$key])) continue;

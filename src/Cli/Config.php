@@ -11,6 +11,20 @@ namespace Phpdup\Cli;
 final class Config
 {
     /**
+     * Accepted values of {@see self::$fingerprintIdMode} (item 1.1,
+     * §5a). 'numbered' is the legacy default and must stay
+     * byte-identical everywhere (bags, caches, goldens, CLI output);
+     * 'un-numbered' is the drift-tolerant mode; 'realnames' is the
+     * planned 1.1-follow-up third value (not accepted yet — adding it
+     * without the Normalizer work behind it would silently alias to
+     * 'un-numbered' semantics).
+     */
+    public const FINGERPRINT_ID_MODES = ['numbered', 'un-numbered'];
+
+    public const FINGERPRINT_ID_NUMBERED = 'numbered';
+
+    public const FINGERPRINT_ID_UNNUMBERED = 'un-numbered';
+    /**
      * @param list<string> $paths
      * @param list<string> $exclude
      * @param list<string> $allowedKinds Empty list = accept all kinds.
@@ -26,6 +40,21 @@ final class Config
         public readonly int $minClusterImpact = 20,
         public readonly float $maxDocumentFrequency = 0.01,
         public readonly int $ngramSize = 5,
+        // Item 1.1 (§5a): identifier-numbering mode for the similarity
+        // fingerprints. 'numbered' = legacy behaviour (the aggressive
+        // Normalizer's `__V3`/`__CALL12` first-occurrence counters ride
+        // into the n-gram bag and the TED labels). 'un-numbered' strips
+        // the counters in lockstep from both (NgramFingerprint +
+        // AptedDistance via Util\IdentifierIds), making the fingerprint
+        // tolerant of guard insertions that renumber every later
+        // identifier. Structural hashes, anti-unification and ML pair
+        // features deliberately KEEP numbered input. Root config only —
+        // a per-directory .phpdup.json carrying this key is refused:
+        // mixed modes across dirs would poison the shared bag/tier
+        // comparisons and warm caches. 'realnames' (1.1-follow-up) will
+        // add a third value. Config-file key `fingerprint_id_mode`;
+        // no CLI flag in v1.
+        public readonly string $fingerprintIdMode = 'numbered',
         public readonly string $cacheDir = '.phpdup-cache',
         public readonly string $parallelism = 'auto',
         public readonly ?string $htmlReportDir = null,
@@ -202,6 +231,12 @@ final class Config
         if (!in_array($scorer, ['default', 'ir'], true)) {
             throw new \InvalidArgumentException("scorer must be one of default|ir, got: $scorer");
         }
+        if (!in_array($fingerprintIdMode, self::FINGERPRINT_ID_MODES, true)) {
+            throw new \InvalidArgumentException(
+                "fingerprint_id_mode must be one of " . implode('|', self::FINGERPRINT_ID_MODES)
+                . ", got: $fingerprintIdMode"
+            );
+        }
         if ($irThreshold < 0 || $irThreshold > 1) {
             throw new \InvalidArgumentException("ir_threshold out of range");
         }
@@ -220,6 +255,16 @@ final class Config
         if ($maxClusters < 0) {
             throw new \InvalidArgumentException("max_clusters must be >= 0");
         }
+    }
+
+    /**
+     * True when the similarity fingerprints (n-gram bag AND TED labels)
+     * run un-numbered — the single conversion point from the string knob
+     * to the boolean constructors of NgramFingerprint / TreeEditDistance.
+     */
+    public function fingerprintIdsUnnumbered(): bool
+    {
+        return $this->fingerprintIdMode === self::FINGERPRINT_ID_UNNUMBERED;
     }
 
     /** @param list<string> $paths */
@@ -336,6 +381,12 @@ final class Config
             minClusterImpact:               isset($overrides['min_cluster_impact'])  ? (int)$overrides['min_cluster_impact']  : $this->minClusterImpact,
             maxDocumentFrequency:           isset($overrides['max_df'])              ? (float)$overrides['max_df']            : $this->maxDocumentFrequency,
             ngramSize:                      isset($overrides['ngram_size'])          ? (int)$overrides['ngram_size']          : $this->ngramSize,
+            // Root-only by design (item 1.1): per-directory files that
+            // carry fingerprint_id_mode are refused at discovery time, so
+            // this knob never arrives through $overrides — it is copied,
+            // never replaced. Mixed modes across dirs would poison the
+            // shared bag/TED tier comparisons and warm caches.
+            fingerprintIdMode:              $this->fingerprintIdMode,
             cacheDir:                       $this->cacheDir,
             parallelism:                    $this->parallelism,
             htmlReportDir:                  $this->htmlReportDir,

@@ -50,6 +50,12 @@ final class PairScoreWorker
         private readonly string $mlPairUrl = '',
         private readonly float $mlPairThreshold = 0.80,
         private readonly int $mlPairTimeoutSec = 5,
+        // Item 1.1 (§5a): un-numbered TED-label mode; MUST mirror the
+        // serial Clusterer's TreeEditDistance wiring (bags arrive
+        // pre-stripped via the blocks themselves — the label side is the
+        // half this constructor carries). Plain bool → safe under the
+        // Socketpair Law (no non-scalar ever crosses to the worker).
+        private readonly bool $unnumbered = false,
     ) {
     }
 
@@ -67,7 +73,7 @@ final class PairScoreWorker
             baseUrl: $this->mlPairUrl,
             timeoutSec: $this->mlPairTimeoutSec,
         )) : null;
-        $ted         = new TreeEditDistance();
+        $ted         = new TreeEditDistance(null, $this->unnumbered);
         $containment = new ContainmentSimilarity();
         $edges       = [];
         // Collect ML candidates for batch scoring (avoids per-pair HTTP latency).

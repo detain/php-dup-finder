@@ -1,0 +1,129 @@
+<?php
+declare(strict_types=1);
+
+namespace Phpdup\Tests\Unit\Similarity;
+
+use PHPUnit\Framework\TestCase;
+use Phpdup\Extraction\BlockExtractor;
+use Phpdup\Normalization\Normalizer;
+use Phpdup\Parsing\AstParser;
+use Phpdup\Similarity\AptedDistance;
+use Phpdup\Similarity\TreeEditDistance;
+
+/**
+ * Item 1.1 (§5a) — TED-label mode pins.
+ *
+ * The label side of the lockstep: un-numbered labels make the
+ * renumber-cascade invisible (the §3.3 "TED 0.923→1.000" class) and
+ * can only ever raise similarity, since coarser label equality never
+ * adds edit cost. Default must stay byte-identical.
+ */
+final class AptedDistanceModeTest extends TestCase
+{
+    /** @return list<\PhpParser\Node> */
+    private static function blocksFrom(string $code): array
+    {
+        $stmts = (new AstParser())->parseCode($code);
+        self::assertNotNull($stmts);
+        $blocks = (new BlockExtractor(minSize: 1))->extract('t.php', $stmts);
+        foreach ($blocks as $b) {
+            (new Normalizer('aggressive'))->normalize($b);
+        }
+        return array_map(static fn($b) => $b->canonical, $blocks);
+    }
+
+    public function testParamSlotFlipReachesOneOnlyUnnumbered(): void
+    {
+        // Measured (diag2.php): numbered TED = 0.7778 (every __V slot
+        // misaligned), un-numbered TED = 1.0000 (identical streams).
+        [$a] = self::blocksFrom('<?php function s($log, $r) { $log->go($r); return $log->back($r); }');
+        [$b] = self::blocksFrom('<?php function s($r, $log) { $log->go($r); return $log->back($r); }');
+
+        $numbered   = (new TreeEditDistance())->similarity($a, $b);
+        $unnumbered = (new TreeEditDistance(null, true))->similarity($a, $b);
+
+        $this->assertLessThan(1.0, $numbered,
+            'numbered labels must charge substitution cost when slots re-deal (cascade)');
+        $this->assertEqualsWithDelta(1.0, $unnumbered, 1e-9,
+            'un-numbered labels must score a slot-flip pair as identical (doc §3.3 class)');
+    }
+
+    public function testGuardDriftStrictlyImprovesWithoutReachingOne(): void
+    {
+        // The §3.3 row-2 shape: different statement counts mean the
+        // trees genuinely differ, so un-numbering must only RAISE the
+        // score, not perfect it. Measured: .5714 → .6429.
+        [$a] = self::blocksFrom('<?php function s($log, $r) { $r->go($log); return $r->back($log); }');
+        [$b] = self::blocksFrom('<?php function s($log, $r) { $r->warn(); if (!$log) { return false; } $r->go($log); return $r->back($log); }');
+
+        $numbered   = (new TreeEditDistance())->similarity($a, $b);
+        $unnumbered = (new TreeEditDistance(null, true))->similarity($a, $b);
+
+        $this->assertGreaterThan($numbered, $unnumbered, 'coarsening must strictly improve this pair');
+        $this->assertLessThan(1.0, $unnumbered, 'and honest fixtures stay <1 when shapes genuinely differ');
+    }
+
+    public function testMonotoneOverFixtureBlocks(): void
+    {
+        // Every fixture-block pair: TED_u >= TED_n. This is the property
+        // behind "every transition is a strict improvement" — a label
+        // alphabet coarsening can only lower edit cost, never raise it.
+        $roots = ['notify', 'sql', 'optional', 'exact'];
+        $count = 0;
+        foreach ($roots as $root) {
+            $dir = realpath(__DIR__ . '/../../Fixtures/' . $root);
+            if ($dir === false) {
+                continue;
+            }
+            $nodes = [];
+            foreach (glob($dir . '/*.php') ?: [] as $file) {
+                $stmts = (new AstParser())->parseFile($file);
+                if ($stmts === null) {
+                    continue;
+                }
+                foreach ((new BlockExtractor(minSize: 5))->extract($file, $stmts) as $blk) {
+                    (new Normalizer('aggressive'))->normalize($blk);
+                    $nodes[] = $blk->canonical;
+                    if (count($nodes) > 12) {
+                        break;
+                    }
+                }
+            }
+            $numberedTree   = new TreeEditDistance();
+            $unnumberedTree = new TreeEditDistance(null, true);
+            $n = count($nodes);
+            for ($i = 0; $i < $n; $i++) {
+                for ($j = $i + 1; $j < $n; $j++) {
+                    $sn = $numberedTree->similarity($nodes[$i], $nodes[$j]);
+                    $su = $unnumberedTree->similarity($nodes[$i], $nodes[$j]);
+                    $this->assertGreaterThanOrEqual($sn - 1e-9, $su,
+                        "TED must be monotone >= under un-numbering (corpus $root pair $i/$j)");
+                    $count++;
+                }
+            }
+        }
+        $this->assertGreaterThan(50, $count, 'the monotonicity sweep must actually have compared pairs');
+    }
+
+    public function testDefaultConstructorMatchesLegacyAptedDirectly(): void
+    {
+        [$a] = self::blocksFrom('<?php function f($x) { $x->go(); return $x->id; }');
+        [$b] = self::blocksFrom('<?php function g($y) { $y->go(); return $y->id; }');
+        $legacy = new AptedDistance();
+        $explicitOff = new AptedDistance(null, false);
+        $this->assertSame(
+            $legacy->similarity($a, $b),
+            $explicitOff->similarity($a, $b),
+            'explicit numbered must equal the historical default byte-for-byte',
+        );
+    }
+
+    public function testModeIsInvisibleToIdenticalTrees(): void
+    {
+        // Coarsening cannot split what was already identical: a pair that
+        // scores 1.0 numbered still scores 1.0 un-numbered.
+        [$a] = self::blocksFrom('<?php function m() { return 42; }');
+        $this->assertEqualsWithDelta(1.0, (new TreeEditDistance())->similarity($a, $a), 1e-9);
+        $this->assertEqualsWithDelta(1.0, (new TreeEditDistance(null, true))->similarity($a, $a), 1e-9);
+    }
+}

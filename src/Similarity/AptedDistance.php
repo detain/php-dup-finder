@@ -6,6 +6,7 @@ namespace Phpdup\Similarity;
 use PhpParser\Node;
 use Phpdup\Fingerprint\ShapeletSketch;
 use Phpdup\Util\AstSerializer;
+use Phpdup\Util\IdentifierIds;
 
 /**
  * Tree edit distance using a Zhang-Shasha base with APTED-style heavy-path
@@ -32,14 +33,21 @@ final class AptedDistance
 {
     private readonly EditCostModel $costModel;
     private readonly int $scaler;
+    private readonly bool $unnumbered;
 
-    public function __construct(?EditCostModel $costModel = null)
+    public function __construct(?EditCostModel $costModel = null, bool $unnumbered = false)
     {
         $this->costModel = $costModel ?? new EditCostModel(EditCostModel::MODEL_DEFAULT);
         // Quantise per-node costs to small ints so the DP can stay
         // int-only. Scaler 2 covers the semantic-model {0.5, 1, 1.5, 2}
         // exactly as {1, 2, 3, 4}.
         $this->scaler = $this->costModel->model === EditCostModel::MODEL_DEFAULT ? 1 : 2;
+        // Item 1.1 (§5a): un-number the `__V1`-style labels too, in
+        // lockstep with NgramFingerprint's bag mode. Coarser labels can
+        // only lower the edit cost (TED similarity is monotone ≥ the
+        // numbered score), so every J-tier transition is an
+        // improvement. false = byte-identical legacy behaviour.
+        $this->unnumbered = $unnumbered;
     }
 
     /**
@@ -79,8 +87,8 @@ final class AptedDistance
             }
         }
 
-        $ta = self::flatten($a);
-        $tb = self::flatten($b);
+        $ta = $this->flatten($a);
+        $tb = $this->flatten($b);
         $n = count($ta['labels']);
         $m = count($tb['labels']);
         if ($n === 0 || $m === 0) {
@@ -250,18 +258,19 @@ final class AptedDistance
      *
      * @return array{labels: list<string>, ll: list<int>, kr: list<int>}
      */
-    private static function flatten(Node $root): array
+    private function flatten(Node $root): array
     {
         $labels = [];
         $ll = [];
         $hasLeftSibling = [];
+        $unnumbered = $this->unnumbered;
 
         // Visit children in heavy-path order (heaviest last) so the DP
         // hits the densest subtree first and stands a better chance of
         // exceeding the budget early on near-misses. The walk returns
         // a tuple (leftmost-leaf-index, own-post-order-index) of the
         // node it just placed.
-        $walk = static function (Node $node, bool $hasLeft) use (&$walk, &$labels, &$ll, &$hasLeftSibling): array {
+        $walk = static function (Node $node, bool $hasLeft) use (&$walk, &$labels, &$ll, &$hasLeftSibling, $unnumbered): array {
             $children = self::orderedChildren($node);
             $sized = [];
             foreach ($children as $child) {
@@ -279,7 +288,7 @@ final class AptedDistance
                 $hasLeftSibling[$childInfo['idx']] = $idx > 0;
             }
 
-            $labels[] = self::labelOf($node);
+            $labels[] = self::labelOf($node, $unnumbered);
             $myIdx = count($labels) - 1;
             $hasLeftSibling[$myIdx] = $hasLeft;
             $ll[$myIdx] = $myLeftmost ?? $myIdx;
@@ -318,10 +327,11 @@ final class AptedDistance
         return $children;
     }
 
-    private static function labelOf(Node $node): string
+    private static function labelOf(Node $node, bool $unnumbered = false): string
     {
         $type = AstSerializer::shortType($node);
         $scalar = AstSerializer::scalarPart($node);
-        return $scalar === null ? $type : $type . '|' . $scalar;
+        $label = $scalar === null ? $type : $type . '|' . $scalar;
+        return $unnumbered ? IdentifierIds::strip($label) : $label;
     }
 }

@@ -101,7 +101,7 @@ final class PreprocessWorker
         $nodePool  = $lowMemory ? new CanonicalNodePool() : null;
         $toolFor = static function (Config $cfg) use (&$tooling, $pluginRegistry, $lowMemory, $nodePool): array {
             $key = sprintf(
-                '%d|%d|%s|%d|%s|%s|%d|%d|%s|%s|%s',
+                '%d|%d|%s|%d|%s|%s|%d|%d|%s|%s|%s|%s',
                 $cfg->minBlockSize, $cfg->maxBlockSize,
                 $cfg->normalizationMode, $cfg->ngramSize,
                 implode(',', $cfg->allowedKinds),
@@ -111,6 +111,13 @@ final class PreprocessWorker
                 self::serializeStringMap($cfg->dbSymbolsMethods),
                 self::serializeStringMap($cfg->dbSymbolsFunctions),
                 $cfg->scorer,
+                // Item 1.1 (§5a): the mode rewrites every n-gram key, so
+                // two modes must never share one tooling entry inside a
+                // worker. Belt + braces: the same value also rides the
+                // IndexStore and ClusterCache config keys (cross-process
+                // misfeed refusal) — one forgotten key = silently
+                // mixed-mode bags in a warm cache.
+                $cfg->fingerprintIdMode,
             );
             if (!isset($tooling[$key])) {
                 // Build the DbOpRegistry with the user's symbol overlay
@@ -133,7 +140,7 @@ final class PreprocessWorker
                         lowMemory: $lowMemory,
                         nodePool: $nodePool,
                     ),
-                    'fp'         => new NgramFingerprint($cfg->ngramSize, $lowMemory),
+                    'fp'         => new NgramFingerprint($cfg->ngramSize, $lowMemory, $cfg->fingerprintIdsUnnumbered()),
                     // IR machinery is constructed lazily — only present
                     // when scorer=ir to keep the default path's startup
                     // cost unchanged.

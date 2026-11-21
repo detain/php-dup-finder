@@ -96,6 +96,15 @@ final class PreprocessStage implements CooperativeStageInterface
             // invalidate so the cached Block records carry (or omit)
             // their irBag consistently with the live config.
             $config->scorer,
+            // Item 1.1 (§5a): fingerprint_id_mode rewrites every stored
+            // n-gram bag key (normalized ASTs themselves are untouched —
+            // the strip happens at bagging time). A numbered cache
+            // served to an un-numbered run (or the reverse) would mix
+            // bag species inside one candidate index with no error —
+            // refuse cross-mode reuse at the key instead. No
+            // PARSER_VERSION bump: the mode value in this key already
+            // separates the two namespaces byte-exactly.
+            $config->fingerprintIdMode,
         ]));
         $store = ($this->useCache && $config->incremental)
             ? new IndexStore($config->cacheDir, $configKey)

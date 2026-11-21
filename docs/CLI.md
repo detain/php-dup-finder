@@ -380,6 +380,7 @@ never hard-count it here, the list grows with each flag): `min_block_size`,
 `normalization_mode`, `similarity_threshold`, `tree_threshold`,
 `min_cluster_impact`, `max_df`, `candidate_budget`, `ngram_size`, `cache_dir`, `parallelism`,
 `workers`, `incremental`, `lazy_ast`, `sort`, `ted_weights`, `scorer`,
+`fingerprint_id_mode`,
 `ir_threshold`, `ml_pair_threshold`, `debug_log`, and `low_memory`.
 
 A few keys use different fallback paths:
@@ -448,6 +449,7 @@ values.
   "max_df":               0.01,
   "candidate_budget":     60000000,
   "ngram_size":           5,
+  "fingerprint_id_mode":  "numbered",
   "cache_dir":            ".phpdup-cache",
   "parallelism":          "auto",
   "workers":              0,
@@ -490,6 +492,7 @@ with the offending field path on the first violation.
 | `max_df`                               | number           | `0.01`           | `0.0 ≤ x ≤ 1.0`.                                                         |
 | `candidate_budget`                     | integer          | `60000000`       | `>= 0`; `0` = unlimited pair generation (guard opted out).               |
 | `ngram_size`                           | integer          | `5`              | `2 ≤ n ≤ 10`.                                                            |
+| `fingerprint_id_mode`                  | string           | `"numbered"`     | One of `numbered`, `un-numbered` (item 1.1, plan §5a). Root config only — per-directory `.phpdup.json` files carrying this key fail the load; no CLI flag in v1. `un-numbered` strips the `__V`/`__CALL`/`__PROP`/`__CLASS` occurrence counters from the n-gram bag AND the tree-edit labels together; Jaccard/containment/TED are monotone under the coarsening (no today-accepted edge is lost). |
 | `cache_dir`                            | string           | `".phpdup-cache"`| Any path; created on first use.                                          |
 | `parallelism`                          | string           | `"auto"`         | One of `auto`, `off`, `manual`.                                          |
 | `workers`                              | integer          | `0` (auto)       | `>= 0`.                                                                  |

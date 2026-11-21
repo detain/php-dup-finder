@@ -43,6 +43,13 @@ final class ClusterStage implements CooperativeStageInterface
             // ngram_size changes each block's fingerprint and thus candidate pairs
             // and Jaccard scores — the cached clusters must be invalidated.
             $config->ngramSize,
+            // Item 1.1 (§5a): same argument as ngram_size, one notch more
+            // load-bearing — the mode rewrites bag keys AND TED labels,
+            // so tier assignment (jaccard vs containment) and edge scores
+            // genuinely differ between modes. A numbered cluster set
+            // served to an un-numbered run would silently under-report
+            // the drifted pairs the mode exists to find.
+            $config->fingerprintIdMode,
             // Item 1.4 (§5b): the medoid-ball split knobs reshape cluster
             // membership, count and reported similarity. Bound to the very
             // constants buildClusterer() hands the Clusterer, so flipping a
@@ -101,6 +108,10 @@ final class ClusterStage implements CooperativeStageInterface
             $cached = $clusterCache->load($state->blocks);
             if ($cached !== null) {
                 $state->clusters = $cached;
+                // Positions in the replayed objects are only as fresh as
+                // the snapshot — tell the downstream loader (item 4.x
+                // perf law: content re-proofs are owed ONLY here).
+                $state->clustersReplayed = true;
                 $state->currentTask = sprintf('Reused %d clusters from cache (corpus unchanged)', count($cached));
                 $state->stageProgress = 1.0;
                 $state->timings['cluster'] = 0.0;
@@ -189,7 +200,7 @@ final class ClusterStage implements CooperativeStageInterface
     {
         return new Clusterer(
             similarity: new JaccardSimilarity(),
-            tree: new TreeEditDistance(new EditCostModel($config->tedWeights)),
+            tree: new TreeEditDistance(new EditCostModel($config->tedWeights), $config->fingerprintIdsUnnumbered()),
             similarityThreshold: $config->similarityThreshold,
             treeThreshold: $config->treeThreshold,
             maxDocumentFrequency: $config->maxDocumentFrequency,
@@ -210,6 +221,12 @@ final class ClusterStage implements CooperativeStageInterface
             // phpver-fix: ids are minted scan-relatively; the roots come
             // straight from the run's configured paths.
             scanRoots:                $config->paths,
+            // §5a R-4 candidate guard (see Clusterer ctor): live only in
+            // un-numbered mode; injects the numbered run's candidate
+            // stream so no pair today's run would even consider can be
+            // lost to df-cap concentration.
+            unnumberedCandidateGuard: $config->fingerprintIdsUnnumbered(),
+            candidateGuardNgramSize:  $config->ngramSize,
         );
     }
 
@@ -292,6 +309,10 @@ final class ClusterStage implements CooperativeStageInterface
             irThreshold: $config->irThreshold,
             mlPairUrl: $config->mlPairUrl,
             mlPairThreshold: $config->mlPairThreshold,
+            // Item 1.1 (§5a): the parallel twin must see the exact same
+            // label mode the serial Clusterer gets, or clusters fork
+            // with worker count (the classic heisenbug class).
+            unnumbered: $config->fingerprintIdsUnnumbered(),
         );
 
         $state->edges = [];

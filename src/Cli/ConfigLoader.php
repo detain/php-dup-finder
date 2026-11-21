@@ -36,6 +36,7 @@ final class ConfigLoader
             'max_df', 'candidate_budget', 'ngram_size', 'cache_dir', 'parallelism',
             'workers', 'incremental', 'lazy_ast',
             'sort', 'ted_weights', 'scorer',
+            'fingerprint_id_mode',
             'ir_threshold', 'ml_pair_threshold', 'debug_log',
             'low_memory', 'fail_on_impact', 'max_clusters',
             'baseline', 'baseline_out', 'diff_base', 'apply',
@@ -59,6 +60,7 @@ final class ConfigLoader
             'sort' => $base->sort,
             'ted_weights' => $base->tedWeights,
             'scorer' => $base->scorer,
+            'fingerprint_id_mode' => $base->fingerprintIdMode,
             'ir_threshold' => $base->irThreshold,
             'ml_pair_threshold' => $base->mlPairThreshold,
             'debug_log' => $base->debugLog,
@@ -112,6 +114,7 @@ final class ConfigLoader
             minClusterImpact:               $flat['min_cluster_impact'],
             maxDocumentFrequency:           $flat['max_df'],
             ngramSize:                      $flat['ngram_size'],
+            fingerprintIdMode:              $flat['fingerprint_id_mode'],
             cacheDir:                       $flat['cache_dir'],
             parallelism:                    $flat['parallelism'],
             htmlReportDir: $htmlOverride !== null ? (string)$htmlOverride : null,
@@ -424,6 +427,20 @@ final class ConfigLoader
                     // smuggle in misspelled keys or out-of-range values.
                     $this->validate($decoded, $file->getPathname());
 
+                    // Item 1.1 (§5a): fingerprint_id_mode is ROOT-ONLY, and
+                    // the key is deliberately absent from shapeOverrides().
+                    // Refused here (not silently dropped) because per-dir
+                    // mode mixing would mint two incompatible bag species
+                    // for one shared candidate index / TED gate comparison
+                    // and one warm cache — the exact silent-misfeed class
+                    // this knob's cache-key packet exists to prevent.
+                    if (array_key_exists('fingerprint_id_mode', $decoded)) {
+                        throw new \RuntimeException(
+                            "fingerprint_id_mode is not a per-directory key (root phpdup.json only): "
+                            . $file->getPathname()
+                        );
+                    }
+
                     $dir = realpath($file->getPath());
                     if ($dir === false) {
                         continue;
@@ -522,6 +539,7 @@ final class ConfigLoader
             'trinity_collapse',
             'db_symbols',
             'scorer',
+            'fingerprint_id_mode',
             'ir_threshold',
             'ml_pair_url',
             'ml_pair_threshold',
@@ -703,6 +721,13 @@ final class ConfigLoader
         }
         if (array_key_exists('scorer', $data)) {
             $assertEnum($data['scorer'], 'scorer', ['default', 'ir']);
+        }
+        if (array_key_exists('fingerprint_id_mode', $data)) {
+            // 'numbered' keeps every legacy byte stable; 'un-numbered' is
+            // the item 1.1 (§5a) drift-tolerant mode. The third planned
+            // value 'realnames' is NOT admitted until 1.1-follow-up ships
+            // the normalization work behind it.
+            $assertEnum($data['fingerprint_id_mode'], 'fingerprint_id_mode', \Phpdup\Cli\Config::FINGERPRINT_ID_MODES);
         }
         if (array_key_exists('ir_threshold', $data)) {
             $assertFloat01($data['ir_threshold'], 'ir_threshold');

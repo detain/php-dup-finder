@@ -75,6 +75,12 @@
             "default": 5,
             "description": "Token-level n-gram length used for fingerprinting and Jaccard similarity."
         },
+        "fingerprint_id_mode": {
+            "type": "string",
+            "enum": ["numbered", "un-numbered"],
+            "default": "numbered",
+            "description": "Identifier-numbering form of the similarity fingerprints (item 1.1, plan §5a). 'numbered' = legacy: the aggressive Normalizer's first-occurrence counters (__V3, __CALL12, __PROP0, __CLASS7) ride into the n-gram bag and the tree-edit labels, so one inserted guard renumbers every later identifier and breaks the fingerprint for the rest of the block. 'un-numbered' = strip the counters from bag tokens AND TED labels in lockstep (Phpdup\\Util\\IdentifierIds); multiset Jaccard, containment and TED similarity are monotone under this coarsening, so no edge accepted today is lost and guard-drift clones finally link. Structural hashes, anti-unification and ML pair features keep numbered input either way. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (mixed modes would poison the shared candidate index and warm caches). No CLI flag in v1. The mode value rides the worker tooling key, the per-file index cache key and the cluster-cache config key; 'numbered' keeps every cache and golden byte-identical."
+        },
         "cache_dir": {
             "type": "string",
             "default": ".phpdup-cache",
