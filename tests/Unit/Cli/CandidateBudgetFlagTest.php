@@ -115,6 +115,43 @@ final class CandidateBudgetFlagTest extends TestCase
         (new ConfigLoader())->load([self::scratchDir()], null, ['candidate_budget' => '0009999999999999999999']);
     }
 
+    public function testZeroPaddedInt64MaxIsAcceptedOnlyThroughTrimBranch(): void
+    {
+        // Load-bearing pin (replaces the vacuity of the short-padding
+        // truth-pins above): 10 leading zeros make the raw string 29
+        // characters, so an UNTRIMMED length compare (29 > 19) would
+        // reject it outright. The accept below is produced solely by the
+        // ltrim('0') branch collapsing the magnitude to exactly
+        // PHP_INT_MAX's digit count — revert that trim and this pin goes
+        // red, which is the non-vacuity proof.
+        $padded = str_repeat('0', 10) . (string) PHP_INT_MAX;
+        $config = (new ConfigLoader())->load([self::scratchDir()], null, ['candidate_budget' => $padded]);
+        self::assertSame(PHP_INT_MAX, $config->candidateBudget);
+    }
+
+    public function testPaddedInt64BoundaryPairIsolatesTrimLexicographicCompare(): void
+    {
+        // Mirror pair, 23 raw characters each (4 pad + 19 digits): with no
+        // trim the length branch rejects BOTH identically, so anything
+        // this pair proves happens only post-trim — both sides land on the
+        // 19-digit cap length and the lexicographic strcmp decides.
+        // PHP_INT_MAX stays in range; MAX+1 (held as text, never a PHP
+        // int) fails loud. Accept first, reject second: the two inputs
+        // differ ONLY in the final digit, isolating the compare in both
+        // directions.
+        $inRange = '0000' . (string) PHP_INT_MAX;
+        $config = (new ConfigLoader())->load([self::scratchDir()], null, ['candidate_budget' => $inRange]);
+        self::assertSame(PHP_INT_MAX, $config->candidateBudget);
+
+        $aboveRange = '0000' . '9223372036854775808';
+        try {
+            (new ConfigLoader())->load([self::scratchDir()], null, ['candidate_budget' => $aboveRange]);
+            self::fail('padded PHP_INT_MAX+1 must fail loud, not saturate');
+        } catch (\InvalidArgumentException $e) {
+            self::assertStringContainsString('64-bit', $e->getMessage());
+        }
+    }
+
     public function testInt64BoundariesAreInRangeAndHandledDownstream(): void
     {
         // Exactly PHP_INT_MAX is representable, so coercion must accept it
