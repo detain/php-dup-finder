@@ -106,4 +106,93 @@ final class SqlTableExtractorTest extends TestCase
         $r2 = SqlTableExtractor::extract('select * from USERS');
         $this->assertSame($r1, $r2);
     }
+
+    /**
+     * engine-048 (a): the regex capture may carry trailing punctuation, so a
+     * bracket-quoted table arrives as `[users],`. The clean pass must strip
+     * punctuation BEFORE bracket detection and never leak bracket residue.
+     */
+    public function testBracketedTableWithTrailingCommaIsCleaned(): void
+    {
+        $cases = [
+            'SELECT * FROM [users], WHERE id = 1' => 'users',
+            'SELECT * FROM [users],' => 'users',
+            'SELECT * FROM [users], [orders]' => 'users', // first-table heuristic, cleaned
+        ];
+        foreach ($cases as $sql => $expected) {
+            $result = SqlTableExtractor::extract($sql);
+            $this->assertNotNull($result, "extraction should succeed for: $sql");
+            $this->assertSame($expected, $result[1], "bracket residue leaked for: $sql");
+        }
+    }
+
+    /** engine-048 (a): unbalanced bracket/quote residue degrades to null, never leaks. */
+    public function testUnbalancedQuoteResidueDegradesToNull(): void
+    {
+        $sqls = [
+            'SELECT * FROM [users, WHERE id = 1',     // open bracket never closes
+            'SELECT * FROM users] WHERE id = 1',      // stray close bracket
+            "SELECT * FROM `users], WHERE 1",         // backtick + dangling bracket
+            'SELECT * FROM "users], x',               // dangling double-quote
+        ];
+        foreach ($sqls as $sql) {
+            $result = SqlTableExtractor::extract($sql);
+            $this->assertNull(
+                $result === null ? null : $result[1],
+                "unresolvable identifier should degrade to null for: $sql",
+            );
+        }
+    }
+
+    /** Balanced quoting on schema-qualified names still cleans. */
+    public function testQualifiedQuotedTablesStillClean(): void
+    {
+        $cases = [
+            'SELECT * FROM db.[users]' => 'users',
+            'SELECT * FROM [db].[users]' => 'users',
+            'SELECT * FROM `db`.`users`' => 'users',
+            'SELECT * FROM "public"."users"' => 'users',
+        ];
+        foreach ($cases as $sql => $expected) {
+            $result = SqlTableExtractor::extract($sql);
+            $this->assertNotNull($result, "extraction should succeed for: $sql");
+            $this->assertSame($expected, $result[1], "cleaning failed for: $sql");
+        }
+    }
+
+    /**
+     * engine-048 (b): the CTE paren walker must skip string-literal spans —
+     * an unbalanced `(` inside `'a(b'` must not desync the depth count and
+     * land the prefix strip mid-query.
+     */
+    public function testCteStripSurvivesParensInsideStringLiterals(): void
+    {
+        $sql = "WITH x AS (SELECT 'a(b' FROM t) SELECT * FROM final_tbl";
+        $result = SqlTableExtractor::extract($sql);
+        $this->assertNotNull($result);
+        $this->assertSame('SELECT', $result[0]);
+        $this->assertSame('final_tbl', $result[1]);
+
+        // Same guard for double-quoted literals and backtick identifiers,
+        // and for a multi-CTE list whose later body carries the trap.
+        $sql2 = "WITH x AS (SELECT 1), y AS (SELECT \"d)\" FROM t) SELECT * FROM z";
+        $r2 = SqlTableExtractor::extract($sql2);
+        $this->assertNotNull($r2);
+        $this->assertSame('z', $r2[1]);
+
+        // Doubled single-quotes are an escaped quote, not a span end.
+        $sql3 = "WITH x AS (SELECT 'O''Brien (x' FROM t) SELECT * FROM q";
+        $r3 = SqlTableExtractor::extract($sql3);
+        $this->assertNotNull($r3);
+        $this->assertSame('q', $r3[1]);
+    }
+
+    /** Null-ish degrade stands: genuinely unbalanced statements are abandoned. */
+    public function testUnbalancedCteDegradesToNull(): void
+    {
+        // Paren opens and never closes (the string-skip keeps it honest).
+        $this->assertNull(SqlTableExtractor::extract("WITH x AS (SELECT 'a(b' FROM t SELECT * FROM y"));
+        // Unterminated string literal swallows the rest of the statement.
+        $this->assertNull(SqlTableExtractor::extract("WITH x AS (SELECT 'oops FROM t) SELECT * FROM y"));
+    }
 }

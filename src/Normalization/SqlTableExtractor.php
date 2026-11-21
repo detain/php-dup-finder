@@ -85,6 +85,9 @@ final class SqlTableExtractor
             return $sql;
         }
         // Walk past balanced parens to find the start of the inner verb.
+        // A WITH clause cannot open its first AS body before any string
+        // literal, so the first `(` is the body opener; everything past it
+        // is scanned with string-literal spans skipped (see findBodyEnd).
         $len = strlen($sql);
         $i = 0;
         while ($i < $len) {
@@ -93,18 +96,16 @@ final class SqlTableExtractor
             if ($open === false) {
                 return $sql;
             }
-            $depth = 1;
-            $j = $open + 1;
-            while ($j < $len && $depth > 0) {
-                $c = $sql[$j];
-                if ($c === '(') {
-                    $depth++;
-                } elseif ($c === ')') {
-                    $depth--;
-                }
-                $j++;
+            $close = self::findBodyEnd($sql, $open);
+            if ($close === null) {
+                // Unbalanced parens or an unterminated string — do not
+                // trust a strip; leave the statement alone so verb
+                // detection degrades to null instead of surfacing a
+                // mid-query fragment.
+                return $sql;
             }
             // After the closing paren we have ", cte2 AS (...)" or the inner verb.
+            $j = $close + 1;
             if ($j < $len && $sql[$j] === ',') {
                 $i = $j + 1;
                 continue;
@@ -112,6 +113,73 @@ final class SqlTableExtractor
             return ltrim(substr($sql, $j));
         }
         return $sql;
+    }
+
+    /**
+     * Index of the `)` closing the paren opened at $open. Depth is counted
+     * outside `'…'`, `"…"` and `` `…` `` spans: a CTE body holding a
+     * string literal with an unbalanced paren (`'a(b'`) must not desync
+     * the walker.
+     *
+     * @return int|null null when the statement never balances (unterminated
+     *                  literal or stray paren) — callers must treat that
+     *                  as "cannot strip".
+     */
+    private static function findBodyEnd(string $sql, int $open): ?int
+    {
+        $len = strlen($sql);
+        $depth = 0;
+        for ($i = $open; $i < $len; $i++) {
+            $c = $sql[$i];
+            if ($c === "'" || $c === '"' || $c === '`') {
+                $i = self::skipQuotedSpan($sql, $i);
+                if ($i < 0) {
+                    return null; // unterminated literal
+                }
+                continue; // $i sits on the closing quote; the loop steps past it
+            }
+            if ($c === '(') {
+                $depth++;
+            } elseif ($c === ')') {
+                $depth--;
+                if ($depth === 0) {
+                    return $i;
+                }
+                if ($depth < 0) {
+                    return null; // stray closer before we ever opened
+                }
+            }
+        }
+        return null; // ran out of statement with parens still open
+    }
+
+    /**
+     * Last index of the quoted span that starts at $start, so a caller's
+     * loop increment lands just past the closing quote. Doubled quotes
+     * (`'it''s'`, ANSI style) and, for `'`/`"`, backslash escapes (MySQL
+     * style) stay inside the span; backticks take no backslash escapes.
+     *
+     * @return int -1 when the span never closes.
+     */
+    private static function skipQuotedSpan(string $sql, int $start): int
+    {
+        $quote = $sql[$start];
+        $len = strlen($sql);
+        for ($i = $start + 1; $i < $len; $i++) {
+            $c = $sql[$i];
+            if ($c === '\\' && $quote !== '`') {
+                $i++; // escape consumes the next character
+                continue;
+            }
+            if ($c === $quote) {
+                if ($i + 1 < $len && $sql[$i + 1] === $quote) {
+                    $i++; // doubled quote is an escaped quote, span continues
+                    continue;
+                }
+                return $i;
+            }
+        }
+        return -1;
     }
 
     /** Return the upper-cased first keyword token of $sql, or null. */
@@ -158,23 +226,16 @@ final class SqlTableExtractor
      * Strip surrounding identifier-quote characters (`"foo"`,
      * `` `foo` ``, `[foo]`), trim trailing punctuation (`,`, `(`),
      * lower-case, and reject obviously-bad inputs (anything containing
-     * a `?` or `$N` placeholder, parens, or whitespace).
+     * a `?` or `$N` placeholder, parens, whitespace, or quote/bracket
+     * residue that failed to balance-strip).
      */
     private static function cleanIdentifier(string $raw): ?string
     {
-        $raw = trim($raw);
-        // Drop quoting.
-        if ($raw !== '' && (
-            ($raw[0] === '`' && str_ends_with($raw, '`')) ||
-            ($raw[0] === '"' && str_ends_with($raw, '"'))
-        )) {
-            $raw = substr($raw, 1, -1);
-        }
-        if ($raw !== '' && $raw[0] === '[' && str_ends_with($raw, ']')) {
-            $raw = substr($raw, 1, -1);
-        }
-        // Strip trailing punctuation that may have followed in regex capture.
-        $raw = rtrim($raw, ",;()");
+        // Strip trailing punctuation that may have followed in regex
+        // capture — BEFORE quote detection, so a capture like `[users],`
+        // still presents a balanced `[users]` to the bracket stripper
+        // instead of leaking bracket residue as the table name.
+        $raw = rtrim(trim($raw), ",;()");
         if ($raw === '' || preg_match('/[?\s$()]/', $raw)) {
             return null;
         }
@@ -182,14 +243,34 @@ final class SqlTableExtractor
         if (str_contains($raw, '.')) {
             $parts = explode('.', $raw);
             $raw = (string)end($parts);
-            // Re-strip quoting on the last segment.
-            if ($raw !== '' && (
-                ($raw[0] === '`' && str_ends_with($raw, '`')) ||
-                ($raw[0] === '"' && str_ends_with($raw, '"'))
-            )) {
-                $raw = substr($raw, 1, -1);
-            }
         }
-        return $raw === '' ? null : strtolower($raw);
+        // Drop quoting on the (possibly last) segment.
+        $raw = self::stripIdentifierQuotes($raw);
+        // Any surviving quote/bracket character means an unbalanced or
+        // embedded quote — we cannot name this table reliably, so degrade
+        // to null instead of flowing a bogus identifier into the DB-op
+        // canonical stream and clustering.
+        if ($raw === '' || preg_match('/[\[\]"`]/', $raw)) {
+            return null;
+        }
+        return strtolower($raw);
+    }
+
+    /** Remove one layer of surrounding identifier quoting: `` `f` ``, `"f"` or `[f]`. */
+    private static function stripIdentifierQuotes(string $token): string
+    {
+        if ($token === '') {
+            return $token;
+        }
+        $closer = match ($token[0]) {
+            '`'  => '`',
+            '"'  => '"',
+            '['  => ']',
+            default => null,
+        };
+        if ($closer !== null && strlen($token) > 1 && str_ends_with($token, $closer)) {
+            return substr($token, 1, -1);
+        }
+        return $token;
     }
 }
