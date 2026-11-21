@@ -19,6 +19,14 @@ consume, so you don't have to roll your own report parsing.
 
 ## GitHub Actions
 
+### Repository CI
+
+`.github/workflows/ci.yml` tests PHP **8.3, 8.4 and 8.5** on
+`ubuntu-latest`, with the 8.3 leg carrying coverage, plus a static-analysis
+job (PHPStan + Psalm) on 8.3. The 8.1/8.2 legs were dropped: every required
+`sugarcraft/*` package (and phpdup itself) declares `"php": "^8.3"`, so
+`composer install` cannot resolve below 8.3 — those legs could never pass.
+
 A maintained composite action lives at `.github/actions/phpdup/action.yml` in
 this repo. From your workflow:
 
