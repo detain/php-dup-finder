@@ -89,7 +89,7 @@ final class TedGateConvergenceTest extends TestCase
     }
 
     /** @return array{clusters: list<Cluster>, candidatePairs: int, index: \Phpdup\Index\BlockIndex} */
-    private function runStage(int $workers, string $corpus, int $cap): array
+    private function runStage(int $workers, string $corpus, int $cap, string $idMode = 'numbered'): array
     {
         $config = new Config(
             paths: [$corpus],
@@ -98,6 +98,7 @@ final class TedGateConvergenceTest extends TestCase
             workers: $workers,
             incremental: false,
             maxTedSize: $cap,
+            fingerprintIdMode: $idMode,
         );
         $state = new PipelineState($config);
         (new ScanningStage())->run($state, new NullOutput());
@@ -210,5 +211,48 @@ final class TedGateConvergenceTest extends TestCase
             'at the default cap the near-dup lane must still pay real TED');
         $this->assertArrayNotHasKey('jaccard-unverified', $summary,
             'nothing may be gated at the default cap');
+    }
+
+    // ── Fix-review [m-1] — fingerprint_id_mode × armed-cap composition ──
+
+    public function testUnnumberedModeHonoursTheArmedCapIdentically(): void
+    {
+        // §5a ruling corner (review Q3): under un-numbered mode the ngram
+        // bags are the monotone-≥ id coarsening, so a gated accept rests
+        // on possibly-inflated jaccard WITHOUT the structural TED check
+        // the pair would otherwise pay. The ruling PERMITS that trade —
+        // this pin exists so no future change can silently deepen it.
+        // The gate itself is mode-agnostic by construction: it reads
+        // $a->size/$b->size (AST node counts, minted before fingerprint
+        // mode has any say) and stamps before any TED call.
+        //
+        // Deterministic assertions on this corpus (family ids are
+        // single-occurrence — the §5a coarsening provably cannot mint
+        // counters over it, verified in the reviewer's own witness):
+        // the armed cap must produce identical fingerprints and identical
+        // tier summaries in BOTH modes, and the inert cap must likewise
+        // converge — the composition is tested, not reasoned about.
+        $armedNum   = $this->runStage(1, $this->corpusBig, 100, 'numbered');
+        $armedUnnum = $this->runStage(1, $this->corpusBig, 100, 'un-numbered');
+
+        $unSummary = $this->tierSummary($armedUnnum['clusters']);
+        $this->assertArrayHasKey('jaccard-unverified', $unSummary,
+            'armed cap must gate the jaccard lane under un-numbered mode too');
+        $this->assertArrayNotHasKey('jaccard', $unSummary,
+            'no pair may have paid TED while the cap is armed, in either mode');
+
+        $this->assertSame($this->fingerprints($armedNum['clusters']), $this->fingerprints($armedUnnum['clusters']),
+            'single-occurrence corpus: §5a coarsening is a no-op here, so mode must not move membership under the gate');
+        $this->assertSame($this->tierSummary($armedNum['clusters']), $unSummary);
+
+        // Inert half: cap above every block size — un-numbered pairs still
+        // pay real TED and carry 'jaccard', and no gated token appears.
+        // (Run on the SMALL corpus: 300-node pairs at an inert cap would
+        // pay real APTED ×32 pairs — seconds of pure cost for a label pin.)
+        $inertUnnum = $this->runStage(1, $this->corpusSmall, 800, 'un-numbered');
+        $inertSummary = $this->tierSummary($inertUnnum['clusters']);
+        $this->assertArrayHasKey('jaccard', $inertSummary,
+            'un-numbered mode must not accidentally gate anything at the default cap');
+        $this->assertArrayNotHasKey('jaccard-unverified', $inertSummary);
     }
 }

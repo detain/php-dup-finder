@@ -158,6 +158,31 @@ final class ScriptKindTest extends TestCase
         $this->assertNotEmpty($bag, 'script folds fingerprint like every other kind — caches accept the wrapper');
     }
 
+    public function testFoldAstRoundTripsThroughSerializedCaches(): void
+    {
+        // Fix-review M-1's persistence half: because folds are now NEVER
+        // unloaded, the warm caches (IndexStore block snapshots,
+        // ClusterCache member payloads) carry their synthetic AST
+        // inlines. The disk caches restrict unserialize() to an explicit
+        // class allow-list that already includes every PhpParser node
+        // class (the docblock: "so a Block with an embedded canonical AST
+        // round-trips intact") — this pin keeps that load-bearing property
+        // from regressing into __PHP_Incomplete_Class → replayed folds
+        // dying at the loader backstop.
+        $block = $this->scriptBlock();
+        $classes = \Phpdup\Persistence\SerializedClassAllowList::blockCacheClasses();
+
+        $copy = unserialize(serialize($block), ['allowed_classes' => $classes]);
+        $this->assertInstanceOf(Block::class, $copy);
+        $this->assertFalse($copy->isAstUnloaded(), 'fold AST must survive the block-cache round trip');
+        $this->assertInstanceOf(Stmt\Block::class, $copy->ast);
+
+        $cluster = new Cluster('C-9', [$copy], 1.0, false);
+        $clusterCopy = unserialize(serialize($cluster), ['allowed_classes' => $classes]);
+        $this->assertFalse($clusterCopy->members[0]->isAstUnloaded(),
+            'and through the cluster-cache payload shape too');
+    }
+
     // ── BlockAstLoader: typed refusal, never silent mis-anchor ─────────
 
     public function testResolveRefusesUnloadedScriptBlock(): void

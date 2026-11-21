@@ -47,7 +47,10 @@ final class BlockExtractor
     ];
 
     /**
-     * @param list<string> $allowedKinds Empty list = accept all kinds.
+     * @param list<string> $allowedKinds Empty list = accept all twelve
+     *        traversable kinds — the 1.3 'script' fold kind is never
+     *        implicit, it must be named (drift-pinned by BlockExtractorTest
+     *        and ScriptKindTest).
      */
     public function __construct(
         private readonly int $minSize = 8,

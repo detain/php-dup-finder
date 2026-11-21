@@ -159,6 +159,11 @@ final class BlockAstLoader
         // Item 1.3 law: a 'script' block is a synthetic fold, not a
         // parse-tree node — relocation is impossible BY CONSTRUCTION and
         // must fail typed-loud here, never silent-mis-anchor (P4 law).
+        // Fix-review M-1: the pipeline now NEVER unloads folds, so a
+        // well-behaved run never reaches this throw for script; it stays
+        // load-bearing as the backstop that turns any future
+        // unload-sweep regression into a loud typed refusal instead of a
+        // silent mis-anchor.
         if ($block->kind === 'script') {
             throw ScriptKindApplyRefusal::forBlock($block, 'BlockAstLoader::resolve()');
         }

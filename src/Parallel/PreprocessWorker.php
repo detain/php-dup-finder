@@ -217,7 +217,12 @@ final class PreprocessWorker
                     // Only unload when lazyAst is enabled; otherwise keep the
                     // AST in memory for RefactorStage (which has no loader when
                     // lazyAst=false).
-                    if ($cfg->lazyAst) {
+                    // Fix-review M-1: 'script' folds are exempt — synthetic,
+                    // non-relocatable, and their AST is the only copy. This
+                    // site is the DEFAULT-run unload (workers always process);
+                    // ClusterStage::unloadAsts carries the matching guard for
+                    // replayed/serial-sourced blocks.
+                    if ($cfg->lazyAst && $block->kind !== 'script') {
                         $block->unloadAst();
                     }
                     $fileRows[] = ['type' => 'block', 'file' => $path, 'block' => $block];

@@ -62,6 +62,16 @@ final class ClusterStage implements CooperativeStageInterface
             // knob invalidates every cached (pre-split) cluster set.
             Clusterer::DEFAULT_SPLIT_CLUSTERS,
             Clusterer::DEFAULT_MIN_SPLIT_SIZE,
+            // Fix-review M-1 (defense in depth, mirroring the IndexStore
+            // key): the kind set changes which blocks — hence which corpus
+            // tokens and cluster memberships — exist at all. corpus_hash
+            // already catches every real divergence (a kinds flip changes
+            // the block token list); binding the run's kind set makes the
+            // invariant local and explicit instead of an emergent property
+            // of the token hash, which matters now that script-kind clusters
+            // carry non-relocatable members. Key-namespace change only: no
+            // PARSER_VERSION bump (fingerprintIdMode precedent).
+            $config->allowedKinds,
         ]));
     }
 
@@ -198,6 +208,17 @@ final class ClusterStage implements CooperativeStageInterface
     private function unloadAsts(PipelineState $state): void
     {
         foreach ($state->blocks as $b) {
+            // Fix-review M-1: a 'script' fold's extracted AST IS its only
+            // copy — it is synthetic (no parse-tree node), so the loader
+            // can never hand one back (its refusal branch is the loud
+            // backstop, not a remedy). Unloading a fold therefore destroys
+            // it and makes plain `--kinds script` abort at RefactorStage.
+            // Folds are small (max_block_size bound) — keeping them loaded
+            // is cheap and philosophically right: never unload what can
+            // never be reloaded.
+            if ($b->kind === 'script') {
+                continue;
+            }
             $b->unloadAst();
         }
     }
