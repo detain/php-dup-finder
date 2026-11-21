@@ -22,6 +22,19 @@ use Phpdup\Cli\ConfigLoader;
  * orphan. A new admitted-but-unconsumed key fails the belt unless it is
  * consciously banked, and the planted-key test proves the belt itself is
  * not vacuous.
+ *
+ * HAND-MAINTAINED DISCLOSURE (p0d-r3 [m-1]): fullPerDirectoryPayload() is
+ * the only input to the emitted-side derivation, and it is maintained by
+ * hand. If shapeOverrides ever admits a key that the payload does not
+ * cover, this file silently under-exercises admission: the assertCount
+ * below stays green and the orphan class re-opens. Treat the two counts
+ * as the tripwire's own coverage promise — if they are stale, the belt is
+ * blind, not clean.
+ *
+ * BUMP PROTOCOL (p0d-r3 [n2]): extend the payload → run → the key lands
+ * in consumed (fix withOverrides), in orphans (fix or BANK it), or the
+ * emitted count grows (only then bump assertCount(EMITTED/CONSUMED) —
+ * never to silence a failure, only to record genuinely-new admission).
  */
 final class PerDirOverrideBeltTest extends TestCase
 {
@@ -67,6 +80,10 @@ final class PerDirOverrideBeltTest extends TestCase
             'baseline_out'         => '/belt/baseline-out.json',
             'diff_base'            => 'belt-ref',
             'kinds'                => ['method'],
+            // item 5.2: both exclude keys are admitted and CONSUMED
+            // (append-merge + reset opt-out in Config::mergeExclude()).
+            'exclude'              => ['belt/exclude/**'],
+            'exclude_reset'        => true,
             'optional_blocks'      => [
                 'enabled'            => false,
                 'containment'        => 0.12,
@@ -86,7 +103,7 @@ final class PerDirOverrideBeltTest extends TestCase
     public function testEveryEmittedPerDirKeyIsConsumedOrBanked(): void
     {
         $emitted = self::emittedKeys();
-        self::assertCount(25, $emitted, 'fully-populated payload must exercise every admitted shape');
+        self::assertCount(27, $emitted, 'fully-populated payload must exercise every admitted shape');
 
         [$consumed, $orphans] = self::classifyKeys($emitted);
 
@@ -100,7 +117,7 @@ final class PerDirOverrideBeltTest extends TestCase
             . implode(', ', array_diff($orphans, $banked))
             . ' — a newly admitted key must be consumed in Config::withOverrides() or consciously BANKED there.',
         );
-        self::assertCount(19, $consumed, 'the consumed half of the belt is 25 emitted minus 6 banked');
+        self::assertCount(21, $consumed, 'the consumed half of the belt is 27 emitted minus 6 banked');
     }
 
     /**
@@ -157,7 +174,9 @@ final class PerDirOverrideBeltTest extends TestCase
             $sentinels['planted_orphan'] = $extraSentinel;
         }
 
-        $root     = new Config(paths: [__DIR__], exclude: []);
+        // Non-empty baseline exclude so BOTH item-5.2 keys move a property
+        // against it: `exclude` appends, `exclude_reset` clears to [].
+        $root     = new Config(paths: [__DIR__], exclude: ['belt-root/**']);
         $baseline = get_object_vars($root->withOverrides([]));
 
         $consumed = [];

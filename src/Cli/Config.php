@@ -230,11 +230,19 @@ final class Config
         // be scanned by default. Plain *.tpl (and every other non-PHP
         // extension) is still invisible until FileScanner::looksLikePhp()
         // is widened, which is an owner-gated decision (plan §6 #6).
+        //
+        // 5.2: the generic build/vendor-style dirs are promoted to `**`/x/**
+        // (any depth) now that FileScanner's glob compiler is segment-safe.
+        // The old root-anchored `vendor/**` missed nested per-package vendor
+        // trees entirely (phlix measured 57,120 vs 1,727 files); the old
+        // `**` → `.*` compiler had made a deep pattern unusable because it
+        // over-matched `myvendor/`. With both halves fixed, deep is strictly
+        // more correct. `"exclude_reset": true` is the documented opt-out.
         return new self(
             paths: $paths,
             exclude: [
-                'vendor/**', 'node_modules/**', 'logs/**', 'cache/**',
-                'storage/**', 'build/**', 'dist/**',
+                '**/vendor/**', '**/node_modules/**', '**/logs/**', '**/cache/**',
+                '**/storage/**', '**/build/**', '**/dist/**',
                 '**/.phpdup-cache/**', '**/phpdup-report/**',
             ],
         );
@@ -243,7 +251,9 @@ final class Config
     /**
      * Build the effective Config for a given file path by overlaying any
      * per-directory `.phpdup.json` overrides whose directory is an
-     * ancestor of $filePath. Deeper overrides win over shallower ones.
+     * ancestor of $filePath. Deeper overrides win over shallower ones —
+     * except the list-valued `exclude`, which APPENDS along the chain
+     * (item 5.2; `"exclude_reset": true` is the documented opt-out).
      *
      * Falls back to $this when there are no per-directory overrides
      * (the common case), so callers can call this unconditionally and
@@ -272,8 +282,30 @@ final class Config
 
         $merged = [];
         foreach ($matches as $overrides) {
+            $resetHere = (bool)($overrides['exclude_reset'] ?? false);
+            if ($resetHere) {
+                // Item 5.2: a layer that resets discards BOTH the root list
+                // (sticky flag, consumed by mergeExclude below) and anything
+                // its ancestors accumulated so far. A later `false` cannot
+                // un-reset — the opt-out is one-way per chain.
+                if (isset($merged['exclude']) && is_array($merged['exclude'])) {
+                    $merged['exclude'] = [];
+                }
+                $merged['exclude_reset'] = true;
+            }
             foreach ($overrides as $k => $v) {
-                $merged[$k] = $v;
+                if ($k === 'exclude_reset') {
+                    continue; // handled layer-by-layer above
+                }
+                if ($k === 'exclude' && is_array($v) && is_array($merged['exclude'] ?? null)) {
+                    // `exclude` is the one list-valued key that ACCUMULATES
+                    // downward instead of per-key-overwriting: a deeper
+                    // .phpdup.json APPENDS to its ancestors' excludes (same
+                    // append posture as db_symbols_* in withOverrides()).
+                    $merged['exclude'] = array_merge($merged['exclude'], $v);
+                } else {
+                    $merged[$k] = $v;
+                }
             }
         }
         return $this->withOverrides($merged);
@@ -282,10 +314,10 @@ final class Config
     /**
      * Build a new Config that copies $this but replaces only the keys
      * named in $overrides. Admission is not consumption: a key that
-     * ConfigLoader::shapeOverrides() validates and emits but this method
-     * does not consume falls back to its root value. The emitted-vs-
-     * consumed delta is pinned by tests/Unit/Cli/PerDirOverrideBeltTest.php;
-     * every currently non-consumed emitted key sits in that test's BANKED
+     * ConfigLoader::shapeOverrides() maps but this method does not
+     * consume falls back to its root value. The emitted-vs-consumed delta
+     * is pinned by tests/Unit/Cli/PerDirOverrideBeltTest.php; every
+     * currently non-consumed emitted key sits in that test's BANKED
      * allowlist under owner-gate R8 (ft-r2 M-1). New admitted keys must be
      * consumed here or consciously banked there — never silently ignored.
      *
@@ -295,7 +327,7 @@ final class Config
     {
         return new self(
             paths:                          $this->paths,
-            exclude:                        $this->exclude,
+            exclude:                        self::mergeExclude($this->exclude, $overrides),
             minBlockSize:                   isset($overrides['min_block_size'])      ? (int)$overrides['min_block_size']      : $this->minBlockSize,
             maxBlockSize:                   isset($overrides['max_block_size'])      ? (int)$overrides['max_block_size']      : $this->maxBlockSize,
             normalizationMode:              isset($overrides['normalization_mode'])  ? (string)$overrides['normalization_mode']: $this->normalizationMode,
@@ -343,5 +375,30 @@ final class Config
             apply:                           isset($overrides['apply']) ? (bool)$overrides['apply'] : $this->apply,
             candidateBudget:                 isset($overrides['candidate_budget']) ? (int)$overrides['candidate_budget'] : $this->candidateBudget,
         );
+    }
+
+    /**
+     * Resolve the `exclude` value of an override dict against an inherited
+     * exclude list (item 5.2 — append-merge, never an accidental wipe).
+     *
+     * By default an explicit `exclude` list APPENDS to $inherited (deduped,
+     * inherited order first) at every layer: root config file, CLI dict and
+     * per-directory files alike. `"exclude_reset": true` is the documented
+     * opt-out: the inherited list is discarded and only the explicit list
+     * from this dict survives (empty explicit list ⇒ scan everything).
+     *
+     * @param list<string>                    $inherited
+     * @param array<string, mixed>            $overrides
+     * @return list<string>
+     */
+    private static function mergeExclude(array $inherited, array $overrides): array
+    {
+        $explicit = isset($overrides['exclude']) && is_array($overrides['exclude'])
+            ? array_values(array_filter($overrides['exclude'], 'is_string'))
+            : [];
+        if ((bool)($overrides['exclude_reset'] ?? false)) {
+            return $explicit;
+        }
+        return array_values(array_unique(array_merge($inherited, $explicit)));
     }
 }

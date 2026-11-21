@@ -23,10 +23,13 @@ final class ConfigDefaultsExcludesTest extends TestCase
     protected function tearDown(): void
     {
         if ($this->tmpDir !== null && is_dir($this->tmpDir)) {
-            foreach (glob($this->tmpDir . '/*') ?: [] as $f) {
-                if (is_file($f)) {
-                    unlink($f);
-                }
+            // recursive: the nested-vendor probe creates subdirectories
+            $it = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($this->tmpDir, \FilesystemIterator::SKIP_DOTS),
+                \RecursiveIteratorIterator::CHILD_FIRST
+            );
+            foreach ($it as $f) {
+                $f->isDir() ? @rmdir($f->getPathname()) : @unlink($f->getPathname());
             }
             @rmdir($this->tmpDir);
         }
@@ -38,12 +41,32 @@ final class ConfigDefaultsExcludesTest extends TestCase
         $exclude = Config::defaults([])->exclude;
 
         $this->assertNotContains('**/*.tpl.php', $exclude);
-        // The sibling entries stay exactly as they were — the flip is surgical.
+        // The sibling entries keep their coverage — item 5.2 promoted them
+        // all to the deep `**`/x/** form once FileScanner's compiler became
+        // segment-safe (the old root-anchored `vendor/**` missed nested
+        // per-package vendor trees; see the CHANGELOG note in that commit).
         $this->assertEqualsCanonicalizing([
-            'vendor/**', 'node_modules/**', 'logs/**', 'cache/**',
-            'storage/**', 'build/**', 'dist/**',
+            '**/vendor/**', '**/node_modules/**', '**/logs/**', '**/cache/**',
+            '**/storage/**', '**/build/**', '**/dist/**',
             '**/.phpdup-cache/**', '**/phpdup-report/**',
         ], $exclude);
+    }
+
+    public function testNestedVendorTreeIsExcludedByDefaults(): void
+    {
+        // The measurable point of the promotion: a vendor tree BELOW the scan
+        // root (scripts/bots/MonitorLizzy/vendor/ in the phlix report) is now
+        // pruned by the stock list, at any depth, without ever touching a
+        // `myvendor/` lookalike.
+        $dir = $this->corpus();
+        mkdir($dir . '/nested/vendor', 0777, true);
+        $php = "<?php\nfunction render_row(\$data) { \$out = []; foreach (\$data as \$row) { \$out[] = trim(\$row); } return implode(',', \$out); }\n";
+        file_put_contents($dir . '/nested/vendor/pkg.php', $php);
+
+        $files = iterator_to_array((new FileScanner(Config::defaults([$dir])->exclude))->scan($dir), false);
+        $paths = implode("\n", $files);
+
+        $this->assertStringNotContainsString('/nested/vendor/', $paths, 'nested vendor must be pruned by defaults');
     }
 
     public function testTplPhpFileReachesScanWithDefaultExcludes(): void

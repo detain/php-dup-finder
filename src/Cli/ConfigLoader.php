@@ -8,9 +8,10 @@ final class ConfigLoader
     /**
      * @param list<string> $paths
      * @param array<string,mixed> $overrides
-     * @param list<string>|null $profileExclude  Profile-supplied exclude globs
-     *                                           applied only when neither $configFile
-     *                                           nor an $overrides['exclude'] is given.
+     * @param list<string>|null $profileExclude  Profile-supplied exclude globs.
+     *        Under the item-5.2 append semantics these ADD to the stock
+     *        defaults (alongside any config-file / overrides excludes);
+     *        only "exclude_reset": true discards the inherited lists.
      */
     public function load(array $paths, ?string $configFile, array $overrides = [], ?array $profileExclude = null): Config
     {
@@ -84,12 +85,21 @@ final class ConfigLoader
         $optBlock = is_array($data['optional_blocks'] ?? null) ? $data['optional_blocks'] : [];
 
         $resolvedPaths = !empty($data['paths']) ? $data['paths'] : $base->paths;
-        // Profile excludes apply when the caller didn't pin them
-        // explicitly via --config / overrides — i.e. they're a *default
-        // upgrade*, not a forced override.
-        $resolvedExclude = !empty($data['exclude'])
-            ? $data['exclude']
-            : ($profileExclude !== null ? $profileExclude : $base->exclude);
+        // Item 5.2 — exclude resolution is APPEND, never wipe: profile,
+        // config-file and programmatic (CLI-dict) lists stack on top of the
+        // stock defaults, in precedence order, deduped. `"exclude_reset":
+        // true` in the config file (or the overrides dict) is the documented
+        // opt-out: every INHERITED layer below the resetting one (defaults
+        // AND profile) is dropped, only the config-file/dict lists survive.
+        // An explicit exclude from ANY source now actually lands (the old
+        // chain silently dropped $overrides['exclude'] entirely and let one
+        // list replace the rest).
+        $configLayer = is_array($data['exclude'] ?? null) ? $data['exclude'] : [];
+        $dictLayer = isset($overrides['exclude']) && is_array($overrides['exclude']) ? $overrides['exclude'] : [];
+        $excludeReset = (bool)($data['exclude_reset'] ?? false) || (bool)($overrides['exclude_reset'] ?? false);
+        $resolvedExclude = array_values(array_unique($excludeReset
+            ? array_merge($configLayer, $dictLayer)
+            : array_merge($base->exclude, $profileExclude ?? [], $configLayer, $dictLayer)));
 
         return new Config(
             paths: $resolvedPaths,
@@ -350,7 +360,14 @@ final class ConfigLoader
             // unreadable branch is SKIPPED, never fatal.
             $filter = new \RecursiveCallbackFilterIterator(
                 $dirIt,
-                static function (\SplFileInfo $current): bool {
+                static function (\RecursiveDirectoryIterator|\SplFileInfo|string $current): bool {
+                    // Psalm models every value the inner iterator may hand a
+                    // RecursiveCallbackFilterIterator callback (entry, child
+                    // iterator, string key); only SplFileInfo carries
+                    // permissions, everything else passes through untouched.
+                    if (!$current instanceof \SplFileInfo) {
+                        return true;
+                    }
                     return $current->isDir() ? $current->isReadable() : true;
                 }
             );
@@ -359,6 +376,14 @@ final class ConfigLoader
                 foreach ($iter as $file) {
                     if (!$file instanceof \SplFileInfo) continue;
                     if ($file->getBasename() !== '.phpdup.json') continue;
+                    if (!$file->isReadable()) {
+                        // n-R2-2: a config FILE the walk can see but not open
+                        // (race, permissions) must not crash the run with a
+                        // raw file_get_contents warning mislabelled as "not
+                        // valid JSON" — environment errors stay non-fatal,
+                        // exactly like the directory-skips above.
+                        continue;
+                    }
                     $decoded = json_decode((string)file_get_contents($file->getPathname()), true);
                     if (!is_array($decoded)) {
                         throw new \RuntimeException('Per-directory config is not valid JSON: ' . $file->getPathname());
@@ -400,7 +425,7 @@ final class ConfigLoader
                   'similarity_threshold', 'tree_threshold', 'min_cluster_impact',
                   'max_df', 'ngram_size', 'sort',
                   'fail_on_impact', 'max_clusters', 'candidate_budget', 'baseline', 'baseline_out',
-                  'diff_base'] as $k) {
+                  'diff_base', 'exclude', 'exclude_reset'] as $k) {
             if (array_key_exists($k, $data)) {
                 $out[$k] = $data[$k];
             }
@@ -448,7 +473,7 @@ final class ConfigLoader
         $where = $source !== null ? " in $source" : '';
 
         $known = [
-            'paths', 'exclude',
+            'paths', 'exclude', 'exclude_reset',
             'min_block_size', 'max_block_size',
             'normalization_mode',
             'similarity_threshold', 'tree_threshold',
@@ -637,6 +662,9 @@ final class ConfigLoader
         }
         if (array_key_exists('trinity_collapse', $data) && !is_bool($data['trinity_collapse'])) {
             throw new \RuntimeException("trinity_collapse must be a boolean$where");
+        }
+        if (array_key_exists('exclude_reset', $data) && !is_bool($data['exclude_reset'])) {
+            throw new \RuntimeException("exclude_reset must be a boolean$where");
         }
         if (array_key_exists('low_memory', $data) && !is_bool($data['low_memory'])) {
             throw new \RuntimeException("low_memory must be a boolean$where");
