@@ -16,9 +16,10 @@ use Phpdup\Util\Delimiters;
  * Computes the most-specific generalization of a cluster's members.
  *
  * Uses path-based hole tracking rather than embedded sentinel nodes:
- * the template is left untouched (it's a deep clone of the seed
- * member's AST), and divergences are recorded as Hole objects with
- * the path through the AST and the observed values per member.
+ * the template is read-only during the walk (walk() only ever reads
+ * it — never a clone), and divergences are recorded as Hole objects
+ * with the path through the AST and the observed values per member.
+ * The one deep clone is the consumer-facing generalizedAst.
  *
  * Algorithm — per cluster:
  *
