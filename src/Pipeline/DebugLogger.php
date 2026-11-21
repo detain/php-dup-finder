@@ -34,7 +34,10 @@ final class DebugLogger
         $handle = @fopen($path, 'ab');
         if (!is_resource($handle)) {
             $last = error_get_last();
-            $reason = preg_replace('/^fopen\([^)]*\): /', '', (string) ($last['message'] ?? ''));
+            // Greedy on purpose (once-S69 r1 / n-1): a ')' inside the path
+            // must not stop the strip — the fopen label ends at the LAST
+            // '): ' separator, since the OS reason never contains one.
+            $reason = preg_replace('/^fopen\(.*\): /', '', (string) ($last['message'] ?? ''));
             return $reason === null || $reason === '' ? 'cannot open for writing' : $reason;
         }
         fclose($handle);

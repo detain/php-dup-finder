@@ -240,6 +240,32 @@ final class PipelineTest extends TestCase
         $this->assertStringStartsNotWith('fopen(', $reason, 'the fopen() prefix is stripped for the one-line message');
     }
 
+    /**
+     * Regression pin (once-S69 r1 review / n-1): a debug-log path that
+     * itself contains ')' — e.g. "a)b.log" — must STILL get the whole
+     * "fopen(...): " label stripped. The old non-greedy [^)]* regex
+     * stopped at the first paren inside the path and leaked the label
+     * into the one-line refusal reason.
+     */
+    public function testAdmissionProbeStripsLabelForPathContainingParenthesis(): void
+    {
+        $parenPath = sys_get_temp_dir() . '/phpdup-s69-missing-' . getmypid() . '/a)b.log';
+
+        $reason = null;
+        $warnings = self::captureWarnings(static function () use ($parenPath, &$reason): void {
+            $reason = DebugLogger::admissionProbe($parenPath);
+        });
+
+        $this->assertSame([], $warnings, 'the paren-in-path probe leaks no warning either');
+        $this->assertIsString($reason);
+        $this->assertStringStartsWith(
+            'Failed to open stream',
+            $reason,
+            'the greedy strip consumes the fopen label even when the path holds ")"',
+        );
+        $this->assertStringNotContainsString('): ', $reason, 'no fragment of the fopen(...) label survives');
+    }
+
     private function debugEmittingStage(): StageInterface
     {
         return new class implements StageInterface {
