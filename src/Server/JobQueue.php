@@ -24,6 +24,25 @@ namespace Phpdup\Server;
  *
  * Results are stored as summaries — only `files`, `blocks`, `clusters`,
  * and the config are retained — never the full JsonReporter output.
+ *
+ * Payload retention
+ * -----------------
+ * Raw request payloads (which may carry arbitrarily large `paths`
+ * lists) are NOT retained. `enqueue()` reduces each payload to a
+ * fixed-size `{digest, bytes}` descriptor: the SHA-256 of the
+ * canonical JSON frame (the same byte encoding the async dispatch leg
+ * writes to the worker socket) plus its length. Retained queue memory
+ * per job is therefore bounded by the descriptor and the result
+ * summary, independent of payload size.
+ *
+ * Consequence for consumers: anything that needs the payload contents
+ * after admission must snapshot it at dispatch time. The async leg
+ * already does exactly that — `Application::enqueueJob()` encodes the
+ * `RUN <id> <json>` frame *before* minting the job — and
+ * {@see JobQueue::payloadDigest()} lets a result writer prove the
+ * frame it ran matches the descriptor the queue kept. The `/api/jobs`
+ * status routes are unaffected (they never exposed the payload);
+ * `get()`/`dequeue()` surface the descriptor under `payload`.
  */
 final class JobQueue
 {
@@ -38,7 +57,7 @@ final class JobQueue
     /** TTL for completed/failed jobs in seconds (1 hour). */
     public const JOB_TTL_SECONDS = 3600;
 
-    /** @var array<string, array{status:string, payload:array<string, mixed>, result:?array<string, mixed>, error:?string, created_at:float, completed_at:?float}> */
+    /** @var array<string, array{status:string, payload:array{digest:string, bytes:int}, result:?array<string, mixed>, error:?string, created_at:float, completed_at:?float}> */
     private array $jobs = [];
 
     /**
@@ -62,6 +81,9 @@ final class JobQueue
      * When the queue is at {@see MAX_JOBS} capacity, the oldest
      * completed/failed entry is evicted before the new one is added.
      *
+     * The retained `payload` is a bounded `{digest, bytes}` descriptor
+     * of the canonical JSON frame, not the raw array (see class docblock).
+     *
      * @param array<string,mixed> $payload
      * @return string Hex-encoded 16-character random id.
      */
@@ -76,13 +98,63 @@ final class JobQueue
         $id = bin2hex(random_bytes(8));
         $this->jobs[$id] = [
             'status'       => self::STATUS_PENDING,
-            'payload'      => $payload,
+            'payload'      => self::describePayload($payload),
             'result'       => null,
             'error'        => null,
             'created_at'   => $this->now(),
             'completed_at' => null,
         ];
         return $id;
+    }
+
+    /**
+     * SHA-256 identity of a payload's canonical JSON frame.
+     *
+     * The frame is encoded with {@see JSON_UNESCAPED_SLASHES} — the
+     * same flags `Application::enqueueJob()` uses for the worker
+     * dispatch — so a leg that snapshots the frame at 202-time can
+     * verify it against the descriptor the queue retained.
+     *
+     * @param array<string,mixed> $payload
+     */
+    public static function payloadDigest(array $payload): string
+    {
+        return hash('sha256', self::canonicalJson($payload));
+    }
+
+    /**
+     * Reduce a payload to its fixed-size retention descriptor.
+     *
+     * @param array<string,mixed> $payload
+     * @return array{digest:string, bytes:int}
+     */
+    private static function describePayload(array $payload): array
+    {
+        $canonical = self::canonicalJson($payload);
+        return [
+            'digest' => hash('sha256', $canonical),
+            'bytes'  => strlen($canonical),
+        ];
+    }
+
+    /**
+     * Canonical byte form a payload is digested over.
+     *
+     * @param array<string,mixed> $payload
+     */
+    private static function canonicalJson(array $payload): string
+    {
+        try {
+            return (string) json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        } catch (\JsonException) {
+            // Unreachable through `phpdup serve`: every HTTP payload is
+            // json_decode output and therefore encodable; the async leg
+            // additionally rejects non-encodable frames before enqueue.
+            // A direct caller passing the rest (INF/NAN/cycles) must not
+            // crash the request path, so fall back to the lossless-where-
+            // possible partial encode instead of throwing.
+            return (string) json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR);
+        }
     }
 
     /**
@@ -137,7 +209,7 @@ final class JobQueue
     /**
      * Look up a job by id.
      *
-     * @return array{status:string, payload:array<string,mixed>, result:?array<string,mixed>, error:?string}|null
+     * @return array{status:string, payload:array{digest:string, bytes:int}, result:?array<string,mixed>, error:?string}|null
      */
     public function get(string $id): ?array
     {
@@ -160,7 +232,7 @@ final class JobQueue
      * ack()/nack() — workers call dequeue() to claim a job, then
      * call ack() on success or nack() on failure.
      *
-     * @return array{id:string, payload:array<string,mixed>}|null
+     * @return array{id:string, payload:array{digest:string, bytes:int}}|null
      */
     public function dequeue(): ?array
     {

@@ -81,7 +81,7 @@ final class JobQueueTest extends TestCase
         $jobs = [];
         $reflection = new \ReflectionClass($queue);
         $prop = $reflection->getProperty('jobs');
-        /** @var array<string, array{status:string, payload:array<string,mixed>, result:?array<string,mixed>, error:?string, created_at:float, completed_at:?float}> $raw */
+        /** @var array<string, array{status:string, payload:array{digest:string, bytes:int}, result:?array<string,mixed>, error:?string, created_at:float, completed_at:?float}> $raw */
         $raw = $prop->getValue($queue);
         foreach ($raw as $id => $job) {
             $jobs[$id] = [
@@ -174,7 +174,7 @@ final class JobQueueTest extends TestCase
 
         $reflection = new \ReflectionClass($queue);
         $prop = $reflection->getProperty('jobs');
-        /** @var array<string, array{status:string, payload:array<string,mixed>, result:?array<string,mixed>, error:?string, created_at:float, completed_at:?float}> $jobs */
+        /** @var array<string, array{status:string, payload:array{digest:string, bytes:int}, result:?array<string,mixed>, error:?string, created_at:float, completed_at:?float}> $jobs */
         $jobs = $prop->getValue($queue);
         $jobs[$id]['completed_at'] = $jobs[$id]['completed_at'] - JobQueue::JOB_TTL_SECONDS - 1;
         $prop->setValue($queue, $jobs);
@@ -207,7 +207,7 @@ final class JobQueueTest extends TestCase
 
         $reflection = new \ReflectionClass($queue);
         $prop = $reflection->getProperty('jobs');
-        /** @var array<string, array{status:string, payload:array<string,mixed>, result:?array<string,mixed>, error:?string, created_at:float, completed_at:?float}> $jobs */
+        /** @var array<string, array{status:string, payload:array{digest:string, bytes:int}, result:?array<string,mixed>, error:?string, created_at:float, completed_at:?float}> $jobs */
         $jobs = $prop->getValue($queue);
         $jobs[$pendingId]['created_at'] = $jobs[$pendingId]['created_at'] - JobQueue::JOB_TTL_SECONDS - 10;
         $jobs[$runningId]['created_at'] = $jobs[$runningId]['created_at'] - JobQueue::JOB_TTL_SECONDS - 10;
@@ -223,9 +223,134 @@ final class JobQueueTest extends TestCase
     {
         $reflection = new \ReflectionClass($queue);
         $prop = $reflection->getProperty('jobs');
-        /** @var array<string, array{status:string, payload:array<string,mixed>, result:?array<string,mixed>, error:?string, created_at:float, completed_at:?float}> $jobs */
+        /** @var array<string, array{status:string, payload:array{digest:string, bytes:int}, result:?array<string,mixed>, error:?string, created_at:float, completed_at:?float}> $jobs */
         $jobs = $prop->getValue($queue);
         $keys = array_keys($jobs);
         return $keys[0] ?? null;
+    }
+
+    // ------------------------------------------------------------------
+    // shell-S06 (php-dup-finder-shell-048): bounded memory for retained
+    // payloads — the queue stores {digest, bytes}, never raw arrays.
+    // Posture: the async leg snapshots its dispatch frame at 202-time
+    // (Application::enqueueJob encodes RUN <id> <json> BEFORE enqueueing);
+    // the digest is pinned below to that exact wire encoding.
+    // ------------------------------------------------------------------
+
+    public function testGetSurfacesDescriptorOnlyNoRawPaths(): void
+    {
+        $queue = new JobQueue();
+        $id = $queue->enqueue(['paths' => ['secret-listing-a', 'secret-listing-b']]);
+
+        $job = $queue->get($id);
+
+        $this->assertSame(['digest', 'bytes'], array_keys($job['payload']));
+        $this->assertArrayNotHasKey('paths', $job['payload']);
+        $this->assertStringNotContainsString(
+            'secret-listing-a',
+            json_encode($job, JSON_THROW_ON_ERROR)
+        );
+    }
+
+    public function testPayloadDigestMatchesWireFrameEncodingAndDiscriminates(): void
+    {
+        $a = ['paths' => ['src/A.php'], 'mode' => 'strict'];
+        $b = ['paths' => ['src/B.php'], 'mode' => 'strict'];
+
+        // Same flags as Application::enqueueJob's worker dispatch frame.
+        $frame = json_encode($a, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        $this->assertSame(hash('sha256', $frame), JobQueue::payloadDigest($a));
+
+        $queue = new JobQueue();
+        $idA1 = $queue->enqueue($a);
+        $idA2 = $queue->enqueue($a);
+        $idB  = $queue->enqueue($b);
+
+        $this->assertSame($queue->get($idA1)['payload'], $queue->get($idA2)['payload']);
+        $this->assertNotSame(
+            $queue->get($idA1)['payload']['digest'],
+            $queue->get($idB)['payload']['digest']
+        );
+    }
+
+    public function testHundredSixteenMebibytePayloadsRetainFixedBudget(): void
+    {
+        // 1,677,723 × 10 chars = 16,777,230 bytes ≥ 16MiB of canonical JSON.
+        $payload = ['paths' => [str_repeat("/deep/dir/", 1_677_723)]];
+        $canonical = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        $this->assertGreaterThanOrEqual(16 * 1024 * 1024, strlen($canonical));
+
+        $queue = new JobQueue();
+        $start = memory_get_usage();
+        $ids = [];
+        for ($i = 0; $i < JobQueue::MAX_JOBS; $i++) {
+            $ids[] = $queue->enqueue($payload);
+        }
+        $retained = memory_get_usage() - $start;
+
+        // Raw retention would cost MAX_JOBS × 16MiB ≈ 1.6GiB here; the
+        // {digest, bytes} posture must stay under a fixed 2MiB budget.
+        $this->assertLessThan(2 * 1024 * 1024, $retained);
+
+        // Ids and statuses survive bounding, one per enqueued job.
+        $this->assertCount(JobQueue::MAX_JOBS, array_unique($ids));
+        foreach ($ids as $id) {
+            $this->assertSame(JobQueue::STATUS_PENDING, $queue->get($id)['status']);
+        }
+
+        // The descriptor carries the full payload identity, not its bytes.
+        $descriptor = $queue->get($ids[0])['payload'];
+        $this->assertSame(['digest', 'bytes'], array_keys($descriptor));
+        $this->assertSame(JobQueue::payloadDigest($payload), $descriptor['digest']);
+        $this->assertSame(strlen($canonical), $descriptor['bytes']);
+    }
+
+    public function testDequeueAndCompletionLegSurvivePayloadBounding(): void
+    {
+        $queue = new JobQueue();
+        $payload = ['paths' => ['src'], 'note' => 'worker runs the 202-time frame, not the queue row'];
+        $id = $queue->enqueue($payload);
+
+        $claimed = $queue->dequeue();
+        $this->assertNotNull($claimed);
+        $this->assertSame($id, $claimed['id']);
+        $this->assertSame(JobQueue::payloadDigest($payload), $claimed['payload']['digest']);
+        $this->assertSame(JobQueue::STATUS_RUNNING, $queue->status($id)['status']);
+
+        $summary = ['files' => 3, 'blocks' => 12, 'clusters' => 1, 'config' => ['minBlockSize' => 5]];
+        $queue->ack($id, $summary);
+
+        $status = $queue->status($id);
+        $this->assertSame(JobQueue::STATUS_COMPLETED, $status['status']);
+        $this->assertSame($summary, $status['result']);
+        $this->assertSame(
+            JobQueue::payloadDigest($payload),
+            $queue->get($id)['payload']['digest']
+        );
+    }
+
+    public function testStatusAndListRoutesNeverExposePayload(): void
+    {
+        // The /api/jobs status JSON shape must stay byte-compatible.
+        $queue = new JobQueue();
+        $id = $queue->enqueue(['paths' => ['x']]);
+
+        $this->assertSame(['status', 'result', 'error'], array_keys($queue->status($id)));
+
+        $entry = $queue->list()[$id];
+        $this->assertSame(['status', 'created_at', 'completed_at'], array_keys($entry));
+    }
+
+    public function testUnencodablePayloadFallsBackToBoundedDescriptorWithoutThrowing(): void
+    {
+        $queue = new JobQueue();
+        $id = $queue->enqueue(['paths' => ['src'], 'limit' => INF]);
+
+        $descriptor = $queue->get($id)['payload'];
+        $this->assertSame(['digest', 'bytes'], array_keys($descriptor));
+        $this->assertSame(64, strlen($descriptor['digest']));
+
+        // The digest stays a stable identity of the lossy canonical form.
+        $this->assertSame(JobQueue::payloadDigest(['paths' => ['src'], 'limit' => INF]), $descriptor['digest']);
     }
 }
