@@ -44,7 +44,7 @@ php -d phar.readonly=0 build-phar.php                       # build phpdup.phar 
 
 **Preprocess**: `src/Parsing/AstParser.php` + `src/Parsing/AstCache.php` + `src/Parsing/TokenCache.php` → `src/Extraction/BlockExtractor.php` (kinds in `BlockExtractor::ALL_KINDS`) → `src/Normalization/Normalizer.php` (modes: `strict`/`default`/`aggressive`) → `src/Fingerprint/SubtreeHasher.php` + `src/Fingerprint/NgramFingerprint.php`. ORM/DB pre-passes: `src/Normalization/DbOpCanonicalizer.php` + `src/Normalization/DbOpRegistry.php` (gated by `--db-aware`); `src/Normalization/TrinityCollapser.php` (gated by `--trinity-collapse`). Per-file cache: `src/Persistence/IndexStore.php`.
 
-**Cluster**: `src/Clustering/Clusterer.php` runs phases via `src/Index/BlockIndex.php` + `src/Index/NgramInvertedIndex.php` — hash buckets → Jaccard (`src/Similarity/JaccardSimilarity.php`) + APTED (`src/Similarity/AptedDistance.php` via `src/Similarity/TreeEditDistance.php` with `src/Similarity/EditCostModel.php`) → Containment (`src/Similarity/ContainmentSimilarity.php`) → IR-tier (`src/Ir/IrLifter.php`, `--scorer=ir`) → ML pair (`src/Ml/MlPairClient.php`, `--ml-pair-url`). Cluster cache: `src/Persistence/ClusterCache.php`. Union-find → `src/Clustering/Cluster.php`.
+**Cluster**: `src/Clustering/Clusterer.php` runs phases via `src/Index/BlockIndex.php` + `src/Index/NgramInvertedIndex.php` — hash buckets → Jaccard (`src/Similarity/JaccardSimilarity.php`) + APTED (`src/Similarity/AptedDistance.php` via `src/Similarity/TreeEditDistance.php` with `src/Similarity/EditCostModel.php`) → Containment (`src/Similarity/ContainmentSimilarity.php`) → IR-tier (`src/Ir/IrLifter.php`, `--scorer=ir`) → ML pair (`src/Ml/MlPairClient.php`, `--ml-pair-url`). Cluster cache: `src/Persistence/ClusterCache.php`. Candidate generation is capped by `--candidate-budget` (default `Clusterer::MAX_CANDIDATE_PAIRS`, `0` = unlimited); overflow throws `src/Clustering/CandidateBudgetException.php`. Union-find → `src/Clustering/Cluster.php`.
 
 **Refactor** (`src/Refactor/`): `AntiUnifier.php` LCS over per-stmt structural hashes → typed `Hole.php`s; `ParameterSynthesizer.php` infers types/names; `SignatureBuilder.php` emits `function name(...): mixed`; `PatternRecognizer.php` tags clusters; `ApplyExtractor.php` (F1b `--apply`) extracts the refactored function and rewrites member call sites via `Cluster::$holePaths` (populated by `AntiUnifier`). Lazy AST reload: `src/Extraction/BlockAstLoader.php`.
 
@@ -63,14 +63,14 @@ php -d phar.readonly=0 build-phar.php                       # build phpdup.phar 
 - **Enums** — `src/Pipeline/Stage.php` is canonical: cases + `label()` + `index()` + `ordered()`.
 - **Static analysis** — keep `psalm-baseline.xml` clean. Tools scoped to `src/` only via `psalm.xml` / `phpstan.neon`; do NOT widen to `tests/Fixtures/`.
 - **SugarCraft styling** — gate `Style::new()->foreground(...)` behind `$output->isDecorated()` (`Theme::plain()` doesn't neutralize raw `Style`).
-- **Per-directory overrides** — `.phpdup.json` discovered via `ConfigLoader::discoverPerDirectoryOverrides()`; merged longest-prefix-wins.
+- **Per-directory overrides** — `.phpdup.json` discovered via `ConfigLoader::discoverPerDirectoryOverrides()`; merged longest-prefix-wins. Keys admitted by `ConfigLoader::shapeOverrides()` must be consumed in `Config::withOverrides()` — enforced by `tests/Unit/Cli/PerDirOverrideBeltTest.php`.
 - **PSR-4** — `Phpdup\` → `src/`, `Phpdup\Tests\` → `tests/`.
 - **Mutable Block fields** — `Block::$class/$file/$namespace/$name/$ast/$ngramBag/$id/$rangeHash` are public-mutable by design; do NOT mark `readonly`.
 - **Schema bumps** — any `JsonReporter::build()` cluster-shape change requires bumping `JsonSchemaSpec::SCHEMA_VERSION` and regenerating Golden via `UPDATE_SNAPSHOTS=1`.
 
 ## Testing
 
-- Mirror `src/` layout under `tests/Unit/<Subns>/<Class>Test.php`. Integration in `tests/Integration/`. Snapshots in `tests/Golden/{notify-exact,sql-exact,optional-near-dups}.json`. Real fixtures in `tests/Fixtures/{exact,notify,optional,sql,unique}/`.
+- Mirror `src/` layout under `tests/Unit/<Subns>/<Class>Test.php`. Integration in `tests/Integration/`. Snapshots in `tests/Golden/{notify-exact,sql-exact,optional-near-dups}.json`. Real fixtures in `tests/Fixtures/{bare-return,exact,micro-fixture,notify,optional,sql,unique}/`.
 - `tests/Golden/GoldenTest.php` runs the full pipeline. Refresh: `UPDATE_SNAPSHOTS=1 vendor/bin/phpunit --testsuite Golden`.
 - `phpunit.xml` sets `failOnWarning="true"` AND `failOnNotice="true"` — any deprecation/notice fails the build.
 - Use `Symfony\Component\Console\Output\NullOutput` when invoking stages.
@@ -90,7 +90,7 @@ php -d phar.readonly=0 build-phar.php                       # build phpdup.phar 
 - **Pipeline stage** — implement `StageInterface` (or `CooperativeStageInterface` with a `YIELD_EVERY` const); append to `Command::execute()`'s `$buildPipeline` closure in canonical order; update `Stage` enum if introducing a new phase.
 - **Block kind** — extend `BlockExtractor::ALL_KINDS`, add `BlockVisitor::classifyKind()` case, add `BlockAstLoader::matchesKind()` case.
 - **Pattern tag** — add a detector method in `src/Refactor/PatternRecognizer.php`; cover with `tests/Unit/Refactor/PatternRecognizerTest.php`.
-- **CLI flag** — six edit sites: `Command::configure()`, grouped-help builder, `Command::execute()` overrides, `ConfigLoader::load()`, `ConfigLoader::validate()`, `Config` constructor. Plus `docs/config-schema.json` + `docs/CLI.md`.
+- **CLI flag** — six edit sites: `Command::configure()`, grouped-help builder, `Command::execute()` overrides, `ConfigLoader::load()`, `ConfigLoader::validate()`, `Config` constructor. Plus `docs/config-schema.json` + `docs/CLI.md`; numeric flags also need a `ConfigLoader::NUMERIC_KEYS` row.
 - **DB symbol pack** — `profiles/db-aware-<name>.json` (allowed keys only), register in `ProjectProfileDetector::KNOWN_PROFILES` + `detectIn()`, cover with `tests/Unit/Cli/ProjectProfileDetectorTest.php`.
 - **Normalization plugin** — implement `Phpdup\Normalization\NormalizationPlugin::visit(Node, string)`; thread the class through `PreprocessWorker::toolFor()` cache-key AND `PreprocessStage` IndexStore config-key.
 - **Architectural analyzer** — implement `Phpdup\Architecture\ArchitecturalAnalyzer::analyze(Cluster)`; instantiate in `ReportStage::run()` analyzers array.
@@ -124,3 +124,20 @@ If `caliber` is not found, read `.agents/skills/setup-caliber/SKILL.md` and foll
 Read `CALIBER_LEARNINGS.md` for patterns and anti-patterns learned from previous sessions.
 These are auto-extracted from real tool usage — treat them as project-specific rules.
 <!-- /caliber:managed:learnings -->
+
+<!-- caliber:managed:model-config -->
+## Model Configuration
+
+Recommended default: `claude-sonnet-4-6` with high effort (stronger reasoning; higher cost and latency than smaller models).
+Smaller/faster models trade quality for speed and cost — pick what fits the task.
+Pin your choice (`/model` in Claude Code, or `CALIBER_MODEL` when using Caliber with an API provider) so upstream default changes do not silently change behavior.
+
+<!-- /caliber:managed:model-config -->
+
+<!-- caliber:managed:sync -->
+## Context Sync
+
+This project uses [Caliber](https://github.com/caliber-ai-org/ai-setup) to keep AI agent configs in sync across Claude Code, Cursor, Copilot, and Codex.
+Configs update automatically before each commit via `caliber refresh`.
+If the pre-commit hook is not set up, read `.agents/skills/setup-caliber/SKILL.md` and follow the setup instructions.
+<!-- /caliber:managed:sync -->
