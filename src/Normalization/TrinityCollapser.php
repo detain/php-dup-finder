@@ -351,7 +351,10 @@ final class TrinityCollapser extends NodeVisitorAbstract
      * exempt — the call there is the mutation the token represents.
      *
      * Boundary: magic `__get`/`__call` receivers are invisible to the
-     * AST, so a plain property fetch counts as pure.
+     * AST, so a plain property fetch counts as pure. Effects in *left-hand*
+     * positions — array-dim expressions, dynamic property names, and setter
+     * arguments — are likewise folded away today and are treated as pure;
+     * only the assignment right-hand side is drop-checked.
      */
     private static function mutateDropsSideEffects(Node\Stmt $stmt): bool
     {
