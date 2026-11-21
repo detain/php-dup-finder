@@ -113,7 +113,7 @@ HELP
         // -----------------------------------------------------------------
         // Guard: must be running from inside a phar
         // -----------------------------------------------------------------
-        $pharPath = Phar::running();
+        $pharPath = $this->runningPharPath();
         if ($pharPath === '') {
             $io->note(
                 'phpdup was not invoked from a phar. ' .
@@ -399,7 +399,15 @@ HELP
         return is_array($decoded) ? $decoded : null;
     }
 
-    /** Download a file with progress reporting. Returns true on success. */
+    /**
+     * Download a file with progress reporting.
+     *
+     * Returns true ONLY on a complete, honest transfer (php-dup-finder-
+     * shell-017): a read that fails before the stream reaches EOF, a
+     * rejected/short write, or a byte count that disagrees with a known
+     * Content-Length all return false and surface a specific error via
+     * $io — never a silent "success" over a torn download.
+     */
     protected function downloadFile(string $url, string $dest, SymfonyStyle $io): bool
     {
         $context = stream_context_create([
@@ -415,8 +423,6 @@ HELP
             ],
         ]);
 
-        $start = microtime(true);
-        $size  = 0;
         $handle = @fopen($url, 'rb', false, $context);
         if ($handle === false) {
             return false;
@@ -435,47 +441,121 @@ HELP
                 : $http_response_header;
         }
 
+        // Content-Length is parsed once (was re-parsed every loop tick)
+        // and kept as a hard completion bound, not just progress input.
+        $expectedBytes = null;
+        if (preg_match('/Content-Length:\s*(\d+)/i', implode("\n", $respHeaders), $m)) {
+            $expectedBytes = (int)$m[1];
+        }
+
         $outHandle = fopen($dest, 'wb');
         if ($outHandle === false) {
             fclose($handle);
             return false;
         }
 
+        $ok = $this->pipeStream($handle, $outHandle, $expectedBytes, $io);
+
+        fclose($handle);
+
+        return $ok;
+    }
+
+    /**
+     * Copy an open input stream into an open output stream with honest
+     * completion semantics (shell-S36 test seam over stream resources).
+     *
+     * Fails (returns false, emits a specific $io error) when:
+     *   - fread returns false, or stalls at '' without EOF, mid-stream;
+     *   - fwrite accepts fewer bytes than given (or fails outright) —
+     *     the pinned lane choice is refusal, not a resume loop;
+     *   - $expectedBytes (a known Content-Length) does not match the
+     *     number of bytes actually written.
+     *
+     * The output stream is flushed and closed here on every path; the
+     * caller retains ownership of the input stream.
+     *
+     * @param resource $inHandle
+     * @param resource $outHandle
+     */
+    protected function pipeStream($inHandle, $outHandle, ?int $expectedBytes, SymfonyStyle $io): bool
+    {
+        $start = microtime(true);
+        $size  = 0;
         $lastPct = -1;
-        while (!feof($handle)) {
-            $chunk = fread($handle, 65536);
-            if ($chunk === false) {
-                break;
+
+        while (!feof($inHandle)) {
+            $chunk = fread($inHandle, 65536);
+            if ($chunk === false || ($chunk === '' && !feof($inHandle))) {
+                fclose($outHandle);
+                $io->error(sprintf(
+                    'Download interrupted: read failed before end of stream (received %s bytes so far).',
+                    number_format($size),
+                ));
+                return false;
             }
-            fwrite($outHandle, $chunk);
-            $size += strlen($chunk);
+            if ($chunk === '') {
+                continue; // EOF race: feof() is set, loop exits next tick
+            }
+
+            $written = fwrite($outHandle, $chunk);
+            if ($written === false || $written < strlen($chunk)) {
+                fclose($outHandle);
+                $io->error(sprintf(
+                    'Download failed: could not write all received bytes to disk (%s of %s written).',
+                    number_format($size + max(0, (int)$written)),
+                    number_format($size + strlen($chunk)),
+                ));
+                return false;
+            }
+            $size += $written;
 
             // Progress every 10 %
-            if (isset($respHeaders[0]) && preg_match('/Content-Length:\s*(\d+)/',
-                implode("\n", $respHeaders), $m)) {
-                $total = (int)$m[1];
-                if ($total > 0) {
-                    $pct = (int)(($size / $total) * 100 / 10) * 10;
-                    if ($pct !== $lastPct && $pct < 100) {
-                        $elapsed = microtime(true) - $start;
-                        $rate = $elapsed > 0 ? $size / $elapsed / 1024 / 1024 : 0;
-                        $io->text(sprintf(
-                            "  %3d%%  %s / %s  (%.1f MB/s)",
-                            $pct,
-                            number_format($size),
-                            number_format($total),
-                            $rate,
-                        ));
-                        $lastPct = $pct;
-                    }
+            if ($expectedBytes !== null && $expectedBytes > 0) {
+                $pct = (int)(($size / $expectedBytes) * 100 / 10) * 10;
+                if ($pct !== $lastPct && $pct < 100) {
+                    $elapsed = microtime(true) - $start;
+                    $rate = $elapsed > 0 ? $size / $elapsed / 1024 / 1024 : 0;
+                    $io->text(sprintf(
+                        "  %3d%%  %s / %s  (%.1f MB/s)",
+                        $pct,
+                        number_format($size),
+                        number_format($expectedBytes),
+                        $rate,
+                    ));
+                    $lastPct = $pct;
                 }
             }
         }
 
-        fclose($handle);
-        fclose($outHandle);
+        $flushed = fflush($outHandle);
+        $closed  = fclose($outHandle);
+        if ($flushed === false || $closed === false) {
+            $io->error('Download failed: could not flush the downloaded file to disk.');
+            return false;
+        }
+
+        if ($expectedBytes !== null && $size !== $expectedBytes) {
+            $io->error(sprintf(
+                'Download incomplete: expected %s bytes, received %s.',
+                number_format($expectedBytes),
+                number_format($size),
+            ));
+            return false;
+        }
 
         return true;
+    }
+
+    /**
+     * Absolute path of the running phar, '' when executing from a source
+     * tree (shell-S36 seam: lets tests drive the real execute() download
+     * caller leg against a fake phar path without ever touching the
+     * checkout or the network — mock transport only, hard rule).
+     */
+    protected function runningPharPath(): string
+    {
+        return Phar::running();
     }
 
     protected function runningVersion(): string
