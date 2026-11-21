@@ -399,6 +399,113 @@ final class ApplicationTest extends TestCase
     }
 
     // ------------------------------------------------------------------
+    // shell-S01 fix r1 (M-1): HTTP /jobs admission mirrors the worker's
+    // RUN-frame refused-key gate — clean 400, no job minted, the refusal
+    // reason survives instead of surfacing as a dispatch 500.
+    // ------------------------------------------------------------------
+
+    public function testJobsMlPairUrlReturns400AndMintsNoJob(): void
+    {
+        $app = new Application(new JobQueue(), null, null);
+
+        // Paths themselves stay admissible (dev mode, no serve root) — the
+        // 400 must come purely from the refused field, pre-mint.
+        $response = $app->handle(
+            'POST',
+            '/jobs',
+            '{"paths":["src"],"ml_pair_url":"http://evil.invalid/"}',
+            []
+        );
+
+        $this->assertSame(400, $response['status']);
+        $this->assertStringContainsString('job payload must not set', $response['body']);
+        $this->assertStringContainsString('ml_pair_url', $response['body']);
+
+        $list = json_decode($app->handle('GET', '/api/jobs', '', [])['body'], true);
+        $this->assertSame([], $list);
+    }
+
+    public function testJobsMlPairUrlNullValueStillReturns400AndMintsNoJob(): void
+    {
+        // Key presence decides, value-independent: an explicit null is still
+        // an attempt to configure the refused field.
+        $app = new Application(new JobQueue(), null, null);
+
+        $response = $app->handle(
+            'POST',
+            '/jobs',
+            '{"paths":["src"],"ml_pair_url":null}',
+            []
+        );
+
+        $this->assertSame(400, $response['status']);
+        $this->assertStringContainsString('job payload must not set', $response['body']);
+
+        $list = json_decode($app->handle('GET', '/api/jobs', '', [])['body'], true);
+        $this->assertSame([], $list);
+    }
+
+    // ------------------------------------------------------------------
+    // shell-S01 fix r1 (L-1): NUL bytes are a shape violation answered
+    // with the same clean 400 as every other — never a ValueError out of
+    // realpath() escaping as a 500.
+    // ------------------------------------------------------------------
+
+    public function testJobsNullBytePathReturns400AndMintsNoJob(): void
+    {
+        $app = new Application(new JobQueue(), sys_get_temp_dir(), null);
+
+        // \u0000 decodes to a real NUL byte; pre-fix it passed the
+        // string/`..` guards and realpath() threw a ValueError.
+        $response = $app->handle('POST', '/jobs', '{"paths":["src\u0000evil"]}', []);
+
+        $this->assertSame(400, $response['status']);
+        $this->assertStringContainsString('paths must not contain null bytes', $response['body']);
+
+        $list = json_decode($app->handle('GET', '/api/jobs', '', [])['body'], true);
+        $this->assertSame([], $list);
+    }
+
+    public function testAnalyzeNullBytePathReturns400WithoutValueError(): void
+    {
+        $app = new Application(new JobQueue(), sys_get_temp_dir(), null);
+
+        $response = $app->handle('POST', '/analyze', '{"paths":["src\u0000evil"]}', []);
+
+        $this->assertSame(400, $response['status']);
+        $this->assertStringContainsString('paths must not contain null bytes', $response['body']);
+    }
+
+    public function testLegitimateJobsEnqueueStillReturns202AfterAdmissionTightening(): void
+    {
+        // Regression pin for both fixes: a clean payload (no refused keys, no
+        // NULs) must still mint a job and report it in the queue.
+        $root = sys_get_temp_dir() . '/phpdup-clean-' . uniqid();
+        mkdir($root);
+        file_put_contents($root . '/a.php', '<?php echo 1;');
+        $cwd = getcwd();
+        chdir($root);
+
+        try {
+            $app = new Application(new JobQueue(), $root, null);
+
+            $response = $app->handle('POST', '/jobs', '{"paths":["a.php"]}', []);
+
+            $this->assertSame(202, $response['status']);
+            $decoded = json_decode($response['body'], true);
+            $this->assertIsArray($decoded);
+            $this->assertArrayHasKey('job_id', $decoded);
+
+            $list = json_decode($app->handle('GET', '/api/jobs', '', [])['body'], true);
+            $this->assertCount(1, $list);
+        } finally {
+            chdir($cwd);
+            @unlink($root . '/a.php');
+            @rmdir($root);
+        }
+    }
+
+    // ------------------------------------------------------------------
     // once-001 defence-in-depth leg: the worker process handed the same
     // payload refuses it, independent of the HTTP layer.
     // ------------------------------------------------------------------
@@ -433,6 +540,25 @@ final class ApplicationTest extends TestCase
 
         $this->assertSame(400, $result['status']);
         $this->assertStringContainsString('paths must contain only strings', $result['error']);
+    }
+
+    public function testWorkerRefusesNullBytePathElement(): void
+    {
+        // shell-S01 fix r1 (L-1) worker leg: the re-validation shared with
+        // HTTP admission answers NUL-contaminated paths before realpath()
+        // could throw inside the job.
+        $worker = new AnalysisWorker(
+            '/tmp/phpdup-worker-defence-unused.sock',
+            sys_get_temp_dir(),
+            sys_get_temp_dir()
+        );
+
+        $processJob = new \ReflectionMethod(AnalysisWorker::class, 'processJob');
+
+        $result = $processJob->invoke($worker, ['paths' => ["src\0evil"]]);
+
+        $this->assertSame(400, $result['status']);
+        $this->assertStringContainsString('paths must not contain null bytes', $result['error']);
     }
 
     public function testWorkerRefusesEscapedRelativePath(): void

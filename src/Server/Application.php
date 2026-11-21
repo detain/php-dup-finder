@@ -49,16 +49,31 @@ use Symfony\Component\Console\Output\NullOutput;
  *   tokens result in a 401 response.
  * - Scanned paths are confined to within {@see $serveRoot} via
  *   realpath canonicalization, for BOTH `POST /analyze` and
- *   `POST /jobs`: payload paths that are non-strings, absolute, contain
- *   `..`, or resolve outside the root are rejected with a 400 response
- *   before any job is minted. In async mode the worker independently
- *   re-runs the same check ({@see AnalysisWorker}) using the serve root
- *   handed to it as a spawn argument — defence in depth.
+ *   `POST /jobs`: payload paths that are non-strings, contain NUL bytes,
+ *   are absolute, contain `..`, or resolve outside the root are rejected
+ *   with a 400 response before any job is minted. Payloads that set a
+ *   {@see self::REFUSED_PAYLOAD_KEYS} field are refused with the same
+ *   400-before-mint posture, mirroring the worker's RUN-frame gate.
+ *   In async mode the worker independently re-runs both checks
+ *   ({@see AnalysisWorker}) using the serve root handed to it as a
+ *   spawn argument — defence in depth.
  */
 final class Application
 {
     /** Hard ceiling on accepted JSON body size (16 MiB). */
     public const MAX_BODY_BYTES = 16 * 1024 * 1024;
+
+    /**
+     * Job-payload fields that must never travel on the wire.
+     *
+     * The list is the single source of truth shared by both admission
+     * layers: HTTP `POST /jobs` refuses such payloads with a 400 before
+     * minting a job ({@see self::enqueueJob()}) and the worker applies the
+     * identical gate to every RUN frame ({@see AnalysisWorker::processJob()}).
+     * ML-URL admission itself stays on the CLI/config path behind
+     * MlClient::isAllowedUrl()'s fail-closed validation gate.
+     */
+    public const REFUSED_PAYLOAD_KEYS = ['ml_pair_url'];
 
     /**
      * @param JobQueue       $queue        Job queue used by the /jobs routes.
@@ -201,7 +216,11 @@ final class Application
      * Enqueue a new analysis job and dispatch to worker if available.
      *
      * Payload paths are validated against the serve root *before* a job is
-     * minted, so a rejected request leaves the queue untouched.
+     * minted, so a rejected request leaves the queue untouched. Payloads
+     * setting a {@see self::REFUSED_PAYLOAD_KEYS} field are refused with the
+     * same 400-before-mint posture (the worker enforces the same gate on the
+     * RUN frame; checking it here keeps a client admission failure from
+     * surfacing as a dispatch 500 with a job minted in the queue).
      *
      * When a worker socket is configured, the job is dispatched to the
      * background worker and this returns immediately (202 Accepted).
@@ -214,6 +233,13 @@ final class Application
     {
         if (($violation = $this->pathViolation($payload['paths'] ?? null)) !== null) {
             return $violation;
+        }
+
+        // Admission mirror of the worker's RUN-frame key gate: a payload that
+        // sets a refused field is a client error (400) decided before any job
+        // is minted — never a post-dispatch 500 that discards the reason.
+        if (($refused = self::refusedPayloadKeys($payload)) !== []) {
+            return $this->json(400, ['error' => 'job payload must not set: ' . implode(', ', $refused)]);
         }
 
         if ($this->workerSocket !== null && $this->resultDir !== null) {
@@ -433,9 +459,10 @@ final class Application
      * reached the worker through any other route still cannot scan outside
      * the root (defence in depth).
      *
-     * Rules: `paths` must be a non-empty array of strings. When a serve root
-     * is configured, absolute paths and paths containing `..` are rejected,
-     * and every path must resolve via realpath() inside the serve root.
+     * Rules: `paths` must be a non-empty array of strings free of NUL bytes.
+     * When a serve root is configured, absolute paths and paths containing
+     * `..` are rejected, and every path must resolve via realpath() inside
+     * the serve root.
      *
      * @return array{status:int, error:string}|null Null when all paths are admissible.
      */
@@ -450,6 +477,12 @@ final class Application
         foreach ($paths as $path) {
             if (!is_string($path)) {
                 return ['status' => 400, 'error' => 'paths must contain only strings'];
+            }
+            if (str_contains($path, "\0")) {
+                // realpath() raises a ValueError on NUL bytes, which would
+                // escape admission as a 500; answer this shape violation
+                // with the same clean 400 every other one gets.
+                return ['status' => 400, 'error' => 'paths must not contain null bytes'];
             }
             $checked[] = $path;
         }
@@ -485,5 +518,28 @@ final class Application
             }
         }
         return null;
+    }
+
+    /**
+     * Enumerate which refused job-payload fields a payload actually set.
+     *
+     * Key presence decides, value-independent: an explicit `null` is still an
+     * attempt to configure the refused field. The shared list lives in
+     * {@see self::REFUSED_PAYLOAD_KEYS} so HTTP admission and the worker's
+     * RUN-frame gate refuse exactly the same fields — fail fast, fail loud,
+     * and stay auditable if the pipeline ever starts consuming more keys.
+     *
+     * @param array<string,mixed> $payload
+     * @return list<string>
+     */
+    public static function refusedPayloadKeys(array $payload): array
+    {
+        $refused = [];
+        foreach (self::REFUSED_PAYLOAD_KEYS as $key) {
+            if (array_key_exists($key, $payload)) {
+                $refused[] = $key;
+            }
+        }
+        return $refused;
     }
 }

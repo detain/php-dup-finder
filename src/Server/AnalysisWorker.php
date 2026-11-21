@@ -32,7 +32,9 @@ use Symfony\Component\Console\Output\NullOutput;
  *     the worker against its spawn-time serve root via
  *     {@see Application::scanPathsError()} — defence in depth: even a frame
  *     that bypassed HTTP admission cannot scan outside the root.
- *   - `ml_pair_url` (refused): explicit {@see self::FRAME_REFUSED_KEYS} gate.
+ *   - `ml_pair_url` (refused): explicit {@see Application::REFUSED_PAYLOAD_KEYS}
+ *     gate — the shared list HTTP admission mirrors on `POST /jobs`, so the
+ *     field is refused at both layers from one source of truth.
  *     An ML pair-scoring endpoint must never be pointed at a remote by a job
  *     payload; ML-URL admission stays on the CLI/config path behind
  *     MlClient::isAllowedUrl()'s fail-closed validation gate.
@@ -44,9 +46,6 @@ use Symfony\Component\Console\Output\NullOutput;
  */
 final class AnalysisWorker
 {
-    /** Config fields that must never arrive through a RUN frame. */
-    private const FRAME_REFUSED_KEYS = ['ml_pair_url'];
-
     /** @var resource|null */
     private $socket;
 
@@ -227,8 +226,9 @@ final class AnalysisWorker
             }
 
             // RUN-frame admission: refuse config fields that must never enter
-            // through the wire (see class docblock for the full enumeration).
-            $refused = self::refusedFrameKeys($configData);
+            // through the wire (see class docblock for the full enumeration;
+            // the list itself is the one HTTP `POST /jobs` admission shares).
+            $refused = Application::refusedPayloadKeys($configData);
             if ($refused !== []) {
                 return ['status' => 400, 'error' => 'RUN frame must not set: ' . implode(', ', $refused)];
             }
@@ -257,27 +257,5 @@ final class AnalysisWorker
         } catch (\Throwable $e) {
             return ['status' => 500, 'error' => $e->getMessage()];
         }
-    }
-
-    /**
-     * Enumerate which refused RUN-frame config fields the frame actually set.
-     *
-     * The frame's accepted fields are listed in the class docblock; anything
-     * in {@see self::FRAME_REFUSED_KEYS} fails the job loudly (fail fast,
-     * fail loud) rather than being silently dropped, so the wire contract
-     * stays auditable if the pipeline ever starts consuming more fields.
-     *
-     * @param array<string,mixed> $configData
-     * @return list<string>
-     */
-    private static function refusedFrameKeys(array $configData): array
-    {
-        $refused = [];
-        foreach (self::FRAME_REFUSED_KEYS as $key) {
-            if (array_key_exists($key, $configData)) {
-                $refused[] = $key;
-            }
-        }
-        return $refused;
     }
 }
