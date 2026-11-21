@@ -28,6 +28,30 @@ final class GitLabSastReporterTest extends TestCase
         $this->assertSame([], $payload['vulnerabilities']);
     }
 
+    /**
+     * output-S04: the SAST scan timestamps must be RFC3339 UTC — naive
+     * 'gmdate('Y-m-d\TH:i:s')' carries no timezone designator and strict
+     * date-time validators reject it.
+     */
+    public function testScanTimestampsCarryRfc3339UtcDesignator(): void
+    {
+        $payload = (new GitLabSastReporter())->build(
+            new Report(0, 0, 0, [], Config::defaults([])),
+        );
+
+        $rfc3339Z = '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/';
+        $this->assertMatchesRegularExpression(
+            $rfc3339Z,
+            (string) $payload['scan']['start_time'],
+            'scan.start_time must be an RFC3339 UTC timestamp with a "Z" designator',
+        );
+        $this->assertMatchesRegularExpression(
+            $rfc3339Z,
+            (string) $payload['scan']['end_time'],
+            'scan.end_time must be an RFC3339 UTC timestamp with a "Z" designator',
+        );
+    }
+
     public function testFixtureReportEmitsVulnerabilityPerMember(): void
     {
         $report  = $this->buildReport();

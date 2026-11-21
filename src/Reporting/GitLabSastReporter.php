@@ -47,8 +47,11 @@ final class GitLabSastReporter
                 ],
                 'type'      => 'sast',
                 'status'    => 'success',
-                'start_time' => gmdate('Y-m-d\TH:i:s'),
-                'end_time'   => gmdate('Y-m-d\TH:i:s'),
+                // RFC3339 UTC with the explicit 'Z' designator: naive
+                // 'gmdate(...)' output reads like UTC but strict date-time
+                // validators reject a timestamp without an offset.
+                'start_time' => gmdate('Y-m-d\TH:i:s\Z'),
+                'end_time'   => gmdate('Y-m-d\TH:i:s\Z'),
             ],
             'vulnerabilities' => $this->buildVulnerabilities($report),
         ];
