@@ -213,6 +213,78 @@ final class BaselineStoreTest extends TestCase
         $this->assertSame([], $newClusters);
     }
 
+    /**
+     * output-029 regression: with the array_flip hoisted out of the
+     * comparison loop, coverage must still come from a SINGLE baseline
+     * cluster — members spread across two baseline clusters do NOT
+     * cover a current one. 2 baseline entries x 4 current entries.
+     */
+    public function testCompareBaselinesManyByManyMatchesPerClusterOnly(): void
+    {
+        $baselineOne = $this->cluster('b1', [
+            ['file' => 'src/Foo.php', 'start' => 10, 'end' => 20],
+            ['file' => 'src/Bar.php', 'start' => 15, 'end' => 25],
+        ], 100);
+        $baselineTwo = $this->cluster('b2', [
+            ['file' => 'src/Baz.php', 'start' => 5, 'end' => 15],
+            ['file' => 'src/Qux.php', 'start' => 1, 'end' => 9],
+        ], 80);
+
+        $coveredByFirst = $this->cluster('c1', [
+            ['file' => 'src/Foo.php', 'start' => 10, 'end' => 20],
+        ], 50); // subset of b1 -> not new
+        $coveredBySecond = $this->cluster('c2', [
+            ['file' => 'src/Baz.php', 'start' => 5, 'end' => 15],
+            ['file' => 'src/Qux.php', 'start' => 1, 'end' => 9],
+        ], 80); // exactly b2 -> not new
+        $spansBoth = $this->cluster('c3', [
+            ['file' => 'src/Bar.php', 'start' => 15, 'end' => 25],
+            ['file' => 'src/Baz.php', 'start' => 5, 'end' => 15],
+        ], 60); // split across b1+b2 -> NEW (no single cluster covers it)
+        $unseen = $this->cluster('c4', [
+            ['file' => 'src/Zzz.php', 'start' => 2, 'end' => 8],
+        ], 40); // never baselined -> NEW
+
+        $baselineEntries = $this->clustersToEntries([$baselineOne, $baselineTwo]);
+        $currentEntries = $this->clustersToEntries([$coveredByFirst, $coveredBySecond, $spansBoth, $unseen]);
+
+        $store = new BaselineStore();
+        $newClusters = $store->compareBaselines($currentEntries, $baselineEntries);
+
+        $this->assertCount(2, $newClusters);
+        $this->assertSame('c3', $newClusters[0]['id']);
+        $this->assertSame('c4', $newClusters[1]['id']);
+    }
+
+    /**
+     * output-029 pin: the size guard compares against the RAW baseline
+     * member count, not the flipped lookup's size — duplicated member
+     * hashes keep their covered verdict (flip semantics preserved).
+     */
+    public function testCompareBaselinesDuplicateMemberHashesKeepVerdicts(): void
+    {
+        $store = new BaselineStore();
+
+        $baselineEntries = [[
+            'id' => 'b1',
+            'impact' => 10,
+            'member_hashes' => ['sha256:a', 'sha256:b', 'sha256:a'],
+        ]];
+        $duplicatedCovered = [[
+            'id' => 'c1',
+            'impact' => 6,
+            'member_hashes' => ['sha256:a', 'sha256:a', 'sha256:b'],
+        ]];
+        $duplicatedBeyond = [[
+            'id' => 'c2',
+            'impact' => 6,
+            'member_hashes' => ['sha256:a', 'sha256:a', 'sha256:b', 'sha256:c'],
+        ]];
+
+        $this->assertSame([], $store->compareBaselines($duplicatedCovered, $baselineEntries));
+        $this->assertCount(1, $store->compareBaselines($duplicatedBeyond, $baselineEntries));
+    }
+
     public function testCompareBaselinesWithEmptyBaselineReturnsAllAsNew(): void
     {
         $clusterA = $this->cluster('c1', [

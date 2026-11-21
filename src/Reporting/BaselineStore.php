@@ -171,6 +171,12 @@ final class BaselineStore
      * baseline clusters to grow (new members added) without triggering
      * a new-duplicate gate.
      *
+     * Each baseline entry's hash list is flipped into its lookup map
+     * exactly ONCE, before the comparison loop (output-029). The
+     * previous shape rebuilt the flip inside isSubset() on every
+     * current × baseline candidate pair — up to 10⁸ constructions on
+     * a 10k × 10k CI-gate corpus.
+     *
      * @param list<array{id: string, impact: int, member_hashes: list<string>}> $currentEntries
      * @param list<array{id: string, impact: int, member_hashes: list<string>}> $baselineEntries
      * @return list<array{id: string, impact: int, member_hashes: list<string>}>
@@ -181,13 +187,20 @@ final class BaselineStore
             return $currentEntries;
         }
 
-        // Build a map of baseline cluster member hashes for fast lookup
-        // Key: sorted hash string; Value: list of hash sets from baseline clusters
-        $baselineHashSets = [];
+        // One sort + one flip per baseline entry, hoisted out of the
+        // per-pair loop. 'count' preserves the RAW (duplicate-carrying)
+        // member count used by isSubset()'s size guard: array_flip
+        // collapses duplicates, so the flipped set's own size would
+        // change verdicts on hash lists that carry them.
+        /** @var list<array{count: int, lookup: array<array-key, int>}> $baselineSets */
+        $baselineSets = [];
         foreach ($baselineEntries as $baseline) {
             $hashes = $baseline['member_hashes'];
             sort($hashes);
-            $baselineHashSets[] = $hashes;
+            $baselineSets[] = [
+                'count' => count($hashes),
+                'lookup' => array_flip($hashes),
+            ];
         }
 
         $newClusters = [];
@@ -198,9 +211,9 @@ final class BaselineStore
             // Check if current cluster is "covered" by any baseline cluster
             // A cluster is covered if ALL its member hashes appear in some baseline cluster
             $covered = false;
-            foreach ($baselineHashSets as $baselineHashes) {
+            foreach ($baselineSets as $baselineSet) {
                 // Current is covered if all its hashes are present in baseline hashes
-                if ($this->isSubset($currentHashes, $baselineHashes)) {
+                if ($this->isSubset($currentHashes, $baselineSet['count'], $baselineSet['lookup'])) {
                     $covered = true;
                     break;
                 }
@@ -243,19 +256,21 @@ final class BaselineStore
     }
 
     /**
-     * Check if $needle is a subset of $haystack (all elements present).
+     * Check if $needle is a subset of a pre-flipped baseline hash set
+     * (all elements present). Pure isset-lookups — the flip happened
+     * once per baseline entry in compareBaselines(), never per pair.
      *
      * @param list<string> $needle
-     * @param list<string> $haystack
+     * @param int $haystackCount raw member count of the baseline set
+     * @param array<array-key, int> $haystackLookup array_flip of the baseline hashes
      */
-    private function isSubset(array $needle, array $haystack): bool
+    private function isSubset(array $needle, int $haystackCount, array $haystackLookup): bool
     {
-        if (count($needle) > count($haystack)) {
+        if (count($needle) > $haystackCount) {
             return false;
         }
-        $haystackSet = array_flip($haystack);
         foreach ($needle as $item) {
-            if (!isset($haystackSet[$item])) {
+            if (!isset($haystackLookup[$item])) {
                 return false;
             }
         }
