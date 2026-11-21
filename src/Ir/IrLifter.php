@@ -189,7 +189,7 @@ final class IrLifter
             ? null
             : new BlockIr($this->liftStmtList($this->foldCaseStmts($cases, $defaultIndex)));
 
-        return $this->buildSwitchChain($subject, $cases, $defaultIndex, $else);
+        return $this->buildSwitchChain($subject, $cases, $else);
     }
 
     /**
@@ -204,7 +204,6 @@ final class IrLifter
     private function buildSwitchChain(
         IrNode $subject,
         array $cases,
-        ?int $defaultIndex,
         ?IrNode $else
     ): IrNode {
         $arms = [];

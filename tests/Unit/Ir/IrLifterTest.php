@@ -67,6 +67,30 @@ final class IrLifterTest extends TestCase
         $this->assertNotNull($first->else);
     }
 
+    public function testThreeArmIfKeepsElseifAndTrailingElseArms(): void
+    {
+        // engine-024 direct repro, pinned standalone (fix-round-1
+        // LOW-2): the finding's literal three-arm shape lifted on its
+        // own — not only as the if-chain counterpart inside the
+        // switch-parity test. The elseif survives as a nested
+        // BranchIr and BOTH of its arms carry bodies: `q()` on the
+        // then side, `r()` on the else terminal. Under the old
+        // else-XOR-elseif fold one of these two arms is discarded.
+        $stmts = (new AstParser())->parseCode(
+            '<?php if ($a) { p(); } elseif ($b) { q(); } else { r(); }'
+        );
+        $this->assertNotEmpty($stmts);
+        $ir = (new IrLifter())->lift($stmts[0]);
+        $this->assertInstanceOf(BranchIr::class, $ir);
+        $this->assertInstanceOf(BranchIr::class, $ir->else);
+        $this->assertInstanceOf(BlockIr::class, $ir->else->then);
+        $this->assertNotEmpty($ir->else->then->stmts,
+            'the elseif body (q()) must survive the three-arm fold');
+        $this->assertInstanceOf(BlockIr::class, $ir->else->else);
+        $this->assertNotEmpty($ir->else->else->stmts,
+            'the trailing else body (r()) must survive the three-arm fold');
+    }
+
     public function testForeachAndForLiftToLoopIr(): void
     {
         $a = $this->liftFunction('<?php function f($items) {
