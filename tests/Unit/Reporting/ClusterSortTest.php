@@ -286,10 +286,13 @@ final class ClusterSortTest extends TestCase
     }
 
     /**
-     * Fully-equal clusters (same id, same every tie-break field) keep
-     * their input order. The old code left this case to usort internals
-     * (unstable since PHP 8.0); the transform pins it via the explicit
-     * position tie-break — a determinism improvement, disclosed in S14.
+     * Contract pin: fully-equal clusters (same id, same every tie-break
+     * field) keep their input order. The explicit position tie-break makes
+     * the order total; usort instability is not observable on PHP 8.3, so
+     * this test stays green without the arm by design — it documents the
+     * contract rather than discriminating the arm. The old code left this
+     * case to usort internals (unstable since PHP 8.0); pinning it to
+     * input order is the determinism improvement disclosed in S14.
      */
     public function testFullyTiedClustersKeepInputOrder(): void
     {

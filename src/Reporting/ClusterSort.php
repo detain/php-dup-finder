@@ -175,7 +175,6 @@ final class ClusterSort
             ];
         }
 
-        /** @param array{int|float|string, int, float, string, int, Cluster} $a */
         usort($decorated, static function (array $a, array $b) use ($sign): int {
             $primary = is_string($a[0])
                 ? strcmp($a[0], (string) $b[0])
