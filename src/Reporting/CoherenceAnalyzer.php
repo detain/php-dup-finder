@@ -18,8 +18,8 @@ use Phpdup\Similarity\JaccardSimilarity;
  *
  * Cost is O(k²) per cluster where k = member count, in **unordered**
  * pairs: each symmetric pair is scored once and its value is credited
- * to both members' means, so k members cost k·(k−1)/2 similarity
- * calls, not k·(k−1). Skipped entirely for k ≤ 2 (no room for
+ * to both members' means, so k members with non-empty bags cost k·(k−1)/2
+ * similarity calls, not k·(k−1). Skipped entirely for k ≤ 2 (no room for
  * an outlier).
  */
 final class CoherenceAnalyzer
