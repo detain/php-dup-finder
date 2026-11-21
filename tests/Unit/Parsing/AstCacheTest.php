@@ -155,6 +155,49 @@ final class AstCacheTest extends TestCase
         $this->assertNull($cache->get($this->sourceFile), 'recursive screening must reject the nested incomplete class');
     }
 
+    public function testNestedDisallowedElementIsMiss(): void
+    {
+        // engine-S23b r1 M-1 (mirror of TokenCacheTest — the shared
+        // decode() arm must stay non-silent for both caches, and
+        // engine-S24/S25 edit these callers next): a disallowed class
+        // sitting directly in the top-level stmt LIST. Not a typed slot
+        // (unserialize survives) and not hidden inside a Node (the tree
+        // walk never enters it) — the stdClass restores as a property-
+        // less __PHP_Incomplete_Class, which is neither a Stmt nor a
+        // Node, so only the element instanceof arm rejects it.
+        $stmt = new Node\Stmt\Expression(new Node\Scalar\Int_(1));
+        $payload = serialize([$stmt, new \stdClass()]);
+
+        // Counter-assert the discriminator: the raw decode yields a real
+        // Stmt plus the incomplete, and the leaf screen ACCEPTS the
+        // property-less incomplete — the instanceof arm is the only
+        // screen standing between this shape and a poisoned HIT.
+        $decoded = @unserialize($payload, ['allowed_classes' => SerializedClassAllowList::parserClasses()]);
+        $this->assertIsArray($decoded);
+        $this->assertInstanceOf(Node\Stmt::class, $decoded[0]);
+        $this->assertInstanceOf(\__PHP_Incomplete_Class::class, $decoded[1]);
+        $this->assertTrue(
+            CacheBlob::isScalarOnlyLeaf($decoded[1]),
+            'the leaf screen accepts the incomplete element — the instanceof arm is the only screen that rejects it'
+        );
+
+        $cache = $this->cache();
+        $cache->put($this->sourceFile, $this->parseSource());
+
+        // Positive control: an honest [Stmt, Stmt] list must still HIT —
+        // the arm guards the gate, it does not void the cache.
+        file_put_contents($this->onlyBlob(), CacheBlob::frame(serialize([
+            new Node\Stmt\Expression(new Node\Scalar\Int_(1)),
+            new Node\Stmt\Expression(new Node\Scalar\Int_(2)),
+        ])));
+        $hit = $cache->get($this->sourceFile);
+        $this->assertNotNull($hit, 'two honest statements must pass the element arm');
+        $this->assertCount(2, $hit);
+
+        file_put_contents($this->onlyBlob(), CacheBlob::frame($payload));
+        $this->assertNull($cache->get($this->sourceFile), 'disallowed class in a list slot must be a miss, not a leak');
+    }
+
     public function testDisallowedClassInAttributesSlotIsMiss(): void
     {
         // engine-S23a r1 M-1: Node::$attributes is not a sub-node list, so

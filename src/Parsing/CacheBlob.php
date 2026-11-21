@@ -114,6 +114,10 @@ final class CacheBlob
      * element (the token-stream caches' plain value objects) must prove
      * every restored property null-or-scalar, so a class smuggled into
      * a declared or dynamic slot fails closed the same way (engine-018).
+     * The restored payload must additionally be a LIST — forged string
+     * or sparse-integer keys are refused even when every element screens
+     * clean, making the `list<T>` return an enforced fact rather than a
+     * promise position-addressed consumers could be harmed by (engine-S23b r1 N-1).
      *
      * @template T of object
      * @param list<class-string> $allowedClasses
@@ -130,6 +134,12 @@ final class CacheBlob
             return null;
         }
         if (!is_array($data)) {
+            return null;
+        }
+        // The list<T> return is enforced, not just promised: position-
+        // addressed consumers must never receive a forged map whose
+        // elements all screen clean (engine-S23b r1 N-1).
+        if (!array_is_list($data)) {
             return null;
         }
         foreach ($data as $element) {

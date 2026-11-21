@@ -175,6 +175,92 @@ final class TokenCacheTest extends TestCase
         $this->assertNull($cache->get($this->sourceFile), 'smuggled dynamic property must fail closed to a miss');
     }
 
+    public function testNestedDisallowedElementIsMiss(): void
+    {
+        // engine-S23b r1 M-1: the third nested shape — a disallowed class
+        // sitting directly in the LIST. It is neither a typed Token slot
+        // (so unserialize() survives it) nor smuggled inside a Token (so
+        // the leaf screen never reaches into it). stdClass is off the
+        // allow-list, so the element restores as a property-less
+        // __PHP_Incomplete_Class — and the (array) cast of an incomplete
+        // with no properties measures clean to isScalarOnlyLeaf. Only the
+        // element instanceof arm distinguishes it; deleting that arm (the
+        // review's M6) leaked this exact payload back as a poisoned HIT.
+        $payload = serialize([new Token(\T_STRING, 'ok', 1, 0), new \stdClass()]);
+
+        // Counter-assert the discriminator (honest-vs-poison idiom of
+        // testSmuggledDynamicPropertyIsMiss): the raw decode succeeds with
+        // a real Token plus the incomplete, the leaf screen ACCEPTS the
+        // incomplete — and an honest Token measures leaf-clean just the
+        // same, so it is the element's class, not its shape, that rejects.
+        $decoded = @unserialize($payload, ['allowed_classes' => SerializedClassAllowList::parserClasses()]);
+        $this->assertIsArray($decoded);
+        $this->assertInstanceOf(Token::class, $decoded[0]);
+        $this->assertInstanceOf(\__PHP_Incomplete_Class::class, $decoded[1]);
+        $this->assertTrue(
+            CacheBlob::isScalarOnlyLeaf($decoded[1]),
+            'the leaf screen accepts the incomplete element — the instanceof arm is the only screen that rejects it'
+        );
+        $this->assertTrue(
+            CacheBlob::isScalarOnlyLeaf(new Token(\T_STRING, 'ok', 1, 0)),
+            'honest tokens stay leaf-clean — the rejection below is caused by the disallowed class, not the shape'
+        );
+
+        $cache = new TokenCache($this->tmp);
+        $cache->put($this->sourceFile, [new Token(\T_OPEN_TAG, '<?php ', 1, 0)]);
+
+        // Positive control: an honest [Token, Token] stream must still
+        // HIT — the arm guards the gate, it does not void the cache.
+        file_put_contents($this->onlyBlob(), CacheBlob::frame(serialize([
+            new Token(\T_STRING, 'a', 1, 0),
+            new Token(\T_STRING, 'b', 2, 5),
+        ])));
+        $hit = $cache->get($this->sourceFile);
+        $this->assertNotNull($hit, 'two honest tokens must pass the element arm');
+        $this->assertCount(2, $hit);
+
+        // The poison: a disallowed class in a list slot must fail closed.
+        file_put_contents($this->onlyBlob(), CacheBlob::frame($payload));
+        $this->assertNull($cache->get($this->sourceFile), 'disallowed class in a list slot must be a miss, not a leak');
+    }
+
+    public function testNonListKeyedBlobIsMiss(): void
+    {
+        // engine-S23b r1 N-1: the element screens are class-based only —
+        // a forged payload with string or sparse-integer keys whose
+        // elements are all honest leaf-clean Tokens passed every pre-fix
+        // arm intact and was returned to position-addressed consumers
+        // (token offsets, stmt indexes) as if it were a list.
+        $tokens = [new Token(\T_STRING, 'a', 1, 0), new Token(\T_STRING, 'b', 2, 5)];
+        $stringKeyed = serialize(['first' => $tokens[0], 'second' => $tokens[1]]);
+        $sparseKeyed = serialize([1 => $tokens[0], 3 => $tokens[1]]);
+
+        // Counter-assert the discriminator: both forgeries decode to real
+        // Token elements that pass the whole element-screen battery —
+        // only the key shape itself can reject them.
+        foreach ([$stringKeyed, $sparseKeyed] as $forgery) {
+            $decoded = @unserialize($forgery, ['allowed_classes' => SerializedClassAllowList::parserClasses()]);
+            $this->assertIsArray($decoded);
+            $this->assertFalse(array_is_list($decoded), 'fixture must stay non-list or the pin proves nothing');
+            foreach ($decoded as $element) {
+                $this->assertInstanceOf(Token::class, $element);
+                $this->assertTrue(CacheBlob::isScalarOnlyLeaf($element));
+            }
+        }
+
+        $cache = new TokenCache($this->tmp);
+        $cache->put($this->sourceFile, $tokens);
+
+        // Positive control: the very same elements under sequential
+        // keys must still HIT — the guard rejects forgeries, not lists.
+        $this->assertNotNull($cache->get($this->sourceFile), 'honest lists must still hit');
+
+        foreach ([$stringKeyed, $sparseKeyed] as $forgery) {
+            file_put_contents($this->onlyBlob(), CacheBlob::frame($forgery));
+            $this->assertNull($cache->get($this->sourceFile), 'non-list key shape must fail closed to a miss');
+        }
+    }
+
     public function testFreshCacheDirIsPrivateAndBlobsOwnerOnly(): void
     {
         $umask = umask(0o002); // the shared-runner posture engine-020 measured
