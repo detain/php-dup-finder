@@ -24,6 +24,15 @@ use Symfony\Component\Console\Output\OutputInterface;
  * hash → ngram-fingerprint for a batch of files. Stateless; safe to
  * run inside a forked child.
  *
+ * Two entry points, same row stream:
+ *  - {@see processStream()} — the generator twin (shell-008): yields each
+ *    file's rows the moment that file completes, so a forked child streams
+ *    records over the socketpair progressively instead of materializing
+ *    the whole chunk's Block graph before the first write.
+ *  - {@see process()} — thin drain over the twin, kept as the array API
+ *    for serial callers (only the unit pins consume it now; the streaming
+ *    stage task calls the generator directly).
+ *
  * Returns a list of arrays (not Block objects) so the master can
  * deduplicate IDs after collecting batches from all workers.
  *
@@ -74,12 +83,49 @@ final class PreprocessWorker
     }
 
     /**
+     * Array API (serial callers): drain the whole batch into a list.
+     *
+     * Content-identical to collecting {@see processStream()} — this is only
+     * the eager wrapper; the streaming behaviour lives in the twin.
+     *
      * @param list<string> $files
      * @return list<array{type: 'block'|'error'|'skipped', file: string, block?: Block, message?: string, blocks?: 0}>
      */
     public function process(array $files, ?OutputInterface $output = null): array
     {
-        if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+        $out = [];
+        foreach ($this->processStream($files, $output) as $row) {
+            $out[] = $row;
+        }
+        return $out;
+    }
+
+    /**
+     * Streaming twin (shell-008): yield each file's rows as soon as that
+     * file completes.
+     *
+     * The fork-zone contract that makes this matter: WorkerPool::runStreaming
+     * drives the child task with `foreach ($task($chunk) as $record)` and
+     * writes every yielded record to the socketpair immediately. An
+     * array-returning task therefore forces the child to materialize the
+     * whole chunk (every Block with its canonical AST) before the parent
+     * observes ANY record — peak child RSS of one full chunk and repaint
+     * stalls at chunk granularity. A generator task streams per file:
+     * first record observable while the chunk's later files are still
+     * untouched. The pair-score path already proved this shape
+     * (ClusterStage::scorePairs task).
+     *
+     * Buffer-and-discard is preserved at FILE granularity: rows are staged
+     * in $fileRows and only yielded once the WHOLE file completed, so a
+     * mid-file throw still never leaks partial rows for that file.
+     *
+     * @param list<string> $files
+     * @return \Generator<int, array{type: 'block'|'error'|'skipped', file: string, block?: Block, message?: string, blocks?: 0}>
+     */
+    public function processStream(array $files, ?OutputInterface $output = null): \Generator
+    {
+        $debug = $output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG;
+        if ($debug) {
             $output->writeln(sprintf('worker: processing %d files in batch [%s]', count($files), MemoryDebug::getMemoryUsage()));
         }
 
@@ -151,41 +197,45 @@ final class PreprocessWorker
             return $tooling[$key];
         };
 
-        $out = [];
         $fileIdx = 0;
+        // Debug-run totals for the closing summary line. Tracked only when
+        // DEBUG: the generator cannot materialize $out anymore, so the old
+        // end-of-run array_filter over every row becomes these counters.
+        $debugBlockRows  = 0;
+        $debugBlockFiles = [];
         foreach ($files as $path) {
             ++$fileIdx;
-            if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+            if ($debug) {
                 $output->writeln(sprintf('worker: parsing file %d/%d: %s [%s]', $fileIdx, count($files), $path, MemoryDebug::getMemoryUsage()));
             }
             $stmts = $cache->get($path);
             if ($stmts === null) {
-                if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                if ($debug) {
                     $output->writeln(sprintf('worker: cache miss, parsing: %s', $path));
                 }
                 $stmts = $parser->parseFile($path);
                 if ($stmts === null) {
-                    if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                    if ($debug) {
                         $output->writeln(sprintf('worker: parse error for %s: %s', $path, $parser->lastError?->getMessage() ?? 'unknown'));
                     }
-                    $out[] = ['type' => 'error', 'file' => $path, 'message' => $parser->lastError?->getMessage() ?? 'parse error'];
+                    yield ['type' => 'error', 'file' => $path, 'message' => $parser->lastError?->getMessage() ?? 'parse error'];
                     continue;
                 }
                 $cache->put($path, $stmts);
             } else {
-                if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                if ($debug) {
                     $output->writeln(sprintf('worker: cache hit for: %s', $path));
                 }
             }
             // Buffer-and-discard (Hazard-1): this file's rows are staged in
-            // $fileRows and only reach $out once the WHOLE file completed. A
-            // mid-file throw (unexpected AST shape, broken normalization
-            // plugin, ...) must never leave a partial block list in the
-            // stream — the master counts processed files by row and caches
-            // exactly the rows it receives (PreprocessStage cache-save), so a
-            // truncated list would be persisted as the file's complete row
-            // set and silently hide the rest of the file on every later
-            // incremental run.
+            // $fileRows and only reach the consumer once the WHOLE file
+            // completed. A mid-file throw (unexpected AST shape, broken
+            // normalization plugin, ...) must never leave a partial block
+            // list in the stream — the master counts processed files by row
+            // and caches exactly the rows it receives (PreprocessStage
+            // cache-save), so a truncated list would be persisted as the
+            // file's complete row set and silently hide the rest of the
+            // file on every later incremental run.
             $fileRows   = [];
             $blockCount = 0;
             try {
@@ -193,7 +243,7 @@ final class PreprocessWorker
                 $tools = $toolFor($cfg);
                 foreach ($tools['extractor']->extract($path, $stmts) as $block) {
                     ++$blockCount;
-                    if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                    if ($debug) {
                         $output->writeln(sprintf('worker:   extracted block kind=%s size=%d from %s', $block->kind, $block->size, $path));
                     }
                     $tools['normalizer']->normalize($block);
@@ -227,7 +277,7 @@ final class PreprocessWorker
                     }
                     $fileRows[] = ['type' => 'block', 'file' => $path, 'block' => $block];
                 }
-                if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
+                if ($debug) {
                     if ($blockCount === 0) {
                         $output->writeln(sprintf('worker:   no blocks extracted from %s (kind=%s, minBlockSize=%d)', $path, $cfg->allowedKinds === [] ? 'all' : implode(',', $cfg->allowedKinds), $cfg->minBlockSize));
                     } else {
@@ -251,11 +301,15 @@ final class PreprocessWorker
                 // PreprocessStage turns this into parseErrors++ (and now
                 // excludes the file from cache-save), so one poison file fails
                 // softly instead of taking the whole forked run to exit 255.
-                $out[] = ['type' => 'error', 'file' => $path, 'message' => $e->getMessage()];
+                yield ['type' => 'error', 'file' => $path, 'message' => $e->getMessage()];
                 continue;
             }
             foreach ($fileRows as $row) {
-                $out[] = $row;
+                yield $row;
+                if ($debug && $row['type'] === 'block') {
+                    ++$debugBlockRows;
+                    $debugBlockFiles[$row['file']] = true;
+                }
             }
             // Trigger PHP's cyclic GC and clear per-cycle memory caches
             // every 10 files to prevent memory buildup from serialize/
@@ -265,12 +319,8 @@ final class PreprocessWorker
                 gc_mem_caches();
             }
         }
-        if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
-            $blockRows = array_filter($out, static fn(array $row): bool => $row['type'] === 'block');
-            $blockCount = count($blockRows);
-            $fileCount = count(array_unique(array_map(static fn(array $row): string => $row['file'], $blockRows)));
-            $output->writeln(sprintf('worker: normalized %d blocks from %d files [%s]', $blockCount, $fileCount, MemoryDebug::getMemoryUsage()));
+        if ($debug) {
+            $output->writeln(sprintf('worker: normalized %d blocks from %d files [%s]', $debugBlockRows, count($debugBlockFiles), MemoryDebug::getMemoryUsage()));
         }
-        return $out;
     }
 }

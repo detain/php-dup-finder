@@ -159,13 +159,25 @@ final class PreprocessStage implements CooperativeStageInterface
         // each child produces them; we yield up to the runtime every
         // YIELD_EVERY records so the TUI can repaint mid-stage instead of
         // freezing for the duration of the parallel work.
+        //
+        // shell-008: the child task is a GENERATOR (PreprocessWorker::
+        // processStream), mirroring the pair-score task in
+        // ClusterStage::scorePairs. With the old array-returning task,
+        // runStreaming's `foreach ($task($chunk) ...)` in the child only
+        // began writing after the child had materialized the WHOLE chunk —
+        // every Block + canonical AST alive at once per child (peak RSS)
+        // and zero records observable until a full chunk finished (the
+        // YIELD_EVERY repaint contract degenerated to chunk granularity).
+        // Per-file yields make both live; row CONTENT is unchanged, so
+        // Golden reports stay byte-identical (ids are canonical-sorted at
+        // assignCanonicalIds below, independent of arrival order).
         $tPre = microtime(true);
         if ($toProcess) {
             $worker = new PreprocessWorker($config);
             $workerCount = $config->workers > 0 ? $config->workers : WorkerPool::detectCpuCount();
             $pool = new WorkerPool(workers: $workerCount);
-            $task = static function (array $batch) use ($worker, $output): array {
-                return $worker->process($batch, $output);
+            $task = static function (array $batch) use ($worker, $output): \Generator {
+                yield from $worker->processStream($batch, $output);
             };
 
             $state->debug($output, sprintf('preprocess: processing %d files across %d workers [%s]', count($toProcess), $workerCount, MemoryDebug::getMemoryUsage()));

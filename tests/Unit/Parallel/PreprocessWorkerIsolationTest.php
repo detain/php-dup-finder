@@ -16,6 +16,9 @@ use Phpdup\Parallel\PreprocessWorker;
  * finished before the throw had already leaked into the output list — and
  * PreprocessStage caches precisely the rows it receives, so a truncated
  * per-file list could be persisted as if complete.
+ *
+ * Also pins the shell-008 streaming twin: PreprocessWorker::processStream
+ * yields per file (early-arrival + array/generator parity).
  */
 final class PreprocessWorkerIsolationTest extends TestCase
 {
@@ -138,7 +141,84 @@ final class PreprocessWorkerIsolationTest extends TestCase
         $this->assertSame(['skipped' => 1], $buckets[$zeroBlock]);
     }
 
-    private function config(bool $poisoned): Config
+    /**
+     * shell-008 early-arrival pin, worker level: the generator twin must
+     * make the FIRST row observable while the chunk's later files are still
+     * untouched. The counting plugin turns "not yet processed" into a hard
+     * number: at the first pull only the first file's call sites exist.
+     * Pre-fix, process()'s array contract forced every file in the batch
+     * through the plugin before row 1 could be seen, so the second file's
+     * site would already be counted.
+     */
+    public function testProcessStreamIsLazyPerFile(): void
+    {
+        StreamingProbePlugin::$visits = 0;
+        $first  = $this->writePhp('stream_first.php', "<?php\nfunction a1() { ca(); }\nfunction a2() { cb(); }\n");
+        $second = $this->writePhp('stream_second.php', "<?php\nfunction b1() { cb1(); }\n");
+
+        $worker = new PreprocessWorker($this->config(poisoned: false, plugins: [StreamingProbePlugin::class]));
+        $gen    = $worker->processStream([$first, $second]);
+
+        $this->assertSame(0, StreamingProbePlugin::$visits, 'the generator must not touch a single file before the first pull');
+
+        $row1 = $gen->current();
+        $this->assertIsArray($row1);
+        $this->assertSame('block', $row1['type']);
+        $this->assertSame($first, $row1['file']);
+        $this->assertSame(2, StreamingProbePlugin::$visits, 'first row visible while the chunk last file is still untouched');
+
+        // Manual drain: a foreach/iterator_to_array on a generator that has
+        // only been current()-ed re-delivers the position (rewind is a
+        // no-op there), so advance explicitly before collecting the rest.
+        $gen->next();
+        $rest = [];
+        while ($gen->valid()) {
+            $rest[] = $gen->current();
+            $gen->next();
+        }
+        $this->assertCount(2, $rest, "file one's second block + file two's single block");
+        $this->assertSame('block', $rest[0]['type']);
+        $this->assertSame($first, $rest[0]['file']);
+        $this->assertSame('block', $rest[1]['type']);
+        $this->assertSame($second, $rest[1]['file']);
+        $this->assertSame(3, StreamingProbePlugin::$visits);
+    }
+
+    /**
+     * shell-008 parity pin: process() stays the array API — the drained
+     * generator twin and the wrapper must produce the very same row stream,
+     * row for row (type, file, block presence), including the buffer-and-
+     * discard error path and the zero-block skipped path.
+     */
+    public function testProcessMatchesProcessStreamRowForRow(): void
+    {
+        $blocks = $this->writePhp('parity_blocks.php', "<?php\nfunction p1() { pa(); }\n");
+        $empty  = $this->writePhp('parity_empty.php', "<?php\n// parses, extracts nothing\n");
+        $poison = $this->writePhp('parity_poison.php', "<?php\nfunction q1() { qa(); }\nfunction q2() { qb(); }\n");
+
+        // Poisoned registry counts FuncCall sites across the whole batch:
+        // pa() is site 1, qa() is site 2 → q1 throws → the poison file
+        // contributes exactly one error row (q2 never runs).
+        $config = $this->config(poisoned: true);
+        $files  = [$blocks, $empty, $poison];
+
+        $shape = static fn (array $rows): array => array_map(
+            static fn (array $r): array => [$r['type'], $r['file'], array_key_exists('block', $r)],
+            $rows,
+        );
+
+        $arrayRows  = (new PreprocessWorker($config))->process($files);
+        $streamRows = iterator_to_array((new PreprocessWorker($config))->processStream($files), false);
+
+        $this->assertSame(
+            [['block', $blocks, true], ['skipped', $empty, false], ['error', $poison, false]],
+            $shape($arrayRows),
+            'row stream shape must match the documented per-file contract',
+        );
+        $this->assertSame($shape($arrayRows), $shape($streamRows), 'the array API and the generator twin are row-identical');
+    }
+
+    private function config(bool $poisoned, array $plugins = []): Config
     {
         return new Config(
             paths: [$this->tmpDir],
@@ -146,7 +226,7 @@ final class PreprocessWorkerIsolationTest extends TestCase
             minBlockSize: 1,
             // 'aggressive' is the only mode where CanonicalizingVisitor reaches
             // the plugin pass (strict/default early-return before it).
-            normalizationPlugins: $poisoned ? [SecondCallSitePoisonPlugin::class] : [],
+            normalizationPlugins: $poisoned ? [SecondCallSitePoisonPlugin::class] : $plugins,
             cacheDir: $this->tmpDir . '/cache',
         );
     }
@@ -188,6 +268,24 @@ final class SecondCallSitePoisonPlugin implements NormalizationPlugin
     {
         if ($node instanceof Node\Expr\FuncCall && ++$this->seenCallSites === 2) {
             throw new \RuntimeException('poisoned: normalization plugin refuses the second call site');
+        }
+    }
+}
+
+/**
+ * shell-008 witness: counts every FuncCall site it is shown, across files,
+ * through a static so the test can read progress from outside the worker.
+ * The plugin pass only runs in aggressive mode (Config default), which is
+ * what the shared config() helper selects.
+ */
+final class StreamingProbePlugin implements NormalizationPlugin
+{
+    public static int $visits = 0;
+
+    public function visit(Node $node, string $mode): void
+    {
+        if ($node instanceof Node\Expr\FuncCall) {
+            ++self::$visits;
         }
     }
 }

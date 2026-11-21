@@ -3,8 +3,10 @@ declare(strict_types=1);
 
 namespace Phpdup\Tests\Unit\Pipeline\Stages;
 
+use PhpParser\Node;
 use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\Config;
+use Phpdup\Normalization\NormalizationPlugin;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\Stage;
 use Phpdup\Pipeline\Stages\PreprocessStage;
@@ -220,6 +222,67 @@ function lone() { $x = 1; return $x + 2; }
         }
     }
 
+    /**
+     * shell-008 arrival-order pin, stage level. The streaming task must be a
+     * GENERATOR: with workers=1 the runStreaming serial fallback runs the
+     * task in-process (`yield from $task($items)`), so a counting plugin can
+     * witness exactly how many files were preprocessed when the stage hits
+     * its first YIELD_EVERY (32) boundary.
+     *
+     * With the fix: the first repaint happens after 32 rows have been
+     * pulled one-by-one — file 33 has not even been parsed. Pre-fix the
+     * array-returning task ran the WHOLE 40-file batch to completion before
+     * row 1 existed, so the probe would read 40 here (40 > 32 is the exact
+     * failure mode the finding names: repaint granularity degenerated to
+     * "whole chunk", peak child RSS of a whole chunk).
+     */
+    public function testStreamingTaskRepaintsBeforeTheChunkCompletes(): void
+    {
+        $tmpDir = sys_get_temp_dir() . '/phpdup_stream_' . uniqid();
+        @mkdir($tmpDir . '/cache', 0o775, true);
+        $files = [];
+        for ($i = 1; $i <= 40; ++$i) {
+            $path = sprintf('%s/f%02d.php', $tmpDir, $i);
+            file_put_contents($path, "<?php\nfunction fn_{$i}() { site_{$i}(); }\n");
+            $files[] = $path;
+        }
+        try {
+            PreprocessStreamingVisitPlugin::$visits = 0;
+            $config = new Config(
+                paths: [$tmpDir],
+                exclude: [],
+                minBlockSize: 1,
+                workers: 1, // serial in-parent fallback: plugin state stays observable
+                normalizationPlugins: [PreprocessStreamingVisitPlugin::class],
+                cacheDir: $tmpDir . '/cache',
+            );
+            $state = new PipelineState($config);
+            $state->files = $files; // fixed order, scanner not involved
+
+            $gen = (new PreprocessStage(useCache: false))->iter($state, new NullOutput());
+            foreach ($gen as $_) {
+                break; // first YIELD_EVERY boundary
+            }
+
+            $this->assertSame(32, PreprocessStreamingVisitPlugin::$visits,
+                'first repaint after 32 streamed rows, with the last 8 files still untouched');
+            $this->assertSame(32, $state->processedFiles);
+
+            foreach ($gen as $_) {
+                // drain to stage completion
+            }
+
+            $this->assertSame(40, PreprocessStreamingVisitPlugin::$visits, 'the whole chunk is only complete after the drain');
+            $this->assertCount(40, $state->blocks);
+            $this->assertSame(40, $state->processedFiles);
+            $this->assertSame(0, $state->parseErrors);
+            $this->assertSame(0, $state->skippedFiles);
+        } finally {
+            PreprocessStreamingVisitPlugin::$visits = 0;
+            $this->removeDirectory($tmpDir);
+        }
+    }
+
     /** Two block files, one zero-block file, one unparseable file. */
     private function createMixedFixture(): string
     {
@@ -276,5 +339,23 @@ function qux() { return 4; }
         $state = new PipelineState(Config::defaults([$path]));
         (new ScanningStage())->run($state, new NullOutput());
         return $state;
+    }
+}
+
+/**
+ * shell-008 witness for the stage-level pin: one static counter incremented
+ * per FuncCall site the aggressive-mode plugin pass is shown. Deterministic
+ * because the serial in-parent pool runs exactly one worker registry over
+ * the batch in list order.
+ */
+final class PreprocessStreamingVisitPlugin implements NormalizationPlugin
+{
+    public static int $visits = 0;
+
+    public function visit(Node $node, string $mode): void
+    {
+        if ($node instanceof Node\Expr\FuncCall) {
+            ++self::$visits;
+        }
     }
 }
