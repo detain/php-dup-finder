@@ -19,9 +19,15 @@
  *     PAIRS plus the transitive-closure family count via
  *     BenchmarkScoreCalculator::closureFromPairs() — the same law
  *     bench/run.php applies.
- *   - Timeouts and crashed runs are shown as `timeout` / `exit-N` —
- *     never as a measurement (and never silently scored as 0.00:
- *     rows with an error carry count=null and a status reason).
+ *   - Timeouts and crashed runs are shown as `timeout` / `error exit-N` —
+ *     never as a measurement (and never silently scored as 0.00: rows
+ *     with an error carry count=null, no wall, no peak, and a status
+ *     reason). "Ran successfully" is a PER-TOOL ok-exit set
+ *     (once-S85 r1 M-1): phpcpd/pmd keep the `exit 1 = duplicates
+ *     found` convention; phpdup is [0] only — its contract (docs/CLI.md
+ *     "Exit codes") exits 0 WITH findings and 1 on internal/runtime
+ *     errors (unknown options included), so rc=1 can never launder a
+ *     dead phpdup run into an "ok" row.
  *   - The per-tool threshold sets differ and change the work being
  *     timed; the fairness footnote below the table is MANDATORY reading
  *     (phpdup runs --max-df 0.5 = 50x the production default 0.01).
@@ -115,6 +121,7 @@ $rows[] = runTool(
             'extra' => ['member_groups' => count($members)],
         ];
     },
+    okRc: [0], // phpdup: 0 = ok (findings included); 1 = runtime error, NOT "duplicates found" (M-1)
     jsonFile: $phpdupJson,
 );
 
@@ -126,6 +133,7 @@ if (commandExists('phpcpd')) {
         cmd:  ['phpcpd', '--fuzzy', '--min-lines', '5', '--min-tokens', '50', '--log-pmd', $cpdXml, $corpus],
         cap: $cap,
         parse: cmpPairXmlParser('phpcpd duplicate pairs', 'phpcpd closed clone families'),
+        okRc: [0, 1], // phpcpd convention: 1 = duplicates found
         jsonFile: $cpdXml,
     );
 } else {
@@ -140,6 +148,7 @@ if (commandExists('pmd')) {
         cmd:  ['pmd', 'cpd', '--language', 'php', '--minimum-tokens', '50', '--format', 'xml', '--dir', $corpus, '--no-fail-on-violation'],
         cap: $cap,
         parse: cmpPairXmlParser('pmd-cpd duplicate pairs', 'pmd-cpd closed clone families'),
+        okRc: [0, 1], // pmd convention retained (run with --no-fail-on-violation; 1 kept benign for duplicates rows)
         stdoutFile: $pmdXml,
     );
 } else {
@@ -268,11 +277,13 @@ function cmpPairXmlParser(string $pairUnit, string $familyUnit): callable
 
 /**
  * @param list<string> $cmd
+ * @param list<int> $okRc exit codes that mean "this tool ran successfully"
+ *                       — per-tool sets, never a blanket rc<=1 (M-1)
  * @param ?string $stdoutFile file the tool's stdout was redirected to (also
  *                            fed to the parser as $file when set)
  * @return array<string, mixed>
  */
-function runTool(string $name, array $cmd, callable $parse, int $cap, ?string $jsonFile = null, ?string $stdoutFile = null): array
+function runTool(string $name, array $cmd, callable $parse, int $cap, array $okRc, ?string $jsonFile = null, ?string $stdoutFile = null): array
 {
     $file = $jsonFile ?? $stdoutFile;
     // The shell always needs a concrete stdout sink; only pmd feeds the
@@ -306,8 +317,12 @@ function runTool(string $name, array $cmd, callable $parse, int $cap, ?string $j
         // measurement does not exist: show `timeout`, not a fake sample.
         $status = 'timeout';
         $error = "timeout-{$cap}s";
-    } elseif ($rc > 1) {
-        // exit 0 = clean, exit 1 = "duplicates found" convention; >1 is a run error.
+    } elseif (!in_array($rc, $okRc, true)) {
+        // M-1 (once-S85 r1): "exit 1 = duplicates found" is the phpcpd/pmd
+        // convention, NOT phpdup's — phpdup exits 0 even with findings and
+        // 1 only on internal/runtime errors (docs/CLI.md "Exit codes"), so
+        // a blanket rc<=1 would launder a crashed phpdup run into `ok`.
+        // Anything outside the tool's ok set is a failed run.
         $status = "error exit-{$rc}";
         $error = "exit-{$rc}";
     }
@@ -316,13 +331,18 @@ function runTool(string $name, array $cmd, callable $parse, int $cap, ?string $j
     if ($error !== null) {
         // Nothing measurable may survive an error/timeout row.
         $parsed = ['count' => null, 'unit' => $parsed['unit'] ?? 'n/a', 'extra' => []];
+        // L-2 (once-S85 r1): the same rule covers wall AND peak — a partial
+        // peak of a killed/failed run is not a measurement, and the old
+        // `wall_s => $status` fallback was dead anyway (the renderer and
+        // the JSON artifact never print it on error rows).
+        $peakNum = null;
     }
 
     return [
         'name'     => $name,
         'status'   => $status,
         'error'    => $error,
-        'wall_s'   => $error === null ? sprintf('%.2f', $wall) : $status,
+        'wall_s'   => $error === null ? sprintf('%.2f', $wall) : '—',
         'wall_num' => $error === null ? round($wall, 3) : null,
         'peak_mb'  => $peakNum === null ? '—' : (string) $peakNum,
         'peak_num' => $peakNum,

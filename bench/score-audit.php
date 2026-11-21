@@ -361,7 +361,6 @@ $detected = [];   // fi => ['rule' => 'ranged-kuhn', 'ci' => int, 'matched' => i
 $bestMatch = [];  // fi => best tolerance-Kuhn match count seen
 $grazed = [];     // fi => first cluster index that touches a cited file (NOT a detection)
 $clusterRangedLink = []; // ci => [fi...] links with line evidence
-$clusterAnyLink = [];    // ci => [fi...] links incl. file-level grazes of ranged findings? no — ranged links only
 foreach ($findings as $fi => $f) {
     $bestMatch[$fi] = 0;
 }
@@ -396,7 +395,12 @@ $inWindow = [];
 foreach ($clusters as $ci => $c) {
     foreach ($c['files'] as $file => $_) {
         foreach ($prefixes as $p) {
-            if (str_starts_with($file, $p)) {
+            // L-3 (once-S85 r1): the cluster-window admission uses the SAME
+            // path-segment-boundary law (bench m4) as the truth-side member
+            // admission above — a raw str_starts_with let a broader --root
+            // admit `include/Api/VpsFoo.php` clusters into the denominator.
+            $rooted = str_ends_with($p, '/') ? $p : $p . '/';
+            if ($file === $p || str_starts_with($file, $rooted)) {
                 $inWindow[$ci] = true;
                 continue 3;
             }

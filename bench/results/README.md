@@ -44,3 +44,21 @@ must be re-derivable from a raw JSON committed here.
 Unlabelled `run-*.json`, `latest.md`, `detection-rate.md` are working
 output of `bench/run-all.sh` / `bench/score.php` and stay uncommitted
 unless promoted by naming them here.
+
+## Follow-on rows booked for closeout (once-S85 r1, M-3)
+
+- `bench/audit-truth/schema.md` "Consumers" still advertises the RETIRED
+  PD-BENCH-04 formula ("bucketed ±LINE_TOLERANCE lines"); reword to the
+  live predicate — both endpoints within ±LINE_TOLERANCE, one-to-one
+  tolerance-Kuhn. A re-implementer following it verbatim reintroduces the
+  bug (the fixture proof above shows the divergence: T1 detected under
+  the live matcher, missed under bucketing).
+- `bench/README.md`: the CI section still claims `latest.md` /
+  `detection-rate.md` "get committed periodically" — contradicted by the
+  paragraph directly above; and its tree listing labels `results/`
+  "(.gitignored)" while the labelled exemplars here are committed
+  (`git add -f`, see law 5).
+
+Both files are outside once-S85's lane lock paths — the full booking
+(plus the src matcher-seam, nested/covers audit mode, and cmpTmp-scratch
+riders) lives in `reviews/exec/once-S85.impl.md`.
