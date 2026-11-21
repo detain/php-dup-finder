@@ -12,7 +12,9 @@ use Phpdup\Refactor\Hole;
  * that ties them together.
  *
  * Populated incrementally:
- *   - Clusterer fills $id, $members, $similarity (min pairwise).
+ *   - Clusterer fills $id (content-derived, §5e), $members, $similarity
+ *     (weakest member-vs-medoid edge after the item-1.4 medoid-ball
+ *     split; legacy weakest-edge when split is off), and $medoidId.
  *   - AntiUnifier fills $generalizedAst, $holes.
  *   - ParameterSynthesizer + SignatureBuilder fill $signature.
  *   - PatternRecognizer fills $patternTags.
@@ -25,6 +27,15 @@ final class Cluster
     public array $members;
     public float $similarity = 1.0;
     public bool $exact = false;
+
+    /**
+     * Block id of this cluster's medoid — the hub member every other
+     * member was edge-adjacent to when the cluster was formed by
+     * {@see Clusterer}'s post-union-find medoid-ball split (item 1.4,
+     * ruling §5b). Null for residue clusters (kept under pre-split
+     * semantics) and for clusters formed while the split is off.
+     */
+    public ?string $medoidId = null;
 
     public ?Node $generalizedAst = null;
 

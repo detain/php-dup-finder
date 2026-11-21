@@ -34,7 +34,11 @@ use Phpdup\Clustering\Cluster;
  */
 final class ClusterCache
 {
-    private const PARSER_VERSION = 'cluster-cache-v1';
+    // cluster-cache-v2 (item 1.4, ruling §5b): v1 blobs carry pre-split
+    // single-linkage cluster sets with md5(union-find-root) ids — those
+    // must never be served by a split-aware run. Wholesale invalidation;
+    // the config_key now also binds the split knobs.
+    private const PARSER_VERSION = 'cluster-cache-v2';
 
     public function __construct(
         private readonly string $cacheDir,

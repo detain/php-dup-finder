@@ -42,6 +42,12 @@ final class ClusterStage implements CooperativeStageInterface
             // ngram_size changes each block's fingerprint and thus candidate pairs
             // and Jaccard scores — the cached clusters must be invalidated.
             $config->ngramSize,
+            // Item 1.4 (§5b): the medoid-ball split knobs reshape cluster
+            // membership, count and reported similarity. Bound to the very
+            // constants buildClusterer() hands the Clusterer, so flipping a
+            // knob invalidates every cached (pre-split) cluster set.
+            Clusterer::DEFAULT_SPLIT_CLUSTERS,
+            Clusterer::DEFAULT_MIN_SPLIT_SIZE,
         ]));
     }
 
@@ -193,6 +199,10 @@ final class ClusterStage implements CooperativeStageInterface
                 ? new \Phpdup\Ml\MlPairClient(baseUrl: $config->mlPairUrl)
                 : null,
             mlPairThreshold:          $config->mlPairThreshold,
+            // Item 1.4 (§5b): split knobs — same constants the cache
+            // config-key binds on, one source of truth.
+            splitClusters:            Clusterer::DEFAULT_SPLIT_CLUSTERS,
+            minSplitSize:             Clusterer::DEFAULT_MIN_SPLIT_SIZE,
         );
     }
 

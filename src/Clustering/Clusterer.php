@@ -69,11 +69,42 @@ final class Clusterer
         // note).
         private readonly ?PairScorer $mlPairClient = null,
         private readonly float $mlPairThreshold = 0.80,
+        // Item 1.4 (ruling §5b): single-linkage union-find chains loosely
+        // related blocks (the 167-guard storm: one cluster, reported 0.80,
+        // first-vs-last members scoring 0.00). When ON (the decided
+        // default) each component is partitioned post-union-find by a
+        // greedy medoid-ball pass that consumes ONLY the already
+        // materialized edges — zero new pair scoring.
+        private readonly bool $splitClusters = self::DEFAULT_SPLIT_CLUSTERS,
+        private readonly int $minSplitSize = self::DEFAULT_MIN_SPLIT_SIZE,
     ) {
+        if ($this->minSplitSize < 2) {
+            throw new \InvalidArgumentException(sprintf(
+                'minSplitSize must be >= 2 (a medoid ball needs a medoid plus at least one member); got %d.',
+                $this->minSplitSize,
+            ));
+        }
         $this->containment = new ContainmentSimilarity();
     }
 
     private const SEEN_CAP = 200_000;
+
+    /**
+     * Item 1.4 (ruling §5b): greedy medoid-ball split of union-find
+     * components. Default ON — the single-linkage chain noise IS the bug
+     * being fixed; the off-switch exists for bisecting split complaints.
+     */
+    public const DEFAULT_SPLIT_CLUSTERS = true;
+
+    /**
+     * Smallest medoid ball allowed to stand as its own cluster. Balls
+     * below the floor dissolve into the residue pool, which re-forms as
+     * one cluster under pre-split (single-linkage) semantics — the
+     * "tighten the knobs" seam of §5b. At the default 2 the pool only
+     * ever collects blocks that had no edge left among the remaining
+     * members.
+     */
+    public const DEFAULT_MIN_SPLIT_SIZE = 2;
 
     /**
      * Safety budget on total candidate-pair output of
@@ -309,16 +340,29 @@ final class Clusterer
             // Use the pre-computed running min accumulated during union instead of
             // re-scanning all member pairs — O(1) instead of O(k²).
             $minSim = $componentMinSim[$root] ?? 1.0;
-            $cluster = new Cluster(
-                id: 'C' . substr(md5((string)$root), 0, 8),
+            $component = new Cluster(
+                // Item 1.4 (ruling §5e, in-lane stopgap for 4.4): ids derive
+                // from the SORTED member content tokens (file|structuralHash,
+                // the element of §5e's sha256(file|structuralHash) direction),
+                // never from the union-find root — the root is edge-arrival-
+                // order dependent, so md5(root) gave identical clusters
+                // different ids between serial and parallel runs.
+                id: self::contentClusterId($members),
                 members: $members,
                 similarity: $allIdenticalHash ? 1.0 : $minSim,
                 exact: $allIdenticalHash,
             );
-            $cluster->pairs = $this->buildPairsFromEdges($members, $edgeMap);
-            $merged[] = $cluster;
-            foreach ($members as $m) {
-                $emittedBlocks[$m->id] = true;
+            $component->pairs = $this->buildPairsFromEdges($members, $edgeMap);
+
+            $groups = $this->splitClusters
+                ? $this->splitComponent($component, $minSim)
+                : [$component];
+
+            foreach ($groups as $group) {
+                $merged[] = $group;
+                foreach ($group->members as $m) {
+                    $emittedBlocks[$m->id] = true;
+                }
             }
         }
 
@@ -336,6 +380,237 @@ final class Clusterer
             }
         }
         return $finalClusters;
+    }
+
+    /**
+     * Content-derived cluster id (item 1.4 in-lane stopgap for 4.4, per
+     * the §5e ruling): 'C' + a digest of the SORTED member content tokens
+     * (file|structuralHash per §5e's element derivation). Two runs that
+     * formed the same cluster from different edge-arrival orders now get
+     * the same id — unlike the previous md5(union-find-root), whose root
+     * depended on arrival order and swapped between serial and parallel.
+     *
+     * Known limitation inherited from §5e's own formula: two clusters of
+     * equal (file|structuralHash) multisets collide — possible only when
+     * identical-hash blocks are kept apart by df-pruning. 4.4's FindingId
+     * pass replaces this derivation wholesale; the sorted-content-element
+     * shape is what stays.
+     *
+     * @param list<Block> $members
+     */
+    private static function contentClusterId(array $members): string
+    {
+        $tokens = [];
+        foreach ($members as $m) {
+            $tokens[] = $m->file . '|' . $m->structuralHash;
+        }
+        sort($tokens);
+        return 'C' . substr(md5(implode("\x1f", $tokens)), 0, 8);
+    }
+
+    /**
+     * Greedy medoid-ball split of one union-find component (item 1.4,
+     * ruling §5b) — post-union-find, consuming ONLY the materialized
+     * {@see Cluster::$pairs}. Edge existence already encodes the
+     * tier-composite gate actually used to accept the pair (Jaccard arm,
+     * containment arm, IR, ML), so membership runs on that composite —
+     * never CoherenceAnalyzer's raw-Jaccard basis, which would false-split
+     * containment-bridged pairs (filing 06 Demo C).
+     *
+     * Loop until the component is consumed:
+     *   1. medoid = the member with the most still-remaining neighbours
+     *      (degree desc, then structuralHash asc, then scan order — fully
+     *      deterministic, so the partition never depends on edge arrival
+     *      order);
+     *   2. ball = medoid + those neighbours. Every ball member is, by
+     *      construction, edge-adjacent to its medoid at or above the tier
+     *      floor — "no member below its medoid threshold" holds by shape,
+     *      and every group is connected through above-floor edges (each
+     *      member joins the group via its medoid edge, or — residue
+     *      stragglers — via its best accepted intra-group edge);
+     *   3. a ball below minSplitSize dissolves into the residue pool.
+     *
+     * Residue handling (§5b "old behavior preserved" escape hatch):
+     *   - >= 2 members  -> one residue cluster with pre-split semantics,
+     *     including the legacy weakest-edge-on-connecting-path similarity;
+     *   - exactly 1     -> attached to the group holding its strongest
+     *     edge (ties -> earliest group), contributing that edge's score as
+     *     its group-link. (A residue member's neighbours can only live in
+     *     surviving groups: an edge to another residue would have kept
+     *     both in the remaining graph.)
+     *
+     * Reported per-group similarity = the weakest member-vs-medoid
+     * (or member-group-link for an attached straggler) edge — §5b's
+     * "similarity corrected to the per-member-vs-medoid score".
+     * `pairs` are filtered to each group's members; cross-ball edges —
+     * the single-linkage bridges — drop out of the sub-cluster evidence.
+     *
+     * Cost is set algebra over already-materialized edges: zero new pair
+     * scoring. Measured ~11 ms for filing 06's 167-member storm component.
+     *
+     * @param Cluster $component   component cluster with members + pairs populated
+     * @param float   $legacyMinSim the component's pre-split running-min similarity
+     * @return list<Cluster>
+     */
+    private function splitComponent(Cluster $component, float $legacyMinSim): array
+    {
+        $byId = [];
+        foreach ($component->members as $m) {
+            $byId[$m->id] = $m;
+        }
+
+        /** @var array<string, array<string, float>> $adjacency */
+        $adjacency = [];
+        foreach ($byId as $id => $_) {
+            $adjacency[$id] = [];
+        }
+        foreach ($component->pairs as $pair) {
+            $a = $pair['blockA'];
+            $b = $pair['blockB'];
+            if (!isset($byId[$a]) || !isset($byId[$b])) {
+                continue;
+            }
+            $adjacency[$a][$b] = $pair['matchScore'];
+            $adjacency[$b][$a] = $pair['matchScore'];
+        }
+
+        $remaining = $byId;
+        /** @var list<array{medoid: string|null, members: list<Block>, anchors: array<string, float>}> $groups */
+        $groups = [];
+        /** @var list<Block> $residue */
+        $residue = [];
+
+        while ($remaining !== []) {
+            $medoidId = $this->pickMedoid($remaining, $adjacency);
+            $ball     = [$medoidId => $remaining[$medoidId]];
+            $anchors  = [];
+            unset($remaining[$medoidId]);
+            foreach (array_keys($adjacency[$medoidId]) as $neighbourId) {
+                if (!isset($remaining[$neighbourId])) {
+                    continue;
+                }
+                $ball[$neighbourId]     = $remaining[$neighbourId];
+                $anchors[$neighbourId]  = $adjacency[$medoidId][$neighbourId];
+                unset($remaining[$neighbourId]);
+            }
+            if (count($ball) >= $this->minSplitSize) {
+                $groups[] = ['medoid' => $medoidId, 'members' => array_values($ball), 'anchors' => $anchors];
+                continue;
+            }
+            foreach ($ball as $m) {
+                $residue[] = $m;
+            }
+        }
+
+        if (count($residue) >= 2) {
+            $groups[] = ['medoid' => null, 'members' => $residue, 'anchors' => []];
+        } elseif ($residue !== []) {
+            $straggler  = $residue[0];
+            $bestGroup  = null;
+            $bestTether = -1.0;
+            foreach ($groups as $gi => $group) {
+                if ($group['medoid'] === null) {
+                    continue;
+                }
+                foreach ($group['members'] as $peer) {
+                    $score = $adjacency[$straggler->id][$peer->id] ?? null;
+                    if ($score !== null && $score > $bestTether) {
+                        $bestTether = $score;
+                        $bestGroup  = $gi;
+                    }
+                }
+            }
+            // Guaranteed by the residue invariant above; the guard keeps
+            // the shape honest rather than trusting it implicitly.
+            if ($bestGroup !== null) {
+                $groups[$bestGroup]['members'][]                  = $straggler;
+                $groups[$bestGroup]['anchors'][$straggler->id]    = $bestTether;
+            }
+        }
+
+        $memberToGroup = [];
+        foreach ($groups as $gi => $group) {
+            foreach ($group['members'] as $m) {
+                $memberToGroup[$m->id] = $gi;
+            }
+        }
+        $groupPairs = array_fill(0, count($groups), []);
+        foreach ($component->pairs as $pair) {
+            $ga = $memberToGroup[$pair['blockA']] ?? null;
+            $gb = $memberToGroup[$pair['blockB']] ?? null;
+            if ($ga !== null && $ga === $gb) {
+                $groupPairs[$ga][] = $pair;
+            }
+        }
+
+        $clusters = [];
+        foreach ($groups as $gi => $group) {
+            $members = $group['members'];
+            usort($members, static fn (Block $a, Block $b): int => strcmp($a->id, $b->id));
+
+            if ($group['medoid'] === null) {
+                $similarity = $legacyMinSim; // residue cluster: pre-split semantics
+            } else {
+                $similarity = 1.0;
+                foreach ($group['anchors'] as $anchorScore) {
+                    $similarity = min($similarity, $anchorScore);
+                }
+            }
+
+            $h                = $members[0]->structuralHash;
+            $allIdenticalHash = true;
+            foreach ($members as $m) {
+                if ($m->structuralHash !== $h) {
+                    $allIdenticalHash = false;
+                    break;
+                }
+            }
+            if ($allIdenticalHash) {
+                $similarity = 1.0;
+            }
+
+            $cluster          = new Cluster(
+                id:         self::contentClusterId($members),
+                members:    $members,
+                similarity: $similarity,
+                exact:      $allIdenticalHash,
+            );
+            $cluster->pairs    = $groupPairs[$gi];
+            $cluster->medoidId = $group['medoid'];
+            $clusters[]        = $cluster;
+        }
+        return $clusters;
+    }
+
+    /**
+     * Deterministic medoid pick: highest count of still-remaining
+     * neighbours; ties broken by structuralHash ascending (then scan
+     * order for equal hashes). Id-arrival order never leaks in.
+     *
+     * @param array<string, Block>                $remaining
+     * @param array<string, array<string, float>> $adjacency
+     */
+    private function pickMedoid(array $remaining, array $adjacency): string
+    {
+        $bestId   = '';
+        $bestDeg  = -1;
+        $bestHash = null;
+        foreach ($remaining as $id => $block) {
+            $deg = 0;
+            foreach (array_keys($adjacency[$id]) as $neighbourId) {
+                if (isset($remaining[$neighbourId])) {
+                    $deg++;
+                }
+            }
+            if ($deg > $bestDeg
+                || ($deg === $bestDeg && ($bestHash === null || strcmp($block->structuralHash, $bestHash) < 0))
+            ) {
+                $bestId   = $id;
+                $bestDeg  = $deg;
+                $bestHash = $block->structuralHash;
+            }
+        }
+        return $bestId;
     }
 
     /**
