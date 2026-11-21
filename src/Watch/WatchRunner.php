@@ -3,8 +3,10 @@ declare(strict_types=1);
 
 namespace Phpdup\Watch;
 
+use Phpdup\Clustering\CandidateBudgetException;
 use Phpdup\Pipeline\Pipeline;
 use Phpdup\Pipeline\PipelineState;
+use Phpdup\Util\CountPhrase;
 use Psr\Log\LoggerInterface;
 use React\EventLoop\Loop;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -43,7 +45,7 @@ final class WatchRunner
         $this->output->writeln('<info>phpdup</info> watch mode (Ctrl+C to exit)');
 
         $state = ($this->rebuildState)();
-        $this->pipeline->run($state, $this->output);
+        $this->runGuarded($state);
 
         // Sync the FileWatcher with the initial file list so it can detect
         // new files added between runs.
@@ -51,26 +53,22 @@ final class WatchRunner
         $this->fileWatcher->syncFromFileList($fileInfos);
 
         $reloads = 0;
-        $this->output->writeln(sprintf(
-            '<comment>watching %d files · last update %s</comment>',
-            count($state->files), date('H:i:s'),
-        ));
+        $this->announceWatching(count($state->files));
 
         $loop = Loop::get();
         $running = true;
         $watcher = $this->fileWatcher;
         $rebuildState = $this->rebuildState;
-        $pipeline = $this->pipeline;
         $output = $this->output;
 
-        $watcher->watch(function (string $path, FileChangeType $type) use (&$reloads, $rebuildState, $pipeline, $output, $watcher): void {
+        $watcher->watch(function (string $path, FileChangeType $type) use (&$reloads, $rebuildState, $output, $watcher): void {
             $reloads++;
             $output->writeln(sprintf(
                 '<info>phpdup</info> change detected (%s: %s) — reload #%d',
                 $type->value, $path, $reloads,
             ));
             $newState = $rebuildState();
-            $pipeline->run($newState, $output);
+            $this->runGuarded($newState);
 
             // Rebase the watcher snapshot on the new file list.
             $fileInfos = [];
@@ -79,10 +77,7 @@ final class WatchRunner
             }
             $watcher->syncFromFileList($fileInfos);
 
-            $output->writeln(sprintf(
-                '<comment>watching %d files · last update %s</comment>',
-                count($newState->files), date('H:i:s'),
-            ));
+            $this->announceWatching(count($newState->files));
         });
 
         if (function_exists('pcntl_signal')) {
@@ -99,6 +94,35 @@ final class WatchRunner
 
         $loop->run();
         return 0;
+    }
+
+    /**
+     * Run one pipeline pass with the candidate-budget guard rendered in the
+     * same posture as the plain path's ft-n2 catch in Command::execute():
+     * a budget halt is a runtime stop, not an invalid invocation, so it
+     * prints the clean `phpdup:` error line instead of reaching Symfony's
+     * throwable renderer with its usage-dump footer — and the watch loop
+     * stays alive to pick up the next edit.
+     */
+    public function runGuarded(PipelineState $state): void
+    {
+        try {
+            $this->pipeline->run($state, $this->output);
+        } catch (CandidateBudgetException $e) {
+            $this->output->writeln('<error>phpdup: ' . $e->getMessage() . '</error>');
+        }
+    }
+
+    /**
+     * Render the "watching N file(s) · last update …" surface. Grammar
+     * routes through CountPhrase so a lone watched file reads "1 file".
+     */
+    public function announceWatching(int $fileCount): void
+    {
+        $this->output->writeln(sprintf(
+            '<comment>watching %s · last update %s</comment>',
+            CountPhrase::files($fileCount), date('H:i:s'),
+        ));
     }
 
     /**

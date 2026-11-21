@@ -16,6 +16,7 @@ use Phpdup\Pipeline\Stage;
 use Phpdup\Similarity\EditCostModel;
 use Phpdup\Similarity\JaccardSimilarity;
 use Phpdup\Similarity\TreeEditDistance;
+use Phpdup\Util\CountPhrase;
 use Phpdup\Util\MemoryDebug;
 use Symfony\Component\Console\Output\OutputInterface;
 
@@ -492,10 +493,10 @@ final class ClusterStage implements CooperativeStageInterface
             $addedCount,
         ));
         $output->writeln(sprintf(
-            "<info>phpdup</info> clone cohort: %d changed + %d related = %d files total",
+            "<info>phpdup</info> clone cohort: %d changed + %d related = %s total",
             count($diffBaseFiles),
             $addedCount,
-            count($cohortFiles),
+            CountPhrase::files(count($cohortFiles)),
         ));
     }
 }

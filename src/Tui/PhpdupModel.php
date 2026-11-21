@@ -8,6 +8,7 @@ use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Pipeline\Stage;
 use Phpdup\Tui\Msg\RestartPipelineMsg;
 use Phpdup\Tui\Msg\StagePumpedMsg;
+use Phpdup\Util\CountPhrase;
 use SugarCraft\Forms\Spinner\Spinner;
 use SugarCraft\Forms\Spinner\Style as SpinnerStyle;
 use SugarCraft\Forms\Spinner\TickMsg as SpinnerTickMsg;
@@ -333,8 +334,8 @@ final class PhpdupModel implements Model, ProgressListener
         $rows = max(20, $this->viewState->rows);
 
         $banner = $this->theme->accent->render(sprintf(
-            ' phpdup — %d files · %d blocks · %d clusters%s',
-            count($this->state->files),
+            ' phpdup — %s · %d blocks · %d clusters%s',
+            CountPhrase::files(count($this->state->files)),
             count($this->state->blocks),
             count($this->state->clusters),
             $this->viewState->analysisComplete ? '' : '   ' . $this->spinner->view(),
@@ -398,8 +399,8 @@ final class PhpdupModel implements Model, ProgressListener
 
         $body = match ($stage) {
             Stage::Scanning => sprintf(
-                "%d files\n%d paths%s",
-                $this->state->totalFiles,
+                "%s\n%d paths%s",
+                CountPhrase::files($this->state->totalFiles),
                 count($this->state->config->paths),
                 $kindFilter,
             ),

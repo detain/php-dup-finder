@@ -189,6 +189,37 @@ final class PreprocessStageTest extends TestCase
         }
     }
 
+    /**
+     * ui-grammar: the headline on a lone-file run reads "1 file", never
+     * "1 files" (same CountPhrase rule as the p0c-m2 report notes —
+     * prose surfaces singularize at exactly one).
+     */
+    public function testHeadlineSingularizesSingleFile(): void
+    {
+        $tmpDir = sys_get_temp_dir() . '/phpdup_one_' . uniqid();
+        @mkdir($tmpDir . '/cache', 0o775, true);
+        file_put_contents($tmpDir . '/only.php', '<?php
+function lone() { $x = 1; return $x + 2; }
+');
+        try {
+            $config = new Config(paths: [$tmpDir], exclude: [], minBlockSize: 1, cacheDir: $tmpDir . '/cache');
+            $state = new PipelineState($config);
+            (new ScanningStage())->run($state, new NullOutput());
+            $output = new \Symfony\Component\Console\Output\BufferedOutput();
+
+            (new PreprocessStage(useCache: false))->run($state, $output);
+
+            $rendered = $output->fetch();
+            $this->assertStringContainsString(
+                'phpdup 1 file (0 reused · 1 processed · 0 no blocks · 0 parse errors)',
+                $rendered,
+            );
+            $this->assertStringNotContainsString('1 files', $rendered);
+        } finally {
+            $this->removeDirectory($tmpDir);
+        }
+    }
+
     /** Two block files, one zero-block file, one unparseable file. */
     private function createMixedFixture(): string
     {

@@ -95,6 +95,26 @@ final class CandidateBudgetFlagTest extends TestCase
         (new ConfigLoader())->load([self::scratchDir()], null, ['candidate_budget' => '99999999999999999999']);
     }
 
+    public function testZeroPaddedInMagnitudeValueIsAcceptedByTrimPolicy(): void
+    {
+        // [n]-1 pin: trim-policy symmetry. The shape regex admits leading
+        // zeros and textBeyondInt64 ltrims them, so padded values are
+        // treated exactly as their unpadded twins — never rejected for
+        // the padding alone.
+        $config = (new ConfigLoader())->load([self::scratchDir()], null, ['candidate_budget' => '00000009999']);
+        self::assertSame(9999, $config->candidateBudget);
+    }
+
+    public function testZeroPaddedBeyondInt64StillFailsLoud(): void
+    {
+        // The padding does not smuggle an out-of-range value past the
+        // ft-n1 guard: ltrim exposes the 19 nines and the magnitude
+        // compare rejects it.
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('64-bit');
+        (new ConfigLoader())->load([self::scratchDir()], null, ['candidate_budget' => '0009999999999999999999']);
+    }
+
     public function testInt64BoundariesAreInRangeAndHandledDownstream(): void
     {
         // Exactly PHP_INT_MAX is representable, so coercion must accept it

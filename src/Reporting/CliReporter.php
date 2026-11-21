@@ -5,6 +5,7 @@ namespace Phpdup\Reporting;
 
 use Phpdup\Clustering\Cluster;
 use Phpdup\Refactor\Hole;
+use Phpdup\Util\CountPhrase;
 use SugarCraft\Core\Util\Color;
 use SugarCraft\Cli\Banner;
 use SugarCraft\Cli\Section;
@@ -134,10 +135,10 @@ final class CliReporter
         $notes = [];
         $skipped = $report->skippedFiles ?? 0;
         if ($skipped > 0) {
-            $notes[] = self::fileCount($skipped) . ' produced no comparable blocks';
+            $notes[] = CountPhrase::files($skipped) . ' produced no comparable blocks';
         }
         if ($report->parseErrors > 0) {
-            $notes[] = self::fileCount($report->parseErrors) . ' failed to parse';
+            $notes[] = CountPhrase::files($report->parseErrors) . ' failed to parse';
         }
         if ($notes !== []) {
             $out->writeln(StatusLine::warn(implode(' · ', $notes), $theme));
@@ -150,16 +151,6 @@ final class CliReporter
             $report->skippedFiles ?? 0,
             $report->parseErrors,
         ), $theme));
-    }
-
-    /**
-     * p0c-m2: prose notes are singular when the count is one — a lone
-     * offender must not render as "1 files". The labelled per-bucket
-     * counter line keeps its fixed column names untouched.
-     */
-    private static function fileCount(int $count): string
-    {
-        return sprintf('%d %s', $count, $count === 1 ? 'file' : 'files');
     }
 
     /**

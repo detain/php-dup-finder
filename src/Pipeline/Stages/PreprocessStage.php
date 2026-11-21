@@ -12,6 +12,7 @@ use Phpdup\Pipeline\NullProgressListener;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Pipeline\Stage;
+use Phpdup\Util\CountPhrase;
 use Phpdup\Util\MemoryDebug;
 use Symfony\Component\Console\Output\OutputInterface;
 
@@ -240,8 +241,8 @@ final class PreprocessStage implements CooperativeStageInterface
         // file is in exactly one bucket: reused + processed + no blocks +
         // parse errors == files.
         $output->writeln(sprintf(
-            "<info>phpdup</info> %d files (%d reused · %d processed · %d no blocks · %d parse errors) → %d blocks",
-            count($files), $state->reusedFiles, $state->processedFiles, $state->skippedFiles, $state->parseErrors, count($blocks),
+            "<info>phpdup</info> %s (%d reused · %d processed · %d no blocks · %d parse errors) → %d blocks",
+            CountPhrase::files(count($files)), $state->reusedFiles, $state->processedFiles, $state->skippedFiles, $state->parseErrors, count($blocks),
         ));
 
         if ($this->showStats) {

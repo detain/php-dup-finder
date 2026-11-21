@@ -143,6 +143,34 @@ final class PhpdupModelTest extends TestCase
         $this->assertSame(12, $model->state->totalFiles);
     }
 
+    /**
+     * ui-grammar: the header banner and the Scanning pane both read
+     * "1 file" on a lone-file run — the model has no other 'files'
+     * surface, so the whole render must be free of the plural word.
+     */
+    public function testBannerAndScanningPaneSingularizeOneFile(): void
+    {
+        $model = $this->buildModel();
+        $model->state->files = ['/tmp/only.php'];
+        $model->state->totalFiles = 1;
+
+        $body = $model->view()->body;
+        $this->assertStringContainsString('phpdup — 1 file ·', $body);
+        $this->assertStringContainsString('1 paths', $body);
+        $this->assertStringNotContainsString('files', $body);
+    }
+
+    public function testBannerAndScanningPaneStayPluralAboveOneFile(): void
+    {
+        $model = $this->buildModel();
+        $model->state->files = ['/tmp/a.php', '/tmp/b.php'];
+        $model->state->totalFiles = 2;
+
+        $body = $model->view()->body;
+        $this->assertStringContainsString('phpdup — 2 files ·', $body);
+        $this->assertGreaterThanOrEqual(2, substr_count($body, '2 files'), 'banner + Scanning pane both plural');
+    }
+
     public function testLeftRightCycleClusterDetailWhenOpen(): void
     {
         $model = $this->buildModel();
