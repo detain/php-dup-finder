@@ -37,7 +37,8 @@ final class NgramFingerprint
 
     /**
      * @return array<string|int,int> n-gram → count. Keys are xxh64 hex strings
-     *                                  in normal mode; int (hi^lo) when lowMemory
+     *                                  in normal mode; the digest as a positive
+     *                                  63-bit int (sign bit cleared) when lowMemory
      *                                  is enabled via CompactNgramBag::compact().
      */
     public function fingerprint(Node $node): array
@@ -79,10 +80,15 @@ final class NgramFingerprint
         }
 
         if ($this->lowMemory) {
-            // Switch to compact int-keyed bag: high 32 bits XOR low 32 bits
-            // of the xxh64 digest. Collision rate is negligible on real corpora
-            // (≪ 1%). The int keys use ~4 bytes vs 16+ bytes for hex strings,
-            // significantly reducing RSS on large codebases.
+            // Switch to compact int-keyed bag: the full xxh64 digest stored
+            // as a positive 63-bit int (sign bit cleared). Birthday math on
+            // 2^63 keys crosses ~1% only around ~4.3e8 distinct grams in one
+            // corpus — negligible in practice. The pre-fix 32-bit hi^lo XOR
+            // fold crossed ~1% near ~9k distinct grams and merged every
+            // equal-XOR pair, silently inflating bag overlap corpus-wide
+            // (php-dup-finder-engine-042). The int keys use ~8 bytes vs
+            // 16+ bytes for hex strings, significantly reducing RSS on
+            // large codebases.
             return CompactNgramBag::compact($bag);
         }
 

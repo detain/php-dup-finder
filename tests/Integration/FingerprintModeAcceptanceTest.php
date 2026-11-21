@@ -129,6 +129,57 @@ final class FingerprintModeAcceptanceTest extends TestCase
         }
     }
 
+    /**
+     * engine-S32 (php-dup-finder-engine-042): the low-memory compact bag
+     * must be the exact masked-positive image of the hex bag on every
+     * gram the real pipeline mints — key species `digest & PHP_INT_MAX`
+     * via the pack/unpack oracle, counts preserved, no fold-era merging
+     * beyond the disclosed sign-bit-twin class. On corpora without twin
+     * digests the scored edge set must be invariant under the bag key
+     * species.
+     *
+     * @dataProvider corpora
+     */
+    public function testLowMemoryBagIsMaskedImageOfHexBag(string $name): void
+    {
+        $dir = realpath(__DIR__ . '/../Fixtures/' . $name);
+        $this->assertNotFalse($dir, "fixture corpus missing: $name");
+
+        $wide = $this->drive($dir, 'numbered');
+        $low  = $this->drive($dir, 'numbered', ['lowMemory' => true]);
+
+        $wideById = [];
+        foreach ($wide->blocks as $b) {
+            $wideById[$b->id] = $b;
+        }
+        $this->assertCount(count($wideById), $wide->blocks, 'fixture block ids must be unique');
+
+        $grams = 0;
+        foreach ($low->blocks as $b) {
+            $source = $wideById[$b->id] ?? null;
+            $this->assertNotNull($source, "block {$b->id} missing from the wide run");
+            $mapped = [];
+            foreach ($source->ngramBag ?? [] as $digest => $cnt) {
+                $key = unpack('J', pack('H16', (string)$digest))[1] & PHP_INT_MAX;
+                $mapped[$key] = ($mapped[$key] ?? 0) + $cnt;
+                $grams++;
+            }
+            $actual = $b->ngramBag ?? [];
+            ksort($mapped);
+            ksort($actual);
+            $this->assertSame($mapped, $actual,
+                "low-memory bag of {$b->id} is not the masked-positive image of its hex bag");
+        }
+        $this->assertGreaterThan(0, $grams, "corpus $name mints no n-grams — probe would be vacuous");
+
+        $wEdges = self::pairKeys($wide->edges);
+        $lEdges = self::pairKeys($low->edges);
+        ksort($wEdges);
+        ksort($lEdges);
+        $this->assertSame($wEdges, $lEdges,
+            "bag key species moved the edge set on corpus $name");
+    }
+
     public function testCrossModeIndexStoreRefusedAndNeverPoisons(): void
     {
         $dir = realpath(__DIR__ . '/../Fixtures/micro-fixture');
