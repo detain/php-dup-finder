@@ -129,7 +129,22 @@ final class ClusterCache
         @file_put_contents($this->cacheDir . '/clusters.idx', serialize($payload));
     }
 
-    /** @param list<\Phpdup\Extraction\Block> $blocks */
+    /**
+     * Corpus fingerprint over the structural member set alone
+     * (item 4.4 / hazard-4): no scan-index block id and nothing
+     * positional participates, so an unchanged corpus re-scanned in any
+     * order replays the same hash.
+     *
+     * Known residual: the tokens embed raw, cwd-dependent file paths, so
+     * the cache is path-bound — analyzing the same tree through a
+     * different root (symlinked parent, run from a sibling directory)
+     * rewrites every token and lands on a honest cache MISS that
+     * recomputes everything; it can never produce a stale HIT. Going
+     * root-independent would mean scan-root-relative member tokens, a
+     * v5 invalidation deliberately left unimplemented (see HANDOFF).
+     *
+     * @param list<\Phpdup\Extraction\Block> $blocks
+     */
     private function hashCorpus(array $blocks): string
     {
         $tokens = [];

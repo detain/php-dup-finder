@@ -363,6 +363,91 @@ final class CliSmokeTest extends TestCase
         }
     }
 
+    public function testWarmClusterCacheRelocatesAfterTopCommentDrift(): void
+    {
+        // Review item [M]-1 pin: warm cluster-cache replay + comment-only
+        // drift above clustered members. structuralHash is comment-
+        // invariant, so the cluster cache MUST hit (correct by design) —
+        // the lazy AST loader then has to re-anchor the stale member
+        // ranges from content instead of throwing 'could not relocate'.
+        // Pre-fix, the warm re-runs below exited 1. The >8-file corpus
+        // keeps the forked RefactorStage workers' relocation path in scope
+        // for the third leg.
+        if (!WorkerPool::isAvailable()) {
+            $this->markTestSkipped('pcntl unavailable: fork zone cannot be exercised on this box');
+        }
+        $corpus = $this->makeDupCorpus(12);
+        $cache  = $this->tmp . '/warm-relocate';
+
+        $cold = $this->cli(
+            ['analyze', $corpus, '--workers=1', '--json', $this->tmp . '/warm-a.json'],
+            cacheDir: $cache,
+        );
+        $this->assertSame(0, $cold['exit'], $cold['combined']);
+        $ja = json_decode((string) file_get_contents($this->tmp . '/warm-a.json'), true);
+        $this->assertIsArray($ja);
+        $this->assertGreaterThan(0, $ja['summary']['clusters']);
+
+        // Comment-only edit at the top of every file: every real block
+        // shifts down two lines while every structuralHash stays put.
+        foreach (glob($corpus . '/*.php') ?: [] as $f) {
+            $src = (string) file_get_contents($f);
+            $this->assertStringStartsWith("<?php\n", $src);
+            file_put_contents($f, "<?php\n// drift\n// drift\n" . substr($src, 6));
+        }
+
+        $warm = $this->cli(
+            ['analyze', $corpus, '--workers=1', '--json', $this->tmp . '/warm-b.json'],
+            cacheDir: $cache,
+        );
+        $this->assertSame(0, $warm['exit'], $warm['combined']);
+        $this->assertStringContainsString(
+            'clusters from cache', $warm['combined'],
+            'the corpus must genuinely replay the warm cluster cache',
+        );
+        $jb = json_decode((string) file_get_contents($this->tmp . '/warm-b.json'), true);
+        $this->assertIsArray($jb);
+
+        $ids = static function (array $j): array {
+            $out = array_map(static fn (array $c): string => (string) $c['id'], $j['clusters']);
+            sort($out);
+            return $out;
+        };
+        $this->assertSame($ids($ja), $ids($jb), 'comment-only drift must not move any finding id');
+
+        $lines = static function (array $j): array {
+            $out = [];
+            foreach ($j['clusters'] as $c) {
+                foreach ($c['members'] ?? [] as $m) {
+                    $out[(string) $c['id'] . '|' . (string) $m['file']] = [(int) $m['start'], (int) $m['end']];
+                }
+            }
+            ksort($out);
+            return $out;
+        };
+        $la = $lines($ja);
+        $lb = $lines($jb);
+        $this->assertSame(array_keys($la), array_keys($lb), 'membership must be unchanged by the replay');
+        foreach ($la as $key => $pair) {
+            $this->assertSame([$pair[0] + 2, $pair[1] + 2], $lb[$key],
+                "warm-replayed member $key must carry the relocated (+2) lines");
+        }
+
+        $fork = $this->cli(
+            ['analyze', $corpus, '--workers=2', '--json', $this->tmp . '/warm-c.json', '--stats'],
+            cacheDir: $cache,
+        );
+        $this->assertSame(0, $fork['exit'], $fork['combined']);
+        $this->assertStringContainsString('workers: 2 (pcntl available)', $fork['combined']);
+        $jc = json_decode((string) file_get_contents($this->tmp . '/warm-c.json'), true);
+        $this->assertIsArray($jc);
+        $this->assertSame(
+            $this->normalizeClusters($jb['clusters']),
+            $this->normalizeClusters($jc['clusters']),
+            'forked workers relocating from the same warm cache must agree with serial, id for id',
+        );
+    }
+
     // ------------------------------------------------------ repo corpora
 
     public function testFixturesCorpusMatchesCommittedContract(): void

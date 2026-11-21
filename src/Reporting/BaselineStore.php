@@ -14,12 +14,12 @@ use Phpdup\Util\PathCanonical;
  * fingerprint so that subsequent runs can detect NEW duplication that
  * was not present when the baseline was recorded.
  *
- * Baseline format:
+ * Baseline format (the live shape at CURRENT_VERSION = 3):
  * {
- *   "version": 1,
+ *   "version": 3,
  *   "clusters": [
  *     {
- *       "id": "cluster-abc123",
+ *       "id": "F77b1cccd981b8db5",
  *       "impact": 150,
  *       "member_hashes": ["sha256:abc...", "sha256:def..."]
  *     }
