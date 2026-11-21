@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Phpdup\Reporting;
 
+use Phpdup\Cli\Config;
 use Phpdup\Clustering\Cluster;
 
 /**
@@ -26,9 +27,18 @@ final class Ranker
         ?ClusterSort $sort = null,
         private readonly float $minSafety = 0.0,
         ?SafetyScorer $safetyScorer = null,
+        // Item 5.1: scoring stance for cross-repo clones. 'global'
+        // (default) runs the legacy math byte-identically; 'per-repo'
+        // counts namespace spread once per repo instead of globally
+        // (the double-dip fix); 'typed' additionally flips the
+        // cross-repo signal into a bonus (audit posture).
+        private readonly string $scoreMode = Config::SCORE_MODE_GLOBAL,
     ) {
+        if (!in_array($scoreMode, Config::SCORE_MODES, true)) {
+            throw new \InvalidArgumentException("score_mode must be one of " . implode('|', Config::SCORE_MODES) . ", got: $scoreMode");
+        }
         $this->sort         = $sort ?? new ClusterSort();
-        $this->safetyScorer = $safetyScorer ?? new SafetyScorer();
+        $this->safetyScorer = $safetyScorer ?? new SafetyScorer($scoreMode);
         if ($minSafety < 0.0 || $minSafety > 1.0) {
             throw new \InvalidArgumentException("minSafety out of range");
         }
@@ -76,6 +86,9 @@ final class Ranker
      *   start at the cluster's similarity score
      *   - subtract 0.1 for each subtree hole (large variable parts)
      *   - subtract 0.05 if cluster spans more than 3 namespaces
+     *     (item 5.1: under score-mode per-repo that spread is counted
+     *     within the densest member repo; under typed, cross-repo
+     *     clusters get the inverse +0.05 instead)
      *   - bump 0.05 if all members share the same class
      *   - clamp to [0,1]
      */
@@ -91,7 +104,21 @@ final class Ranker
             $namespaces[$m->namespace ?? ''] = true;
             $classes[$m->class ?? ''] = true;
         }
-        if (count($namespaces) > 3) $conf -= 0.05;
+        if ($this->scoreMode === Config::SCORE_MODE_GLOBAL) {
+            // legacy math — byte-identical to every score ever stored.
+            if (count($namespaces) > 3) $conf -= 0.05;
+        } elseif (ClusterScope::isCrossRepo($c) && $this->scoreMode === Config::SCORE_MODE_TYPED) {
+            // Item 5.1 audit posture: a cross-repo clone is stronger
+            // dedup evidence (one shared helper erases N repo-local
+            // copies), so the ns-spread penalty is replaced by a bonus.
+            $conf += 0.05;
+        } elseif (ClusterScope::maxRepoNamespaceSpread($c) > 3) {
+            // per-repo (and typed same-repo): the >3 penalty fires on
+            // the namespace spread within the densest single repo, so
+            // the same subsystem mirrored into N repos no longer reads
+            // as N unrelated namespaces (the double-dip fix).
+            $conf -= 0.05;
+        }
         if (count($classes) === 1)  $conf += 0.05;
         return max(0.0, min(1.0, $conf));
     }

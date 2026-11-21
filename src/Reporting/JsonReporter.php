@@ -93,6 +93,11 @@ final class JsonReporter
                 'class'     => $m->class,
                 'name'      => $m->name,
                 'size'      => $m->size,
+                // Item 5.1: trailing-additive run-context labels —
+                // repo is the scan-root basename ('' when no root
+                // matched), scope is 'single' or the repo label.
+                'repo'      => $m->repo,
+                'scope'     => $m->scope,
             ], $c->members),
             'pairs' => array_map(static fn(array $p) => [
                 'blockA'     => $p['blockA'],
@@ -118,6 +123,11 @@ final class JsonReporter
                 }
                 return $base;
             }, $c->holes),
+            // Item 5.1: trailing-additive cluster scope — 'multi' when
+            // members span >=2 distinct non-empty repo labels, 'single'
+            // otherwise. Computed from the members' own labels; never
+            // persisted on Cluster, so it cannot drift from its evidence.
+            'scope' => ClusterScope::of($c),
         ];
     }
 }

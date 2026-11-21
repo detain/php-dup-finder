@@ -13,6 +13,7 @@ use Phpdup\Pipeline\Stage;
 use Phpdup\Pipeline\StageInterface;
 use Phpdup\Reporting\CheckstyleReporter;
 use Phpdup\Reporting\CliReporter;
+use Phpdup\Reporting\ClusterScope;
 use Phpdup\Reporting\CoherenceAnalyzer;
 use Phpdup\Reporting\CsvReporter;
 use Phpdup\Reporting\DeclaredTwinAnalyzer;
@@ -76,6 +77,16 @@ final class ReportStage implements StageInterface
 
         $config = $state->config;
 
+        // Item 5.1: labels are run context. Blocks reached here via the
+        // normal path were stamped by PreprocessStage from this run's
+        // roots; cluster-cache replay, however, deserializes whole
+        // Cluster objects whose members carry the ROOTS OF THE SAVING
+        // RUN. Restamp every cluster member so repo/scope as reported
+        // (and as scored per-repo/typed) always speaks for this run.
+        foreach ($state->clusters as $cluster) {
+            \Phpdup\Scanning\RepoLabels::stampAll($cluster->members, $config->paths);
+        }
+
         if ($this->showStats) {
             $output->writeln('  timings (s):');
             foreach ($state->timings as $k => $v) {
@@ -92,7 +103,14 @@ final class ReportStage implements StageInterface
             minImpact:  $config->minClusterImpact,
             sort:       \Phpdup\Reporting\ClusterSort::parse($config->sort),
             minSafety:  $this->minSafety,
+            scoreMode:  $config->scoreMode,
         ))->rank($state->clusters);
+
+        // Item 5.1: --scope filters between rank and report (order
+        // pinned): gates and reporters both see the filtered set, so a
+        // CI --fail-on-impact/--max-clusters run with --scope measures
+        // exactly the slice it reports. 'all' (default) is a no-op.
+        $clusters = ClusterScope::filter($clusters, $config->scope);
 
         // Coherence analysis: flag outlier members (low mean pairwise
         // similarity to the rest of their cluster). Reporters surface

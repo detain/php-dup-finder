@@ -41,7 +41,7 @@ final class JsonReporterTest extends TestCase
         );
         $payload = (new JsonReporter())->build($report);
 
-        $this->assertSame('1.3', $payload['schema_version']);
+        $this->assertSame('1.4', $payload['schema_version']);
         $summary = $payload['summary'];
         $this->assertSame(array_keys(JsonSchemaSpec::summaryShape()), array_keys($summary));
         // Item 4.3: trailing key, present even for producers that never

@@ -23,6 +23,17 @@ namespace Phpdup\Reporting;
 final class JsonSchemaSpec
 {
     /**
+     * 1.4 (minor, additive): item 5.1 repo/scope surfacing — trailing
+     * `scope` key on every cluster ('single' | 'multi', computed from
+     * the members' repo labels) plus trailing `repo` and `scope` keys
+     * on every cluster member (scan-root basename / 'single' or the
+     * repo label; '' when the path matched no configured root). Every
+     * 1.3 field keeps its name, type and position, so 1.3 consumers
+     * parse 1.4 payloads untouched. The `--scope` filter and
+     * `--score-mode` knob change WHICH clusters and WHICH scores are
+     * emitted, never the shape; defaults reproduce 1.3 semantics
+     * exactly (score-mode global is byte-identical math).
+     *
      * 1.3 (minor, additive): trailing `declared_twins` top-level key —
      * the item 4.3 claim-vs-reality table (one entry per doc-comment
      * twin declaration, verdicts holds|drifted|unresolved|unmeasurable|
@@ -37,7 +48,7 @@ final class JsonSchemaSpec
      * files_without_blocks). Every 1.1 field keeps its name and type, so
      * 1.1 consumers parse 1.2 payloads untouched.
      */
-    public const SCHEMA_VERSION = '1.3';
+    public const SCHEMA_VERSION = '1.4';
 
     /**
      * Top-level shape of {@see JsonReporter::build()} output. This is
@@ -145,9 +156,10 @@ final class JsonSchemaSpec
             'outlier_members'        => 'list<int>',
             'architectural_findings' => 'list<object>',
             'signature'              => 'string|null',
-            'members'                => 'list<object>',
+            'members'                => 'list<object>  // trailing repo/scope keys since 1.4 (item 5.1); see JsonReporter::clusterPayload()',
             'pairs'                  => 'list<object>',
             'holes'                  => 'list<object>',
+            'scope'                  => "string  // 'single' | 'multi' — item 5.1, trailing (1.4)",
         ];
     }
 }

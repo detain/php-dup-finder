@@ -1,6 +1,6 @@
 {
     "phpdup_version": "0.1.0",
-    "schema_version": "1.3",
+    "schema_version": "1.4",
     "summary": {
         "files": 1,
         "blocks": 3,
@@ -47,7 +47,9 @@
                     "namespace": "Fixtures\\Sql",
                     "class": "UserRepo",
                     "name": "findById",
-                    "size": 37
+                    "size": 37,
+                    "repo": "sql",
+                    "scope": "single"
                 },
                 {
                     "file": "tests/Fixtures/sql/Repos.php",
@@ -57,7 +59,9 @@
                     "namespace": "Fixtures\\Sql",
                     "class": "ProductRepo",
                     "name": "findById",
-                    "size": 37
+                    "size": 37,
+                    "repo": "sql",
+                    "scope": "single"
                 },
                 {
                     "file": "tests/Fixtures/sql/Repos.php",
@@ -67,7 +71,9 @@
                     "namespace": "Fixtures\\Sql",
                     "class": "OrderRepo",
                     "name": "findById",
-                    "size": 37
+                    "size": 37,
+                    "repo": "sql",
+                    "scope": "single"
                 }
             ],
             "pairs": [],
@@ -84,7 +90,8 @@
                     ],
                     "value_count": 3
                 }
-            ]
+            ],
+            "scope": "single"
         }
     ],
     "declared_twins": []

@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Phpdup\Reporting;
 
+use Phpdup\Cli\Config;
 use Phpdup\Clustering\Cluster;
 
 /**
@@ -43,6 +44,25 @@ final class SafetyScorer
         'optional-segments'  => -0.05,
     ];
 
+    /**
+     * @param string $scoreMode Item 5.1 scoring stance:
+     *        'global' (default) — legacy math, byte-identical;
+     *        'per-repo' — the namespace-spread rule evaluated once per
+     *        repo instead of on the global count (double-dip fix);
+     *        'typed' — additionally rewards cross-repo clusters
+     *        (audit posture: one shared helper erases N repo-local
+     *        copies, so the spread is evidence FOR the refactor).
+     */
+    public function __construct(
+        private readonly string $scoreMode = Config::SCORE_MODE_GLOBAL,
+    ) {
+        if (!in_array($scoreMode, Config::SCORE_MODES, true)) {
+            throw new \InvalidArgumentException(
+                "score_mode must be one of " . implode('|', Config::SCORE_MODES) . ", got: $scoreMode"
+            );
+        }
+    }
+
     public function score(Cluster $c): float
     {
         $score = $c->similarity;
@@ -52,15 +72,33 @@ final class SafetyScorer
 
         // Cross-namespace check: a cluster spanning many top-level
         // namespaces is more likely to be coincidentally similar.
-        $namespaces = [];
-        foreach ($c->members as $m) {
-            $namespaces[$m->namespace ?? ''] = true;
-        }
-        $nsCount = count($namespaces);
-        if ($nsCount === 1) {
-            $score += 0.05;
-        } elseif ($nsCount > 3) {
-            $score -= 0.10;
+        if ($this->scoreMode === Config::SCORE_MODE_GLOBAL) {
+            $namespaces = [];
+            foreach ($c->members as $m) {
+                $namespaces[$m->namespace ?? ''] = true;
+            }
+            $nsCount = count($namespaces);
+            if ($nsCount === 1) {
+                $score += 0.05;
+            } elseif ($nsCount > 3) {
+                $score -= 0.10;
+            }
+        } elseif (ClusterScope::isCrossRepo($c) && $this->scoreMode === Config::SCORE_MODE_TYPED) {
+            // typed mode inverts the cross-repo reading of the very
+            // ns-spread the strict stance penalises (f12 §5.1: 13.2%
+            // of clusters take the -0.10/-0.05 double dip purely for
+            // mirroring across packages).
+            $score += 0.10;
+        } else {
+            // per-repo (and typed same-repo): same rule, evaluated on
+            // the namespace spread within the densest single repo —
+            // identical to the legacy count when one repo is involved.
+            $spread = ClusterScope::maxRepoNamespaceSpread($c);
+            if ($spread === 1) {
+                $score += 0.05;
+            } elseif ($spread > 3) {
+                $score -= 0.10;
+            }
         }
 
         // Member-count factor.

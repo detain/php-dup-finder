@@ -8,6 +8,7 @@ use Phpdup\Parallel\PreprocessWorker;
 use Phpdup\Parallel\WorkerPool;
 use Phpdup\Persistence\IndexStore;
 use Phpdup\Pipeline\CooperativeStageInterface;
+use Phpdup\Scanning\RepoLabels;
 use Phpdup\Pipeline\NullProgressListener;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\ProgressListener;
@@ -239,6 +240,13 @@ final class PreprocessStage implements CooperativeStageInterface
         $state->debug($output, sprintf('preprocess: assigning IDs to %d blocks... [%s]', count($blocks), MemoryDebug::getMemoryUsage()));
         foreach ($blocks as $i => $b) {
             $b->id = substr($b->structuralHash, 0, 8) . '_' . $i;
+            // Item 5.1: repo/scope labels are run context, so they are
+            // (re)computed for every block here — cache-restored and
+            // freshly extracted alike — after the cache-save pass above.
+            // Nothing label-shaped therefore reaches the `.idx` blobs:
+            // a stale cache cannot serve a stale (or silently empty)
+            // label because the stamp always overwrites the default.
+            RepoLabels::stamp($b, $config->paths);
         }
         $state->debug($output, sprintf('preprocess: ID assignment complete, transitioning to next stage... [%s]', MemoryDebug::getMemoryUsage()));
 

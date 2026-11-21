@@ -79,6 +79,7 @@ final class Command extends SymfonyCommand
             ->addOption('auto-tune', null, InputOption::VALUE_NONE, 'Probe the corpus before analysis and pick min-block-size / max-df / min-impact based on size; --exact-only is forced on for very large trees. Picked profile is printed; explicit CLI overrides take precedence.')
             ->addOption('profile', null, InputOption::VALUE_REQUIRED, 'Apply a project profile (laravel|symfony|drupal|wordpress|generic|db-aware-laravel|db-aware-doctrine|db-aware-cake|db-aware-thinkorm|db-aware-medoo|db-aware-propel|db-aware-redbean|db-aware-cycle|db-aware-phpactiverecord|auto) to seed framework-aware excludes + tuning. db-aware-* profiles ship symbol-equivalence packs for various ORMs. "auto" sniffs the scan path for known markers. Explicit CLI flags + --config win over profile values.')
             ->addOption('min-safety', null, InputOption::VALUE_REQUIRED, 'Drop clusters whose refactor-safety score (0..1) is below this threshold. 0 = report all (default).')
+            ->addOption('score-mode', null, InputOption::VALUE_REQUIRED, 'Scoring stance for cross-repo clones: global|per-repo|typed (item 5.1, default global). global = legacy math, byte-identical to every stored baseline. per-repo = the >3-namespaces penalty in confidence/safety is evaluated on the namespace spread within the densest member repo, so a subsystem mirrored across packages is no longer double-penalized for its mirroring. typed = audit posture: cross-repo clusters skip that penalty and gain the inverse bonus (a cross-repo clone is the strongest dedup signal: one shared helper erases N repo-local copies). Only clusters with >=2 distinct member repo labels behave differently; everything else scores as before. Equivalently: config key score_mode.')
             ->addOption('ted-weights', null, InputOption::VALUE_REQUIRED, 'Tree-edit cost model: default|semantic. semantic weights method calls / control flow heavier than literals.')
             ->addOption('db-aware', null, InputOption::VALUE_NONE, 'ORM-/DB-aware semantic dedup: rewrite recognised database calls (Eloquent, Doctrine, PDO, mysqli, pg_*, raw SQL) to canonical __DB_<OP>__ tokens during normalisation so equivalent ORM and raw-SQL variants cluster together. Off by default — opt-in for ORM-heavy codebases. See docs/plans/orm-db-semantic-dedup.md.')
             ->addOption('trinity-collapse', null, InputOption::VALUE_NONE, 'Detect the canonical CRUD trinity (read → mutate → save) and rewrite the three-statement sequence as a single __DB_UPSERT__("entity") synthetic call so ORM upserts cluster with raw UPDATE queries. Composes with --db-aware. Off by default. See option 2 of docs/plans/orm-db-semantic-dedup.md.')
@@ -112,6 +113,7 @@ final class Command extends SymfonyCommand
             ->addOption('limit', null, InputOption::VALUE_REQUIRED, 'Show at most N clusters in CLI output', 50)
             ->addOption('summary-only', null, InputOption::VALUE_NONE, 'Render only the top banner + final summary line (skip per-cluster details)')
             ->addOption('clusters', null, InputOption::VALUE_NONE, 'Render a one-line-per-cluster table instead of the full per-cluster breakdown')
+            ->addOption('scope', null, InputOption::VALUE_REQUIRED, 'Report only clusters matching a repo scope (item 5.1): all|single|multi|<repo label> (default all). Clusters carry per-member repo labels derived from the scan roots; single = one repo per cluster, multi = members span >=2 distinct repos, any other value = keep clusters with at least one member from that repo label. Applied after ranking, so --limit/--sort and the CI gates all measure the filtered slice. Equivalently: config key scope.')
             ->addOption('pager', null, InputOption::VALUE_REQUIRED, 'Page CLI report through $PAGER (default `less -R`). Modes: auto|never|always. auto pages when stdout is a TTY and the rendered output exceeds ~60 lines.', 'never')
             ->addOption('sort', null, InputOption::VALUE_REQUIRED, 'Cluster sort: KEY[:asc|desc]. Keys: impact|members|block-size|lines|similarity|confidence|name|file|id. Aliases: size→members, count→members. Default impact:desc.')
             ->addOption('stats', null, InputOption::VALUE_NONE, 'Show pipeline statistics')
@@ -153,6 +155,7 @@ Options grouped by category:
     --min-block-size, --mode, --similarity, --max-df, --candidate-budget,
     --optional-blocks, --optional-blocks-containment,
     --min-impact, --min-safety, --fail-on-impact, --max-clusters,
+    --score-mode,
     --exact-only, --kinds, --auto-tune,
     --ted-weights, --db-aware, --trinity-collapse,
     --scorer, --ir-threshold,
@@ -165,7 +168,7 @@ Options grouped by category:
     --graphviz, --plantuml,
     --refactor-patch, --refactor-tests,
     --diff, --patch, --apply, --dry-run, --limit, --sort, --stats,
-    --summary-only, --clusters
+    --summary-only, --clusters, --scope
 
   <comment>CI / Baseline</comment>
     --baseline, --baseline-out
@@ -264,6 +267,7 @@ HELP;
             'baseline'                    => $input->getOption('baseline'),
             'baseline_out'                => $input->getOption('baseline-out'),
             'diff_base'                   => $input->getOption('diff-base'),
+            'scope'                       => $input->getOption('scope'),
         ], fn($v) => $v !== null);
 
         if ($input->getOption('db-aware')) {
@@ -284,6 +288,27 @@ HELP;
                 return null;
             }
             $overrides['scorer'] = $scorerOpt;
+        }
+
+        $scoreModeOpt = $input->getOption('score-mode');
+        if ($scoreModeOpt !== null) {
+            $scoreModeOpt = strtolower((string)$scoreModeOpt);
+            if (!in_array($scoreModeOpt, \Phpdup\Cli\Config::SCORE_MODES, true)) {
+                $output->writeln(sprintf(
+                    '<error>phpdup: --score-mode must be one of %s</error>',
+                    implode('|', \Phpdup\Cli\Config::SCORE_MODES),
+                ));
+                return null;
+            }
+            $overrides['score_mode'] = $scoreModeOpt;
+        }
+
+        $scopeOpt = $input->getOption('scope');
+        if ($scopeOpt !== null && trim((string)$scopeOpt) === '') {
+            // Open-set value (all|single|multi|<repo label>) — only the
+            // empty string is a shape error the CLI can see.
+            $output->writeln('<error>phpdup: --scope must be a non-empty value (all|single|multi|&lt;repo-label&gt;)</error>');
+            return null;
         }
 
         $irThresholdOpt = $input->getOption('ir-threshold');

@@ -126,6 +126,17 @@
             "pattern": "^[+-]?(impact|members|size|count|block-size|block_size|lines|similarity|confidence|name|file|id)(:(asc|desc|ascending|descending|\\+|\\-))?$",
             "description": "Cluster sort spec — KEY[:DIRECTION]. Keys: impact, members, block-size, lines, similarity, confidence, name, file, id. Aliases: size/count → members; block_size → block-size. Direction defaults to desc; a leading '-' forces desc, '+' forces asc. Equivalent to --sort on the CLI."
         },
+        "scope": {
+            "type": "string",
+            "default": "all",
+            "description": "Repo scope filter for reported clusters (item 5.1). 'all' = no filtering (legacy behaviour). 'single' = keep clusters whose members share one repo; 'multi' = keep clusters spanning >=2 distinct non-empty member repo labels; any other non-empty string = keep clusters with at least one member carrying that exact repo label. Repo labels are the basenames of the configured scan roots (each block's file matched against the longest root prefix), so a multi-repo analysis passes one root per repository. Applied after ranking: --limit/--sort and the CI gates all measure the filtered slice. CLI: --scope. Root-config/CLI only; per-directory .phpdup.json files do not admit this key."
+        },
+        "score_mode": {
+            "type": "string",
+            "enum": ["global", "per-repo", "typed"],
+            "default": "global",
+            "description": "Scoring stance for cross-repo clones (item 5.1). 'global' = legacy math, byte-identical to every historical score, baseline and gate run. 'per-repo' = the >3-namespaces penalty in confidence (Ranker) and safety (SafetyScorer) is evaluated on the namespace spread within the densest member repo, so a subsystem mirrored across packages is no longer double-penalized for its mirroring (quantified: 13.2% of phlix clusters took the paired −0.05/−0.10 hit). 'typed' = audit posture: cross-repo clusters skip that penalty and instead gain +0.05 confidence / +0.10 safety — one shared helper erases N repo-local copies, so the spread is evidence FOR the refactor. Single-repo clusters score identically under every mode. CLI: --score-mode. Root-config/CLI only; not a per-directory key."
+        },
         "optional_blocks": {
             "type": "object",
             "additionalProperties": false,

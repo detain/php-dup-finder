@@ -24,6 +24,22 @@ final class Config
     public const FINGERPRINT_ID_NUMBERED = 'numbered';
 
     public const FINGERPRINT_ID_UNNUMBERED = 'un-numbered';
+
+    /**
+     * Accepted values of {@see self::$scoreMode} (item 5.1). 'global'
+     * is the legacy default and must stay byte-identical everywhere
+     * (goldens, stored baselines, gate history); 'per-repo' groups the
+     * namespace-spread penalty by repo so cross-repo mirrors are
+     * penalized at most once (the double-dip fix); 'typed' additionally
+     * rewards cross-repo clusters (audit posture).
+     */
+    public const SCORE_MODES = ['global', 'per-repo', 'typed'];
+
+    public const SCORE_MODE_GLOBAL = 'global';
+
+    public const SCORE_MODE_PER_REPO = 'per-repo';
+
+    public const SCORE_MODE_TYPED  = 'typed';
     /**
      * @param list<string> $paths
      * @param list<string> $exclude
@@ -198,6 +214,18 @@ final class Config
         // opted out entirely. Default mirrors Clusterer::MAX_CANDIDATE_PAIRS
         // (60,000,000); a pinned unit test keeps the two values equal.
         public readonly int $candidateBudget = 60_000_000,
+        // Item 5.1: reported-cluster scope filter — 'all' (default),
+        // 'single' (one repo per cluster), 'multi' (cross-repo clusters),
+        // or any exact repo label (basename of a scan root). Applied in
+        // ReportStage between rank and report, so CI gates measure the
+        // slice that is reported. Config-file key `scope`; CLI --scope.
+        public readonly string $scope = 'all',
+        // Item 5.1: scoring stance for cross-repo clones — see
+        // {@see self::SCORE_MODES}. 'global' keeps every historical
+        // score byte-identical; per-repo/typed only re-weight clusters
+        // that carry ≥2 distinct member repo labels. Config-file key
+        // `score_mode`; CLI --score-mode.
+        public readonly string $scoreMode = self::SCORE_MODE_GLOBAL,
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -245,6 +273,14 @@ final class Config
         }
         if ($candidateBudget < 0) {
             throw new \InvalidArgumentException("candidate_budget must be >= 0 (0 = unlimited pair generation)");
+        }
+        if (!in_array($scoreMode, self::SCORE_MODES, true)) {
+            throw new \InvalidArgumentException(
+                "score_mode must be one of " . implode('|', self::SCORE_MODES) . ", got: $scoreMode"
+            );
+        }
+        if ($scope === '') {
+            throw new \InvalidArgumentException("scope must be a non-empty string (use 'all' to disable filtering)");
         }
         if ($mlPairUrl !== '' && !\Phpdup\Ml\MlClient::isAllowedUrl(rtrim($mlPairUrl, '/') . '/score-pair')) {
             throw new \InvalidArgumentException("ml_pair_url failed validation: $mlPairUrl");
@@ -425,6 +461,15 @@ final class Config
             diffBase:                        isset($overrides['diff_base']) ? (string)$overrides['diff_base'] : $this->diffBase,
             apply:                           isset($overrides['apply']) ? (bool)$overrides['apply'] : $this->apply,
             candidateBudget:                 isset($overrides['candidate_budget']) ? (int)$overrides['candidate_budget'] : $this->candidateBudget,
+            // Item 5.1: report-level knobs, copied — never replaced —
+            // per-directory. A scope filter or score stance is a fact
+            // about the ONE final report; letting per-dir files vary it
+            // would make one run answer to many scopes. Not admitted by
+            // shapeOverrides() at all (same posture as cache_dir /
+            // parallelism / workers), so a per-directory file carrying
+            // these keys drops them silently at the shape step.
+            scope:                           $this->scope,
+            scoreMode:                       $this->scoreMode,
         );
     }
 

@@ -37,6 +37,7 @@ final class ConfigLoader
             'workers', 'incremental', 'lazy_ast',
             'sort', 'ted_weights', 'scorer',
             'fingerprint_id_mode',
+            'scope', 'score_mode',
             'ir_threshold', 'ml_pair_threshold', 'debug_log',
             'low_memory', 'fail_on_impact', 'max_clusters',
             'baseline', 'baseline_out', 'diff_base', 'apply',
@@ -61,6 +62,8 @@ final class ConfigLoader
             'ted_weights' => $base->tedWeights,
             'scorer' => $base->scorer,
             'fingerprint_id_mode' => $base->fingerprintIdMode,
+            'scope' => $base->scope,
+            'score_mode' => $base->scoreMode,
             'ir_threshold' => $base->irThreshold,
             'ml_pair_threshold' => $base->mlPairThreshold,
             'debug_log' => $base->debugLog,
@@ -149,6 +152,8 @@ final class ConfigLoader
             diffBase:                      $flat['diff_base'],
             apply:                         $flat['apply'],
             candidateBudget:               $flat['candidate_budget'],
+            scope:                         $flat['scope'],
+            scoreMode:                     $flat['score_mode'],
         );
     }
 
@@ -540,6 +545,8 @@ final class ConfigLoader
             'db_symbols',
             'scorer',
             'fingerprint_id_mode',
+            'scope',
+            'score_mode',
             'ir_threshold',
             'ml_pair_url',
             'ml_pair_threshold',
@@ -728,6 +735,20 @@ final class ConfigLoader
             // value 'realnames' is NOT admitted until 1.1-follow-up ships
             // the normalization work behind it.
             $assertEnum($data['fingerprint_id_mode'], 'fingerprint_id_mode', \Phpdup\Cli\Config::FINGERPRINT_ID_MODES);
+        }
+        if (array_key_exists('score_mode', $data)) {
+            // Item 5.1: 'global' is the byte-identical legacy stance;
+            // per-repo groups the ns double-dip by repo; typed rewards
+            // cross-repo clones (audit posture).
+            $assertEnum($data['score_mode'], 'score_mode', \Phpdup\Cli\Config::SCORE_MODES);
+        }
+        if (array_key_exists('scope', $data)) {
+            // Item 5.1: open-set value (any non-empty string): 'all',
+            // 'single', 'multi', or an exact repo label. Empty is the
+            // only shape error the loader can see here.
+            if (!is_string($data['scope']) || $data['scope'] === '') {
+                throw new \RuntimeException("scope must be a non-empty string$where");
+            }
         }
         if (array_key_exists('ir_threshold', $data)) {
             $assertFloat01($data['ir_threshold'], 'ir_threshold');

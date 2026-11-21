@@ -43,6 +43,25 @@ final class Block
 
     public ?Node $ast;
 
+    /**
+     * Item 5.1: repo label of the scan root that produced this block —
+     * basename of the longest matching configured root ('' when no root
+     * matches: an honest identity fallback, exactly like
+     * {@see \Phpdup\Util\PathCanonical}'s no-match case). Stamped per
+     * run by {@see \Phpdup\Scanning\RepoLabels}; never trusted from a
+     * deserialized cache (labels are run context, not content facts).
+     * Public-mutable by design like every other field on this class.
+     */
+    public string $repo = '';
+
+    /**
+     * Item 5.1: scope label of this block — {@see \Phpdup\Scanning\RepoLabels::SCOPE_SINGLE}
+     * ('single') when the run had one scan root, otherwise the
+     * containing root's {@see self::$repo} label. Stamped in the same
+     * pass; public-mutable by design.
+     */
+    public string $scope = '';
+
     public function __construct(
         public string $file,
         public LineRange $range,
