@@ -2,9 +2,12 @@
 
 Artifacts of the **dup-logo lab program** (rounds 1–3, generated 2026-11-20/21 by
 thirteen-seat read-only research lanes). Per the owner's ruling these are
-**logos only**: nothing is wired into the tool, and the generator scripts were
-deliberately **not** copied into this repo — they live in the lab dirs under
-`/tmp/opencode/` (origins in the table below).
+**logos only**: nothing is wired into the tool. The generator scripts were
+harvested from the lab dirs on 2026-11-21 into [`tools/`](tools/TOOLS.md) —
+renamed per seat (`r<round>-<seatNN>-<original-name>`), with provenance,
+purposes and the borrowed-stock/exclusion rules documented in
+[`tools/TOOLS.md`](tools/TOOLS.md); the lab originals under `/tmp/opencode/`
+remain the live sources (origins in the table below).
 
 ## Layout
 
