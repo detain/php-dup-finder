@@ -34,7 +34,7 @@ final class RefactorTestReporter
             if (count($cluster->members) < 2) {
                 continue;
             }
-            $safeId = preg_replace('/[^a-zA-Z0-9_-]/', '_', $cluster->id);
+            $safeId = Slug::safe($cluster->id);
             $file = $dir . DIRECTORY_SEPARATOR . "Cluster{$safeId}Test.php";
             file_put_contents($file, $this->buildTest($cluster));
         }

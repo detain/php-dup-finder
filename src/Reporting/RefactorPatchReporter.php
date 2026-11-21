@@ -70,7 +70,7 @@ final class RefactorPatchReporter
                     if (count($cluster->members) < 2) {
                         continue;
                     }
-                    $safeId = preg_replace('/[^a-zA-Z0-9_-]/', '_', $cluster->id);
+                    $safeId = Slug::safe($cluster->id);
                     $parts[] = $this->buildPatch($cluster, $safeId);
                 }
                 file_put_contents($dir . DIRECTORY_SEPARATOR . 'apply.diff', implode("\n", $parts));
@@ -83,7 +83,7 @@ final class RefactorPatchReporter
                     if (count($cluster->members) < 2) {
                         continue;
                     }
-                    $safeId = preg_replace('/[^a-zA-Z0-9_-]/', '_', $cluster->id);
+                    $safeId = Slug::safe($cluster->id);
                     $unsafe = $this->detectUnsafe($cluster);
                     if ($unsafe !== null) {
                         // Unsafe cluster: fall back to preview patch.
@@ -120,7 +120,7 @@ final class RefactorPatchReporter
             if (count($cluster->members) < 2) {
                 continue;
             }
-            $safeId = preg_replace('/[^a-zA-Z0-9_-]/', '_', $cluster->id);
+            $safeId = Slug::safe($cluster->id);
             $file = $dir . DIRECTORY_SEPARATOR . $safeId . '.patch';
             file_put_contents($file, $this->buildPatch($cluster, $safeId));
         }
@@ -135,7 +135,7 @@ final class RefactorPatchReporter
      */
     public function buildPatch(Cluster $cluster, ?string $safeId = null): string
     {
-        $safeId ??= preg_replace('/[^a-zA-Z0-9_-]/', '_', $cluster->id);
+        $safeId ??= Slug::safe($cluster->id);
         $unsafe = $this->detectUnsafe($cluster);
         $header = "# phpdup refactor patch — cluster {$cluster->id}\n"
                 . "# members: " . count($cluster->members)

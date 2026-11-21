@@ -11,6 +11,7 @@ use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Parsing\AstParser;
+use Phpdup\Reporting\Slug;
 use Phpdup\Util\AstSerializer;
 
 /**
@@ -69,7 +70,7 @@ final class ApplyExtractor
         if (!is_dir($refactoredDir)) {
             @mkdir($refactoredDir, 0o775, true);
         }
-        $safeId = preg_replace('/[^a-zA-Z0-9_-]/', '_', $cluster->id);
+        $safeId = Slug::safe($cluster->id);
         file_put_contents($refactoredDir . "/{$safeId}.php", $functionFile);
 
         // 4. Rewrite each member's call site.

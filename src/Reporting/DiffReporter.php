@@ -29,7 +29,7 @@ final class DiffReporter
             if (count($cluster->members) < 2) {
                 continue;
             }
-            $safeId = preg_replace('/[^a-zA-Z0-9_-]/', '_', $cluster->id);
+            $safeId = Slug::safe($cluster->id);
             $file = $dir . DIRECTORY_SEPARATOR . $safeId . '.diff';
             file_put_contents($file, $this->buildClusterDiff($cluster));
         }
