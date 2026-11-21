@@ -104,7 +104,7 @@
             ],
             "scope": "single",
             "template": {
-                "id": "53edd72b_2",
+                "id": "53edd72b_0",
                 "file": "tests/Fixtures/notify/Notify.php",
                 "start": 10,
                 "end": 15
@@ -114,7 +114,7 @@
                 "truncated": false
             },
             "evidence_diff": {
-                "member": "53edd72b_4",
+                "member": "53edd72b_1",
                 "file": "tests/Fixtures/notify/Notify.php",
                 "start": 17,
                 "end": 22,
@@ -215,7 +215,7 @@
             ],
             "scope": "single",
             "template": {
-                "id": "e02c914f_3",
+                "id": "e02c914f_0",
                 "file": "tests/Fixtures/notify/Notify.php",
                 "start": 12,
                 "end": 14
@@ -225,7 +225,7 @@
                 "truncated": false
             },
             "evidence_diff": {
-                "member": "e02c914f_5",
+                "member": "e02c914f_1",
                 "file": "tests/Fixtures/notify/Notify.php",
                 "start": 19,
                 "end": 21,

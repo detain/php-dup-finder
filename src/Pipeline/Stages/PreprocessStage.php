@@ -245,9 +245,39 @@ final class PreprocessStage implements CooperativeStageInterface
         }
 
         // Assign IDs (after collecting from all sources).
+        //
+        // CI-85 determinism: ids must not depend on arrival order. The old
+        // numbering used the global position in $blocks — an index that
+        // mixes cache-restored files (scan order) with worker-stream rows
+        // (completion timing), so the same corpus scanned under a different
+        // host, worker schedule, or sibling kind opt-in could hand a block
+        // `_9` here and `_10` there. That leaked byte-for-byte into report
+        // surfaces that embed ids (`template.id`, `evidence_diff.member`,
+        // `pairs[].blockA/B`) and into member ordering (clusters sort by
+        // strcmp of ids, medoid ties break on iteration order). Two fixes
+        // in one place, both content-derived:
+        //   1. sort $blocks canonically by (file, start, end, kind, name,
+        //      structuralHash) — the extraction position of a block is a
+        //      function of its source, so this order is host- and
+        //      schedule-independent (a shared absolute-path prefix does
+        //      not reorder anything within one root);
+        //   2. number each block by its rank WITHIN its 8-hex hash prefix
+        //      group instead of the global index, so adding or removing an
+        //      unrelated family (e.g. opting an extra kind into the run)
+        //      never renumbers the clones a stable cluster reports on.
+        // Uniqueness still holds: two blocks cannot share the full key
+        // (file, start, end, kind, name) — the extractor emits each
+        // traversable node once.
         $state->debug($output, sprintf('preprocess: assigning IDs to %d blocks... [%s]', count($blocks), MemoryDebug::getMemoryUsage()));
-        foreach ($blocks as $i => $b) {
-            $b->id = substr($b->structuralHash, 0, 8) . '_' . $i;
+        usort($blocks, static fn (Block $a, Block $b): int => [
+            $a->file, $a->range->start, $a->range->end, $a->kind, $a->name ?? '', $a->structuralHash,
+        ] <=> [
+            $b->file, $b->range->start, $b->range->end, $b->kind, $b->name ?? '', $b->structuralHash,
+        ]);
+        $rankByPrefix = [];
+        foreach ($blocks as $b) {
+            $prefix = substr($b->structuralHash, 0, 8);
+            $b->id = $prefix . '_' . ($rankByPrefix[$prefix] = ($rankByPrefix[$prefix] ?? -1) + 1);
             // Item 5.1: repo/scope labels are run context, so they are
             // (re)computed for every block here — cache-restored and
             // freshly extracted alike — after the cache-save pass above.
