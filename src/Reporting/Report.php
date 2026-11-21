@@ -19,6 +19,7 @@ final class Report
 {
     /**
      * @param list<Cluster> $clusters
+     * @param list<array<string, mixed>> $declaredTwins
      */
     public function __construct(
         public readonly int $files,
@@ -29,6 +30,11 @@ final class Report
         public readonly ?int $reusedFiles = null,
         public readonly ?int $processedFiles = null,
         public readonly ?int $skippedFiles = null,
+        // Item 4.3: declared-twin claim-vs-reality rows
+        // (DeclaredTwinAnalyzer::analyze()); trailing default = "feature
+        // not run" for library/worker producers, so the §5f rule that
+        // payload lists ride trailing params holds zero-cost.
+        public readonly array $declaredTwins = [],
     ) {
     }
 

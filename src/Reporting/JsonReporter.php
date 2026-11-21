@@ -54,6 +54,11 @@ final class JsonReporter
                 'min_cluster_impact'   => $report->config->minClusterImpact,
             ],
             'clusters' => array_map([$this, 'clusterPayload'], $report->clusters),
+            // Item 4.3: the declared-twin claim-vs-reality table —
+            // trailing-additive key, schema '1.2' → '1.3'. Producers
+            // without the analyzer pass emit [] (the key is always
+            // present so consumers can bind on it).
+            'declared_twins' => $report->declaredTwins,
         ];
     }
 

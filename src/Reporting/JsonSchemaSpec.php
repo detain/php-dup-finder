@@ -23,13 +23,21 @@ namespace Phpdup\Reporting;
 final class JsonSchemaSpec
 {
     /**
+     * 1.3 (minor, additive): trailing `declared_twins` top-level key —
+     * the item 4.3 claim-vs-reality table (one entry per doc-comment
+     * twin declaration, verdicts holds|drifted|unresolved|unmeasurable|
+     * harvested). Every 1.2 field keeps its name and type — including
+     * `clusters[].id`, whose VALUES moved to the canonical FindingId
+     * stream (item 4.4), a value change, not a shape change. 1.2
+     * consumers parse 1.3 payloads untouched; per the rules above a
+     * MINOR bump is a warning, not an error.
+     *
      * 1.2 (minor, additive): four trailing file-accounting keys in
      * `summary` (files_scanned, files_reused, files_processed,
      * files_without_blocks). Every 1.1 field keeps its name and type, so
-     * 1.1 consumers parse 1.2 payloads untouched — per the rules above a
-     * MINOR bump is a warning, not an error.
+     * 1.1 consumers parse 1.2 payloads untouched.
      */
-    public const SCHEMA_VERSION = '1.2';
+    public const SCHEMA_VERSION = '1.3';
 
     /**
      * Top-level shape of {@see JsonReporter::build()} output. This is
@@ -45,6 +53,38 @@ final class JsonSchemaSpec
             'summary'         => 'object',
             'config'          => 'object',
             'clusters'        => 'list<object>',
+            'declared_twins'  => 'list<object>  // item 4.3, trailing (1.3); see declaredTwinShape()',
+        ];
+    }
+
+    /**
+     * Shape of one `declared_twins` row (item 4.3). All values are
+     * JSON scalars or null: `keyword` is the lowercased declaration
+     * phrase; `reference` the path/symbol it names; `kind` is
+     * 'claim' | 'directive' (@phpdup-ignore harvest); `similarity` is
+     * the best measured Jaccard (null when unresolvable/unmeasurable);
+     * `verdict` is 'holds' | 'drifted' | 'unresolved' | 'unmeasurable'
+     * | 'harvested'; `cluster_id` links the claimant's cluster when it
+     * is one (canonical FindingId, item 4.4); `finding_id` is set only
+     * for directive rows.
+     *
+     * @return array<string, string>
+     */
+    public static function declaredTwinShape(): array
+    {
+        return [
+            'file'          => 'string',
+            'keyword'       => 'string',
+            'reference'     => 'string',
+            'kind'          => 'string',
+            'line'          => 'int',
+            'comment'       => 'string',
+            'finding_id'    => 'string|null',
+            'target_file'   => 'string|null',
+            'target_blocks' => 'int',
+            'similarity'    => 'float|null',
+            'cluster_id'    => 'string|null',
+            'verdict'       => 'string',
         ];
     }
 

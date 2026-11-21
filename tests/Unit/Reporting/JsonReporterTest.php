@@ -41,9 +41,13 @@ final class JsonReporterTest extends TestCase
         );
         $payload = (new JsonReporter())->build($report);
 
-        $this->assertSame('1.2', $payload['schema_version']);
+        $this->assertSame('1.3', $payload['schema_version']);
         $summary = $payload['summary'];
         $this->assertSame(array_keys(JsonSchemaSpec::summaryShape()), array_keys($summary));
+        // Item 4.3: trailing key, present even for producers that never
+        // ran the analyzer (default [] on Report).
+        $this->assertSame(array_keys(JsonSchemaSpec::topLevelShape()), array_keys($payload));
+        $this->assertSame([], $payload['declared_twins']);
         $this->assertSame(10, $summary['files']);          // historical key = files scanned
         $this->assertSame(10, $summary['files_scanned']);  // restated unambiguously
         $this->assertSame(3, $summary['files_reused']);

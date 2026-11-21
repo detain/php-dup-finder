@@ -282,16 +282,20 @@ final class CliSmokeTest extends TestCase
         );
     }
 
-    public function testJsonReportCarriesSchemaOneTwoAccountingKeys(): void
+    public function testJsonReportCarriesSchemaOneThreeAccountingKeys(): void
     {
         $corpus = $this->makeDupCorpus(2);
         $run = $this->cli(['analyze', $corpus, '--json', $this->tmp . '/r.json']);
         $this->assertSame(0, $run['exit'], $run['combined']);
 
         $decoded = json_decode((string) file_get_contents($this->tmp . '/r.json'), true);
-        $this->assertSame('1.2', $decoded['schema_version']);
+        $this->assertSame('1.3', $decoded['schema_version']);
         $this->assertSame(JsonSchemaSpec::SCHEMA_VERSION, $decoded['schema_version']);
         $this->assertSame(array_keys(JsonSchemaSpec::summaryShape()), array_keys($decoded['summary']));
+        // Item 4.3: `declared_twins` is the trailing top-level key and
+        // always present (empty array when the corpus declares nothing).
+        $this->assertSame(array_keys(JsonSchemaSpec::topLevelShape()), array_keys($decoded));
+        $this->assertSame([], $decoded['declared_twins']);
     }
 
     public function testWarmCacheRunReusesAndKeepsBalance(): void
@@ -379,7 +383,7 @@ final class CliSmokeTest extends TestCase
 
         $decoded = json_decode((string) file_get_contents($this->tmp . '/r.json'), true);
         $s = $decoded['summary'];
-        $this->assertSame('1.2', $decoded['schema_version']);
+        $this->assertSame('1.3', $decoded['schema_version']);
         $this->assertSame(20, $s['files_scanned']);
         $this->assertSame(0, $s['parse_errors'], 'the fixture corpus must parse cleanly');
         $this->assertSame(15, $s['clusters'], 'planted fixture clones must keep being found (re-pin only WITH fixture changes)');

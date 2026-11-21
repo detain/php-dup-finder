@@ -15,6 +15,7 @@ use Phpdup\Reporting\CheckstyleReporter;
 use Phpdup\Reporting\CliReporter;
 use Phpdup\Reporting\CoherenceAnalyzer;
 use Phpdup\Reporting\CsvReporter;
+use Phpdup\Reporting\DeclaredTwinAnalyzer;
 use Phpdup\Reporting\DiffReporter;
 use Phpdup\Reporting\GitLabSastReporter;
 use Phpdup\Reporting\GraphvizReporter;
@@ -109,6 +110,24 @@ final class ReportStage implements StageInterface
             $c->architecturalFindings = $findings;
         }
 
+        // Item 4.3: declared-twin verification — measure every doc-comment
+        // twin claim in the corpus against the retained content. Drifted
+        // claimant clusters gain a warning Finding here (rendered through
+        // the existing architectural-findings surface); the full table
+        // rides the Report as `declared_twins`. Needs the block index;
+        // without one (library-invoked ReportStage on hand-built state)
+        // the pass is honestly empty, never faked.
+        $declaredTwins = [];
+        if ($state->index !== null) {
+            $twinAnalyzer = new DeclaredTwinAnalyzer(
+                index: $state->index,
+                similarityThreshold: $config->similarityThreshold,
+                cacheDir: is_dir($config->cacheDir) ? $config->cacheDir : null,
+            );
+            $declaredTwins = $twinAnalyzer->analyze($clusters);
+            $twinAnalyzer->annotateClusters($clusters, $declaredTwins);
+        }
+
         $report = new Report(
             files: count($state->files),
             blocks: count($state->blocks),
@@ -118,6 +137,7 @@ final class ReportStage implements StageInterface
             reusedFiles: $state->reusedFiles,
             processedFiles: $state->processedFiles,
             skippedFiles: $state->skippedFiles,
+            declaredTwins: $declaredTwins,
         );
         $state->report   = $report;
         $state->clusters = $clusters;

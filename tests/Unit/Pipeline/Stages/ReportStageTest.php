@@ -12,6 +12,7 @@ use Phpdup\Pipeline\Stages\PreprocessStage;
 use Phpdup\Pipeline\Stages\RefactorStage;
 use Phpdup\Pipeline\Stages\ReportStage;
 use Phpdup\Pipeline\Stages\ScanningStage;
+use Phpdup\Reporting\JsonReporter;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\NullOutput;
 
@@ -24,6 +25,56 @@ final class ReportStageTest extends TestCase
         (new ReportStage(limit: 50, showStats: false))->run($state, new NullOutput());
 
         $this->assertNull($state->report);
+    }
+
+    /**
+     * Item 4.3 wiring: ReportStage runs the DeclaredTwinAnalyzer over
+     * the block index, lands the claim-vs-reality table on the Report
+     * (JSON top-level `declared_twins`), and stamps drifted claimant
+     * clusters with the warning Finding.
+     */
+    public function testReportStageRunsDeclaredTwinPassAndReportsDrift(): void
+    {
+        $tmp = sys_get_temp_dir() . '/phpdup-stage-twin-' . uniqid();
+        mkdir($tmp . '/cache', 0o775, true);
+        try {
+            file_put_contents($tmp . '/a.php', "<?php\nfunction shared_a(): int\n{\n    \$x = 1;\n    \$y = 2;\n    \$z = 3;\n    return \$x + \$y + \$z;\n}\n");
+            file_put_contents($tmp . '/b.php', "<?php\n/**\n * Mirror of a.php - keep in sync.\n */\nfunction drifted_b(): string\n{\n    \$a = 'completely';\n    \$b = 'different';\n    \$c = 'body';\n    return \$a . \$b . \$c . strrev('no-overlap');\n}\n");
+
+            $config = new Config(
+                paths: [$tmp],
+                exclude: [],
+                minBlockSize: 1,
+                cacheDir: $tmp . '/cache',
+            );
+            $state = new PipelineState($config);
+            $out   = new NullOutput();
+            (new ScanningStage())->run($state, $out);
+            (new PreprocessStage(useCache: false))->run($state, $out);
+            (new ClusterStage(exactOnly: false, useClusterCache: false))->run($state, $out);
+            $this->assertNotNull($state->index, 'ClusterStage leaves the index the twin pass measures');
+
+            (new ReportStage(limit: 50, showStats: false))->run($state, $out);
+
+            $this->assertNotNull($state->report);
+            $rows = $state->report->declaredTwins;
+            $this->assertNotEmpty($rows, 'the Mirror-of claim must reach the report through the stage');
+            $verdicts = array_column($rows, 'verdict');
+            $this->assertContains('drifted', $verdicts,
+                "b.php's body no longer resembles a.php — the FALSE claim must be flagged");
+
+            $decoded = (new JsonReporter())->build($state->report);
+            $this->assertSame($rows, $decoded['declared_twins'],
+                'the JSON top-level declared_twins key rides the stage-built report');
+        } finally {
+            @unlink($tmp . '/a.php');
+            @unlink($tmp . '/b.php');
+            foreach (glob($tmp . '/cache/*') ?: [] as $c) {
+                @unlink($c);
+            }
+            @rmdir($tmp . '/cache');
+            @rmdir($tmp);
+        }
     }
 
     public function testFullPipelineProducesReportAndCliOutput(): void
