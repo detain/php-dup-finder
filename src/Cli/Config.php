@@ -250,17 +250,17 @@ final class Config
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
         }
-        if ($similarityThreshold < 0 || $similarityThreshold > 1) {
-            throw new \InvalidArgumentException("similarity_threshold out of range");
+        if (!is_finite($similarityThreshold) || $similarityThreshold < 0 || $similarityThreshold > 1) {
+            throw new \InvalidArgumentException("similarity_threshold out of range (must be a finite number in [0, 1], got $similarityThreshold)");
         }
-        if ($treeThreshold < 0 || $treeThreshold > 1) {
-            throw new \InvalidArgumentException("tree_threshold out of range");
+        if (!is_finite($treeThreshold) || $treeThreshold < 0 || $treeThreshold > 1) {
+            throw new \InvalidArgumentException("tree_threshold out of range (must be a finite number in [0, 1], got $treeThreshold)");
         }
-        if ($optionalBlocksContainment < 0 || $optionalBlocksContainment > 1) {
-            throw new \InvalidArgumentException("optional_blocks_containment out of range");
+        if (!is_finite($optionalBlocksContainment) || $optionalBlocksContainment < 0 || $optionalBlocksContainment > 1) {
+            throw new \InvalidArgumentException("optional_blocks_containment out of range (must be a finite number in [0, 1], got $optionalBlocksContainment)");
         }
-        if ($optionalBlocksMinOverlap < 0 || $optionalBlocksMinOverlap > 1) {
-            throw new \InvalidArgumentException("optional_blocks_min_overlap out of range");
+        if (!is_finite($optionalBlocksMinOverlap) || $optionalBlocksMinOverlap < 0 || $optionalBlocksMinOverlap > 1) {
+            throw new \InvalidArgumentException("optional_blocks_min_overlap out of range (must be a finite number in [0, 1], got $optionalBlocksMinOverlap)");
         }
         if ($optionalBlocksMaxPerCluster < 0) {
             throw new \InvalidArgumentException("optional_blocks_max_per_cluster must be >= 0");
@@ -285,11 +285,11 @@ final class Config
                 . ", got: $fingerprintIdMode"
             );
         }
-        if ($irThreshold < 0 || $irThreshold > 1) {
-            throw new \InvalidArgumentException("ir_threshold out of range");
+        if (!is_finite($irThreshold) || $irThreshold < 0 || $irThreshold > 1) {
+            throw new \InvalidArgumentException("ir_threshold out of range (must be a finite number in [0, 1], got $irThreshold)");
         }
-        if ($mlPairThreshold < 0 || $mlPairThreshold > 1) {
-            throw new \InvalidArgumentException("ml_pair_threshold out of range");
+        if (!is_finite($mlPairThreshold) || $mlPairThreshold < 0 || $mlPairThreshold > 1) {
+            throw new \InvalidArgumentException("ml_pair_threshold out of range (must be a finite number in [0, 1], got $mlPairThreshold)");
         }
         if ($candidateBudget < 0) {
             throw new \InvalidArgumentException("candidate_budget must be >= 0 (0 = unlimited pair generation)");
@@ -305,8 +305,8 @@ final class Config
         if ($maxTedSize < 1) {
             throw new \InvalidArgumentException("max_ted_size must be >= 1 (0 or negative would gate every pair)");
         }
-        if ($maxHoleCoverage < 0 || $maxHoleCoverage > 1) {
-            throw new \InvalidArgumentException("max_hole_coverage must be within 0..1 (got $maxHoleCoverage)");
+        if (!is_finite($maxHoleCoverage) || $maxHoleCoverage < 0 || $maxHoleCoverage > 1) {
+            throw new \InvalidArgumentException("max_hole_coverage must be a finite number within 0..1 (got $maxHoleCoverage)");
         }
         if ($mlPairUrl !== '' && !\Phpdup\Ml\MlClient::isAllowedUrl(rtrim($mlPairUrl, '/') . '/score-pair')) {
             throw new \InvalidArgumentException("ml_pair_url failed validation: $mlPairUrl");

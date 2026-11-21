@@ -39,9 +39,8 @@ final class Ranker
         }
         $this->sort         = $sort ?? new ClusterSort();
         $this->safetyScorer = $safetyScorer ?? new SafetyScorer($scoreMode);
-        if ($minSafety < 0.0 || $minSafety > 1.0) {
-            throw new \InvalidArgumentException("minSafety out of range");
-        }
+        // No minSafety range check here: range admission is a CLI/config
+        // boundary contract (output-056), not a per-call-site crash leg.
     }
 
     /**

@@ -28,8 +28,8 @@ final class CoherenceAnalyzer
         private readonly float $outlierThreshold = 0.6,
     ) {
         $this->jaccard = new JaccardSimilarity();
-        if ($outlierThreshold < 0.0 || $outlierThreshold > 1.0) {
-            throw new \InvalidArgumentException("outlierThreshold out of range");
+        if (!is_finite($outlierThreshold) || $outlierThreshold < 0.0 || $outlierThreshold > 1.0) {
+            throw new \InvalidArgumentException("outlierThreshold out of range (must be a finite number in [0, 1], got $outlierThreshold)");
         }
     }
 

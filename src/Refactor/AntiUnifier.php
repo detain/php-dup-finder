@@ -155,10 +155,10 @@ final class AntiUnifier
      * hole sets mean the seed maximally captured what the cluster
      * has in common.
      *
-     * For clusters of <=2 members or when there's a unique largest
-     * member by a wide margin, this falls back to the single-seed
-     * pick. Only kicks in when ≥3 members of comparable size give
-     * the search room to choose.
+     * Falls back to the single-seed pick for clusters with fewer
+     * than 3 members. There is no margin-based short-circuit: at
+     * ≥3 members the trial search always runs, over whichever
+     * members rank top SEED_CANDIDATES by size.
      *
      * @param list<Block> $members
      */

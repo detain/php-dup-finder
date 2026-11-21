@@ -55,6 +55,36 @@ final class CoherenceAnalyzerTest extends TestCase
         $this->assertNotEmpty($cluster->outlierMemberIds, 'high threshold flags partial-overlap member');
     }
 
+    public function testConstructorRejectsNonFiniteThreshold(): void
+    {
+        foreach ([NAN, INF, -INF] as $poison) {
+            try {
+                new CoherenceAnalyzer($poison);
+                $this->fail('constructor accepted non-finite threshold ' . var_export($poison, true));
+            } catch (\InvalidArgumentException $e) {
+                $this->assertStringContainsString('outlierThreshold', $e->getMessage());
+            }
+        }
+    }
+
+    public function testConstructorRejectsOutOfRangeFiniteThreshold(): void
+    {
+        foreach ([-0.1, 1.1] as $poison) {
+            try {
+                new CoherenceAnalyzer($poison);
+                $this->fail('constructor accepted out-of-range threshold ' . var_export($poison, true));
+            } catch (\InvalidArgumentException $e) {
+                $this->assertStringContainsString('outlierThreshold', $e->getMessage());
+            }
+        }
+    }
+
+    public function testConstructorAcceptsBoundaryThresholds(): void
+    {
+        $this->assertNotNull(new CoherenceAnalyzer(0.0));
+        $this->assertNotNull(new CoherenceAnalyzer(1.0));
+    }
+
     /** @param list<Block> $members */
     private function cluster(array $members): Cluster
     {
