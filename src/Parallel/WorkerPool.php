@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace Phpdup\Parallel;
 
+use Phpdup\Persistence\SerializedClassAllowList;
+
 /**
  * pcntl_fork-based worker pool for embarrassingly parallel batch work.
  *
@@ -115,6 +117,17 @@ final class WorkerPool
         $buffers  = [];
         $gcCounter = 0;
 
+        // Decode with the same explicit class allow-list the disk caches use
+        // (IndexStore / ClusterCache via SerializedClassAllowList): worker
+        // rows legitimately embed Block / Hole / LineRange / PhpParser node
+        // graphs, and 'allowed_classes' => false turned every such object
+        // arriving here into __PHP_Incomplete_Class, corrupting downstream
+        // consumers (BUG-B: `analyze src` died at PreprocessStage id-assign).
+        // Hoisted per run: parserClasses() is memoized internally, but
+        // blockCacheClasses() re-runs the array merge on each call and this
+        // is the hot decode path.
+        $allowList = SerializedClassAllowList::blockCacheClasses();
+
         foreach ($chunks as $idx => $chunk) {
             $pair = @stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
             if ($pair === false) {
@@ -188,13 +201,25 @@ final class WorkerPool
                         $payload = substr($buffers[$idx], self::FRAME_HEADER, $len);
                         $buffers[$idx] = substr($buffers[$idx], self::FRAME_HEADER + $len);
 
-                        $record = @unserialize($payload, ['allowed_classes' => false]);
+                        $record = @unserialize($payload, ['allowed_classes' => $allowList]);
                         if (is_array($record) && isset($record['__error'])) {
                             throw new \RuntimeException("Worker $idx failed: " . $record['__error']);
                         }
                         if (is_array($record) && isset($record['__done'])) {
                             $closeAfter = true;
                             break;
+                        }
+                        // Fail loud instead of yielding silently-corrupt data:
+                        // an incomplete class here means the worker channel now
+                        // ships a class that is missing from the allow-list
+                        // (a new wire type whose author forgot to extend it).
+                        $blocked = self::findBlockedClassName($record);
+                        if ($blocked !== null) {
+                            throw new \RuntimeException(
+                                "Worker $idx returned an object of class '$blocked', which is missing from the " .
+                                "unserialize allow-list (SerializedClassAllowList::blockCacheClasses()) — " .
+                                'extend the allow-list for the new wire class. Refusing to continue with corrupt data.'
+                            );
                         }
                         yield $record;
                     }
@@ -222,6 +247,66 @@ final class WorkerPool
                 }
             }
         }
+    }
+
+    /**
+     * Recursively scan a decoded record for blocked classes.
+     *
+     * unserialize() converts every instance whose class is absent from the
+     * allow-list into __PHP_Incomplete_Class; left unchecked those poison the
+     * pipeline downstream (the property-access / substr() crash class this
+     * guard retires). The scan walks array values and object properties —
+     * every class legitimately shipped over the worker wire (Block, LineRange,
+     * Hole, Cluster and all PhpParser nodes) keeps its state in public
+     * properties, which get_object_vars() sees from this scope.
+     *
+     * Object ids are visited once: DAG-shaped payloads (the same node shared
+     * by many holes) cost a single pass, and a pathological cycle cannot hang
+     * the scan.
+     *
+     * @return string|null the blocked instance's original class name, or null
+     *                     when the record decodes clean.
+     */
+    private static function findBlockedClassName(mixed $record): ?string
+    {
+        /** @var array<int, true> $seen */
+        $seen = [];
+        return self::scanForBlockedClass($record, $seen);
+    }
+
+    /** @param array<int, true> $seen spl_object_id() set of visited objects */
+    private static function scanForBlockedClass(mixed $value, array &$seen): ?string
+    {
+        if (is_array($value)) {
+            foreach ($value as $item) {
+                $blocked = self::scanForBlockedClass($item, $seen);
+                if ($blocked !== null) {
+                    return $blocked;
+                }
+            }
+            return null;
+        }
+        if (!is_object($value)) {
+            return null;
+        }
+        $oid = spl_object_id($value);
+        if (isset($seen[$oid])) {
+            return null;
+        }
+        $seen[$oid] = true;
+        if ($value instanceof \__PHP_Incomplete_Class) {
+            /** @var array<string, mixed> $vars */
+            $vars = get_object_vars($value);
+            $name = $vars['__PHP_Incomplete_Class_Name'] ?? null;
+            return is_string($name) && $name !== '' ? $name : '<unknown>';
+        }
+        foreach (get_object_vars($value) as $propertyValue) {
+            $blocked = self::scanForBlockedClass($propertyValue, $seen);
+            if ($blocked !== null) {
+                return $blocked;
+            }
+        }
+        return null;
     }
 
     /**
