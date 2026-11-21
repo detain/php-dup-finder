@@ -22,8 +22,11 @@ use Phpdup\Util\Delimiters;
  *
  * Algorithm — per cluster:
  *
- *   1. Pick the seed: the member with the most AST nodes. Used as the
- *      template so it acts as the "maximal" version of the abstraction.
+ *   1. Pick the seed: for clusters of 3+ members, the top
+ *      {@see self::SEED_CANDIDATES} members by node count are each tried
+ *      as the template and the one whose walk yields the fewest holes
+ *      wins; below that, the member with the most AST nodes. The winning
+ *      walk IS the unification — see {@see self::pickBestSeed()}.
  *   2. For each other member i, walk seed and member i in parallel:
  *       - if a hole already exists at this path: record member i's
  *         value, stop recursing
@@ -45,6 +48,8 @@ final class AntiUnifier
     private Standard $printer;
     /** @var array<string, list<int|string>> holeId => path — populated after each unify() call */
     private array $lastHolePaths = [];
+    /** @var int full anti-unification walks performed by the most recent unify() call */
+    private int $lastWalkCount = 0;
 
     public function __construct(
         private readonly ?BlockAstLoader $astLoader = null,
@@ -65,10 +70,27 @@ final class AntiUnifier
         return $this->lastHolePaths;
     }
 
+    /**
+     * Number of complete anti-unification walks performed by the most
+     * recent unify() call.
+     *
+     * Regression seam for php-dup-finder-output-014: the seed search used
+     * to run SEED_CANDIDATES trial walks, throw them all away, and walk a
+     * second time with the winner (≈4× per ≥3-member cluster). The
+     * winning trial's context is now carried forward, so this count is
+     * exactly the number of candidate walks — never more than
+     * SEED_CANDIDATES, and 1 for every cluster below 3 members.
+     */
+    public function getLastWalkCount(): int
+    {
+        return $this->lastWalkCount;
+    }
+
     public function unify(Cluster $cluster): void
     {
         $members = $cluster->members;
         $count   = count($members);
+        $this->lastWalkCount = 0;
         if ($count === 0) {
             return;
         }
@@ -78,24 +100,19 @@ final class AntiUnifier
             return;
         }
 
-        // 1. Multi-seed search: try the top candidate seeds and pick
-        //    the one that yields the smallest hole set (the abstraction
-        //    with the most agreement across members). When all members
-        //    are the same size the original largest-member tiebreaker
-        //    still wins, so this only changes behaviour for clusters
-        //    where one seed truly produces a tighter abstraction.
-        $seedIdx = $this->pickBestSeed($members);
-        if ($seedIdx !== 0) {
-            // Swap into a local array — cluster.members order stays as the
-            // ranker arranged it, but unification proceeds with seed at index 0.
-            [$members[0], $members[$seedIdx]] = [$members[$seedIdx], $members[0]];
-        }
-
-        $ctx = new UnifyContext($this->optionalBlocksEnabled, $this->optionalBlocksMaxPerCluster);
-        $first = $this->astOf($members[0]);
-        for ($i = 1; $i < $count; $i++) {
-            $this->walk($first, $this->astOf($members[$i]), $i, $ctx, []);
-        }
+        // 1. Seed search. Multi-seed: try the top candidate seeds and pick
+        //    the one whose walk yields the smallest hole set (the
+        //    abstraction with the most agreement across members). When all
+        //    members are the same size the original largest-member
+        //    tiebreaker still wins, so this only changes behaviour for
+        //    clusters where one seed truly produces a tighter abstraction.
+        //    The winning trial is CARRIED FORWARD as the final unification
+        //    (output-014): walk() only ever reads the template, so the
+        //    trials need no per-candidate deep clone and the winner must
+        //    not be walked a second time. The one legitimate clone is the
+        //    generalizedAst below — the mutation-ready template handed to
+        //    the refactor consumers.
+        [$seedIdx, $seedAst, $ctx] = $this->pickBestSeed($members);
 
         // 2. Pad any holes whose later-arriving members agreed structurally —
         //    walk's early-return appends a value, but optional_block holes get
@@ -111,7 +128,7 @@ final class AntiUnifier
             }
         }
 
-        $cluster->generalizedAst = Normalizer::deepClone($first);
+        $cluster->generalizedAst = Normalizer::deepClone($seedAst);
         $cluster->holes          = array_values($ctx->holes);
 
         // 3. Remap observed values from internal (seed-first) to external
@@ -147,73 +164,103 @@ final class AntiUnifier
     }
 
     /**
-     * Multi-seed search.
+     * Multi-seed search returning the winning walk itself.
      *
      * Picks the top {@see self::SEED_CANDIDATES} candidates by size,
-     * runs a *trial* unification with each as seed, and returns the
-     * index whose run produces the smallest set of holes. Smaller
-     * hole sets mean the seed maximally captured what the cluster
-     * has in common.
+     * runs a *trial* unification with each as seed, and hands back the
+     * index whose run produces the smallest set of holes — together
+     * with that run's template AST and context, so the caller adopts
+     * the winning trial as the final unification instead of re-walking
+     * (php-dup-finder-output-014: walk() only reads the template, so
+     * trials need no deep clone and the winner needs no second pass).
      *
      * Falls back to the single-seed pick for clusters with fewer
-     * than 3 members. There is no margin-based short-circuit: at
-     * ≥3 members the trial search always runs, over whichever
-     * members rank top SEED_CANDIDATES by size.
+     * than 3 members — exactly one walk, no trial comparison. There is
+     * no margin-based short-circuit: at ≥3 members the trial search
+     * always runs, over whichever members rank top SEED_CANDIDATES by
+     * size, and ties go to the earlier candidate (strict-less-than
+     * comparison over the size-ranked order).
      *
      * @param list<Block> $members
+     * @return array{0: int, 1: Node|null, 2: UnifyContext} seed index, seed AST, winning walk context
      */
-    private function pickBestSeed(array $members): int
+    private function pickBestSeed(array $members): array
     {
         $count = count($members);
         if ($count < 3) {
-            return $this->pickSeedIndex($members);
+            $idx = $this->pickSeedIndex($members);
+            [$ctx, $ast] = $this->trialUnify($members, $idx);
+            return [$idx, $ast, $ctx];
         }
 
-        // Rank candidates by size, descending; consider top SEED_CANDIDATES.
+        $candidates = $this->rankSeedCandidates($members);
+
+        $bestIdx = $candidates[0];
+        [$bestCtx, $bestAst] = $this->trialUnify($members, $bestIdx);
+        $bestHoles = count($bestCtx->holes);
+
+        foreach (array_slice($candidates, 1) as $idx) {
+            [$ctx, $ast] = $this->trialUnify($members, $idx);
+            $holes = count($ctx->holes);
+            if ($holes >= $bestHoles) {
+                continue;
+            }
+            $bestIdx   = $idx;
+            $bestCtx   = $ctx;
+            $bestAst   = $ast;
+            $bestHoles = $holes;
+        }
+        return [$bestIdx, $bestAst, $bestCtx];
+    }
+
+    /**
+     * Seed candidate indices, largest member first. PHP's sort is stable,
+     * so equal sizes keep their cluster order.
+     *
+     * @param list<Block> $members
+     * @return list<int>
+     */
+    private function rankSeedCandidates(array $members): array
+    {
         $ranked = [];
         foreach ($members as $i => $m) {
             $ranked[] = [$i, $m->size];
         }
         usort($ranked, static fn(array $a, array $b) => $b[1] <=> $a[1]);
-        $candidates = array_slice($ranked, 0, self::SEED_CANDIDATES);
-
-        $bestIdx  = $candidates[0][0];
-        $bestHoles = PHP_INT_MAX;
-        foreach ($candidates as [$idx, $size]) {
-            $holes = $this->trialUnifyHoleCount($members, $idx);
-            if ($holes < $bestHoles) {
-                $bestHoles = $holes;
-                $bestIdx   = $idx;
-            }
-        }
-        return $bestIdx;
+        $top = array_slice($ranked, 0, self::SEED_CANDIDATES);
+        return array_map(static fn(array $pair): int => $pair[0], $top);
     }
 
     /** Number of seed candidates to evaluate in the multi-seed search. */
     private const SEED_CANDIDATES = 3;
 
     /**
-     * Run a *no-op* unification with $candidateIdx as seed and report
-     * the resulting hole count. Doesn't mutate $cluster — used purely
-     * for picking between candidate seeds. Costs roughly the same as
-     * one regular unification call per candidate; only invoked when
-     * ≥3 members are available so the worst case is 3x.
+     * Run one anti-unification with $seedIdx as template and return its
+     * context plus the template it walked. Doesn't mutate $members, the
+     * cluster, or any AST node — walk() reads the template, so no deep
+     * clone is needed here; the single clone that IS required (the
+     * mutation-ready generalizedAst) lives in unify(). Costs exactly one
+     * full walk per call.
      *
      * @param list<Block> $members
+     * @return array{0: UnifyContext, 1: Node|null}
      */
-    private function trialUnifyHoleCount(array $members, int $candidateIdx): int
+    private function trialUnify(array $members, int $seedIdx): array
     {
+        $this->lastWalkCount++;
         $local = $members;
-        if ($candidateIdx !== 0) {
-            [$local[0], $local[$candidateIdx]] = [$local[$candidateIdx], $local[0]];
+        if ($seedIdx !== 0) {
+            // Swap into a local array — cluster.members order stays as the
+            // ranker arranged it, but unification proceeds with seed at index 0.
+            [$local[0], $local[$seedIdx]] = [$local[$seedIdx], $local[0]];
         }
-        $ctx   = new UnifyContext($this->optionalBlocksEnabled, $this->optionalBlocksMaxPerCluster);
-        $first = Normalizer::deepClone($this->astOf($local[0]));
-        $count = count($local);
+        $ctx      = new UnifyContext($this->optionalBlocksEnabled, $this->optionalBlocksMaxPerCluster);
+        $template = $this->astOf($local[0]);
+        $count    = count($local);
         for ($i = 1; $i < $count; $i++) {
-            $this->walk($first, $this->astOf($local[$i]), $i, $ctx, []);
+            $this->walk($template, $this->astOf($local[$i]), $i, $ctx, []);
         }
-        return count($ctx->holes);
+        return [$ctx, $template];
     }
 
     private function astOf(Block $block): Node|null

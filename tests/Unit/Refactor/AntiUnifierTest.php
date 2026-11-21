@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Phpdup\Tests\Unit\Refactor;
 
+use PhpParser\PrettyPrinter\Standard;
 use PHPUnit\Framework\TestCase;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
@@ -361,4 +362,474 @@ final class AntiUnifierTest extends TestCase
         }
         return new Cluster('IFTEST', $blocks, 1.0, false);
     }
+
+    // ── output-S25 (php-dup-finder-output-014): seed trials carry forward ────
+
+    public function testTrialPathNeverDeepClonesTheSeedTemplate(): void
+    {
+        $file   = (new \ReflectionClass(AntiUnifier::class))->getFileName();
+        $this->assertIsString($file);
+        $source = (string)file_get_contents($file);
+
+        // Structure check (grep-as-spy on the compiled unit): every walk of
+        // a >=3-member cluster runs through the seed-search methods, so the
+        // trial path is clone-free exactly when these bodies are clone-free.
+        $bodyOf = static function (string $method) use ($source): string {
+            $ref   = new \ReflectionMethod(AntiUnifier::class, $method);
+            $lines = array_slice(
+                explode("\n", $source),
+                (int)$ref->getStartLine() - 1,
+                (int)$ref->getEndLine() - (int)$ref->getStartLine() + 1,
+            );
+            return implode("\n", $lines);
+        };
+
+        foreach (['pickBestSeed', 'rankSeedCandidates', 'trialUnify'] as $method) {
+            $this->assertStringNotContainsString(
+                'deepClone',
+                $bodyOf($method),
+                "$method must not clone the template — walk() only reads it",
+            );
+        }
+
+        // The second half of the finding: unify() must not re-walk after the
+        // search — all walking happens inside the carried candidate trials.
+        $this->assertStringNotContainsString('$this->walk(', $bodyOf('unify'));
+
+        // The ONLY Normalizer::deepClone call sites left are the two
+        // legitimate ones in unify(): the single-member template and the
+        // mutation-ready generalizedAst.
+        $this->assertSame(2, substr_count($source, 'Normalizer::deepClone('));
+        $this->assertSame(2, substr_count($bodyOf('unify'), 'Normalizer::deepClone('));
+    }
+
+    public function testGeneralizedAstRemainsAFreshCloneOfTheCarriedSeed(): void
+    {
+        // Winner carries forward, but the template the consumers receive is
+        // still a private deep copy — ApplyExtractor may mutate it without
+        // touching the member's own AST.
+        $cluster = $this->clusterFor([
+            'function long()  { a(); b(); c(); d(); e(); }',
+            'function mid()   { a(); b(); c(); d(); }',
+            'function short() { a(); b(); c(); }',
+        ]);
+
+        $antiUnifier = new AntiUnifier();
+        $antiUnifier->unify($cluster);
+
+        $this->assertSame(3, $antiUnifier->getLastWalkCount(), 'three candidate walks, zero discarded re-walks');
+        $this->assertSame([], $cluster->holes, 'the zero-hole seed wins exactly as before the refactor');
+
+        $seed = $cluster->members[2];
+        $this->assertNotNull($seed->ast);
+        $this->assertNotNull($cluster->generalizedAst);
+        $this->assertNotSame($seed->ast, $cluster->generalizedAst);
+
+        $printer = new Standard();
+        $this->assertSame(
+            trim($printer->prettyPrint([$seed->ast])),
+            trim($printer->prettyPrint([$cluster->generalizedAst])),
+        );
+    }
+
+    /**
+     * @param list<string> $codes
+     * @param array<string, mixed> $opts
+     * @param array{seed_matches: list<int>, generalizedAst: string, holes: list<array{0: string, 1: string, 2: list<string>, 3: bool}>, holePaths: array<string, list<int|string>>} $expect
+     *
+     * @dataProvider preChangeSeedPins
+     */
+    public function testSeedAndHoleSetAreIdenticalToPreChange(
+        array $codes,
+        array $opts,
+        array $expect,
+        int $walks,
+    ): void {
+        $cluster = $this->clusterFor($codes);
+
+        $antiUnifier = new AntiUnifier(...$opts);
+        $antiUnifier->unify($cluster);
+
+        $printer = new Standard();
+        $ast     = $cluster->generalizedAst;
+        $this->assertNotNull($ast);
+        $printed = trim($printer->prettyPrint([$ast]));
+        $this->assertSame($expect['generalizedAst'], $printed);
+
+        $matches = [];
+        foreach ($cluster->members as $i => $member) {
+            if ($member->ast !== null && trim($printer->prettyPrint([$member->ast])) === $printed) {
+                $matches[] = $i;
+            }
+        }
+        $this->assertSame($expect['seed_matches'], $matches, 'chosen seed must be the pre-change pick');
+
+        $holes = [];
+        foreach ($cluster->holes as $h) {
+            $holes[] = [$h->placeholder, $h->kind, $h->observedValues, $h->degraded];
+        }
+        $this->assertSame($expect['holes'], $holes, 'hole set must be identical to pre-change');
+
+        // ApplyExtractor wire shape: holeId => path, unchanged.
+        $this->assertSame($expect['holePaths'], $cluster->holePaths);
+        $this->assertSame($expect['holePaths'], $antiUnifier->getLastHolePaths());
+
+        $this->assertSame(
+            $walks,
+            $antiUnifier->getLastWalkCount(),
+            'one walk per candidate with the winner carried — no discarded re-walk',
+        );
+    }
+
+    /**
+     * Measured on master BEFORE the carry-forward refactor (output-014
+     * rebase): seed pick + hole set as they were BEFORE the carry-forward
+     * refactor — pinned so the refactor is proven identity-preserving.
+     *
+     * @return array<string, array{codes: list<string>, opts: array<string, mixed>, expect: array{seed_matches: list<int>, generalizedAst: string, holes: list<array{0: string, 1: string, 2: list<string>, 3: bool}>, holePaths: array<string, list<int|string>>}, walks: int}>
+     */
+    public static function preChangeSeedPins(): array
+    {
+        return [
+            'three_notify' => [
+                'codes' => [
+                    'function notifyHigh($u, $s) { if ($s > 10) { send("admin", $u); } }',
+                    'function notifyMid($u, $s) { if ($s > 20) { send("moderator", $u); } }',
+                    'function notifyLow($u, $s) { if ($s > 30) { send("editor", $u); } }',
+                ],
+                'opts' => [],
+                'expect' => [
+                    'seed_matches' => [
+                        0,
+                    ],
+                    'generalizedAst' => 'function notifyHigh($u, $s)
+{
+    if ($s > 10) {
+        send("admin", $u);
+    }
+}',
+                    'holes' => [
+                        [
+                            '__P0',
+                            'literal',
+                            [
+                                '10',
+                                '20',
+                                '30',
+                            ],
+                            false,
+                        ],
+                        [
+                            '__P1',
+                            'literal',
+                            [
+                                '\'admin\'',
+                                '\'moderator\'',
+                                '\'editor\'',
+                            ],
+                            false,
+                        ],
+                    ],
+                    'holePaths' => [
+                        '__P0' => [
+                            'stmts',
+                            0,
+                            'cond',
+                            'right',
+                        ],
+                        '__P1' => [
+                            'stmts',
+                            0,
+                            'stmts',
+                            0,
+                            'expr',
+                            'args',
+                            0,
+                            'value',
+                        ],
+                    ],
+                ],
+                'walks' => 3,
+            ],
+            'three_selection' => [
+                'codes' => [
+                    'function a($x) { logit($x); return strlen($x); }',
+                    'function b($x) { return strlen($x); }',
+                    'function c($x) { return strlen($x) + 7; }',
+                ],
+                'opts' => [],
+                'expect' => [
+                    'seed_matches' => [
+                        1,
+                    ],
+                    'generalizedAst' => 'function b($x)
+{
+    return strlen($x);
+}',
+                    'holes' => [
+                        [
+                            '__P0',
+                            'subtree',
+                            [
+                                'strlen($x)',
+                                'strlen($x)',
+                                'strlen($x) + 7',
+                            ],
+                            false,
+                        ],
+                    ],
+                    'holePaths' => [
+                        '__P0' => [
+                            'stmts',
+                            0,
+                            'expr',
+                        ],
+                    ],
+                ],
+                'walks' => 3,
+            ],
+            'three_optional_lcs' => [
+                'codes' => [
+                    'function long()  { a(); b(); c(); d(); e(); }',
+                    'function mid()   { a(); b(); c(); d(); }',
+                    'function short() { a(); b(); c(); }',
+                ],
+                'opts' => [
+                    'optionalBlocksEnabled' => true,
+                ],
+                'expect' => [
+                    'seed_matches' => [
+                        2,
+                    ],
+                    'generalizedAst' => 'function short()
+{
+    a();
+    b();
+    c();
+}',
+                    'holes' => [],
+                    'holePaths' => [],
+                ],
+                'walks' => 3,
+            ],
+            'two_member_pair' => [
+                'codes' => [
+                    'function long()  { a(); b(); c(); d(); e(); }',
+                    'function short() { a(); b(); c(); }',
+                ],
+                'opts' => [],
+                'expect' => [
+                    'seed_matches' => [
+                        0,
+                    ],
+                    'generalizedAst' => 'function long()
+{
+    a();
+    b();
+    c();
+    d();
+    e();
+}',
+                    'holes' => [
+                        [
+                            '__O0',
+                            'optional_block',
+                            [
+                                'd();',
+                                '<absent>',
+                            ],
+                            false,
+                        ],
+                        [
+                            '__O1',
+                            'optional_block',
+                            [
+                                'e();',
+                                '<absent>',
+                            ],
+                            false,
+                        ],
+                    ],
+                    'holePaths' => [
+                        '__O0' => [
+                            'stmts',
+                            3,
+                        ],
+                        '__O1' => [
+                            'stmts',
+                            4,
+                        ],
+                    ],
+                ],
+                'walks' => 1,
+            ],
+            'three_xor_null' => [
+                'codes' => [
+                    'function f($x) { return $x + 1; }',
+                    'function g($x) { return; }',
+                    'function h($x) { return $x + 2; }',
+                ],
+                'opts' => [],
+                'expect' => [
+                    'seed_matches' => [
+                        0,
+                    ],
+                    'generalizedAst' => 'function f($x)
+{
+    return $x + 1;
+}',
+                    'holes' => [
+                        [
+                            '__P0',
+                            'subtree',
+                            [
+                                '',
+                                '',
+                                '$x + 2',
+                            ],
+                            true,
+                        ],
+                    ],
+                    'holePaths' => [
+                        '__P0' => [
+                            'stmts',
+                            0,
+                            'expr',
+                        ],
+                    ],
+                ],
+                'walks' => 3,
+            ],
+            'three_optional_off' => [
+                'codes' => [
+                    'function long()  { a(); b(); c(); d(); e(); }',
+                    'function mid()   { a(); b(); c(); d(); }',
+                    'function short() { a(); b(); c(); }',
+                ],
+                'opts' => [
+                    'optionalBlocksEnabled' => false,
+                ],
+                'expect' => [
+                    'seed_matches' => [
+                        0,
+                    ],
+                    'generalizedAst' => 'function long()
+{
+    a();
+    b();
+    c();
+    d();
+    e();
+}',
+                    'holes' => [
+                        [
+                            '__P0',
+                            'subtree',
+                            [
+                                '',
+                                '',
+                                '',
+                            ],
+                            true,
+                        ],
+                    ],
+                    'holePaths' => [
+                        '__P0' => [
+                            'stmts',
+                        ],
+                    ],
+                ],
+                'walks' => 3,
+            ],
+            'four_cap_two' => [
+                'codes' => [
+                    'function long()  { a(); b(); c(); d(); e(); f(); g(); }',
+                    'function m1()    { a(); b(); c(); }',
+                    'function m2()    { a(); b(); d(); e(); }',
+                    'function short() { a(); b(); c(); d(); }',
+                ],
+                'opts' => [
+                    'optionalBlocksEnabled' => true,
+                    'optionalBlocksMaxPerCluster' => 2,
+                ],
+                'expect' => [
+                    'seed_matches' => [
+                        0,
+                    ],
+                    'generalizedAst' => 'function long()
+{
+    a();
+    b();
+    c();
+    d();
+    e();
+    f();
+    g();
+}',
+                    'holes' => [
+                        [
+                            '__P0',
+                            'subtree',
+                            [
+                                '',
+                                '',
+                                '',
+                                '',
+                            ],
+                            true,
+                        ],
+                    ],
+                    'holePaths' => [
+                        '__P0' => [
+                            'stmts',
+                        ],
+                    ],
+                ],
+                'walks' => 3,
+            ],
+            'three_equal_ties' => [
+                'codes' => [
+                    'function p($x) { q($x); r(1); }',
+                    'function p($x) { q($x); r(2); }',
+                    'function p($x) { q($x); r(3); }',
+                ],
+                'opts' => [],
+                'expect' => [
+                    'seed_matches' => [
+                        0,
+                    ],
+                    'generalizedAst' => 'function p($x)
+{
+    q($x);
+    r(1);
+}',
+                    'holes' => [
+                        [
+                            '__P0',
+                            'literal',
+                            [
+                                '1',
+                                '2',
+                                '3',
+                            ],
+                            false,
+                        ],
+                    ],
+                    'holePaths' => [
+                        '__P0' => [
+                            'stmts',
+                            1,
+                            'expr',
+                            'args',
+                            0,
+                            'value',
+                        ],
+                    ],
+                ],
+                'walks' => 3,
+            ],
+        ];
+    }
+
 }
+
