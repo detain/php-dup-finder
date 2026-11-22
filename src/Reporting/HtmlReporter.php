@@ -24,10 +24,40 @@ use SebastianBergmann\Diff\Output\StrictUnifiedDiffOutputBuilder;
  * explicit `[source not read: reason]` marker, never an empty cell that
  * reads like a real (empty) source, and the pairwise diff section states
  * the same posture instead of diffing placeholder bytes.
+ *
+ * output-041: three throughput arms, rendering unchanged.
+ * - Cluster pages are batched into name => html groups flushed together
+ *   ({@see DEFAULT_WRITE_BATCH}); batch size 1 reproduces the old
+ *   per-page streaming writer byte for byte.
+ * - One {@see Differ} serves every diff section of a run instead of a
+ *   fresh instance per cluster page ({@see differBuilds()} is the seam).
+ * - The highlighter classifies tokens by which alternation arm matched
+ *   (named captures) instead of re-running a second regex over the token.
  */
 final class HtmlReporter
 {
-    public function __construct(private readonly ?SourceTextStore $sourceText = null) {}
+    /** Cluster pages rendered into one write batch before it is flushed. */
+    public const DEFAULT_WRITE_BATCH = 128;
+
+    private ?Differ $differ = null;
+
+    private int $differBuilds = 0;
+
+    private int $pageWriteFlushes = 0;
+
+    /**
+     * @param int $writeBatchSize cluster pages held in the render batch
+     *                            before a flush; 1 is the streaming writer
+     *                            (each page written as it renders).
+     */
+    public function __construct(
+        private readonly ?SourceTextStore $sourceText = null,
+        private readonly int $writeBatchSize = self::DEFAULT_WRITE_BATCH,
+    ) {
+        if ($writeBatchSize < 1) {
+            throw new \InvalidArgumentException("writeBatchSize must be >= 1, got {$writeBatchSize}");
+        }
+    }
 
     public function writeTo(Report $report, string $dir): void
     {
@@ -37,13 +67,59 @@ final class HtmlReporter
 
         $store = $this->sourceText ?? new SourceTextStore($report->config->paths);
 
+        // output-041: the Differ memo is run-scoped — a fresh run builds its
+        // own instance (the construction counter below stays cumulative).
+        $this->differ = null;
+
         file_put_contents($dir . '/style.css', $this->css());
         file_put_contents($dir . '/app.js', $this->js());
         file_put_contents($dir . '/index.html', $this->renderIndex($report));
 
+        // output-041: batched page writes — pages render into the batch and
+        // flush as a group, so a large report no longer interleaves one
+        // write per render.
+        $batch = [];
         foreach ($report->clusters as $i => $cluster) {
-            $name = sprintf('cluster-%03d.html', $i + 1);
-            file_put_contents($dir . '/' . $name, $this->renderCluster($i + 1, $cluster, $report, $store));
+            $batch[sprintf('cluster-%03d.html', $i + 1)] = $this->renderCluster($i + 1, $cluster, $report, $store);
+            if (count($batch) >= $this->writeBatchSize) {
+                $this->flushPages($dir, $batch);
+                $batch = [];
+            }
+        }
+        $this->flushPages($dir, $batch);
+    }
+
+    /**
+     * Differ instances built so far (cumulative across runs). A run with
+     * several diff pages must build exactly one — output-041's seam, in the
+     * spirit of RefactorPatchReporter's public counter.
+     */
+    public function differBuilds(): int
+    {
+        return $this->differBuilds;
+    }
+
+    /**
+     * Non-empty page batches flushed so far (cumulative across runs) —
+     * the observable shape of the batching mode: N pages at batch 1 flush
+     * N times, at batch N flush once.
+     */
+    public function pageWriteFlushes(): int
+    {
+        return $this->pageWriteFlushes;
+    }
+
+    /**
+     * @param array<string, string> $pages file name => rendered html
+     */
+    private function flushPages(string $dir, array $pages): void
+    {
+        if ($pages === []) {
+            return;
+        }
+        $this->pageWriteFlushes++;
+        foreach ($pages as $name => $html) {
+            file_put_contents($dir . '/' . $name, $html);
         }
     }
 
@@ -318,9 +394,16 @@ final class HtmlReporter
 
     private function renderDiff(string $a, string $b): string
     {
-        $diff = (new Differ(new StrictUnifiedDiffOutputBuilder([
-            'fromFile' => 'member 1', 'toFile' => 'member 2',
-        ])))->diff($a, $b);
+        // output-041: one Differ per run (built lazily on the first diff
+        // page); construction was per cluster page before. Differ::diff is
+        // stateless, so the memoized instance renders identically.
+        if ($this->differ === null) {
+            $this->differ = new Differ(new StrictUnifiedDiffOutputBuilder([
+                'fromFile' => 'member 1', 'toFile' => 'member 2',
+            ]));
+            $this->differBuilds++;
+        }
+        $diff = $this->differ->diff($a, $b);
         $out = '';
         foreach (preg_split("/\r?\n/", $diff) ?: [] as $line) {
             $cls = '';
@@ -351,6 +434,15 @@ final class HtmlReporter
      * The `class="c"` attribute case is handled by matching the entire string
      * `&quot;c&quot;` atomically first; the keyword pattern never sees the "class"
      * inside it.
+     *
+     * output-041: the callback branches on which named capture group matched
+     * (`num` / `kw`) instead of re-running anchored number/keyword regexes
+     * over the token text — the matched alternation arm already encodes the
+     * class. Equivalent because the old re-checks were fully anchored
+     * (`^…$`), so only a token that *is* a whole number or keyword passed
+     * them — exactly the tokens the named arms match. Unmatched trailing
+     * groups are trimmed from `$m` (hence `?? ''`); an earlier group that
+     * did not participate reads `''`.
      */
     private function highlightPhp(string $code): string
     {
@@ -371,9 +463,10 @@ final class HtmlReporter
             | //[^\n]*                         # single-line comment
             | &quot;[^&]*?&quot;                  # double-quoted string (htmlspecialchars ENT_QUOTES)
             | &#039;[^&\n]*?&#039;        # single-quoted string
-            | \b\d+(?:\.\d+)?\b                # numbers
-            | \b(' . $kw . ')\b(?!\s*=)       # keywords (negative lookahead prevents matching
-                                              # keywords before =, e.g. class= in HTML attributes)
+            | (?P<num>\b\d+(?:\.\d+)?\b)       # numbers
+            | \b(?P<kw>' . $kw . ')\b(?!\s*=)  # keywords (negative lookahead prevents
+                                              # matching keywords before =, e.g. class=
+                                              # in HTML attributes)
             ~x',
             static function (array $m): string {
                 $token = $m[0];
@@ -383,14 +476,14 @@ final class HtmlReporter
                     return $token;
                 }
 
-                // Numbers: wrap.
-                if (preg_match('/^\b\d+(?:\.\d+)?\b$/', $token)) {
+                // Numbers: the number arm matched — wrap.
+                if (($m['num'] ?? '') !== '') {
                     return '<span class="n">' . $token . '</span>';
                 }
 
-                // Keywords: wrap (negative lookahead already verified we're not in
-                // an HTML attribute context like class= followed by =).
-                if (preg_match('/^\b(function|return|if|elseif|foreach|for|while|do|switch|case|break|continue|new|class|interface|trait|extends|implements|public|private|protected|static|readonly|final|abstract|use|namespace|try|catch|finally|throw|null|true|false|array|int|string|float|bool|mixed|self|parent|void|never|use|match|enum)\b$/', $token)) {
+                // Keywords: the keyword arm matched (lookahead already verified
+                // we're not in an HTML attribute context like class= + '=') — wrap.
+                if (($m['kw'] ?? '') !== '') {
                     return '<span class="k">' . $token . '</span>';
                 }
 

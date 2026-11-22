@@ -13,6 +13,7 @@ use Phpdup\Pipeline\Stages\ClusterStage;
 use Phpdup\Pipeline\Stages\PreprocessStage;
 use Phpdup\Pipeline\Stages\RefactorStage;
 use Phpdup\Pipeline\Stages\ScanningStage;
+use Phpdup\Refactor\Hole;
 use Phpdup\Reporting\HtmlReporter;
 use Phpdup\Reporting\Ranker;
 use Phpdup\Reporting\Report;
@@ -348,5 +349,352 @@ final class HtmlReporterTest extends TestCase
             is_dir($p) ? $this->rrmdir($p) : @unlink($p);
         }
         @rmdir($dir);
+    }
+
+    // ------------------------------------------------------------------
+    // output-041 (step output-S39): batching + shared-Differ seams, and
+    // behavioral escape pins for the renderer (parsed-structure and
+    // evasion properties — not snapshot coincidences).
+    // ------------------------------------------------------------------
+
+    /**
+     * @param int $clusters how many 2-member clusters to build; member 2's
+     *                      body differs from member 1's so every page's
+     *                      renderDiff emits add/del lines
+     * @return array{Report, string} report + its temp root (caller rrmdirs)
+     */
+    private function diffCapableReport(int $clusters): array
+    {
+        $root = sys_get_temp_dir() . '/phpdup-html-diff-' . uniqid();
+        mkdir($root . '/a', 0o775, true);
+        mkdir($root . '/b', 0o775, true);
+        $mk = static function (string $file, int $i, int $delta): Block {
+            $body = "<?php\nfunction m()\n{\n    return {$delta} + {$i};\n}\n";
+            file_put_contents($file, $body);
+            $stmts = (new AstParser())->parseCode($body);
+            return new Block(
+                file: $file, range: new LineRange(2, 4), kind: 'function',
+                namespace: null, class: null, name: 'm', ast: $stmts[0],
+            );
+        };
+        $list = [];
+        for ($i = 0; $i < $clusters; $i++) {
+            $cluster = new Cluster(
+                'C' . $i,
+                [$mk($root . '/a/f' . $i . '.php', $i, 1), $mk($root . '/b/f' . $i . '.php', $i, 2)],
+                1.0,
+                false,
+            );
+            $cluster->signature = 'function m(): int';
+            $list[] = $cluster;
+        }
+        $report = new Report(
+            files: 2 * $clusters, blocks: 2 * $clusters, parseErrors: 0,
+            clusters: $list, config: Config::defaults([$root]),
+        );
+        return [$report, $root];
+    }
+
+    public function testBatchedAndStreamingWritersProduceIdenticalClusterDirs(): void
+    {
+        [$report, $root] = $this->diffCapableReport(5);
+        $dirs = [];
+        try {
+            foreach ([HtmlReporter::DEFAULT_WRITE_BATCH, 1, 2] as $batch) {
+                $dir = $root . '/out-' . $batch;
+                (new HtmlReporter(null, $batch))->writeTo($report, $dir);
+                $dirs[$batch] = $dir;
+            }
+            $ref = [];
+            foreach (scandir($dirs[1]) ?: [] as $f) {
+                if ($f !== '.' && $f !== '..') {
+                    $ref[] = $f;
+                }
+            }
+            sort($ref);
+            $this->assertSame(
+                ['app.js', 'cluster-001.html', 'cluster-002.html', 'cluster-003.html',
+                    'cluster-004.html', 'cluster-005.html', 'index.html', 'style.css'],
+                $ref,
+            );
+            foreach ([HtmlReporter::DEFAULT_WRITE_BATCH, 2] as $batch) {
+                foreach ($ref as $f) {
+                    $this->assertFileEquals(
+                        $dirs[1] . '/' . $f,
+                        $dirs[$batch] . '/' . $f,
+                        "batch {$batch} diverged from streaming writer on {$f}",
+                    );
+                }
+            }
+        } finally {
+            $this->rrmdir($root);
+        }
+    }
+
+    public function testWriteBatchSizeShapesTheFlushPattern(): void
+    {
+        [$report, $root] = $this->diffCapableReport(5);
+        try {
+            foreach ([['batch', 2, 3], ['streaming', 1, 5], ['single', 1000, 1]] as [$label, $batch, $want]) {
+                $reporter = new HtmlReporter(null, $batch);
+                $reporter->writeTo($report, $root . '/shape-' . $label);
+                $this->assertSame($want, $reporter->pageWriteFlushes(), $label . ' flush count');
+            }
+            $empty = new HtmlReporter(null, 1);
+            $empty->writeTo(
+                new Report(files: 0, blocks: 0, parseErrors: 0, clusters: [], config: Config::defaults([$root])),
+                $root . '/shape-empty',
+            );
+            $this->assertSame(0, $empty->pageWriteFlushes(), 'no pages, no flush');
+        } finally {
+            $this->rrmdir($root);
+        }
+    }
+
+    public function testZeroWriteBatchSizeFailsFast(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        new HtmlReporter(null, 0);
+    }
+
+    public function testDifferIsBuiltOncePerRunAcrossDiffPages(): void
+    {
+        [$report, $root] = $this->diffCapableReport(4);
+        try {
+            $reporter = new HtmlReporter(null, 1);
+            $reporter->writeTo($report, $root . '/run1');
+            // Every page really rendered a diff (no vacuous pass): four
+            // renderDiff calls, one Differ for the run.
+            foreach (['cluster-001', 'cluster-002', 'cluster-003', 'cluster-004'] as $page) {
+                $html = (string)file_get_contents($root . '/run1/' . $page . '.html');
+                $this->assertStringContainsString('<span class="add">', $html, $page . ' rendered no diff');
+                $this->assertStringContainsString('<span class="del">', $html, $page . ' rendered no diff');
+            }
+            $this->assertSame(1, $reporter->differBuilds());
+            // A second run builds its own single Differ; the counter is
+            // cumulative across runs by design.
+            $reporter->writeTo($report, $root . '/run2');
+            $this->assertSame(2, $reporter->differBuilds());
+        } finally {
+            $this->rrmdir($root);
+        }
+    }
+
+    /**
+     * Escape truth table: hostile strings in every user-controlled field of a
+     * cluster (member paths/qualified names, signature, pattern tags, hole
+     * placeholders/names/types/observed values) must survive the write + DOM
+     * round-trip byte-exact, and must never forge an element or an href.
+     * A broken escape truncates the parsed attribute or spawns a node — both
+     * are asserted against the PARSED structure, not raw-page substrings.
+     */
+    public function testHostileFieldRoundTripThroughParsedDomWithoutForgingStructure(): void
+    {
+        $hostileFile  = '/evil"><a href=x>click</a>.php';
+        $hostileName  = 'n"><textarea>';
+        $hostileType  = '"string"';
+        $hostileSig   = 'function evil($p): array /*"><img src=q onerror=1>*/';
+        $hostileTag   = "sql-builder'><i>i</i>";
+        $hostilePlace = '$__P0" onload=z';
+        $hostileObs   = 'v"><object data=y>';
+
+        $root = sys_get_temp_dir() . '/phpdup-html-hostile-' . uniqid();
+        mkdir($root, 0o775, true);
+        try {
+            $mk = static function (string $file, string $name): Block {
+                $stmts = (new AstParser())->parseCode("<?php\nfunction m()\n{\n    return 1;\n}\n");
+                return new Block(
+                    file: $file, range: new LineRange(2, 4), kind: 'function',
+                    namespace: null, class: null, name: $name, ast: $stmts[0],
+                );
+            };
+            $cluster = new Cluster('H1', [$mk($root . '/good.php', 'plain'), $mk($hostileFile, $hostileName)], 1.0, false);
+            $cluster->signature    = $hostileSig;
+            $cluster->patternTags  = [$hostileTag, 'controller-action'];
+            $hole                  = new Hole($hostilePlace, 'literal', [$hostileObs, 'other'], true);
+            $hole->suggestedName   = $hostileName;
+            $hole->inferredType    = $hostileType;
+            $cluster->holes        = [$hole];
+            $report = new Report(
+                files: 2, blocks: 2, parseErrors: 0,
+                clusters: [$cluster], config: Config::defaults([$root]),
+            );
+
+            $dir = $root . '/out';
+            (new HtmlReporter())->writeTo($report, $dir);
+
+            $index = $this->parseDom($dir . '/index.html');
+            $page  = $this->parseDom($dir . '/cluster-001.html');
+
+            // No scanned string forged an element on either surface.
+            foreach (['index' => $index, 'cluster' => $page] as $label => $doc) {
+                $x = new \DOMXPath($doc);
+                $this->assertSame(0, $x->query('//script[not(@src)]')->length, $label . ': inline script forged');
+                $this->assertSame(0, $x->query('//img')->length, $label . ': img forged');
+                $this->assertSame(0, $x->query('//textarea')->length, $label . ': textarea forged');
+                $this->assertSame(0, $x->query('//object')->length, $label . ': object forged');
+                $this->assertSame(0, $x->query('//iframe')->length, $label . ': iframe forged');
+                $this->assertSame(0, $x->query('//style')->length, $label . ': style element forged');
+                // Hunted defect class: raw quote passthrough into an href.
+                foreach ($x->query('//a/@href') as $href) {
+                    $this->assertMatchesRegularExpression(
+                        '#^(cluster-\d{3}\.html|index\.html)$#',
+                        (string)$href->nodeValue,
+                        $label . ': scanned bytes reached an href',
+                    );
+                }
+            }
+
+            // Parsed values round-trip the hostile strings byte-exact.
+            $x = new \DOMXPath($index);
+            $this->assertSame($hostileSig, $x->query('//button[@class="copy"]/@data-copy')->item(0)->nodeValue);
+            $search = (string)$x->query('//tr/@data-search')->item(0)->nodeValue;
+            $this->assertStringContainsString(strtolower($hostileFile), $search);
+            $this->assertStringContainsString($hostileTag, $x->query('//table[@id="clusters"]//tbody//td[6]')->item(0)->nodeValue);
+            $this->assertSame($hostileSig, trim((string)$x->query('//tbody//code')->item(0)->nodeValue));
+
+            $x = new \DOMXPath($page);
+            $this->assertSame($hostileSig, $x->query('//button[@class="copy"]/@data-copy')->item(0)->nodeValue);
+            $this->assertSame($hostilePlace, $x->query('//tr[contains(@class,"hole-literal")]/@data-hole')->item(0)->nodeValue);
+            $nameInput  = $x->query('//input[@class="hole-name"]')->item(0);
+            $typeInput  = $x->query('//input[@class="hole-type"]')->item(0);
+            $this->assertNotNull($nameInput, 'hole name input missing (structure forged?)');
+            $this->assertSame($hostileName, $nameInput->getAttribute('value'));
+            $this->assertSame($hostileName, $nameInput->getAttribute('data-default'));
+            $this->assertSame($hostileType, $typeInput->getAttribute('value'));
+            $this->assertStringContainsString($hostileObs, (string)$x->query('//tr[contains(@class,"hole-literal")]/td[5]')->item(0)->nodeValue);
+            $this->assertStringContainsString($hostileFile, (string)$x->query('//div[@class="members"]//h3')->item(1)->nodeValue);
+            $this->assertSame(
+                $hostileName,
+                trim(explode('·', (string)$x->query('//div[@class="members"]//p[@class="meta"]')->item(1)->nodeValue)[0]),
+            );
+        } finally {
+            $this->rrmdir($root);
+        }
+    }
+
+    /**
+     * FRAME_DANGER-class bytes (NUL, GS, RS, US, ESC) ride the HTML surface
+     * from observed values/signature/tags. Rendering posture: htmlspecialchars
+     * neutralises the quote/angle bytes that could escape a context; the bare
+     * control bytes themselves are inert inside text/attribute content — they
+     * can never open or close a tag. (Non-UTF-8 byte hygiene and injection
+     * closure are once-S60's queued territory; DOM parsing of a NUL-bearing
+     * page is unreliable in libxml, so the pin asserts evasion counts on the
+     * raw page instead of a parse.)
+     */
+    public function testFrameDangerControlBytesCannotForgeElementsOnHtmlSurface(): void
+    {
+        $frameDanger = "\x00\x1D\x1E\x1F\x1b";
+        $payload     = $frameDanger . '<script>alert(1)</script>"\'><i>evil</i>';
+
+        $root = sys_get_temp_dir() . '/phpdup-html-frame-' . uniqid();
+        mkdir($root, 0o775, true);
+        try {
+            $stmts = (new AstParser())->parseCode("<?php\nfunction m()\n{\n    return 1;\n}\n");
+            $a = new Block(file: $root . '/a.php', range: new LineRange(2, 4), kind: 'function', namespace: null, class: null, name: 'm', ast: $stmts[0]);
+            $b = new Block(file: $root . '/b.php', range: new LineRange(2, 4), kind: 'function', namespace: null, class: null, name: 'm', ast: $stmts[0]);
+            file_put_contents($root . '/a.php', "<?php\nfunction m()\n{\n    return 1;\n}\n");
+            file_put_contents($root . '/b.php', "<?php\nfunction m()\n{\n    return 2;\n}\n");
+
+            $cluster = new Cluster('F1', [$a, $b], 1.0, false);
+            $cluster->signature   = 'function evil(): int // ' . $payload;
+            $cluster->patternTags = [$payload];
+            $hole                 = new Hole('$__P0', 'literal', [$payload, 'x'], true);
+            $cluster->holes       = [$hole];
+            $report = new Report(
+                files: 2, blocks: 2, parseErrors: 0,
+                clusters: [$cluster], config: Config::defaults([$root]),
+            );
+
+            $dir = $root . '/out';
+            (new HtmlReporter())->writeTo($report, $dir);
+
+            foreach (['index', 'cluster-001'] as $page) {
+                $html = strtolower((string)file_get_contents($dir . '/' . $page . '.html'));
+                // The only script markup on a page is the static app.js loader.
+                $this->assertSame(1, substr_count($html, '<script'), $page . ': forged a script tag');
+                $this->assertSame(1, substr_count($html, '</script'), $page . ': forged a script close');
+                $this->assertSame(0, substr_count($html, '<img'), $page . ': forged an img');
+                $this->assertSame(0, substr_count($html, '<i>'), $page . ': forged emphasis via broken quote');
+                // The breakout attempt survives only in entity form…
+                $this->assertStringContainsString('&lt;script&gt;', $html, $page . ': < > not entity-encoded');
+                // …and every span stays balanced (no half-written wrap).
+                $this->assertSame(
+                    substr_count($html, '<span'),
+                    substr_count($html, '</span'),
+                    $page . ': span balance broken',
+                );
+            }
+            // Control bytes ride the file verbatim (documented inert posture:
+            // they cannot interact with quote escaping, hence cannot escape
+            // an attribute; browser surfaces render them as inert text).
+            $clusterHtml = (string)file_get_contents($dir . '/cluster-001.html');
+            $this->assertGreaterThan(0, substr_count($clusterHtml, "\x00"));
+        } finally {
+            $this->rrmdir($root);
+        }
+    }
+
+    /**
+     * The capture-group classification keeps the atomicity guarantees the
+     * single-pass design promises, observed through the real page surface:
+     * a float in code is wrapped, digits inside strings and comments are not.
+     */
+    public function testNumberArmsWrapCodeDigitsButNotStringOrCommentDigits(): void
+    {
+        $root = sys_get_temp_dir() . '/phpdup-html-nums-' . uniqid();
+        mkdir($root . '/a', 0o775, true);
+        mkdir($root . '/b', 0o775, true);
+        $body = static fn (int $extra): string => "<?php\nfunction m()\n{\n    \$x = 1.5;\n    \$y = \"\$42\";\n    // 42 tail use\n    \$z = 'return';\n    return {$extra};\n}\n";
+        file_put_contents($root . '/a/f.php', $body(1));
+        file_put_contents($root . '/b/f.php', $body(2));
+        $mk = static function (string $file): Block {
+            $stmts = (new AstParser())->parseCode((string)file_get_contents($file));
+            return new Block(
+                file: $file, range: new LineRange(2, 8), kind: 'function',
+                namespace: null, class: null, name: 'm', ast: $stmts[0],
+            );
+        };
+        $cluster = new Cluster('N1', [$mk($root . '/a/f.php'), $mk($root . '/b/f.php')], 1.0, false);
+        try {
+            $dir = $root . '/out';
+            (new HtmlReporter())->writeTo(new Report(
+                files: 2, blocks: 2, parseErrors: 0,
+                clusters: [$cluster], config: Config::defaults([$root]),
+            ), $dir);
+
+            $html = (string)file_get_contents($dir . '/cluster-001.html');
+            $this->assertStringContainsString('<span class="n">1.5</span>', $html, 'float not wrapped by the num arm');
+            $this->assertStringContainsString('<span class="n">2</span>', $html, 'trailing return int not wrapped');
+            $this->assertStringContainsString('&quot;$42&quot;', $html);
+            $this->assertStringNotContainsString('<span class="n">42</span>', $html, 'digits inside string/comment were re-classified');
+            $this->assertStringNotContainsString('<span class="n">$42', $html);
+        } finally {
+            $this->rrmdir($root);
+        }
+    }
+
+    private function parseDom(string $file): \DOMDocument
+    {
+        $prev = libxml_use_internal_errors(true);
+        libxml_clear_errors();
+        $doc = new \DOMDocument();
+        $loaded = $doc->loadHTML((string)file_get_contents($file));
+        $errors = libxml_get_errors();
+        libxml_clear_errors();
+        libxml_use_internal_errors($prev);
+        $this->assertNotFalse($loaded, $file . ' did not parse');
+        // libxml's HTML parser is HTML4-era: it rejects the report's valid
+        // HTML5 sectioning tags by NAME ("Tag section invalid"). Those name
+        // warnings are whitelisted; anything else — mismatched or broken
+        // markup a bad escape would cause — fails the pin.
+        $significant = preg_grep(
+            '/Tag (section|main|article|aside|nav|header|footer|figure|figcaption) invalid/',
+            array_map(static fn (\LibXMLError $e): string => trim($e->message), $errors),
+            PREG_GREP_INVERT,
+        );
+        $this->assertSame([], $significant, $file . ' produced libxml parse errors: ' . json_encode(array_values($significant)));
+        return $doc;
     }
 }
