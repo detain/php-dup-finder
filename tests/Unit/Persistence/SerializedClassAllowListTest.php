@@ -601,6 +601,28 @@ final class SerializedClassAllowListTest extends TestCase
             SerializedClassAllowList::firstUnallowlistedClassHeader('O:9:"A"nother":0:{}', $allow),
             'declared length disagrees with the capture — hand-forged framing'
         );
+        // S11R1-2 discriminating pins: each payload spells an ALLOWED,
+        // resolvable capture, so the flip and unresolvable arms cannot
+        // route it — only ONE of the two header-arithmetic guards can.
+        // Without the arm it pins, the gate would wave the forged
+        // header through as clean (the routing authority is the arm,
+        // not the list miss).
+        self::assertSame(
+            'Phpdup\Extraction\Block',
+            SerializedClassAllowList::firstUnallowlistedClassHeader(
+                'O:24:"Phpdup\Extraction\Block":0:{}',
+                $allow
+            ),
+            'allowed name with a one-byte-longer declared length — the strlen-equality arm alone routes it'
+        );
+        self::assertSame(
+            'Phpdup\Extraction\Block',
+            SerializedClassAllowList::firstUnallowlistedClassHeader(
+                'O:0000000000000000000023:"Phpdup\Extraction\Block":0:{}',
+                $allow
+            ),
+            'zero-padded 22-digit declaration whose int value equals the name length — the >18 digit-string arm alone routes it'
+        );
         self::assertSame(
             'Short',
             SerializedClassAllowList::firstUnallowlistedClassHeader('O:99999999999999999999999:"Short":0:{}', $allow),
