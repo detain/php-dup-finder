@@ -26,9 +26,14 @@ use Phpdup\Util\Delimiters;
  * once unify() returns. A row whose member never cleanly visited the
  * path is an explicit {@see Hole::MISSING} placeholder with the hole
  * degraded — the pad never back-records seed content, and the
- * seed-order → cluster-order remap swaps unconditionally instead of
- * silently skipping short lists. Reporters and ApplyExtractor index
- * rows positionally, so this invariant is load-bearing.
+ * seed-order → cluster-order remap is an id-addressed one-pass rebuild
+ * (php-dup-finder-once-039): each row lands in the cluster slot owned
+ * by the member id recorded for the walk, never by a blind positional
+ * assumption — the 0↔seedIdx pair-swap survives only as the fallback
+ * for id-less fixtures. Reporters and ApplyExtractor still index rows
+ * positionally (the list stays a cluster-order list<string>), so this
+ * invariant remains load-bearing; only HOW the order is established
+ * changed.
  *
  * Algorithm — per cluster:
  *
@@ -148,15 +153,95 @@ final class AntiUnifier
         }
 
         // 3. Remap observed values from internal (seed-first) to external
-        //    (cluster.members) order. The rows were appended in walk-order:
-        //    index 0 = seed = original cluster index $seedIdx; index
-        //    $seedIdx in the list = original cluster index 0; everyone else
-        //    lines up. The swap is UNCONDITIONAL and placeholder-aware
-        //    (output-018): the old isset() guard silently skipped the remap
-        //    whenever a short list left the seed's counterpart missing,
-        //    pairing every row beside the wrong cluster member. The pad
-        //    above guarantees density; the in-loop guard keeps a
-        //    mis-ordered future call from ever skipping the remap again.
+        //    (cluster.members) order. The rows were appended in walk-order;
+        //    unify's trial put the seed at local slot 0. The remap is
+        //    ADDRESS-BY-MEMBER-ID in one pass over all holes
+        //    (php-dup-finder-once-039): $ctx->localMemberIds names the
+        //    cluster member owning each local row slot, so every row is
+        //    re-emitted into the slot its member occupies in
+        //    $cluster->members — order-correct whatever the walk permutation
+        //    is. Id-less fixtures (ids are stamped by PreprocessStage in
+        //    production; hand-built clusters may lack them) and the
+        //    placeholder-density belt are handled inside the remap; the old
+        //    unconditional isset()-skipped pair-swap (output-018) survives
+        //    only there, as the fallback.
+        $this->remapRowsByMemberId($cluster, $members, $ctx->localMemberIds, $seedIdx);
+
+        // 4. Persist hole paths for ApplyExtractor (paths are template-
+        //    relative and unaffected by the row remap above).
+        $cluster->holePaths = $ctx->holePaths;
+        $this->lastHolePaths = $ctx->holePaths;
+    }
+
+    /**
+     * Re-emit every hole's observedValues in cluster-member order,
+     * addressed by member id (php-dup-finder-once-039).
+     *
+     * The winning walk appended rows in {@see trialUnify}'s LOCAL order;
+     * $localIds names the cluster member owning each local slot. When the
+     * cluster's ids are usable — stamped (non-empty) and the same multiset
+     * as the members' — every row moves to the slot its member occupies in
+     * $cluster->members, in ONE pass over all holes. Content-derived ids
+     * make duplicate members share an id; their walk observations are
+     * content-deterministic (hence row-equal), so occurrence-order pairing
+     * among duplicates stays faithful.
+     *
+     * The output shape is unchanged: a dense positional list in cluster
+     * order — positional is the contract consumers (reporters,
+     * ApplyExtractor's member walk) index by, and only the establishment of
+     * that order moved from positional assumption to id address.
+     *
+     * When ids are NOT usable (id-less fixtures — PreprocessStage assigns
+     * ids only in the real pipeline), the remap falls back to the exact
+     * local permutation trialUnify actually builds: the 0↔seedIdx
+     * transposition, unconditional and placeholder-aware (output-018). The
+     * belt loop inside keeps a mis-ordered future call from ever skipping
+     * the remap.
+     *
+     * @param list<Block>   $members  cluster members in external order
+     * @param list<string>  $localIds member ids in walk (local) slot order
+     * @param int           $seedIdx  winning seed's cluster index
+     */
+    private function remapRowsByMemberId(Cluster $cluster, array $members, array $localIds, int $seedIdx): void
+    {
+        $ids = array_map(static fn(Block $m): string => $m->id, $members);
+
+        $sortedLocal = $localIds;
+        $sortedIds   = $ids;
+        sort($sortedLocal);
+        sort($sortedIds);
+        // Ids address rows only when every slot carries one and the walk's
+        // id multiset matches the cluster's (the two derive from the same
+        // list, so a mismatch means a broken caller — refuse, fall back).
+        if (
+            $localIds !== []
+            && !in_array('', $ids, true)
+            && $sortedLocal === $sortedIds
+        ) {
+            /** @var array<string, list<int>> id => local slots in walk order */
+            $slotsById = [];
+            foreach ($localIds as $slot => $id) {
+                $slotsById[$id][] = $slot;
+            }
+            foreach ($cluster->holes as $hole) {
+                $rows = $hole->observedValues;
+                /** @var array<string, int> id => next occurrence to consume */
+                $taken = [];
+                $rebuilt = [];
+                foreach ($ids as $id) {
+                    $n    = $taken[$id] ?? 0;
+                    $taken[$id] = $n + 1;
+                    // belt: unreachable while unify()'s pad + the multiset
+                    // check hold — a missing slot could only shift other
+                    // members' rows, never steal one.
+                    $slot = $slotsById[$id][$n] ?? null;
+                    $rebuilt[] = $slot === null ? Hole::MISSING : ($rows[$slot] ?? Hole::MISSING);
+                }
+                $hole->observedValues = $rebuilt;
+            }
+            return;
+        }
+
         if ($seedIdx !== 0) {
             foreach ($cluster->holes as $hole) {
                 // belt: unreachable while the pad invariant holds
@@ -167,11 +252,6 @@ final class AntiUnifier
                     = [$hole->observedValues[$seedIdx], $hole->observedValues[0]];
             }
         }
-
-        // 4. Persist hole paths for ApplyExtractor (paths are template-
-        //    relative and unaffected by the row remap above).
-        $cluster->holePaths = $ctx->holePaths;
-        $this->lastHolePaths = $ctx->holePaths;
     }
 
     /** @param list<Block> $members */
@@ -285,6 +365,11 @@ final class AntiUnifier
             [$local[0], $local[$seedIdx]] = [$local[$seedIdx], $local[0]];
         }
         $ctx      = new UnifyContext($this->optionalBlocksEnabled, $this->optionalBlocksMaxPerCluster);
+        // once-039: record which cluster member owns each local row slot, so
+        // unify()'s remap can address rows by id instead of assuming the
+        // swap layout. Block::$id is public-mutable and pre-stamp fixtures
+        // carry '' — the remap treats that as "ids unusable".
+        $ctx->localMemberIds = array_map(static fn(Block $m): string => $m->id, $local);
         $template = $this->astOf($local[0]);
         $count    = count($local);
         for ($i = 1; $i < $count; $i++) {
@@ -764,6 +849,16 @@ final class UnifyContext
     public array $holesByPath = [];
     /** @var array<string, list<int|string>> holeId => path */
     public array $holePaths = [];
+    /**
+     * Member ids in this context's LOCAL walk-slot order: index k is
+     * trialUnify's local slot k, value the id of the cluster member sitting
+     * there (once-039). Empty '' entries mean the cluster was built without
+     * PreprocessStage's id stamp and unify() must fall back to the known
+     * local transposition.
+     *
+     * @var list<string>
+     */
+    public array $localMemberIds = [];
     /**
      * local member index => set of path keys the member walked cleanly
      * (its whole subtree under the path was token-equal to the template's).

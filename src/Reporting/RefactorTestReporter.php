@@ -131,11 +131,23 @@ PHP;
     private function providerRows(Cluster $cluster): array
     {
         $count = count($cluster->members);
+        // once-S35 (php-dup-finder-once-039): rows are addressed BY MEMBER
+        // ID, not by blind positional indexing. AntiUnifier emits each
+        // hole's observedValues aligned to cluster-member order; the member
+        // id vector is the address that proves a row names the right
+        // member. Members without a recorded id (pre-PreprocessStage
+        // fixtures) address by position, so hand-built holes keep working;
+        // content-equal members share an id — and, being
+        // content-deterministic in the walk, share row-equal evidence.
+        $keys = [];
+        foreach ($cluster->members as $i => $m) {
+            $keys[$i] = $m->id !== '' ? $m->id : '#' . $i;
+        }
         $out = [];
         for ($i = 0; $i < $count; $i++) {
             $row = [];
             foreach ($cluster->holes as $h) {
-                $row[] = $this->reprValue($h, $i);
+                $row[] = $this->reprValue($h, $this->rowForId($h, $keys, $keys[$i]));
             }
             $label = "member_{$i}_" . str_replace([':', '/'], '_', $cluster->members[$i]->location());
             $out[$label] = $row;
@@ -144,13 +156,48 @@ PHP;
     }
 
     /**
+     * Resolve one hole's row for one member by id key (see
+     * {@see providerRows()}). A hole whose list runs short yields null —
+     * the member has NO recorded observation — and reprValue renders an
+     * explicit degraded gap. The retired positional `?? null` let that
+     * miss reach the old null arm, which emitted a bare 'false'/'null':
+     * a missing row counted as a VERIFIED absence or an observed null
+     * (the pre-1.7 gap-row lie output-S27 legislated against). A hole
+     * with rows beyond the member count has no member to name them —
+     * they are unaddressed, never silently shifted onto a real member.
+     *
+     * @param list<string> $keys
+     */
+    private function rowForId(Hole $h, array $keys, string $key): ?string
+    {
+        foreach ($h->observedValues as $i => $value) {
+            if (($keys[$i] ?? ('#' . $i)) === $key) {
+                return $value;
+            }
+        }
+        return null;
+    }
+
+    /**
      * Render one observed hole value as a PHP literal suitable for
      * embedding directly in a `casesProvider` row.
+     *
+     * @param string|null $v the member's observed row resolved by
+     *                       {@see rowForId()}; null = NO row recorded.
      */
-    private function reprValue(Hole $h, int $memberIdx): string
+    private function reprValue(Hole $h, ?string $v): string
     {
-        $v = $h->observedValues[$memberIdx] ?? null;
-        if ($v === null || $v === '<absent>') {
+        if ($v === null) {
+            // once-S35: an unrecorded row is a structural gap, not an
+            // absence claim — same honest rendering as a degraded MISSING
+            // row, distinct wording so a human can tell the two apart.
+            return 'null /* degraded: member had no recorded row for this hole */';
+        }
+        if ($v === '<absent>') {
+            // Belt: pre-5.4 cached holes may still carry the retired
+            // printable sentinel; it claimed absence, so it projects as
+            // the old arm did. Fresh rows can never contain it (Hole.php
+            // forbids minting).
             return $h->kind === 'optional_block' ? 'false' : 'null';
         }
         if ($v === Hole::MISSING && $h->kind === 'optional_block' && !$h->degraded) {
