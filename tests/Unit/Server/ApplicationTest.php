@@ -1876,4 +1876,590 @@ final class ApplicationTest extends TestCase
             chdir($cwd);
         }
     }
+
+    // ------------------------------------------------------------------
+    // once-S94: the async serve surface, end to end over REAL HTTP. The
+    // legs above drive the dispatcher through probe seams and a hand-played
+    // unix channel; this battery boots the real `phpdup serve` daemon as a
+    // child process on a kernel-picked ephemeral 127.0.0.1 port (the
+    // port-0 occupation probe is the ServeCommandSweepTest convention),
+    // lets its REAL spawned worker do the analysis, and speaks raw HTTP/1.1
+    // at it. Every async route is answered at least once for real; the
+    // killed-worker leg proves the queue can never lie about a dead worker;
+    // the trust/413 legs prove the once-046 gate and the transport body
+    // cap are actually WIRED into the accept loop, not just defined.
+    // All waits are poll-until-deadline (no fixed sleeps); every child is
+    // this test's own and is verified unreachable before the test returns.
+    // ------------------------------------------------------------------
+
+    public function testLiveServeAsyncHappyPathEndToEndWithRealResultBytes(): void
+    {
+        $this->s94RequirePosixSupervision();
+        $root = $this->repoRoot();
+        $serve = $this->s94SpawnServe($root);
+        try {
+            $health = $this->s94Http($serve['port'], 'GET', '/healthz');
+            $this->assertSame(200, $health['status']);
+            $this->assertSame('ok', $health['body']);
+
+            // The headline async admission over the wire.
+            $submit = $this->s94Http($serve['port'], 'POST', '/jobs', '{"paths":["tests/Fixtures/notify"]}');
+            $this->assertSame(202, $submit['status'], 'live async POST /jobs must answer 202: ' . $submit['body']);
+            $decodedSubmit = json_decode($submit['body'], true);
+            $this->assertSame(['job_id'], array_keys($decodedSubmit), 'ordinary 202 shape survives the live transport');
+            $id = (string) $decodedSubmit['job_id'];
+
+            // Poll the status route until the row is terminal. Every
+            // intermediate read is a live-state observation; the verdict is
+            // COMPLETED — the real worker really ran the real pipeline.
+            [$observed, $row] = $this->s94PollUntil(
+                fn(): array => (array) json_decode($this->s94Http($serve['port'], 'GET', '/jobs/' . $id)['body'], true),
+                static fn(array $r): bool => ($r['status'] ?? '') === JobQueue::STATUS_COMPLETED
+                    || ($r['status'] ?? '') === JobQueue::STATUS_FAILED,
+                60.0,
+                'async job over live serve to reach a terminal state'
+            );
+            foreach ($observed as $read) {
+                $this->assertContains((string) ($read['status'] ?? ''), [
+                    JobQueue::STATUS_PENDING, JobQueue::STATUS_RUNNING,
+                    JobQueue::STATUS_COMPLETED, JobQueue::STATUS_FAILED,
+                ], '/jobs/{id} must only ever report a real queue status');
+            }
+            $this->assertSame(JobQueue::STATUS_COMPLETED, $row['status'], 'observed: ' . json_encode(array_column($observed, 'status')));
+
+            // The status-only route agrees with the row route.
+            $statusRoute = $this->s94Http($serve['port'], 'GET', '/api/jobs/' . $id);
+            $this->assertSame(200, $statusRoute['status']);
+            $this->assertSame(JobQueue::STATUS_COMPLETED, json_decode($statusRoute['body'], true)['status']);
+
+            // REAL result bytes: the worker's published report, served from
+            // the results directory, with non-zero counters at the report
+            // summary level (the once-003 cure, live).
+            $result = $this->s94Http($serve['port'], 'GET', '/api/jobs/' . $id . '/result');
+            $this->assertSame(200, $result['status']);
+            $this->assertSame('application/json', $result['headers']['content-type']);
+            $report = json_decode($result['body'], true);
+            $this->assertIsArray($report);
+            $this->assertGreaterThan(0, $report['summary']['files']);
+            $this->assertGreaterThan(0, $report['summary']['blocks']);
+            $this->assertGreaterThan(0, $report['summary']['clusters']);
+
+            // The settled row and the served bytes can never disagree —
+            // one shared settlement helper, now proven across the transport.
+            $this->assertSame($report['summary']['files'], $row['result']['files']);
+            $this->assertSame($report['summary']['blocks'], $row['result']['blocks']);
+            $this->assertSame($report['summary']['clusters'], $row['result']['clusters']);
+
+            // The list route: keyed by the id, carrying exactly the
+            // descriptor shape (payload bytes never surface over HTTP).
+            $list = $this->s94Http($serve['port'], 'GET', '/api/jobs');
+            $this->assertSame(200, $list['status']);
+            $rows = json_decode($list['body'], true);
+            $this->assertIsArray($rows);
+            $this->assertArrayHasKey($id, $rows);
+            $this->assertSame(['status', 'created_at', 'completed_at'], array_keys($rows[$id]));
+            $this->assertSame(JobQueue::STATUS_COMPLETED, $rows[$id]['status']);
+
+            // An id this daemon never minted keeps the plain story on both
+            // per-id shapes (16 hex chars, same alphabet as minted ids).
+            $never = bin2hex(random_bytes(8));
+            $gone = $this->s94Http($serve['port'], 'GET', '/jobs/' . $never);
+            $this->assertSame(404, $gone['status']);
+            $this->assertSame('job not found', json_decode($gone['body'], true)['error']);
+
+            // S03 over the live wire, both directions: default posture keeps
+            // the near-dup (holes + signature in the payload), and the
+            // optional key really short-circuits. A mistyped posture is a
+            // pre-mint 400, not a dispatched-but-wrong job.
+            $analyze = $this->s94Http($serve['port'], 'POST', '/analyze', '{"paths":["tests/Fixtures/optional"]}');
+            $this->assertSame(200, $analyze['status']);
+            $near = json_decode($analyze['body'], true);
+            $this->assertSame(1, $near['summary']['clusters'], 'the full report posture rides live HTTP');
+            $this->assertNotEmpty($near['clusters'][0]['holes']);
+
+            $exact = $this->s94Http($serve['port'], 'POST', '/analyze', '{"paths":["tests/Fixtures/optional"],"exact_only":true}');
+            $this->assertSame(200, $exact['status']);
+            $this->assertSame(0, json_decode($exact['body'], true)['summary']['clusters']);
+
+            $mistyped = $this->s94Http($serve['port'], 'POST', '/analyze', '{"paths":["tests/Fixtures/optional"],"exact_only":"yes"}');
+            $this->assertSame(400, $mistyped['status']);
+            $this->assertStringContainsString('exact_only must be a boolean', $mistyped['body']);
+        } finally {
+            $this->s94StopServe($serve);
+        }
+    }
+
+    public function testLiveServeWorkerKilledMidQueueFailsEveryLiveRowAsObservedDeath(): void
+    {
+        $this->s94RequirePosixSupervision();
+        $root = $this->repoRoot();
+        $serve = $this->s94SpawnServe($root);
+        try {
+            // Job 1: 'src' is a multi-second real analysis at tip (measured
+            // 10.9 s serial) — it holds the worker for the whole leg.
+            $first = $this->s94Http($serve['port'], 'POST', '/jobs', '{"paths":["src"]}');
+            $this->assertSame(202, $first['status']);
+            $id1 = (string) json_decode($first['body'], true)['job_id'];
+
+            // Job 2: the busy worker never reads this frame — the dispatch
+            // is a BUFFERED admission, honestly pending, channel held.
+            $second = $this->s94Http($serve['port'], 'POST', '/jobs', '{"paths":["src"]}');
+            $this->assertSame(202, $second['status'], 'a busy live worker is an admission, not a 500: ' . $second['body']);
+            $id2 = (string) json_decode($second['body'], true)['job_id'];
+
+            // Kill-time census: read every row ONCE. A row that is already
+            // terminal must be honestly completed with real counters (the
+            // machine was fast, not lying); rows still live join the set the
+            // kill is about to condemn. The buffered admission is ALWAYS in
+            // that set: its POST returned at the end of the 5 s ack window
+            // and the real src job takes seconds more than the milliseconds
+            // until the read below.
+            /** @var list<string> $liveAtKill */
+            $liveAtKill = [];
+            foreach ([$id1, $id2] as $id) {
+                $row = json_decode($this->s94Http($serve['port'], 'GET', '/jobs/' . $id)['body'], true);
+                if (in_array($row['status'], [JobQueue::STATUS_PENDING, JobQueue::STATUS_RUNNING], true)) {
+                    $liveAtKill[] = $id;
+                } else {
+                    $this->assertSame(JobQueue::STATUS_COMPLETED, $row['status'], 'pre-kill terminal read: ' . json_encode($row));
+                    $this->assertGreaterThan(0, (int) ($row['result']['files'] ?? 0), 'a row completed before the kill still shows real counters');
+                }
+            }
+            $this->assertNotEmpty($liveAtKill, 'at least the buffered job must be live at kill time');
+
+            // kill -9 the REAL analysis process. The pid printed on the
+            // daemon's 'worker spawned (pid N)' line is N = proc_get_status
+            // of the string-command spawn — when PHP's shell wrapper keeps
+            // its own pid (proc_open string-command posture, probed at this
+            // era), killing only N leaves the actual worker analyzing. The
+            // kill leg therefore identifies the process by what it holds:
+            // the daemon-unique worker socket path in its argv.
+            $workers = $this->s94WorkerPids($serve['servePid']);
+            $this->assertNotEmpty($workers, 'test setup: a real analysis worker must be running mid-job');
+            foreach ($workers as $pid) {
+                $this->assertTrue(posix_kill($pid, 9), "test setup: kill -9 worker pid {$pid}");
+            }
+
+            // Every row that was live at the kill must settle as the
+            // OBSERVED death — never success, never the absence-deadline
+            // story. (S46: worker death never looks like completion.)
+            foreach ($liveAtKill as $id) {
+                [$observed, $row] = $this->s94PollUntil(
+                    fn(): array => (array) json_decode($this->s94Http($serve['port'], 'GET', '/jobs/' . $id)['body'], true),
+                    static fn(array $r): bool => ($r['status'] ?? '') === JobQueue::STATUS_COMPLETED
+                        || ($r['status'] ?? '') === JobQueue::STATUS_FAILED,
+                    20.0,
+                    "job {$id} to settle after kill -9 of its worker"
+                );
+                $this->assertSame(JobQueue::STATUS_FAILED, $row['status'],
+                    "a killed worker must never mint success (job {$id}, observed " . json_encode(array_column($observed, 'status')) . ')');
+                $this->assertStringContainsString('ended without publishing a result', (string) $row['error']);
+                $this->assertStringNotContainsString('did not produce a result', (string) $row['error']);
+            }
+
+            // The daemon outlives its worker: the serial loop keeps serving.
+            $health = $this->s94Http($serve['port'], 'GET', '/healthz');
+            $this->assertSame(200, $health['status']);
+        } finally {
+            $this->s94StopServe($serve);
+        }
+    }
+
+    public function testLiveServeTrustGateAndBodyCapRefuseBeforeAnythingRuns(): void
+    {
+        $this->s94RequirePosixSupervision();
+        $root = $this->repoRoot();
+        $serve = $this->s94SpawnServe($root);
+        try {
+            // Host-spoof (the DNS-rebinding shape): 400 from the header
+            // section — the route, and the queue, never see it.
+            $spoof = $this->s94Http($serve['port'], 'POST', '/jobs', '{"paths":["tests/Fixtures/notify"]}', ['Host' => 'evil.example']);
+            $this->assertSame(400, $spoof['status']);
+            $this->assertStringContainsString('Host is not the address this server is bound to', $spoof['body']);
+
+            // Cross-site Origin: 403 (the daemon never sends CORS, so no
+            // wider semantics exist to honour).
+            $origin = $this->s94Http($serve['port'], 'POST', '/jobs', '{}', ['Origin' => 'http://evil.example']);
+            $this->assertSame(403, $origin['status']);
+            $this->assertStringContainsString('Origin is not the origin this server answers', $origin['body']);
+
+            // The text/plain simple-form shape: 415 before a body byte is
+            // even consumed by the application.
+            $plain = $this->s94Http($serve['port'], 'POST', '/analyze', '{}', ['Content-Type' => 'text/plain']);
+            $this->assertSame(415, $plain['status']);
+            $this->assertStringContainsString('Content-Type must be application/json', $plain['body']);
+
+            // Oversize claim: the transport gate answers 413 off the header
+            // alone — the client never sends the body it declared.
+            $huge = $this->s94Http(
+                $serve['port'],
+                'POST',
+                '/jobs',
+                '',
+                ['Content-Type' => 'application/json', 'Content-Length' => (string) (Application::MAX_BODY_BYTES + 1)]
+            );
+            $this->assertSame(413, $huge['status']);
+
+            // None of the refused requests minted anything.
+            $list = $this->s94Http($serve['port'], 'GET', '/api/jobs');
+            $this->assertSame(200, $list['status']);
+            $this->assertSame([], json_decode($list['body'], true));
+
+            // And the daemon keeps serving its own authority.
+            $health = $this->s94Http($serve['port'], 'GET', '/healthz');
+            $this->assertSame(200, $health['status']);
+        } finally {
+            $this->s94StopServe($serve);
+        }
+    }
+
+    public function testWorkerlessDeploymentRefusesJobsBeforeAnyValidation(): void
+    {
+        // once-S73, the Application-side owed pins (r1 of once-S73 named
+        // this venue): the refusal door is the FIRST decision inside
+        // POST /jobs — before path validation, before the refused-keys and
+        // posture gates, before any row is minted — while the synchronous
+        // routes and a real worker deployment are untouched.
+        $queue = new JobQueue();
+        $app = new Application($queue, $this->repoRoot(), null, null, null, false, 1, [], true);
+
+        // A payload that would itself be a 400 (traversal) answers 503:
+        // the door decides first.
+        $traversal = $app->handle('POST', '/jobs', '{"paths":["../etc/passwd"]}', []);
+        $this->assertSame(503, $traversal['status'], 'the refusal door precedes every validation leg');
+        $this->assertSame(['error' => Application::asyncUnavailableError()], json_decode($traversal['body'], true));
+
+        // No mint, no phantom row: the read routes keep their plain shape.
+        $this->assertSame([], json_decode($app->handle('GET', '/api/jobs', '', [])['body'], true));
+        $missing = $app->handle('GET', '/jobs/deadbeef', '', []);
+        $this->assertSame(404, $missing['status']);
+        $this->assertSame('job not found', json_decode($missing['body'], true)['error']);
+
+        // The synchronous sibling is unaffected: same app, still answers.
+        $health = $app->handle('GET', '/healthz', '', []);
+        $this->assertSame(200, $health['status']);
+        $this->assertSame('ok', $health['body']);
+
+        // Control: the flag alone is not the sync-mode inline run — with a
+        // worker socket named, the async dispatch path opens normally.
+        $resultDir = sys_get_temp_dir() . '/phpdup-s94-door-' . uniqid('', true);
+        mkdir($resultDir, 0700);
+        try {
+            $withWorker = new Application($queue2 = new JobQueue(), null, null, '/tmp/phpdup-s94-unused.sock', $resultDir, false, 1, [], true);
+            $withWorker->workerAckProbe = $this->ackProbe('OK');
+            $admitted = $withWorker->handle('POST', '/jobs', '{"paths":["src"]}', []);
+            $this->assertSame(202, $admitted['status'], 'flag true with a worker present is a normal async admission');
+            $this->assertCount(1, $queue2->list());
+        } finally {
+            @rmdir($resultDir);
+        }
+    }
+
+    private function s94RequirePosixSupervision(): void
+    {
+        if (!function_exists('posix_kill')) {
+            $this->markTestSkipped('posix required to supervise the live serve battery');
+        }
+    }
+
+    /**
+     * Reserve a kernel-picked free loopback port (SweepTest's port-0 probe
+     * convention), then boot the real daemon on it. A bind race (the tiny
+     * window between the probe closing and the daemon binding) is retried
+     * on a fresh port; every other failure is a loud, output-bearing fail.
+     *
+     * @return array{proc:resource,pipes:array<int,resource>,port:int,servePid:int,workerPid:int}
+     */
+    private function s94SpawnServe(string $serveRoot): array
+    {
+        for ($attempt = 1; $attempt <= 3; $attempt++) {
+            $errno = 0;
+            $errstr = '';
+            $probe = @stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
+            $this->assertIsResource($probe, "cannot reserve an ephemeral loopback port: {$errstr}");
+            $name = (string) stream_socket_get_name($probe, false);
+            fclose($probe);
+            $port = (int) substr($name, (int) strrpos($name, ':') + 1);
+            $this->assertGreaterThan(0, $port, 'the port-0 probe must report a real port');
+
+            $handle = $this->s94StartServeOn($serveRoot, $port);
+            if ($handle !== null) {
+                return $handle;
+            }
+        }
+        $this->fail('live serve refused every ephemeral port it was handed');
+    }
+
+    /**
+     * Boot `phpdup serve` and wait (poll-until-deadline) for the two facts
+     * that make the battery's premise true: the daemon spawned its worker
+     * (line carries the pid) and it bound its listener. Null only for the
+     * one transient worth re-picking: the port went busy between probe and
+     * bind. Any other early death fails loudly with the daemon's own output.
+     *
+     * @return array{proc:resource,pipes:array<int,resource>,port:int,servePid:int,workerPid:int}|null
+     */
+    private function s94StartServeOn(string $serveRoot, int $port): ?array
+    {
+        $cmd = [
+            PHP_BINARY, $serveRoot . '/bin/phpdup', 'serve',
+            '--host', '127.0.0.1',
+            '--port', (string) $port,
+            '--serve-root', $serveRoot,
+        ];
+        $proc = proc_open($cmd, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $serveRoot);
+        $this->assertIsResource($proc, 'serve must spawn as a child process');
+        stream_set_blocking($pipes[1], false);
+        stream_set_blocking($pipes[2], false);
+        $servePid = proc_get_status($proc)['pid'];
+
+        $out = '';
+        $deadline = microtime(true) + 20.0;
+        while (microtime(true) < $deadline) {
+            $chunk = fread($pipes[1], 65536);
+            if ($chunk === false || $chunk === '') {
+                // Drain complete for this wake (EAGAIN or EOF) — only now is
+                // the liveness vote safe to take.
+                if (!proc_get_status($proc)['running']) {
+                    break;
+                }
+                usleep(25000);
+                continue;
+            }
+            $out .= $chunk;
+            if (str_contains($out, 'listening on')) {
+                $this->assertSame(1, preg_match('/worker spawned \(pid (\d+)\)/', $out, $m),
+                    'the battery needs the REAL async deployment; stdout was:' . PHP_EOL . $out);
+                return [
+                    'proc' => $proc, 'pipes' => $pipes, 'port' => $port,
+                    'servePid' => $servePid, 'workerPid' => (int) $m[1],
+                ];
+            }
+        }
+
+        $err = (string) stream_get_contents($pipes[2]);
+        $this->s94HardKill($proc, $pipes, $servePid);
+        if (str_contains($out, 'bind failed')) {
+            return null; // the ephemeral port got snatched mid-handoff: re-pick
+        }
+        $this->fail("serve died before it listened. stdout:" . PHP_EOL . $out . PHP_EOL . 'stderr:' . $err);
+    }
+
+    /**
+     * @param array{proc:resource,pipes:array<int,resource>,port:int,servePid:int,workerPid:int} $serve
+     */
+    private function s94StopServe(array $serve): void
+    {
+        $servePid = $serve['servePid'];
+        $workerPid = $serve['workerPid'];
+
+        // The daemon's own graceful path first (shell-016): SIGTERM runs the
+        // handler that reaps the worker, unlinks the socket and sweeps the
+        // results dir. SIGKILL only ever after the grace deadline — and only
+        // on the two pids this test can prove are its own children.
+        posix_kill($servePid, 15);
+        $deadline = microtime(true) + 8.0;
+        while (microtime(true) < $deadline && $this->s94ProcLive($servePid)) {
+            usleep(20000);
+        }
+        if ($this->s94ProcLive($servePid)) {
+            posix_kill($servePid, 9);
+        }
+        // Close the pipes BEFORE proc_close: proc_close closes them itself,
+        // and fclose() on a closed resource is a TypeError, not a warning.
+        foreach ($serve['pipes'] as $pipe) {
+            if (is_resource($pipe)) {
+                @fclose($pipe);
+            }
+        }
+        proc_terminate($serve['proc']);
+        proc_close($serve['proc']);
+
+        // The real worker (and any lingering wrapper) must not outlive the
+        // test. Give the graceful path its moment — the worker's daemon-
+        // death poll wakes on a 5 s accept timeout — then belt-kill by the
+        // socket identity, never by anything broader.
+        $deadline = microtime(true) + 9.0;
+        while (microtime(true) < $deadline && $this->s94WorkerPids($servePid) !== []) {
+            usleep(20000);
+        }
+        foreach ($this->s94WorkerPids($servePid) as $pid) {
+            posix_kill($pid, 9);
+        }
+        if ($this->s94ProcLive($workerPid)) {
+            posix_kill($workerPid, 9);
+        }
+        $this->assertSame([], $this->s94WorkerPids($servePid), 'the spawned worker must not outlive the test');
+        $this->assertFalse($this->s94ProcLive($servePid), 'the serve daemon must not outlive the test');
+
+        // Belt cleanup for a crash-skipped handler. Both paths are
+        // pid-name-keyed to THIS daemon (never the shared startup sweep).
+        @unlink(sys_get_temp_dir() . '/phpdup-worker-' . $servePid . '.sock');
+        $resultsDir = sys_get_temp_dir() . '/phpdup-results-' . $servePid;
+        if (is_dir($resultsDir)) {
+            $iter = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($resultsDir, \FilesystemIterator::SKIP_DOTS),
+                \RecursiveIteratorIterator::CHILD_FIRST
+            );
+            foreach ($iter as $entry) {
+                $entry->isDir() ? @rmdir($entry->getPathname()) : @unlink($entry->getPathname());
+            }
+            @rmdir($resultsDir);
+        }
+    }
+
+    /** @param array<int,resource> $pipes */
+    private function s94HardKill($proc, array $pipes, int $servePid): void
+    {
+        posix_kill($servePid, 9);
+        foreach ($this->s94WorkerPids($servePid) as $pid) {
+            posix_kill($pid, 9);
+        }
+        proc_terminate($proc);
+        proc_close($proc); // closes the pipes it created
+    }
+
+    /**
+     * The REAL analysis worker pids of one daemon. Identity is the
+     * daemon-unique worker socket path carried in the spawn argv (the same
+     * path ServeCommand names in the worker line), filtered to live
+     * processes and to the worker itself — the `sh` string-spawn wrapper is
+     * skipped, since when the wrapper keeps its own pid the printed
+     * 'worker spawned (pid N)' number is the wrapper's, not the analyst's.
+     *
+     * @return list<int>
+     */
+    private function s94WorkerPids(int $servePid): array
+    {
+        $needle = '/phpdup-worker-' . $servePid . '.sock';
+        $workers = [];
+        foreach (glob('/proc/[0-9]*') ?: [] as $dir) {
+            $cmdline = @file_get_contents($dir . '/cmdline');
+            if ($cmdline === false || !str_contains($cmdline, $needle)) {
+                continue;
+            }
+            if (basename((string) explode("\0", $cmdline)[0]) === 'sh') {
+                continue;
+            }
+            $pid = (int) basename($dir);
+            if ($this->s94ProcLive($pid)) {
+                $workers[] = $pid;
+            }
+        }
+        return $workers;
+    }
+
+    /** Dead or reaped-in-waiting (zombie) is NOT live for supervision. */
+    private function s94ProcLive(int $pid): bool
+    {
+        if ($pid <= 0) {
+            return false;
+        }
+        if (!function_exists('posix_kill')) {
+            return is_dir('/proc/' . $pid);
+        }
+        if (!posix_kill($pid, 0)) {
+            return false;
+        }
+        $stat = @file_get_contents('/proc/' . $pid . '/stat');
+        if ($stat === false) {
+            return false;
+        }
+        $fields = explode(' ', substr($stat, (int) strrpos($stat, ')') + 1));
+
+        return ($fields[0] ?? 'Z') !== 'Z';
+    }
+
+    /**
+     * Raw HTTP/1.1 exchange against the live daemon. The server answers one
+     * request per connection and closes it, so reading to EOF is complete.
+     *
+     * @param array<string,string> $headers extra (or overriding) request headers
+     * @return array{status:int,headers:array<string,string>,body:string}
+     */
+    private function s94Http(int $port, string $method, string $path, string $body = '', array $headers = []): array
+    {
+        $lower = array_change_key_case($headers, CASE_LOWER);
+        $lines = [sprintf('%s %s HTTP/1.1', $method, $path)];
+        if (!isset($lower['host'])) {
+            $lines[] = 'Host: 127.0.0.1:' . $port;
+        }
+        foreach ($headers as $name => $value) {
+            $lines[] = $name . ': ' . $value;
+        }
+        if ($method === 'POST' && !isset($lower['content-length'])) {
+            if (!isset($lower['content-type'])) {
+                $lines[] = 'Content-Type: application/json';
+            }
+            $lines[] = 'Content-Length: ' . strlen($body);
+        }
+        $request = implode("\r\n", $lines) . "\r\nConnection: close\r\n\r\n";
+
+        $errno = 0;
+        $errstr = '';
+        $sock = @stream_socket_client('tcp://127.0.0.1:' . $port, $errno, $errstr, 5.0);
+        $this->assertIsResource($sock, "connect to the live daemon failed: {$errstr}");
+        $this->assertGreaterThan(0, (int) @fwrite($sock, $request));
+        if ($body !== '') {
+            $this->assertGreaterThan(0, (int) @fwrite($sock, $body));
+        }
+        stream_set_timeout($sock, 15);
+
+        $raw = '';
+        while (!feof($sock)) {
+            $chunk = fread($sock, 65536);
+            if ($chunk === false || $chunk === '') {
+                break;
+            }
+            $raw .= $chunk;
+        }
+        fclose($sock);
+
+        return $this->s94ParseHttpResponse($raw);
+    }
+
+    /** @return array{status:int,headers:array<string,string>,body:string} */
+    private function s94ParseHttpResponse(string $raw): array
+    {
+        $split = strpos($raw, "\r\n\r\n");
+        $this->assertIsInt($split, 'the daemon must answer a framed HTTP response; got: ' . substr($raw, 0, 240));
+        $lines = explode("\r\n", substr($raw, 0, $split));
+        $this->assertSame(1, preg_match('#^HTTP/1\.1 (\d{3})#', $lines[0], $m), 'status line expected, got: ' . $lines[0]);
+
+        $headers = [];
+        foreach (array_slice($lines, 1) as $line) {
+            $pos = strpos($line, ':');
+            if ($pos !== false) {
+                $headers[strtolower(trim(substr($line, 0, $pos)))] = trim(substr($line, $pos + 1));
+            }
+        }
+
+        return ['status' => (int) $m[1], 'headers' => $headers, 'body' => substr($raw, $split + 4)];
+    }
+
+    /**
+     * Poll-until-deadline driver shared by every async wait in this era:
+     * fixed sleeps never decide an async fact here.
+     *
+     * @param callable():T $fetch
+     * @param callable(T):bool $done
+     * @return array{0:list<T>,1:T}
+     *
+     * @template T
+     */
+    private function s94PollUntil(callable $fetch, callable $done, float $deadlineSeconds, string $what): array
+    {
+        $observed = [];
+        $deadline = microtime(true) + $deadlineSeconds;
+        do {
+            $value = $fetch();
+            $observed[] = $value;
+            if ($done($value)) {
+                return [$observed, $value];
+            }
+            usleep(50000);
+        } while (microtime(true) < $deadline);
+
+        $this->fail("live serve: waited {$deadlineSeconds}s for {$what}; observed: " . json_encode($observed));
+    }
 }

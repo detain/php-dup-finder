@@ -10,6 +10,9 @@ use Phpdup\Pipeline\Pipeline;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\Stage;
 use Phpdup\Pipeline\StageInterface;
+use Phpdup\Pipeline\Stages\ClusterStage;
+use Phpdup\Pipeline\Stages\PreprocessStage;
+use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Watch\FileChangeType;
 use Phpdup\Watch\FileWatcher;
 use Phpdup\Watch\WatchRunner;
@@ -674,6 +677,74 @@ final class WatchRunnerTest extends TestCase
         $this->assertSame(2, $stage->runs, 'non-excluded changes keep re-analyzing');
         $this->assertStringContainsString('change detected', $output->fetch());
     }
+
+    // ─── once-S94: a REAL pipeline re-runs on a REAL event ──────────────────
+
+    /**
+     * The once-S94 acceptance: the scripted-counter legs above prove the
+     * dispatch machinery re-enters; this one proves the analysis is real.
+     * The same live consumer wiring as the S47 pins (real FileWatcher on a
+     * poll backend + fake loop + run()'s exact watch() installation), but the
+     * pipeline is the genuine Scanning→Preprocess→Cluster chain over the
+     * test's temp tree. When an event lands a new file, the per-pass counts
+     * the real stages produce — files scanned, blocks extracted — move with
+     * it. That is a re-analysis, not a reload gesture.
+     */
+    public function testRealEventMovesTheCountsWithARealPipelineReanalysis(): void
+    {
+        // Two near-identical standalone functions, each comfortably past the
+        // default min_block_size of 8, built in the temp tree as the watch
+        // subject. (Cluster outcomes are deliberately NOT pinned here — the
+        // acceptance is that the REAL per-pass counts move with the tree.)
+        $twin = static fn(string $name, int $seed): string => sprintf(
+            "<?php\nfunction %s(int \$x): int\n{\n%s\n    return \$h;\n}\n",
+            $name,
+            implode("\n", array_map(
+                static fn(int $i): string => sprintf('    $%s = $%s + %d;', chr(97 + $i), $i === 0 ? '$x' : chr(96 + $i), $seed + $i),
+                range(0, 7)
+            ))
+        );
+        file_put_contents($this->scanRoot . '/a.php', $twin('alpha', 1));
+
+        $counter = new WatchCountStage();
+        $loop = new CoalescingTestLoop();
+        $watcher = $this->pollBackedWatcher($loop);
+        $output = new BufferedOutput();
+        $runner = new WatchRunner(
+            new Pipeline([new ScanningStage(), new PreprocessStage(false), new ClusterStage(false, 0, null, false), $counter]),
+            fn(): PipelineState => new PipelineState(Config::defaults([$this->scanRoot])),
+            $output,
+            new NullLogger(),
+            $this->scanRoot,
+            1.5,
+            $watcher,
+        );
+
+        // Boot dispatch (run()'s order), then install the watcher.
+        $runner->handleChange('a.php', FileChangeType::Created);
+        $watcher->watch([$runner, 'handleChange']);
+
+        $this->assertCount(1, $counter->passes, 'the boot pass really ran the pipeline');
+        $this->assertSame(1, $counter->passes[0]['files'], 'pass one scanned exactly a.php');
+        $this->assertGreaterThanOrEqual(1, $counter->passes[0]['blocks'], 'the function block was really extracted');
+        $this->assertStringContainsString('watching 1 file · last update', $output->fetch());
+
+        // A REAL change: the twin function lands in the watched tree.
+        file_put_contents($this->scanRoot . '/b.php', $twin('beta', 2));
+        $loop->firePeriodic(); // hint tick sees it
+        $loop->fireTimers();   // the debounce window expires → one flush
+
+        $this->assertCount(2, $counter->passes, 'the flushed event re-ran the pipeline');
+        $this->assertGreaterThan($counter->passes[0]['files'], $counter->passes[1]['files'], 'the job count moved with the tree');
+        $this->assertSame(2, $counter->passes[1]['files']);
+        $this->assertGreaterThan($counter->passes[0]['blocks'], $counter->passes[1]['blocks'], 'the new twin contributed real extracted blocks');
+
+        // One fetch: the change line and the honest new announce share the
+        // window's render (BufferedOutput::fetch drains what it returns).
+        $second = $output->fetch();
+        $this->assertStringContainsString('change detected (created:', $second);
+        $this->assertStringContainsString('watching 2 files · last update', $second);
+    }
 }
 
 /**
@@ -708,6 +779,33 @@ final class WatchScriptedStage implements StageInterface
         if ($this->always !== null) {
             throw $this->always;
         }
+    }
+}
+
+/**
+ * once-S94: the real-chain observer. A terminal stage of a genuine
+ * Scanning→Preprocess→Cluster pipeline that records, per dispatch, the
+ * counts the REAL analysis produced. Its `passes` list is the acceptance
+ * surface: an event that only re-enters a scripted counter leaves these
+ * numbers alone; a real re-analysis moves them.
+ */
+final class WatchCountStage implements StageInterface
+{
+    /** @var list<array{files:int, blocks:int, clusters:int}> */
+    public array $passes = [];
+
+    public function name(): Stage
+    {
+        return Stage::Reporting;
+    }
+
+    public function run(PipelineState $state, OutputInterface $output): void
+    {
+        $this->passes[] = [
+            'files'    => count($state->files),
+            'blocks'   => count($state->blocks),
+            'clusters' => count($state->clusters),
+        ];
     }
 }
 
