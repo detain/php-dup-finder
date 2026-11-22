@@ -213,8 +213,12 @@ final class MlPairClient implements PairScorer
      * engine-S20 (php-dup-finder-engine-013, domain): inside an aligned
      * response each entry's numbers — named or positional — clear the
      * shared closed-[0,1] fence {@see MlClient::coerceUnitFloat()}. A
-     * malformed entry degrades to a null slot (that pair falls back
-     * individually) without voiding its correctly-scored neighbours.
+     * malformed entry degrades to a null slot without voiding its
+     * correctly-scored neighbours — the consumer reads
+     * $batchResults[$idx] ?? null inside the aligned list, so a null
+     * slot simply means that pair receives no ML-tier edge (skip, not
+     * retry: per-pair re-scoring fires only when the whole response
+     * voids, per the alignment paragraph above).
      *
      * @return list<array{similarity: float, confidence: float}|null>|null
      */

@@ -449,13 +449,15 @@ final class MlPairClientTest extends TestCase
         self::assertNull($verdicts[5]);
     }
 
-    public function testBatchNullSlotFallsBackPerPairNotWholeResponse(): void
+    public function testBatchNullSlotKeepsValidNeighbours(): void
     {
         // The count fence protects ALIGNMENT only — one malformed
-        // entry must not discard the valid verdicts around it (that
-        // would re-introduce a different honesty bug: the consumer
-        // retries only what arrives as null, and valid entries do not
-        // need retrying).
+        // entry must not discard the valid verdicts around it. A null
+        // slot is NOT a retry trigger: PairScoreWorker consumes
+        // $batchResults[$idx] ?? null inside an aligned batch, so a
+        // null slot simply means that pair receives no ML-tier edge;
+        // the per-pair score() fallback fires only when the WHOLE
+        // response voids.
         $client = new MlPairClient('http://ml.invalid');
         $parse  = new \ReflectionMethod($client, 'parseBatchVerdicts');
         $verdicts = $parse->invoke($client, '{"results":[[true,0.5],[0.6,0.2]]}', 2);
