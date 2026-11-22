@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Phpdup\Reporting;
 
 use Phpdup\Clustering\Cluster;
+use Phpdup\Util\Json;
 
 /**
  * Append-only JSONL: one summary row per analysis run.
@@ -36,7 +37,7 @@ final class TimeseriesReporter
 
     public function buildLine(Report $report): string
     {
-        return (string)json_encode($this->buildRecord($report), JSON_UNESCAPED_SLASHES);
+        return Json::encode($this->buildRecord($report), JSON_UNESCAPED_SLASHES);
     }
 
     /** @return array<string,mixed> */

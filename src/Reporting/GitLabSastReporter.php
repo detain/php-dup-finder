@@ -5,6 +5,7 @@ namespace Phpdup\Reporting;
 
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
+use Phpdup\Util\Json;
 
 /**
  * GitLab SAST report (schema v15.x).
@@ -23,7 +24,7 @@ final class GitLabSastReporter
 
     public function writeTo(Report $report, string $file): void
     {
-        $this->writeFile($file, json_encode($this->build($report), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        $this->writeFile($file, Json::encode($this->build($report), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
     }
 
     /** @return array<string, mixed> */

@@ -9,6 +9,7 @@ use Phpdup\Extraction\Block;
 use Phpdup\Refactor\Hole;
 use Phpdup\Refactor\HoleCoverage;
 use Phpdup\Refactor\PlacementAdvisor;
+use Phpdup\Util\Json;
 use Phpdup\Util\Num;
 use PhpParser\Node;
 use PhpParser\PrettyPrinter\Standard as PrettyPrinter;
@@ -41,7 +42,7 @@ final class JsonReporter
 
     public function writeTo(Report $report, string $file): void
     {
-        $this->writeFile($file, json_encode($this->build($report), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        $this->writeFile($file, Json::encode($this->build($report), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
     }
 
     /** @return array<string, mixed> */
