@@ -209,6 +209,32 @@ final class JsonReporterEvidenceTest extends TestCase
         );
     }
 
+    // ── output-038: unfetchable sources take the shape's own null posture ────
+
+    public function testUnfetchableTemplateSourceIsNullNotPlaceholder(): void
+    {
+        $cluster = $this->pairCluster();
+        unlink($this->tmp . '/m0.php'); // template vanishes between scan and report
+
+        $payload = $this->payloadFor($cluster, 1.0);
+        $source  = $payload['clusters'][0]['source'];
+        $this->assertNull($source['text'], 'a vanished source is null — the <source unavailable: …> string is gone');
+        $this->assertFalse($source['truncated']);
+        $this->assertStringNotContainsString('<source unavailable', json_encode($source) ?: '');
+        $this->assertSame(JsonSchemaSpec::SCHEMA_VERSION, $payload['schema_version'], 'null posture needs no schema bump: text already declares null');
+    }
+
+    public function testEvidenceDiffNullWhenPeerSourceUnfetchable(): void
+    {
+        $cluster = $this->pairCluster();
+        unlink($this->tmp . '/m1.php'); // only the peer is gone
+
+        $payload     = $this->payloadFor($cluster, 1.0);
+        $clusterData = $payload['clusters'][0];
+        $this->assertIsString($clusterData['source']['text'], 'the fetchable template still serializes its real bytes');
+        $this->assertNull($clusterData['evidence_diff'], 'no evidence can be built against bytes never fetched — null, not a placeholder diff');
+    }
+
     // ── fixtures ────────────────────────────────────────────────────────────
 
     /** @return array<string,mixed> */

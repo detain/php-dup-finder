@@ -16,6 +16,7 @@ use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Reporting\DiffReporter;
 use Phpdup\Reporting\Ranker;
 use Phpdup\Reporting\Report;
+use Phpdup\Reporting\SourceTextStore;
 use Phpdup\Util\LineRange;
 use Symfony\Component\Console\Output\NullOutput;
 
@@ -177,8 +178,9 @@ final class DiffReporterTest extends TestCase
         try {
             // Attack-shaped name/signature plus a relative trigger-leading
             // member path (what a scan of `=evil.php` actually yields); the
-            // third member has no source on disk so its diff payload is the
-            // structural "<source unavailable>" line — raw on purpose.
+            // third member has no source on disk, so output-038 states it as
+            // an explicit "# source not read (reason)" metadata row instead
+            // of the old fabricated "<source unavailable>" hunk bytes.
             $cluster = new Cluster("=cmd|'/C calc'", [
                 $this->realBlock($fileA), $this->realBlock($fileB), $this->block('=evil.php'),
             ], 1.0, false);
@@ -196,7 +198,9 @@ final class DiffReporterTest extends TestCase
             // a defused path there would corrupt the patch structure.
             $this->assertStringContainsString('--- a/' . $fileA, $body);
             $this->assertStringNotContainsString("--- a/'", $body);
-            $this->assertStringContainsString('<source unavailable: =evil.php>', $body);
+            $this->assertStringContainsString("#   source not read (file not present)", $body);
+            $this->assertStringNotContainsString('<source unavailable', $body);
+            $this->assertStringNotContainsString('<unreadable', $body);
             $this->assertMatchesRegularExpression('/^\+function m\(\) \{ return 2; \}$/m', $body);
             $this->assertMatchesRegularExpression('/^-function m\(\) \{ return 1; \}$/m', $body);
             $this->assertDoesNotMatchRegularExpression("/^'[-+@]/m", $body, 'no defuse prefix may reach hunk line starts');
@@ -213,6 +217,129 @@ final class DiffReporterTest extends TestCase
             (new DiffReporter())->writeDir(new Report(
                 files: 2, blocks: count($cluster->members), parseErrors: 0,
                 clusters: [$cluster], config: Config::defaults([]),
+            ), $dir);
+            $files = glob($dir . '/*.diff') ?: [];
+            return $files === [] ? '' : (string)file_get_contents($files[0]);
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
+    // ── output-038: explicit unfetched posture, no fabricated hunks ──────────
+
+    public function testUnfetchedAnchorStatesPostureWithoutFabricatedHunks(): void
+    {
+        $cluster = new Cluster('ALL-FAKE', [
+            $this->block('nope-a.php'), $this->block('nope-b.php'),
+        ], 1.0, false);
+        $cluster->signature = 'function s(): int';
+        $body = $this->renderCluster($cluster);
+
+        $this->assertStringContainsString('# phpdup cluster ALL-FAKE', $body);
+        $this->assertStringContainsString('#   source not read (file not present)', $body);
+        $this->assertStringNotContainsString('<source unavailable', $body, 'placeholder strings must not ride the stream');
+        $this->assertStringNotContainsString('@@', $body, 'an unreadable base leaves no hunk bytes to diff against');
+        $this->assertStringNotContainsString('## member[', $body, 'no per-member sections when the anchor itself is unfetched');
+    }
+
+    public function testUnfetchedMemberKeepsAnchorButEmitsNoHeaderPair(): void
+    {
+        $dir  = sys_get_temp_dir() . '/phpdup-diff-posture-' . uniqid('', true);
+        $src  = $dir . '/sub';
+        mkdir($src, 0o775, true);
+        $fileA = $src . '/a.php';
+        $fileB = $src . '/b.php';
+        file_put_contents($fileA, "<?php\nfunction m() { return 1; }\n");
+        file_put_contents($fileB, "<?php\nfunction m() { return 2; }\n");
+        try {
+            $cluster = new Cluster('MIXED', [
+                $this->realBlock($fileA), $this->realBlock($fileB), $this->block('gone.php'),
+            ], 1.0, false);
+            $cluster->signature = 'function m(): int';
+            $body = $this->renderCluster($cluster);
+
+            // The fetched member still gets its diff; the unfetched one gets
+            // an anchor + statement row only — pairing law: a `## member[`
+            // anchor without content must not be counted as a header pair.
+            $this->assertSame(2, substr_count($body, '## member['));
+            $this->assertSame(1, substr_count($body, '--- a/'));
+            $this->assertStringContainsString("## member[2]: gone.php:1-1\n#   source not read (file not present)\n", $body);
+            $this->assertStringNotContainsString('<source unavailable: gone.php>', $body);
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
+    public function testPlantedSymlinkEscapeIsRefusedAndNotedOnTheDiffSurface(): void
+    {
+        $dir    = sys_get_temp_dir() . '/phpdup-diff-escape-' . uniqid('', true);
+        $outside = $dir . '-outside';
+        mkdir($dir . '/sub', 0o775, true);
+        mkdir($outside, 0o775, true);
+        $secret = $outside . '/secret.php';
+        file_put_contents($secret, "<?php\nfunction m() { return 'TOP-SECRET-OUT-OF-ROOT'; }\n");
+        $fileA  = $dir . '/sub/a.php';
+        $link   = $dir . '/sub/link.php';
+        file_put_contents($fileA, "<?php\nfunction m() { return 1; }\n");
+        symlink($secret, $link);
+        $store = new SourceTextStore([$dir], warnOnSkip: false);
+        try {
+            $cluster = new Cluster('ESCAPE', [$this->realBlock($fileA), $this->realBlock($link)], 1.0, false);
+            $cluster->signature = 'function m(): int';
+            $body = $this->renderClusterWithStore($cluster, $store, $dir);
+
+            $this->assertStringNotContainsString('TOP-SECRET-OUT-OF-ROOT', $body, 'out-of-root content never enters the artifact');
+            $this->assertStringNotContainsString('***', $body);
+            $this->assertStringContainsString('#   source not read (target escapes the scan root)', $body);
+            $this->assertSame(
+                ["skipped symlinked path {$link} (target escapes the scan root)"],
+                $store->skipNotes(),
+            );
+        } finally {
+            $this->rrmdir($dir);
+            $this->rrmdir($outside);
+        }
+    }
+
+    public function testSharedStoreReadsEachFileOnceAcrossSurfaces(): void
+    {
+        $dir = sys_get_temp_dir() . '/phpdup-diff-once-' . uniqid('', true);
+        mkdir($dir, 0o775, true);
+        $fileA = $dir . '/a.php';
+        $fileB = $dir . '/b.php';
+        file_put_contents($fileA, "<?php\nfunction m() { return 1; }\n");
+        file_put_contents($fileB, "<?php\nfunction m() { return 2; }\n");
+        try {
+            $a = $this->realBlock($fileA);
+            $b = $this->realBlock($fileB);
+            // One cluster, four member slots over two files; the shared
+            // store must serve two whole-file reads, not four (and both
+            // surfaces together still two).
+            $cluster = new Cluster('SHARED', [$a, $b, $a, $b], 1.0, false);
+            $cluster->signature = 'function m(): int';
+            $report = new Report(
+                files: 2, blocks: 4, parseErrors: 0,
+                clusters: [$cluster], config: Config::defaults([$dir]),
+            );
+            $store = new SourceTextStore([$dir]);
+            $outDir = $dir . '/diffs';
+            (new DiffReporter($store))->writeDir($report, $outDir);
+            (new DiffReporter($store))->writePatch($report, $dir . '/all.patch');
+
+            $this->assertSame(2, $store->readCount(), 'two distinct files = two reads, never member-slots × surfaces');
+            $this->assertFileExists($dir . '/all.patch');
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
+    private function renderClusterWithStore(Cluster $cluster, SourceTextStore $store, string $root): string
+    {
+        $dir = sys_get_temp_dir() . '/phpdup-diff-render2-' . uniqid('', true);
+        try {
+            (new DiffReporter($store))->writeDir(new Report(
+                files: 2, blocks: count($cluster->members), parseErrors: 0,
+                clusters: [$cluster], config: Config::defaults([$root]),
             ), $dir);
             $files = glob($dir . '/*.diff') ?: [];
             return $files === [] ? '' : (string)file_get_contents($files[0]);

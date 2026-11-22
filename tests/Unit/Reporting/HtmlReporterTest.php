@@ -5,6 +5,9 @@ namespace Phpdup\Tests\Unit\Reporting;
 
 use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\Config;
+use Phpdup\Clustering\Cluster;
+use Phpdup\Extraction\Block;
+use Phpdup\Parsing\AstParser;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\Stages\ClusterStage;
 use Phpdup\Pipeline\Stages\PreprocessStage;
@@ -13,6 +16,8 @@ use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Reporting\HtmlReporter;
 use Phpdup\Reporting\Ranker;
 use Phpdup\Reporting\Report;
+use Phpdup\Reporting\SourceTextStore;
+use Phpdup\Util\LineRange;
 use Symfony\Component\Console\Output\NullOutput;
 
 final class HtmlReporterTest extends TestCase
@@ -210,6 +215,87 @@ final class HtmlReporterTest extends TestCase
                 "Attribute corruption detected in: $code\nOutput: $output",
             );
         }
+    }
+
+    // ── output-038: unfetched posture on the HTML surface ────────────────────
+
+    public function testUnreadableMemberRendersExplicitUnfetchedMarker(): void
+    {
+        $dir = sys_get_temp_dir() . '/phpdup-html-posture-' . uniqid('', true);
+        mkdir($dir, 0o775, true);
+        $real = $dir . '/a.php';
+        file_put_contents($real, "<?php\nfunction m() { return 1; }\n");
+        $report = $this->postureReport($real, $dir . '/absent.php');
+        $outDir = $dir . '/html';
+        try {
+            (new HtmlReporter(new SourceTextStore([$dir], warnOnSkip: false)))->writeTo($report, $outDir);
+            $html = implode('', array_map(
+                static fn(string $f): string => (string)file_get_contents($f),
+                glob($outDir . '/*.html') ?: [],
+            ));
+            $this->assertNotSame('', $html);
+
+            // output-016: silence-as-empty-cell and the placeholder string
+            // are both replaced by one explicit, honestly-labelled marker.
+            $this->assertStringContainsString('<span class="unfetched">[source not read: file not present]</span>', $html);
+            $this->assertStringNotContainsString('<source unavailable', $html);
+            $this->assertStringNotContainsString('<unreadable', $html);
+            $this->assertStringContainsString('[diff skipped: source not read (member 2: file not present)]', $html);
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
+    public function testPlantedSymlinkEscapeEmbedsNoOutRootContentInHtml(): void
+    {
+        $dir     = sys_get_temp_dir() . '/phpdup-html-escape-' . uniqid('', true);
+        $outside = $dir . '-outside';
+        mkdir($dir, 0o775, true);
+        mkdir($outside, 0o775, true);
+        $secret = $outside . '/secret.php';
+        file_put_contents($secret, "<?php\nfunction m() { return 'TOP-SECRET-OUT-OF-ROOT'; }\n");
+        $real = $dir . '/a.php';
+        file_put_contents($real, "<?php\nfunction m() { return 1; }\n");
+        $link = $dir . '/link.php';
+        symlink($secret, $link);
+
+        $report = $this->postureReport($real, $link);
+        $outDir = $dir . '/html';
+        try {
+            $store = new SourceTextStore([$dir], warnOnSkip: false);
+            (new HtmlReporter($store))->writeTo($report, $outDir);
+            $html = implode('', array_map(
+                static fn(string $f): string => (string)file_get_contents($f),
+                glob($outDir . '/*.html') ?: [],
+            ));
+
+            // output-048 (SEC-06 read-side): the planted target's bytes
+            // never reach the shareable artifact — grep finds nothing.
+            $this->assertStringNotContainsString('TOP-SECRET-OUT-OF-ROOT', $html);
+            $this->assertStringContainsString('[source not read: target escapes the scan root]', $html);
+            $this->assertSame(["skipped symlinked path {$link} (target escapes the scan root)"], $store->skipNotes());
+        } finally {
+            $this->rrmdir($dir);
+            $this->rrmdir($outside);
+        }
+    }
+
+    /** Two-member cluster: first real, second the tested path. */
+    private function postureReport(string $real, string $other): Report
+    {
+        $mk = static function (string $file): Block {
+            $stmts = (new AstParser())->parseCode(is_file($file) ? (string)file_get_contents($file) : '<?php $x;');
+            return new Block(
+                file: $file, range: new LineRange(2, 2), kind: 'function',
+                namespace: null, class: null, name: 'm', ast: $stmts[0],
+            );
+        };
+        $cluster = new Cluster('S38', [$mk($real), $mk($other)], 1.0, false);
+        $cluster->signature = 'function m(): int';
+        return new Report(
+            files: 2, blocks: 2, parseErrors: 0,
+            clusters: [$cluster], config: Config::defaults([dirname($real)]),
+        );
     }
 
     private function buildReport(): Report

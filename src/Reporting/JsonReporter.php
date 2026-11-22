@@ -269,6 +269,17 @@ final class JsonReporter
         if ($rep === null) {
             return null;
         }
+        // output-011: the evidence diff embeds both paths raw in its
+        // `--- a/… / +++ b/…` header, and a decoded consumer that pipes
+        // this field into `git apply`/`patch` sees forged stream lines if
+        // either name carries a control byte. Refuse, loudly, at build
+        // time — the same boundary law as DiffReporter and
+        // RefactorPatchReporter. (Schema 1.6 shape is untouched: this is
+        // a refusal, not a payload edit.) The guard runs BEFORE the store
+        // reads: a forged path is a named refusal even when the forgery
+        // itself made the file unresolvable (output-038 order-preservation).
+        ControlText::reject($t->file, 'JsonReporter evidence diff', 'template file path');
+        ControlText::reject($rep->file, 'JsonReporter evidence diff', 'evidence peer file path');
         $srcT = DiffReporter::sourceOf($t, $store);
         $srcR = DiffReporter::sourceOf($rep, $store);
         if ($srcT === null || $srcR === null) {
@@ -282,15 +293,6 @@ final class JsonReporter
             // as proof — say "no evidence" instead of showing a header.
             return null;
         }
-        // output-011: the evidence diff embeds both paths raw in its
-        // `--- a/… / +++ b/…` header, and a decoded consumer that pipes
-        // this field into `git apply`/`patch` sees forged stream lines if
-        // either name carries a control byte. Refuse, loudly, at build
-        // time — the same boundary law as DiffReporter and
-        // RefactorPatchReporter. (Schema 1.6 shape is untouched: this is
-        // a refusal, not a payload edit.)
-        ControlText::reject($t->file, 'JsonReporter evidence diff', 'template file path');
-        ControlText::reject($rep->file, 'JsonReporter evidence diff', 'evidence peer file path');
         $differ = new \SebastianBergmann\Diff\Differ(
             new \SebastianBergmann\Diff\Output\UnifiedDiffOutputBuilder("--- a/{$t->file}\n+++ b/{$rep->file}\n", false),
         );

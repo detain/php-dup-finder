@@ -7,10 +7,12 @@ use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\Config;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
+use Phpdup\Parsing\AstParser;
 use Phpdup\Refactor\Hole;
 use Phpdup\Reporting\RefactorPatchReporter;
 use Phpdup\Reporting\RefactorTestReporter;
 use Phpdup\Reporting\Report;
+use Phpdup\Reporting\SourceTextStore;
 use Phpdup\Util\LineRange;
 
 final class RefactorPatchReporterTest extends TestCase
@@ -193,6 +195,82 @@ final class RefactorPatchReporterTest extends TestCase
         );
     }
 
+    // ── output-038 / -043: memoized verdict + confined .patch surface ────────
+
+    public function testUnsafeVerdictIsComputedOncePerClusterOnTheApplySurface(): void
+    {
+        $dir = sys_get_temp_dir() . '/phpdup-patch-memo-' . uniqid('', true);
+        mkdir($dir, 0o775, true);
+        $a = $dir . '/a.php';
+        $b = $dir . '/b.php';
+        file_put_contents($a, "<?php\nfunction m1(\$x) { return \$this->dep(\$x); }\n");
+        file_put_contents($b, "<?php\nfunction m2(\$x) { return \$this->dep(\$x); }\n");
+        $out = $dir . '/apply';
+        try {
+            $report = $this->reportWith([$this->realBlk($a), $this->realBlk($b)], 'MEMO');
+            $r = new RefactorPatchReporter(new SourceTextStore([$dir]));
+            $r->writeTo($report, $out, apply: true, dryRun: false);
+
+            // output-043: the F1b gate computed the verdict; the unsafe
+            // fallback's buildPatch reused it. Two calls, one computation.
+            $this->assertSame(1, $r->detectUnsafeComputations());
+            $summary = (string)file_get_contents($out . '/apply.diff');
+            $this->assertStringContainsString('member uses $this', $summary);
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
+    public function testPlantedSymlinkEscapeEmbedsNoOutRootContentInPatches(): void
+    {
+        $dir     = sys_get_temp_dir() . '/phpdup-patch-escape-' . uniqid('', true);
+        $outside = $dir . '-outside';
+        mkdir($dir, 0o775, true);
+        mkdir($outside, 0o775, true);
+        $secret = $outside . '/secret.php';
+        file_put_contents($secret, "<?php\nfunction m2() { return 'TOP-SECRET-OUT-OF-ROOT'; }\n");
+        $a = $dir . '/a.php';
+        file_put_contents($a, "<?php\nfunction m1() { return 1; }\n");
+        $link = $dir . '/link.php';
+        symlink($secret, $link);
+        $out = $dir . '/patches';
+        try {
+            $report = $this->reportWith([$this->realBlk($a), $this->realBlk($link)], 'ESCP');
+            $store  = new SourceTextStore([$dir], warnOnSkip: false);
+            (new RefactorPatchReporter($store))->writeTo($report, $out);
+
+            $bodies = implode('', array_map(
+                static fn(string $f): string => (string)file_get_contents($f),
+                glob($out . '/*.patch') ?: [],
+            ));
+            $this->assertNotSame('', $bodies, 'the cluster still gets its patch — minus the refused bytes');
+            $this->assertStringNotContainsString('TOP-SECRET-OUT-OF-ROOT', $bodies);
+            $this->assertSame(["skipped symlinked path {$link} (target escapes the scan root)"], $store->skipNotes());
+        } finally {
+            $this->rrmdir($dir);
+            $this->rrmdir($outside);
+        }
+    }
+
+    /** @param list<Block> $members */
+    private function reportWith(array $members, string $id): Report
+    {
+        $cluster = new Cluster($id, $members, 1.0, false);
+        return new Report(
+            files: 2, blocks: 2, parseErrors: 0,
+            clusters: [$cluster], config: Config::defaults([dirname($members[0]->file)]),
+        );
+    }
+
+    private function realBlk(string $file): Block
+    {
+        $stmts = (new AstParser())->parseCode((string)file_get_contents($file));
+        return new Block(
+            file: $file, range: new LineRange(2, 2), kind: 'function',
+            namespace: null, class: null, name: null, ast: $stmts[0],
+        );
+    }
+
     private function namedCluster(string $id): Cluster
     {
         $blocks = [$this->blk('t1.php'), $this->blk('t2.php')];
@@ -215,5 +293,26 @@ final class RefactorPatchReporterTest extends TestCase
             namespace: null, class: null, name: null,
             ast: $stmts[0],
         );
+    }
+
+    private function rrmdir(string $dir): void
+    {
+        if (!is_dir($dir)) {
+            return;
+        }
+        foreach (scandir($dir) ?: [] as $f) {
+            if ($f === '.' || $f === '..') {
+                continue;
+            }
+            $p = $dir . '/' . $f;
+            if (is_link($p)) {
+                @unlink($p);
+            } elseif (is_dir($p)) {
+                $this->rrmdir($p);
+            } else {
+                @unlink($p);
+            }
+        }
+        @rmdir($dir);
     }
 }
