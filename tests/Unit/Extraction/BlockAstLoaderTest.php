@@ -2195,10 +2195,10 @@ final class BlockAstLoaderTest extends TestCase
     /**
      * The Php7.php:1635 shape as a mini-fixture: two content-identical
      * compact if/else-if/else one-liners inside one class method. Line
-     * 19 hosts TWO If_ nodes on the same [19,19] span (the chain and
-     * its nested else-if); line 21 is the content-twin decoy pair a
+     * 18 hosts TWO If_ nodes on the same [18,18] span (the chain and
+     * its nested else-if); line 20 is the content-twin decoy pair a
      * span-shadowed inner member silently fell onto before engine-040
-     * half A (21 = 19 + one blank line).
+     * half A (20 = 18 + one blank line).
      */
     private static function compactElseIfChain(): string
     {
