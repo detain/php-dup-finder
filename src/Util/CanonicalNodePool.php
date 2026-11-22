@@ -17,9 +17,27 @@ use PhpParser\Node;
  *     children) are not pooled because mutating one would corrupt the
  *     others. This is the conservative choice; copy-on-write is a
  *     follow-up.
+ *   - Leaf identity includes the class, every scalar child value, AND
+ *     every SCALAR ATTRIBUTE (engine-008). Parser-painted positions —
+ *     startLine/endLine/token/file offsets — are scalar attributes, so
+ *     leaves from distinct positions never alias a shared instance and
+ *     per-member line reporting in JSON/`--apply` cannot be corrupted
+ *     by pooling. Nodes minted fresh by canonicalisation (the name
+ *     stamps `__CALL_*`/`__PROP_*`/`__CLASS_*`, `__FN`, the fold
+ *     sentinels) carry no attributes, so they dedupe corpus-wide —
+ *     which is where the RSS win actually lives. Non-scalar attributes
+ *     (comment lists) are not part of the key: they are decoration,
+ *     and deep clone shares those objects by reference already.
  *   - The pool is opt-in: callers explicitly invoke {@see intern()}.
- *     The Normalizer / fingerprint paths don't touch the pool by
- *     default, so existing tests are unaffected.
+ *     Normalizer splices leaves into their parent slots when
+ *     constructed with lowMemory + a pool (engine-008: the --low-memory
+ *     mode without splicing was inert and net-negative). The
+ *     fingerprint paths don't touch the pool by default, so existing
+ *     tests are unaffected.
+ *   - Pooled instances are shared across every block that interned the
+ *     key, so canonical trees are read-only after normalisation (the
+ *     pipeline's consumers — hashers, fingerprints, TED — are; hole
+ *     rewriting runs on the original AST).
  *   - {@see clear()} is provided so long-lived processes (TUI,
  *     watch-mode) can reset the pool between runs.
  */
@@ -70,7 +88,26 @@ final class CanonicalNodePool
     }
 
     /**
-     * Stable identity for a leaf node — type + every scalar attribute.
+     * Stable identity for a leaf node — type + every scalar child value
+     * + every scalar attribute.
+     *
+     * The attribute half is the engine-008 line-honesty fix: the old key
+     * ignored attributes, so an interned leaf aliased the FIRST-seen
+     * node's startLine/endLine/token positions, and any consumer that
+     * reported lines off the shared instance would corrupt per-member
+     * JSON/`--apply` line reporting. Position attributes are parser-
+     * painted scalars, so including every scalar attribute keeps equal-
+     * position leaves sharing (the canonicalisation-minted sentinels all
+     * carry an empty attribute set and dedupe freely) and strictly
+     * separates every pair that differs in any line-bearing or
+     * value-bearing attribute. Non-scalar attributes (the `comments`
+     * list) are decoration already shared by reference under clone, so
+     * they are excluded rather than paying a per-comment serialization.
+     *
+     * Attribute iteration order is deterministic: every node in a parsed
+     * or canonicalised tree receives its keys from the same construction
+     * site (Parser painting, or NodeAbstract::__construct's merge), so
+     * equal-valued maps serialize to equal strings without sorting.
      */
     private static function leafKey(Node $node): string
     {
@@ -79,6 +116,11 @@ final class CanonicalNodePool
             $val = $node->$sub;
             if (is_scalar($val) || $val === null) {
                 $parts[] = $sub . '=' . self::scalarRepr($val);
+            }
+        }
+        foreach ($node->getAttributes() as $key => $value) {
+            if (is_scalar($value) || $value === null) {
+                $parts[] = '@' . $key . '=' . self::scalarRepr($value);
             }
         }
         return implode('|', $parts);

@@ -8,6 +8,7 @@ use Phpdup\Extraction\BlockExtractor;
 use Phpdup\Fingerprint\SubtreeHasher;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Parsing\AstParser;
+use Phpdup\Util\CanonicalNodePool;
 
 final class NormalizerTest extends TestCase
 {
@@ -288,6 +289,184 @@ final class NormalizerTest extends TestCase
             $this->canonicalHash($d, 'aggressive'),
             'aggressive mode still collapses method names to __FN',
         );
+    }
+
+    // ---------------------------------------------------------------
+    // engine-008: --low-memory pooling must ACTUALLY splice pooled
+    // leaves into their parents' child slots, and its leaf key must be
+    // line-honest (distinct-line leaves never alias — the caveat that
+    // protects per-member JSON/--apply line reporting).
+    // engine-030: deepClone stays a faithful deep copy under the new
+    // cached-discovery walk.
+    // ---------------------------------------------------------------
+
+    public function testLowMemoryPoolingSplicesSharedLeafIntoParentSlots(): void
+    {
+        // The finding's regression pin: two identical leaves under
+        // --low-memory share spl_object_id AND each parent's child slot
+        // references the pooled instance. Pre-fix, applyNodePool rebound
+        // only its local parameter — the trees kept two distinct leaf
+        // objects while the pool grew for nothing.
+        $pool = new CanonicalNodePool();
+        $norm = new Normalizer(mode: 'strict', lowMemory: true, nodePool: $pool);
+
+        $a = $this->blockOf('<?php function f() { return $x; }');
+        $b = $this->blockOf('<?php function g() { return $x; }');
+        $norm->normalize($a);
+        $norm->normalize($b);
+
+        $leafA = $a->canonical->stmts[0]->expr;
+        $leafB = $b->canonical->stmts[0]->expr;
+        $this->assertInstanceOf(\PhpParser\Node\Expr\Variable::class, $leafA);
+        $this->assertSame('__V0', $leafA->name, 'fixture sanity: strict renames the leaf');
+        $this->assertSame(spl_object_id($leafA), spl_object_id($leafB),
+            'identical leaves must collapse to one pooled instance');
+        $this->assertSame($leafA, $a->canonical->stmts[0]->expr);
+        $this->assertSame($leafA, $b->canonical->stmts[0]->expr,
+            'both parents\' child slots reference the shared instance');
+        $this->assertGreaterThan(0, $pool->size(), 'the walk must actually intern');
+    }
+
+    public function testLowMemoryPoolingNeverAliasesDistinctLines(): void
+    {
+        // Line-reporting honesty: identical leaves at distinct positions
+        // stay distinct objects, so getStartLine() on any canonical node
+        // reports that member's own line — never the first interned
+        // node's (the aliasing the finding warns any splicing fix about).
+        $pool = new CanonicalNodePool();
+        $norm = new Normalizer(mode: 'strict', lowMemory: true, nodePool: $pool);
+
+        $a = $this->blockOf('<?php function f() { return $x; }');
+        $b = $this->blockOf("<?php function g() {\n\n\n return \$x; }");
+        $norm->normalize($a);
+        $norm->normalize($b);
+
+        $leafA = $a->canonical->stmts[0]->expr;
+        $leafB = $b->canonical->stmts[0]->expr;
+        $this->assertNotSame($leafA, $leafB, 'distinct-line leaves must not be pooled together');
+        $this->assertSame(1, $leafA->getStartLine());
+        $this->assertSame(4, $leafB->getStartLine(), 'each member reports its own line');
+    }
+
+    public function testPoolingIsInactiveWithoutLowMemoryFlag(): void
+    {
+        // Default (no --low-memory): trees are untouched, the pool stays
+        // empty — canonical leaves are per-block objects as before.
+        $pool = new CanonicalNodePool();
+        $norm = new Normalizer(mode: 'strict', nodePool: $pool); // lowMemory NOT set
+
+        $a = $this->blockOf('<?php function f() { return $x; }');
+        $b = $this->blockOf('<?php function g() { return $x; }');
+        $norm->normalize($a);
+        $norm->normalize($b);
+
+        $this->assertNotSame(
+            $a->canonical->stmts[0]->expr,
+            $b->canonical->stmts[0]->expr,
+            'without the flag no interning may happen',
+        );
+        $this->assertSame(0, $pool->size());
+    }
+
+    public function testPoolSpliceDoesNotChangeCanonicalStreams(): void
+    {
+        // Stream-equality property: pooling changes object identity, never
+        // content — the structural hash of every canonical tree must be
+        // byte-for-byte what the unpooled pass produced (the goldens'
+        // unmoved-ness rests on exactly this).
+        $code = '<?php function f($u) { if ($u > 3) { $this->m->send("hi", $u); }'
+            . ' return match ($u) { 1 => "a", default => "b" }; }';
+
+        $plain = $this->blockOf($code);
+        (new Normalizer('aggressive'))->normalize($plain);
+        $plainStrict = $this->blockOf($code);
+        (new Normalizer('strict'))->normalize($plainStrict);
+
+        $hasher = new SubtreeHasher();
+
+        $pool = new CanonicalNodePool();
+        $pooled = $this->blockOf($code);
+        (new Normalizer(mode: 'aggressive', lowMemory: true, nodePool: $pool))->normalize($pooled);
+        $this->assertSame($hasher->hash($plain->canonical), $hasher->hash($pooled->canonical));
+
+        $poolStrict = new CanonicalNodePool();
+        $pooledStrict = $this->blockOf($code);
+        (new Normalizer(mode: 'strict', lowMemory: true, nodePool: $poolStrict))->normalize($pooledStrict);
+        $this->assertSame($hasher->hash($plainStrict->canonical), $hasher->hash($pooledStrict->canonical));
+
+        $this->assertGreaterThan(0, $pool->size(), 'guard against a vacuous pass: interning happened');
+    }
+
+    public function testDeepClonePreservesTreeAndDetachesNodes(): void
+    {
+        // engine-030 fidelity pin for the cached-discovery copyNode: the
+        // clone prints identically, carries identical attributes, and
+        // shares NO mutable node object with the original — while
+        // non-Node array members (Comment objects) keep the reference-
+        // sharing the old copyArray had (they are not Nodes).
+        $code = '<?php function f($x) { /*note*/ return "s" . $x . preg_replace(["a"], ["b"], $x); }';
+        $stmts = (new AstParser())->parseCode($code);
+        $tree  = $stmts[0];
+        $clone = Normalizer::deepClone($tree);
+
+        $this->assertNotSame($tree, $clone);
+        $this->assertSame(
+            (new \PhpParser\PrettyPrinter\Standard())->prettyPrint([$tree]),
+            (new \PhpParser\PrettyPrinter\Standard())->prettyPrint([$clone]),
+            'a faithful clone prints identically',
+        );
+        $this->assertSame($tree->getAttributes(), $clone->getAttributes());
+
+        $finder = new \PhpParser\NodeFinder();
+        $origVars  = $finder->findInstanceOf([$tree],  \PhpParser\Node\Expr\Variable::class);
+        $cloneVars = $finder->findInstanceOf([$clone], \PhpParser\Node\Expr\Variable::class);
+        $this->assertNotEmpty($origVars);
+        $this->assertCount(count($origVars), $cloneVars);
+        foreach ($origVars as $i => $v) {
+            $this->assertNotSame($v, $cloneVars[$i], 'no Variable object may be shared');
+        }
+
+        $origStrs  = $finder->findInstanceOf([$tree],  \PhpParser\Node\Scalar\String_::class);
+        $cloneStrs = $finder->findInstanceOf([$clone], \PhpParser\Node\Scalar\String_::class);
+        foreach ($origStrs as $i => $s) {
+            $this->assertNotSame($s, $cloneStrs[$i], 'no array-held String_ child may be aliased');
+        }
+
+        // Mutating the clone cannot leak into the original.
+        $cloneVars[0]->name = 'poisoned';
+        $this->assertNotSame('poisoned', $origVars[0]->name);
+
+        // Comments: the old walk shared them by reference (not Nodes) —
+        // pin the fast path keeps that exact sharing semantics.
+        $returnNode = null;
+        foreach ($finder->findInstanceOf([$tree], \PhpParser\Node\Stmt\Return_::class) as $r) {
+            $returnNode = $r;
+            break;
+        }
+        $this->assertNotNull($returnNode);
+        $origComments = $returnNode->getAttributes()['comments'] ?? [];
+        $cloneReturn  = $finder->findFirstInstanceOf([$clone], \PhpParser\Node\Stmt\Return_::class);
+        $this->assertIsArray($origComments);
+        $this->assertNotEmpty(
+            $origComments,
+            'fixture sanity: the parser must attach the inline comment to the Return',
+        );
+        $cloneComments = $cloneReturn->getAttributes()['comments'] ?? [];
+        $this->assertNotEmpty($cloneComments, 'the attributes array must survive the copy');
+        $this->assertSame(
+            $origComments[0],
+            $cloneComments[0],
+            'Comment objects are shared by reference, exactly as the old copyArray left them',
+        );
+    }
+
+    private function blockOf(string $code, string $file = 'test.php'): \Phpdup\Extraction\Block
+    {
+        $parser    = new AstParser();
+        $extractor = new BlockExtractor(minSize: 1);
+        $blocks    = $extractor->extract($file, $parser->parseCode($code));
+        $this->assertNotEmpty($blocks, 'fixture must produce at least one block');
+        return $blocks[0];
     }
 
     private function canonicalHash(string $code, string $mode = 'aggressive'): string

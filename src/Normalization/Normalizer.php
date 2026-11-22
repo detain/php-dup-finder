@@ -107,10 +107,12 @@ final class Normalizer
         $stmts = $traverser->traverse([$clone]);
         $block->canonical = $stmts[0];
 
-        // Low-memory mode: walk the canonical AST and intern each leaf node
-        // so identical subtrees across blocks deduplicate to shared instances.
+        // Low-memory mode: interning pass over the canonical AST. The
+        // root is reassigned because a leaf-shaped root would intern to
+        // an earlier pooled instance; composite roots (every extracted
+        // block) come back identity-equal.
         if ($this->lowMemory && $this->nodePool !== null) {
-            $this->applyNodePool($block->canonical, $this->nodePool);
+            $block->canonical = $this->applyNodePool($block->canonical, $this->nodePool);
         }
     }
 
@@ -129,36 +131,49 @@ final class Normalizer
     }
 
     /**
-     * Walk a canonical AST and intern each leaf node via $pool so that
-     * structurally identical subtrees across blocks share the same object
-     * references — reducing RSS on large corpora at the cost of some speed.
-     * Composite nodes (nodes with children) are not interned since mutating
-     * one would corrupt all sharers; only leaf nodes benefit from dedup.
+     * Walk a canonical AST bottom-up, intern each leaf via $pool, and
+     * SPLICE the pooled instance into its parent's child slot so
+     * structurally identical leaves across blocks genuinely share one
+     * object — reducing RSS on large corpora (engine-008: the old pass
+     * rebound only its local parameter, so nothing ever entered the
+     * tree while the strongly-held first-seen store made the mode a
+     * net memory regression).
+     *
+     * The walk iterates getSubNodeNames() — the public child-slot
+     * contract of php-parser nodes — instead of a per-node reflection
+     * walk (same finding: the reflection version allocated a
+     * ReflectionClass per node, on exactly the corpora the mode
+     * targets). Composite nodes pass through intern() unchanged, so
+     * only leaf slots are rewritten; the walk returns the interned node
+     * for the caller (or normalize()) to install.
      */
-    private function applyNodePool(Node $node, CanonicalNodePool $pool): void
+    private function applyNodePool(Node $node, CanonicalNodePool $pool): Node
     {
-        // Intern the current node; for leaf nodes this returns a pooled
-        // instance (potentially the same object ref if already seen).
-        $node = $pool->intern($node);
-
-        // For composite nodes, recurse into children. For leaf nodes,
-        // intern() returned $node unchanged and we skip the recursion.
-        $reflection = new \ReflectionClass($node);
-        foreach ($reflection->getProperties() as $property) {
-            if (!$property->isInitialized($node)) {
+        foreach ($node->getSubNodeNames() as $name) {
+            // isset() skips uninitialized typed slots and null children —
+            // the same slots the old reflection walk skipped.
+            if (!isset($node->$name)) {
                 continue;
             }
-            $value = $property->getValue($node);
+            $value = $node->$name;
             if ($value instanceof Node) {
-                $this->applyNodePool($value, $pool);
+                $interned = $this->applyNodePool($value, $pool);
+                if ($interned !== $value) {
+                    $node->$name = $interned;
+                }
             } elseif (is_array($value)) {
                 foreach ($value as $k => $v) {
                     if ($v instanceof Node) {
-                        $this->applyNodePool($v, $pool);
+                        $interned = $this->applyNodePool($v, $pool);
+                        if ($interned !== $v) {
+                            $node->$name[$k] = $interned;
+                        }
                     }
                 }
             }
         }
+
+        return $pool->intern($node);
     }
 
     /**
@@ -186,35 +201,79 @@ final class Normalizer
     }
 
     /**
+     * Property names eligible for the recursive copy pass, per node
+     * class. engine-030: the old walk built a fresh ReflectionClass and
+     * enumerated getProperties() for EVERY node (~4.6 µs/node measured);
+     * discovery now runs once per class and the hot loop is plain public
+     * property access.
+     *
+     * @var array<class-string<Node>, list<string>>
+     */
+    private static array $copyableProperties = [];
+
+    /**
      * Recursively copy a node and all its child nodes.
+     *
+     * The shallow `clone` already value-copies scalars and the whole
+     * protected `attributes` array (arrays are copy-on-write by value in
+     * PHP); the cached name list then drives the recursive pass over the
+     * remaining public instance properties — exactly the property set the
+     * old reflection walk copied (see {@see discoverCopyableProperties()}
+     * for the static/protected delta, which is a self-assignment no-op
+     * and the value-copied attributes array respectively).
      *
      * @internal
      */
     private static function copyNode(Node $node): Node
     {
-        $clone = (clone $node);
+        $clone = clone $node;
 
-        $reflection = new \ReflectionClass($node);
-        foreach ($reflection->getProperties() as $property) {
+        $names = self::$copyableProperties[$node::class]
+            ??= self::discoverCopyableProperties($node::class);
 
-            if (!$property->isInitialized($clone)) {
+        foreach ($names as $name) {
+            // isset() reproduces the old walk's two skips: uninitialized
+            // typed properties (isInitialized false) and null values.
+            if (!isset($clone->$name)) {
                 continue;
             }
-
-            $value = $property->getValue($clone);
-
-            if ($value === null) {
-                continue;
-            }
-
+            $value = $clone->$name;
             if (is_array($value)) {
-                $property->setValue($clone, self::copyArray($value));
+                $clone->$name = self::copyArray($value);
             } elseif ($value instanceof Node) {
-                $property->setValue($clone, self::copyNode($value));
+                $clone->$name = self::copyNode($value);
             }
         }
 
         return $clone;
+    }
+
+    /**
+     * Public, non-static instance properties of a node class — the copy
+     * set. Statics (String_::$replacements) were re-assigned to equal
+     * copies by the old reflection walk; skipping them keeps that no-op
+     * off the hot path. `attributes` is the only non-public instance
+     * property any node class carries (NodeAbstract::$attributes, and it
+     * is value-copied by the shallow clone), so skipping non-publics
+     * loses nothing; the explicit name guard documents the dependency.
+     *
+     * @param class-string<Node> $class
+     * @return list<string>
+     */
+    private static function discoverCopyableProperties(string $class): array
+    {
+        $names = [];
+        foreach ((new \ReflectionClass($class))->getProperties() as $property) {
+            if (
+                $property->isStatic()
+                || !$property->isPublic()
+                || $property->getName() === 'attributes'
+            ) {
+                continue;
+            }
+            $names[] = $property->getName();
+        }
+        return $names;
     }
 
     /**

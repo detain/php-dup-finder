@@ -17,6 +17,7 @@ use Phpdup\Parallel\PairScoreWorker;
 use Phpdup\Similarity\JaccardSimilarity;
 use Phpdup\Similarity\TreeEditDistance;
 use Phpdup\Util\LineRange;
+use Phpdup\Util\CanonicalNodePool;
 
 /**
  * Item 1.2 — the max_ted_size gate.
@@ -91,7 +92,7 @@ final class TedSizeGateTest extends TestCase
      *
      * @return array{0: Block, 1: Block}
      */
-    private function realPair(int $units, bool $extraB = true, int $foreachB = 0): array
+    private function realPair(int $units, bool $extraB = true, int $foreachB = 0, ?CanonicalNodePool $pool = null): array
     {
         $mk = static function (string $tag, bool $extra) use ($units, $extraB, $foreachB): string {
             $code = "<?php\nfunction probe_{$tag}(\$p) {\n";
@@ -113,7 +114,9 @@ final class TedSizeGateTest extends TestCase
         // maxSize deliberately above the probe trees so the extractor does
         // not drop them (this test measures scoring, not extraction caps).
         $extractor = new BlockExtractor(minSize: 1, maxSize: 100000);
-        $normalizer = new Normalizer('aggressive');
+        $normalizer = $pool === null
+            ? new Normalizer('aggressive')
+            : new Normalizer(mode: 'aggressive', lowMemory: true, nodePool: $pool);
         $fingerprint = new NgramFingerprint(5);
         $blocks = [];
         foreach (['A', 'B'] as $tag) {
@@ -402,5 +405,67 @@ final class TedSizeGateTest extends TestCase
     {
         $this->expectException(\InvalidArgumentException::class);
         $this->worker(new BlockIndex(), -1);
+    }
+
+    // ------------------------------------------------------------------
+    // engine-S04 rider: --low-memory pooling must be invisible to the
+    // gate (canonical content is unchanged) while demonstrably splicing
+    // shared sentinel leaves across the two members' canonical trees.
+    // ------------------------------------------------------------------
+
+    public function testPoolingPreservesGateVerdictsAndSplicesSharedSentinels(): void
+    {
+        $plainA  = $this->realPair(6);
+        $pool    = new CanonicalNodePool();
+        $pooledA = $this->realPair(6, pool: $pool);
+
+        // (1) Stream equality: pooling rewrites object identity, never
+        //     content — both members' structural hashes are bit-what-
+        //     the unpooled pass minted, so every gate input is unmoved.
+        $this->assertSame($plainA[0]->structuralHash, $pooledA[0]->structuralHash);
+        $this->assertSame($plainA[1]->structuralHash, $pooledA[1]->structuralHash);
+        $this->assertGreaterThan(0, $pool->size(), 'guard against a vacuous pass: interning happened');
+
+        // (2) The finding's shared-object proof through the real path:
+        //     aggressive canonicalisation mints attribute-less `__CALL_`
+        //     sentinel Names, so the same call name in the two members'
+        //     trees collapses to ONE pooled object that each parent's
+        //     name slot references.
+        $finder = new \PhpParser\NodeFinder();
+        $strlenName = static function (Block $b) use ($finder): ?\PhpParser\Node\Name {
+            foreach ($finder->findInstanceOf([$b->canonical], \PhpParser\Node\Expr\FuncCall::class) as $call) {
+                if ($call->name instanceof \PhpParser\Node\Name && $call->name->toString() === '__CALL_strlen') {
+                    return $call->name;
+                }
+            }
+            return null;
+        };
+        $plainNameA = $strlenName($plainA[0]);
+        $plainNameB = $strlenName($plainA[1]);
+        $this->assertNotNull($plainNameA, 'fixture sanity: probe carries a strlen FuncCall');
+        $this->assertNotNull($plainNameB);
+        $this->assertNotSame($plainNameA, $plainNameB, 'without the pool the same sentinel stays two objects');
+
+        $pooledNameA = $strlenName($pooledA[0]);
+        $pooledNameB = $strlenName($pooledA[1]);
+        $this->assertNotNull($pooledNameA);
+        $this->assertNotNull($pooledNameB);
+        $this->assertSame(spl_object_id($pooledNameA), spl_object_id($pooledNameB),
+            'the pooled sentinel must be one shared instance across members');
+
+        // (3) Gate verdict identical through both runs (tiny cap forces
+        //     the jaccard-unverified branch over the real trees).
+        $plainVerdict  = $this->serialClusterer(50)->cluster($this->indexOf($plainA[0], $plainA[1]), null);
+        $pooledVerdict = $this->serialClusterer(50)->cluster($this->indexOf($pooledA[0], $pooledA[1]), null);
+        $this->assertCount(1, $pooledVerdict);
+        $this->assertSame(
+            $plainVerdict[0]->pairs[0]['matchTier'],
+            $pooledVerdict[0]->pairs[0]['matchTier'],
+        );
+        $this->assertSame('jaccard-unverified', $pooledVerdict[0]->pairs[0]['matchTier']);
+        $this->assertSame(
+            $plainVerdict[0]->pairs[0]['matchScore'],
+            $pooledVerdict[0]->pairs[0]['matchScore'],
+        );
     }
 }
