@@ -417,16 +417,22 @@ final class PhpdupModel implements Model, ProgressListener
 
     private function renderBody(): string
     {
-        $cols = max(60, $this->viewState->cols);
-        $rows = max(20, $this->viewState->rows);
+        // once-S61 (php-dup-finder-once-070): the viewport is a CEILING, not
+        // a suggestion. The old `max(60, cols)` / `max(20, rows)` inflated
+        // the layout past small terminals — rows wider than the screen are
+        // wrapped by the terminal itself, tearing every border below. A
+        // degenerate 0-clipped reading floors at 1 honest cell; it never
+        // grows past what the terminal can show.
+        $cols = max(1, $this->viewState->cols);
+        $rows = max(1, $this->viewState->rows);
 
-        $banner = $this->theme->accent->render(sprintf(
+        $banner = $this->theme->accent->render(ViewState::clipToCells(sprintf(
             ' phpdup — %s · %d blocks · %d clusters%s',
             CountPhrase::files(count($this->state->files)),
             count($this->state->blocks),
             count($this->state->clusters),
             $this->viewState->analysisComplete ? '' : '   ' . $this->spinner->view(),
-        ));
+        ), $cols));
 
         $panes = FlexBox::row(
             FlexItem::new($this->paneFor(Stage::Scanning))->withRatio(1),
@@ -435,32 +441,105 @@ final class PhpdupModel implements Model, ProgressListener
             FlexItem::new($this->paneFor(Stage::Refactoring))->withRatio(1),
         )->withGap(1);
 
-        $statusLine = $this->viewState->analysisComplete
-            ? ''
-            : "  " . $this->theme->info->render('▸ ' . $this->state->stage->label())
-              . '  ' . $this->theme->muted->render($this->state->currentTask !== ''
-                  ? $this->state->currentTask
-                  : 'working...')
-              . "\n";
+        // Panes shrink instead of overflowing: 8 chrome rows (banner + blank
+        // + status + sparkline + detail + blanks) reserved, never more rows
+        // than the screen has, never fewer than one honest row.
+        $paneRows = max(1, min($rows, $rows - 8));
+
+        $errPanel = $this->renderErrorPanel($cols);
+
+        $statusLine = $this->viewState->analysisComplete ? '' : $this->renderStatusLine($cols);
 
         $detail = $this->viewState->detailClusterId !== null
-            ? $this->renderDetail()
-            : "  " . $this->theme->muted->render(sprintf(
-                'Tip: ↑/↓ focus · Enter detail · t sort (%s) · T flip dir · h help · q quit',
-                $this->viewState->sortMode . ':' . $this->viewState->sortDirection,
-            ));
+            ? $this->renderDetail($cols)
+            : $this->tipLine($cols);
 
-        $help = $this->viewState->helpExpanded ? "\n  " . $this->theme->muted->render(
-            'Keys: ↑/↓ cycle focused pane · ←/→ navigate detail · Enter expand · Esc dismiss · t cycle sort (impact/members/block-size/lines/similarity/confidence/name) · T flip asc/desc · h toggle help · Ctrl+C / q quit'
-        ) : '';
+        $help = $this->viewState->helpExpanded ? $this->helpLine($cols) : '';
 
-        return $banner . "\n\n"
-             . $this->renderErrorPanel($cols)
-             . $panes->render($cols, max(8, $rows - 8)) . "\n"
-             . $statusLine
-             . $this->renderTimingsSparkline($cols)
-             . $detail
-             . $help;
+        $paneBlock = $panes->render($cols, $paneRows);
+        $compose   = fn(string $status, string $spark, string $helpRow): string =>
+            $banner . "\n\n"
+            . $errPanel
+            . $paneBlock . "\n"
+            . $status . $spark . $detail . $helpRow;
+
+        $body = $compose($statusLine, $this->renderTimingsSparkline($cols), $help);
+
+        // Vertical clamp that CLAMPS (once-070): too many rows scrolls the
+        // terminal and tears the layout below just as badly as too-wide rows
+        // wrap. Auxiliary rows drop in least-important order — help, then
+        // sparkline, then live status — until the paint fits the screen.
+        // The halt panel, banner, one pane row and the detail/tip row are
+        // the irreducible honest frame (5 rows: banner + blank + pane +
+        // detail head + continuation, plus one per error-panel row) and are
+        // never dropped; below that floor the terminal scrolls by physical
+        // necessity, disclosed in the census as max($rows, 5 + err rows).
+        $errRows = $this->countRows($errPanel);
+        $census  = static fn(string $b): int => $b === '' ? 0 : count(explode("\n", rtrim($b, "\n")));
+        $floor   = 5 + $errRows;
+        if ($census($body) > max($rows, $floor)) {
+            $body = $compose($statusLine, $this->renderTimingsSparkline($cols), '');
+        }
+        if ($census($body) > max($rows, $floor)) {
+            $body = $compose($statusLine, '', '');
+        }
+        if ($census($body) > max($rows, $floor)) {
+            $body = $compose('', '', '');
+        }
+        return $body;
+    }
+
+    /** Screen rows a fragment occupies (trailing newline is a row terminator, not a row). */
+    private function countRows(string $fragment): int
+    {
+        return $fragment === '' ? 0 : count(explode("\n", rtrim($fragment, "\n")));
+    }
+
+    /**
+     * Live-task status row: the fixed label segment keeps its cells, the
+     * task text (stage-produced, and per the display-door doctrine treated
+     * as untrusted content) gets whatever the viewport leaves, clipped in
+     * cells so the row always occupies exactly one screen row.
+     */
+    private function renderStatusLine(int $cols): string
+    {
+        $label = '▸ ' . $this->state->stage->label();
+        // 2 leading + label + 2 separator cells are fixed; the task owns the
+        // rest. When the viewport cannot hold even the fixed part plus one
+        // task cell, the honest layout drops the row — a row that cannot fit
+        // is a guaranteed wrap (php-dup-finder-once-070).
+        $fixed = 4 + ViewState::displayWidth($label);
+        if ($cols < $fixed + 1) {
+            return '';
+        }
+        $task = ViewState::displayLabel(
+            $this->state->currentTask !== '' ? $this->state->currentTask : 'working...',
+            ViewState::regionBudget($cols, $fixed, PHP_INT_MAX),
+        );
+
+        return "  " . $this->theme->info->render($label)
+              . '  ' . $this->theme->muted->render($task) . "\n";
+    }
+
+    /** Tip row, clipped to the viewport (once-070: the 84-col tip never was). */
+    private function tipLine(int $cols): string
+    {
+        $tip = sprintf(
+            '  Tip: ↑/↓ focus · Enter detail · t sort (%s) · T flip dir · h help · q quit',
+            $this->viewState->sortMode . ':' . $this->viewState->sortDirection,
+        );
+        // The indent rides INSIDE the clip so even a 1-cell viewport gets a
+        // 1-cell row — a pad that cannot fit is a line-break in disguise.
+        return $this->theme->muted->render(ViewState::clipToCells($tip, $cols));
+    }
+
+    /** Key-help row, clipped to the viewport (once-070: the 190-col row never was). */
+    private function helpLine(int $cols): string
+    {
+        return "\n" . $this->theme->muted->render(ViewState::clipToCells('  ' .
+            'Keys: ↑/↓ cycle focused pane · ←/→ navigate detail · Enter expand · Esc dismiss · t cycle sort (impact/members/block-size/lines/similarity/confidence/name) · T flip asc/desc · h toggle help · Ctrl+C / q quit',
+            $cols,
+        ));
     }
 
     /**
@@ -476,7 +555,17 @@ final class PhpdupModel implements Model, ProgressListener
         if ($this->pipelineError === null) {
             return '';
         }
-        $width = max(20, $cols - 24); // first line shares space with '✗ phpdup: '
+        // First line shares the row with the '✗ phpdup: ' head, so the wrap
+        // budget is the viewport minus that head. The old `max(20, cols-24)`
+        // alone could hand a narrow terminal a WIDER budget than the screen
+        // minus its head (once-070) — min() now also caps at $cols - head,
+        // while the generous 24-col inset survives as the comfort ceiling it
+        // always wanted to be (php-dup-finder-once-070).
+        $headPrefix = '✗ phpdup: ';
+        $width = max(1, min(
+            $cols - ViewState::displayWidth($headPrefix),
+            max(20, $cols - 24),
+        ));
         $displayLines = [];
         foreach (explode("\n", $this->pipelineError) as $sourceLine) {
             foreach (self::wrapToCells(ViewState::displaySafe($sourceLine), $width) as $wrapped) {
@@ -484,9 +573,14 @@ final class PhpdupModel implements Model, ProgressListener
             }
         }
         $head = array_shift($displayLines) ?? '';
-        $out = "\n" . $this->theme->error->render('✗ phpdup: ' . $head) . "\n";
+        // Both rows ride a final viewport clip covering their prefixes, so
+        // the panel can never emit an over-wide line even at degenerate
+        // widths (the wrap budget already guarantees it for sane screens).
+        $out = "\n" . $this->theme->error->render(
+            ViewState::clipToCells($headPrefix . $head, $cols),
+        ) . "\n";
         foreach ($displayLines as $line) {
-            $out .= $this->theme->error->render('  ' . $line) . "\n";
+            $out .= $this->theme->error->render(ViewState::clipToCells('  ' . $line, $cols)) . "\n";
         }
         return $out . "\n";
     }
@@ -511,7 +605,7 @@ final class PhpdupModel implements Model, ProgressListener
                 $current = $word;
                 continue;
             }
-            if (mb_strwidth($current . ' ' . $word, 'UTF-8') <= $width) {
+            if (ViewState::displayWidth($current . ' ' . $word) <= $width) {
                 $current .= ' ' . $word;
                 continue;
             }
@@ -527,11 +621,19 @@ final class PhpdupModel implements Model, ProgressListener
         if ($this->stageDurations === []) {
             return '';
         }
-        $width    = max(10, min(40, $cols - 30));
-        $sparkline = Sparkline::new($this->stageDurations, $width);
-        $elapsed   = microtime(true) - $this->startedAt;
-        return '  ' . $this->theme->muted->render(sprintf('elapsed %5.2fs ', $elapsed))
-             . $sparkline->view() . "\n";
+        // The label owns its 15 cells first (2 leading + 'elapsed NNN.NNs '),
+        // the plot takes what the viewport leaves up to its ideal 40 — a
+        // clamp that clamps: at 40 cols the plot renders 25 cells, not the
+        // old floor-inflated 10-on-a-20-col-screen row that never fit
+        // anywhere (php-dup-finder-once-070).
+        $elapsedLabel = sprintf('elapsed %5.2fs ', microtime(true) - $this->startedAt);
+        if ($cols < 2 + ViewState::displayWidth($elapsedLabel) + 1) {
+            return ''; // label + one plot cell cannot coexist on this row
+        }
+        $labelClipped = ViewState::clipToCells($elapsedLabel, ViewState::regionBudget($cols, 2, PHP_INT_MAX));
+        $plotWidth    = ViewState::regionBudget($cols, 2 + ViewState::displayWidth($labelClipped), 40);
+        $sparkline    = Sparkline::new($this->stageDurations, $plotWidth);
+        return '  ' . $this->theme->muted->render($labelClipped) . $sparkline->view() . "\n";
     }
 
     private function paneFor(Stage $stage): string
@@ -616,22 +718,37 @@ final class PhpdupModel implements Model, ProgressListener
         return sprintf("%d refactored\n%.2fs", $refactored, $duration);
     }
 
-    private function renderDetail(): string
+    private function renderDetail(int $cols): string
     {
         $id = $this->viewState->detailClusterId;
         foreach ($this->state->clusters as $c) {
             if ($c->id === $id) {
-                $sig = $c->signature ?? '<no signature>';
-                return sprintf(
-                    "  Cluster %s — %d members, similarity %.2f, impact %d\n%s",
+                // The signature is composed from SCANNED source (member
+                // names, parameter lists): it crosses the display door and
+                // is clipped in cells like every other region — escape
+                // first, then measure (php-dup-finder-once-070,
+                // once-024's boundary contract).
+                $sig      = $c->signature ?? '<no signature>';
+                $head     = ViewState::clipToCells(ViewState::displaySafe(sprintf(
+                    '  Cluster %s — %d members, similarity %.2f, impact %d',
                     $c->id,
                     count($c->members),
                     $c->similarity,
                     $c->impact,
-                    $sig,
-                );
+                )), $cols);
+                $sigCells = max(1, $cols - 2);
+                $sigLines = [];
+                foreach (explode("\n", $sig) as $sigLine) {
+                    // Outer clip covers the indent at sub-3-col viewports,
+                    // where a fixed 2-space pad is itself an overflow row.
+                    $sigLines[] = ViewState::clipToCells(
+                        "  " . ViewState::displayLabel($sigLine, $sigCells),
+                        $cols,
+                    );
+                }
+                return $head . "\n" . implode("\n", $sigLines);
             }
         }
-        return '  (cluster not found)';
+        return ViewState::clipToCells('  (cluster not found)', $cols);
     }
 }

@@ -6,6 +6,7 @@ namespace Phpdup\Tui;
 use Phpdup\Pipeline\Stage;
 use Phpdup\Reporting\ClusterSort;
 use Phpdup\Util\ControlText;
+use SugarCraft\Core\Util\Width;
 
 /**
  * UI-only state for the phpdup TUI.
@@ -17,6 +18,12 @@ use Phpdup\Util\ControlText;
  * scanned-derived label, toast or excerpt entering a terminal cell passes
  * {@see self::displayLabel()}, which consumes the shared
  * {@see ControlText} venue (php-dup-finder-once-024, ViewState leg).
+ *
+ * All cell math runs through sugar-core's {@see Width} util — the same
+ * grapheme-cluster, East-Asian-wide, emoji-aware measure the rest of the
+ * SugarCraft stack (and sugar-flexbox itself) lays out with — so the model's
+ * budgets and the renderer's painting agree on what a "column" is
+ * (php-dup-finder-once-070, ViewState leg).
  */
 final class ViewState
 {
@@ -119,7 +126,7 @@ final class ViewState
         "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F" .
         "\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1A\x1B\x1C\x1D\x1E\x1F\x7F";
 
-    /** Ellipsis closing a clipped display run (one cell under mb_strwidth). */
+    /** Ellipsis closing a clipped display run (one cell under {@see Width}). */
     private const ELLIPSIS = '…';
 
     /** @var array<string,string>|null single control byte => caret notation, derived once from C0_DEL_BYTES */
@@ -146,6 +153,37 @@ final class ViewState
     }
 
     /**
+     * Display-cell width of already-safe text — the canonical count.
+     *
+     * Delegates to sugar-core's {@see Width::string()}, the grapheme-cluster
+     * measure the whole SugarCraft stack paints with: CJK 2 cells, combining
+     * marks 0, emoji ZWJ sequences one cluster. `mb_strwidth` (per-codepoint)
+     * and `mb_strlen` (codepoints) disagree with the terminal on all three and
+     * are the desync this door closes (php-dup-finder-once-070).
+     */
+    public static function displayWidth(string $displayText): int
+    {
+        return Width::string($displayText);
+    }
+
+    /**
+     * Cell budget for one region inside a viewport — a clamp that CLAMPS.
+     *
+     * The layout bug class this replaces (once-070): guards written as
+     * `max(60, $cols)` inflate the layout past a small terminal — a floor
+     * where a ceiling was meant, so 40-col screens got 60-col rows that the
+     * terminal wrapped into border-tear. The honest shape is min(): never
+     * more than the viewport minus the region's fixed overhead, never more
+     * than the region's ideal, and never less than one cell (a 1-cell run
+     * still renders a visible ellipsis instead of vanishing).
+     */
+    public static function regionBudget(int $viewportCells, int $overheadCells, int $idealCells): int
+    {
+        $usable = $viewportCells - $overheadCells;
+        return max(1, min($usable, $idealCells));
+    }
+
+    /**
      * Clip an already display-safe string to a display-cell budget.
      *
      * The caller must pass text that went through {@see self::displaySafe()}
@@ -153,30 +191,35 @@ final class ViewState
      * first and then lay out, instead of slicing escape bytes mid-notation —
      * the compounding bug class the UPSTREAM scout flagged (UP-04). Result
      * occupies at most $maxCells columns; a clipped run ends in one ellipsis
-     * cell.
+     * cell. Cuts land on grapheme-cluster boundaries: a wide glyph is never
+     * split and a combining mark never strands from its base
+     * (php-dup-finder-once-070 — widths count in cells, not codepoints).
      */
     public static function clipToCells(string $displayText, int $maxCells): string
     {
         if ($maxCells <= 0) {
             return '';
         }
-        if (mb_strwidth($displayText, 'UTF-8') <= $maxCells) {
+        if (Width::string($displayText) <= $maxCells) {
             return $displayText;
         }
         if ($maxCells === 1) {
             return self::ELLIPSIS;
         }
 
-        $budget = $maxCells - mb_strwidth(self::ELLIPSIS, 'UTF-8');
+        $budget = $maxCells - Width::string(self::ELLIPSIS);
         $used   = 0;
         $out    = '';
-        foreach (mb_str_split($displayText, 1, 'UTF-8') as $ch) {
-            $cells = mb_strwidth($ch, 'UTF-8');
+        $length = strlen($displayText);
+        for ($i = 0; $i < $length;) {
+            $cluster = Width::nextCluster($displayText, $i);
+            $cells   = Width::string($cluster);
             if ($used + $cells > $budget) {
                 break;
             }
-            $out  .= $ch;
+            $out  .= $cluster;
             $used += $cells;
+            $i    += strlen($cluster);
         }
         return $out . self::ELLIPSIS;
     }
