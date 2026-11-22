@@ -235,6 +235,11 @@ final class IdentifierIdsTest extends TestCase
     /**
      * The memo is a bounded speed layer: a storm of distinct tokens must
      * reset it instead of growing it, and values must survive the reset.
+     *
+     * Fix-round r1 (review NIT-1): the entry cap is sampled at PEAK during
+     * the storm, not only sampled after it — the old post-storm read missed
+     * a >= → > off-by-one that lets the memo transiently hold cap+1
+     * entries (r1 MUT3 came back GREEN).
      */
     public function testMemoStaysBoundedUnderStormAndKeepsValues(): void
     {
@@ -246,12 +251,15 @@ final class IdentifierIdsTest extends TestCase
         for ($i = 0; $i < 3 * $entryCap; $i++) {
             $tokens[] = "Variable|v:__V{$i}_go";
         }
+        $foldMemo = $class->getProperty('foldMemo');
+        $peakEntries = 0;
         foreach ($tokens as $token) {
             $this->assertSame(self::legacyFoldStamps($token), IdentifierIds::foldStamps($token));
+            $peakEntries = max($peakEntries, count($foldMemo->getValue()));
         }
 
-        $foldMemo = $class->getProperty('foldMemo');
         $foldBytes = $class->getProperty('foldMemoBytes');
+        $this->assertLessThanOrEqual($entryCap, $peakEntries, 'fold memo peak during the storm must respect its entry cap, never transiently exceed it');
         $this->assertLessThanOrEqual($entryCap, count($foldMemo->getValue()), 'fold memo must reset at its entry cap, never grow past it');
         $this->assertLessThanOrEqual($byteCap + max(array_map('strlen', $tokens)), $foldBytes->getValue(), 'fold memo byte budget must bound storage');
 

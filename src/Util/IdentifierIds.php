@@ -193,7 +193,12 @@ final class IdentifierIds
         }
         $lastRunStart = strlen($subject) - 1;
         if (strspn($subject, $runBytes, $lastRunStart) === 0) {
-            return null; // the anchored run must consume the very last byte
+            // The anchored run must consume the very last byte. This is an
+            // intentional fast-fail short-circuit, redundant by construction:
+            // the runBoundary math below already rejects the same input, so
+            // the guard is deliberately unpinned — deleting it turns no test
+            // red (engine-S38 review r1, NIT-2/MUT4).
+            return null;
         }
         // The run reaches the end, so a match's run starts at or after the
         // beginning of the longest run-class suffix.
