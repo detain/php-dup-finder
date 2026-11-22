@@ -7,13 +7,19 @@ use PhpParser\Node;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Scalar;
 use PHPUnit\Framework\TestCase;
+use Phpdup\Cli\Config;
 use Phpdup\Extraction\BlockExtractor;
 use Phpdup\Fingerprint\FingerprintIdMode;
 use Phpdup\Fingerprint\SubtreeHasher;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Parsing\AstParser;
+use Phpdup\Pipeline\PipelineState;
+use Phpdup\Pipeline\Stages\PreprocessStage;
+use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Util\AstSerializer;
 use Phpdup\Util\Delimiters;
+use Phpdup\Util\PathCanonical;
+use Symfony\Component\Console\Output\NullOutput;
 
 /**
  * Tests for AstSerializer node-count invariants.
@@ -548,6 +554,128 @@ final class AstSerializerTest extends TestCase
             (string) file_get_contents(dirname(__DIR__, 3) . '/' . FingerprintIdMode::ROOT_TOKEN_FILE),
             'root roster file diverged from the cache identity'
         );
+    }
+
+    // ------------------------------------------------- once-S87 shuffle fence
+
+    /**
+     * DET-07's repo-side fence (php-dup-finder-once-109): the same tree
+     * reached through duplicate or nested-overlapping scan roots — in
+     * either argument order — must produce the identical extraction:
+     * same file census, same canonical block ids, and byte-identical
+     * normalized token streams (the deterministic-shuffle acceptance
+     * property, golden-free). Before once-S87 the duplicate-root form
+     * didn't even finish (second twin starved the loader → 'could not
+     * relocate' exit 1), and the determinism claim lived only in manual
+     * proof prose; this test is the pin that keeps it true.
+     */
+    public function testDedupedAndNestedRootOrderingsYieldIdenticalNormalizedBytesAndIds(): void
+    {
+        $root = $this->scratchDir() . '/s87tree';
+        self::assertTrue(mkdir($root . '/sub', 0o775, true));
+        $twin = static function (string $ns): string {
+            return "<?php\n\nnamespace {$ns};\n\nfunction pair_gate(int \$x): int {\n"
+                . "    if (\$x > 4) {\n        \$a = 1;\n        \$b = 2;\n    }\n"
+                . "    if (\$x > 4) {\n        \$a = 3;\n        \$b = 4;\n    }\n"
+                . "    return \$x;\n}\n";
+        };
+        file_put_contents($root . '/top.php', $twin('S87Top'));
+        file_put_contents($root . '/sub/deep.php', $twin('S87Deep'));
+
+        $run = function (array $paths, string $tag) use ($root): array {
+            $config = new Config(
+                paths: $paths,
+                exclude: [],
+                minBlockSize: 1,
+                cacheDir: $this->scratchDir() . '/cc-' . $tag,
+            );
+            $state = new PipelineState($config);
+            (new ScanningStage())->run($state, new NullOutput());
+            (new PreprocessStage(false))->run($state, new NullOutput());
+            self::assertNotEmpty($state->blocks, 'the fixture must extract real blocks');
+            $rows = [];
+            foreach ($state->blocks as $b) {
+                self::assertNotSame('', (string) $b->id, 'blocks carry canonical ids after preprocessing');
+                $rows[] = $b->id . '|' . md5(json_encode(AstSerializer::tokens($b->canonical)))
+                    . '|' . substr((string) $b->file, strlen($root));
+            }
+            sort($rows);
+            return [$rows, $state->totalFiles];
+        };
+
+        $plain = $run([$root], 'plain');
+        [$dup, $nested, $nestedRev] = [
+            $run([$root, $root], 'dup'),
+            $run([$root, $root . '/sub'], 'nest'),
+            $run([$root . '/sub', $root], 'nestrev'),
+        ];
+
+        self::assertSame($plain, $dup, 'a duplicated root collapses to a byte-identical scan');
+        self::assertSame($plain, $nested, 'a nested overlapping root keeps the shared file counted once');
+        self::assertSame($nested, $nestedRev, 'root argument order cannot move a byte of the extraction');
+    }
+
+    /**
+     * PathCanonical::diskKey — the collapse key behind that determinism:
+     * one disk location, one key (trailing/double separators fold through
+     * realpath, a symlink spelling meets its target), while an
+     * unresolvable path keeps a deterministic separator-folded literal
+     * (the honest fallback: never false, never order-dependent).
+     */
+    public function testPathCanonicalDiskKeyCollapsesDiskIdentityAndFoldsFallback(): void
+    {
+        $base = $this->scratchDir() . '/dk';
+        self::assertTrue(mkdir($base));
+        $real = realpath($base);
+        self::assertNotFalse($real);
+
+        self::assertSame($real, PathCanonical::diskKey($base));
+        self::assertSame($real, PathCanonical::diskKey($base . '/'));
+        self::assertSame($real, PathCanonical::diskKey($base . '//'));
+
+        $link = $base . '-link';
+        if (!@symlink($base, $link)) {
+            // Filesystem without symlink support: the target-vs-link arm
+            // is unavailable here, the remaining arms still pin the key.
+            self::markTestSkipped('symlink() unavailable on this filesystem');
+        }
+        self::assertSame($real, PathCanonical::diskKey($link), 'a symlink spelling meets its target');
+
+        self::assertSame('missing-tree/sub', PathCanonical::diskKey('missing-tree\\sub'));
+        self::assertSame('C:/proj/src', PathCanonical::diskKey('C:\\proj\\src'));
+        self::assertNotSame(
+            PathCanonical::diskKey($base),
+            PathCanonical::diskKey($base . '/nowhere'),
+            'distinct disk locations never share a key'
+        );
+    }
+
+    private ?string $s87Scratch = null;
+
+    private function scratchDir(): string
+    {
+        if ($this->s87Scratch === null) {
+            $dir = sys_get_temp_dir() . '/s87-' . bin2hex(random_bytes(6));
+            mkdir($dir, 0o775, true);
+            $this->s87Scratch = $dir;
+        }
+        return $this->s87Scratch;
+    }
+
+    protected function tearDown(): void
+    {
+        if ($this->s87Scratch === null || !is_dir($this->s87Scratch)) {
+            return;
+        }
+        $it = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($this->s87Scratch, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($it as $entry) {
+            $entry->isDir() ? @rmdir($entry->getPathname()) : @unlink($entry->getPathname());
+        }
+        @rmdir($this->s87Scratch);
+        $this->s87Scratch = null;
     }
 }
 

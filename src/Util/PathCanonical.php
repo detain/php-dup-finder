@@ -99,4 +99,28 @@ final class PathCanonical
 
         return self::separators($path);
     }
+
+    /**
+     * Disk-identity key (once-S87, php-dup-finder-once-109 DET-04): the
+     * resolved real path when the disk answers, otherwise the
+     * separator-folded literal. Used by ScanningStage to collapse roots
+     * that name the same disk location (`analyze src src`, `src/` plus
+     * `src`, or two spellings reached through a symlink) and to keep one
+     * representative per file when distinct-but-overlapping roots walk
+     * the same subtree twice.
+     *
+     * This is deliberately NOT underRoots() territory: no root-strip, no
+     * case folding (the once-S40 case-sensitivity law governs matching,
+     * and realpath() already resolves exactly what the OS resolves), and
+     * no relpath emission — the key is a set-membership token, never a
+     * reported path. Paths the disk cannot resolve (not yet created,
+     * unreadable parents) fall back to the folded literal, which keeps
+     * the key deterministic for the run: the same unreachable spelling
+     * always yields the same key, so dedupe stays order-insensitive.
+     */
+    public static function diskKey(string $path): string
+    {
+        $real = realpath($path);
+        return $real !== false ? $real : self::separators($path);
+    }
 }

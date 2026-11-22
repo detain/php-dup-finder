@@ -11,6 +11,7 @@ use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Pipeline\Stage;
 use Phpdup\Scanning\FileScanner;
 use Phpdup\Util\MemoryDebug;
+use Phpdup\Util\PathCanonical;
 use Symfony\Component\Console\Output\OutputInterface;
 
 final class ScanningStage implements CooperativeStageInterface
@@ -79,10 +80,63 @@ final class ScanningStage implements CooperativeStageInterface
         // layer and cannot change the walk.
         $scanner = new FileScanner($config->exclude, perDirExcludes: self::excludeLayers($config));
 
+        // once-S87 (php-dup-finder-once-109 DET-04): `analyze src src`
+        // walked the same disk path twice — every block extracted twice,
+        // the per-file index layer accumulated duplicate rows, and the
+        // refactor stage crashed relocating the second twin. Roots that
+        // name one disk location (identical spelling, trailing slash, or
+        // two spellings through a symlink) collapse to their first
+        // appearance here, before any file is discovered. Distinct roots
+        // that merely OVERLAP (a nested `corp corp/Clustering` pair) are
+        // not collapsed: per S28 each root binds its own per-directory
+        // exclude layer, so the nested root legitimately re-scans under
+        // rules its ancestor frame may have pruned — their shared files
+        // are deduped by disk identity after the walk instead.
+        $rootSpellings = [];
+        foreach ($config->paths as $root) {
+            $rootSpellings[PathCanonical::diskKey($root)][] = $root;
+        }
+        $scanRoots = [];
+        $collapsedRoots = 0;
+        foreach ($rootSpellings as $spellings) {
+            $collapsedRoots += count($spellings) - 1;
+            // Deterministic representative: the lexicographically-smallest
+            // spelling of the disk location, so shuffled argument orders
+            // (`src ./src` vs `./src src`) scan identical bytes. Group
+            // order follows first appearance; scan order cannot move any
+            // output byte anyway — the file list is sorted and file
+            // representatives re-chosen post-sort below.
+            sort($spellings);
+            $scanRoots[] = $spellings[0];
+        }
+
+        // Overlap census for the warning line: unordered root pairs where
+        // one folded literal is a path-prefix of the other (equal keys
+        // cannot survive the collapse above). n is the configured-path
+        // count — a handful — so the quadratic scan is free.
+        $foldedRoots = [];
+        foreach ($scanRoots as $root) {
+            $foldedRoots[] = rtrim(PathCanonical::fold($root), '/');
+        }
+        $overlappingPairs = 0;
+        for ($i = 0, $n = count($foldedRoots); $i < $n; $i++) {
+            for ($j = $i + 1; $j < $n; $j++) {
+                if ($foldedRoots[$i] === $foldedRoots[$j]) {
+                    continue;
+                }
+                [$shorter, $longer] = strlen($foldedRoots[$i]) < strlen($foldedRoots[$j])
+                    ? [$foldedRoots[$i], $foldedRoots[$j]]
+                    : [$foldedRoots[$j], $foldedRoots[$i]];
+                if (str_starts_with($longer . '/', $shorter . '/')) {
+                    $overlappingPairs++;
+                }
+            }
+        }
+
         $files = [];
         $sinceYield = 0;
         $state->stageStartTime = microtime(true);
-        foreach ($config->paths as $root) {
+        foreach ($scanRoots as $root) {
             foreach ($scanner->scan($root) as $path) {
                 $files[] = $path;
                 $state->totalFiles++;
@@ -105,6 +159,31 @@ final class ScanningStage implements CooperativeStageInterface
         }
         sort($files);
 
+        // once-S87 (php-dup-finder-once-109 DET-04): the walk can still
+        // hand the same disk file to the pipeline twice when two
+        // DISTINCT roots legitimately overlap (the nested `corp
+        // corp/Clustering` shape, kept both scans for their per-directory
+        // layers). After sort() the survivors are chosen by disk
+        // identity: the lexicographically-smallest literal representative
+        // wins, so the surviving spelling never depends on root order —
+        // reordered root spellings yield byte-identical file lists,
+        // extraction input, and therefore byte-identical downstream
+        // reports (the DET-07 determinism property, pinned in
+        // AstSerializerTest).
+        $seenFileKeys = [];
+        $uniqueFiles = [];
+        $duplicateFiles = 0;
+        foreach ($files as $path) {
+            $fileKey = PathCanonical::diskKey($path);
+            if (isset($seenFileKeys[$fileKey])) {
+                $duplicateFiles++;
+                continue;
+            }
+            $seenFileKeys[$fileKey] = true;
+            $uniqueFiles[] = $path;
+        }
+        $files = $uniqueFiles;
+
         $state->files = $files;
         $state->totalFiles = count($files);
         $state->scannedFiles = count($files);
@@ -125,13 +204,38 @@ final class ScanningStage implements CooperativeStageInterface
             ));
         }
 
+        // once-S87: the dedupe census, warned ONLY when it actually
+        // collapsed something — a clean single-root (or disjoint-roots)
+        // run never emits these lines, so ScanningStageTest's output
+        // order pins (diff-base line immediately above the summary) hold
+        // untouched. Kept below the diff-base report so the summary
+        // line stays the stage's final word.
+        if ($collapsedRoots > 0) {
+            $output->writeln(sprintf(
+                "<comment>phpdup</comment> %d duplicate root path(s) collapsed: %d configured → %d distinct disk path(s) scanned",
+                $collapsedRoots, count($config->paths), count($scanRoots)
+            ));
+        }
+        if ($overlappingPairs > 0) {
+            $output->writeln(sprintf(
+                "<comment>phpdup</comment> %d overlapping root pair(s) kept both scans (per-directory exclude layers bind per root); shared files counted once",
+                $overlappingPairs
+            ));
+        }
+        if ($duplicateFiles > 0) {
+            $output->writeln(sprintf(
+                "<comment>phpdup</comment> %d duplicate file path(s) collapsed by disk identity",
+                $duplicateFiles
+            ));
+        }
+
         // Cover any remaining files that didn't fill a full yield-interval
         // batch (the listener was only called at yield boundaries above).
         $this->listener->onFileScanned($state->scannedFiles, $state->totalFiles);
 
         $output->writeln(sprintf(
             "<info>phpdup</info> scanning %d path(s) → %d files",
-            count($config->paths), count($files)
+            count($scanRoots), count($files)
         ));
     }
 

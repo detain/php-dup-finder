@@ -23,6 +23,7 @@ use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Pipeline\Stages\PreprocessStage;
 use Phpdup\Pipeline\Stages\ClusterStage;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\NullOutput;
 
 /**
@@ -1466,6 +1467,219 @@ final class BlockAstLoaderTest extends TestCase
         sort($coldIds);
         sort($warmIds);
         self::assertSame($coldIds, $warmIds, 'content-derived ids are unmoved by the fix (and by the attack)');
+    }
+
+    // ------------------------------------------------- once-S87 dup-root corpus
+
+    /**
+     * The DET-04 crash shape, pinned at the stage-chain level: `analyze
+     * src src` used to walk the tree twice, and the second twin starved
+     * the loader's claim ledger (findStrict excludes claimed nodes, the
+     * findReanchored pool runs empty) until a resolve() died loud —
+     * 'could not relocate'. The cure is upstream (ScanningStage collapses
+     * roots by disk identity), so the requirement on the loader is:
+     * never see the poisoned corpus again. A duplicate-root run must be
+     * indistinguishable from the single-root run — same files, same
+     * unique block ids, same structural hashes and ranges, same
+     * content-derived cluster ids — and every member must still resolve
+     * honestly (zero degrades) from the deduped state.
+     */
+    public function testDedupedDuplicateRootRunIsIndistinguishableAndServeable(): void
+    {
+        $dir = $this->dir . '/s87corp';
+        @mkdir($dir . '/Nested', 0o777, true);
+        file_put_contents($dir . '/file1.php', self::corpswpFile1());
+        file_put_contents($dir . '/Nested/file2.php', self::corpswpFile1());
+
+        $run = function (array $paths, string $cacheDir, string $astDir): PipelineState {
+            $config = new Config(paths: $paths, exclude: [], minBlockSize: 1, cacheDir: $cacheDir);
+            $state = new PipelineState($config);
+            (new ScanningStage())->run($state, new NullOutput());
+            (new PreprocessStage(false))->run($state, new NullOutput());
+            (new ClusterStage(false))->run($state, new NullOutput());
+            self::assertNotEmpty($state->clusters, 'the fixture must produce real clusters');
+            $loader = new BlockAstLoader(new AstCache($astDir), new AstParser(), $config);
+            $loader->rebaseClusters($state->clusters, $state->blocks);
+            foreach ($state->clusters as $cluster) {
+                foreach ($cluster->members as $member) {
+                    $member->unloadAst();
+                    self::assertNotNull(
+                        $loader->resolve($member),
+                        'every member of the deduped corpus resolves — the pre-fix second twin died here'
+                    );
+                }
+            }
+            self::assertSame(0, $loader->rebaseStats()['degrades'], 'an honest corpus never degrades');
+            return $state;
+        };
+
+        $single = $run([$dir], $this->dir . '/s87cc1', $this->dir . '/s87ast1');
+        $dup    = $run([$dir, $dir], $this->dir . '/s87cc2', $this->dir . '/s87ast2');
+
+        self::assertSame($single->totalFiles, $dup->totalFiles,
+            'duplicate roots collapse to the single-scan file census');
+
+        $ids = array_map(static fn (Block $b): string => (string) $b->id, $dup->blocks);
+        self::assertSame(count($ids), count(array_unique($ids)), 'no duplicate block ids in the corpus');
+
+        $sig = static function (PipelineState $s): array {
+            $rows = [];
+            foreach ($s->blocks as $b) {
+                $rows[] = $b->id . '|' . $b->structuralHash . '|' . $b->file . '|'
+                    . $b->range->start . '-' . $b->range->end;
+            }
+            sort($rows);
+            $clusterIds = array_map(static fn (Cluster $c): string => $c->id, $s->clusters);
+            sort($clusterIds);
+            return [$rows, $clusterIds];
+        };
+        self::assertSame($sig($single), $sig($dup),
+            'the duplicate-root report is byte-identical (ids, hashes, ranges, clusters) to the single-root one');
+    }
+
+    /**
+     * DET-07 loader half: relocation of identical-hint members is decided
+     * by content and group geometry, never by the order the members
+     * arrived. The same stale decoyGeometry pair, fed once in file order
+     * and once reversed (fresh blocks, fresh loader), must land on the
+     * same truth spans with the same stats — the multiset of ranges is
+     * what downstream bytes depend on, and the twins are byte-equal, so
+     * an arrival-order-dependent assignment would be unobservable here
+     * precisely because it must not exist.
+     */
+    public function testReversedMemberArrivalAnchorsTheSameTruthSpans(): void
+    {
+        $file = $this->write('s87-shuffle.php', self::decoyGeometry());
+        $hints = [[13, 16], [21, 24]]; // stale: live twins sit at 16-19 / 24-27
+
+        $anchor = function (array $membersOrder, string $clusterId, string $astDir) use ($file, $hints): array {
+            $pair = $this->decoyMembers($file, $hints);
+            $members = [$pair[$membersOrder[0]], $pair[$membersOrder[1]]];
+            $this->mintHashes($file, ...$members);
+            foreach ($members as $m) {
+                $m->unloadAst();
+            }
+            $cluster = new Cluster($clusterId, $members, 1.0, true);
+            $loader = new BlockAstLoader(new AstCache($astDir), new AstParser(), Config::defaults([$file]));
+            $loader->rebaseClusters([$cluster]);
+            $ranges = [];
+            foreach ($cluster->members as $m) {
+                self::assertNotNull($loader->resolve($m), 'arrival order never starves a claim');
+                $ranges[] = [$m->range->start, $m->range->end];
+            }
+            sort($ranges);
+            $stats = $loader->rebaseStats();
+            return [$ranges, $stats['keys'], $stats['degrades']];
+        };
+
+        $forward = $anchor([0, 1], 'Fs87shuffle0000001', $this->dir . '/s87astF');
+        $reverse = $anchor([1, 0], 'Fs87shuffle0000002', $this->dir . '/s87astR');
+
+        self::assertSame([[16, 19], [24, 27]], $forward[0], 'file-order arrival lands on the live twins');
+        self::assertSame($forward, $reverse, 'reversed arrival is indistinguishable');
+    }
+
+    /**
+     * The scan-level collapse removes the poisoned corpus, but the
+     * loader's loud failure remains the last belt for genuinely-starved
+     * claims: two DISTINCT block objects over the single remaining live
+     * body — the first claims it, the second must still throw 'could not
+     * relocate'. Silent double-serve of one node would hand identical
+     * ASTs to different owners, which is exactly what the pre-fix
+     * duplicate scan did by accident; the honest answer stays a fail-loud,
+     * and this step changed nothing on this path (BlockAstLoader src
+     * carries zero once-S87 edits — this pin proves it stayed strict).
+     */
+    public function testStrictBackstopStillThrowsOnGenuinelyStarvedSecondClaim(): void
+    {
+        $file = $this->write('s87-starve.php', self::decoyGeometry());
+        // Only one live `$x > 4` twin remains in the rewritten bytes.
+        file_put_contents($file, "<?php\n\nnamespace F1Land;\n\nfunction twin_gate(int \$x): int {\n"
+            . "    if (\$x > 4) {\n        echo 'only';\n        \$junk = 1;\n    }\n"
+            . "    return \$x;\n}\n");
+        $first = $this->decoyMembers($file)[0];   // hint == live truth, real twin content
+        $this->mintHashes($file, $first);
+        // A second, distinct owner over the same body — the exact pre-fix
+        // twin shape, rebuilt by hand from the same node and hash.
+        $second = new Block(
+            $file,
+            new LineRange($first->range->start, $first->range->end),
+            $first->kind,
+            $first->namespace,
+            $first->class,
+            $first->name,
+            $first->ast,
+        );
+        $second->structuralHash = $first->structuralHash;
+        $first->unloadAst();
+        $second->unloadAst();
+
+        $loader = $this->loaderWithConfig($file);
+        self::assertNotNull($loader->resolve($first), 'the first honest claim is served');
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/could not relocate/');
+        $loader->resolve($second);
+    }
+
+    /**
+     * once-S87 (DET-04/DET-07 scan half): the dedupe mechanics themselves,
+     * pinned at the stage boundary with the census warnings they owe.
+     *  - exact-duplicate roots (same disk path, any spelling) collapse
+     *    BEFORE the walk, deterministically to the lexicographically-
+     *    smallest configured spelling — so a shuffled argv cannot move a
+     *    byte of downstream input;
+     *  - DISTINCT-but-overlapping roots keep both scans (S28 binds
+     *    per-directory layers per root) yet contribute each disk file
+     *    exactly once, the representative being the first (sorted) literal;
+     *  - a clean run stays silent, and the summary line reports post-
+     *    collapse root counts ('scanning %d path(s)').
+     */
+    public function testDuplicateAndOverlappingRootsAreDedupedWithCensusWarnings(): void
+    {
+        $tree = $this->dir . '/s87roots';
+        @mkdir($tree . '/Nested', 0o777, true);
+        file_put_contents($tree . '/alpha.php', "<?php\n\nfunction alpha(int \$x): int\n{\n    return \$x;\n}\n");
+        file_put_contents($tree . '/Nested/beta.php', "<?php\n\nfunction beta(int \$x): int\n{\n    return \$x + 1;\n}\n");
+
+        $scan = function (array $paths): array {
+            $config = new Config(
+                paths: $paths, exclude: [], minBlockSize: 1,
+                cacheDir: $this->dir . '/s87-rootscan-cache',
+            );
+            $state = new PipelineState($config);
+            $out = new BufferedOutput();
+            (new ScanningStage())->run($state, $out);
+            return [$state->files, $out->fetch()];
+        };
+
+        [$singleFiles, $singleOut] = $scan([$tree]);
+        self::assertCount(2, $singleFiles);
+        self::assertStringNotContainsString('collapsed', $singleOut, 'a clean run stays silent');
+        self::assertStringNotContainsString('overlapping', $singleOut);
+        self::assertMatchesRegularExpression('/scanning 1 path\(s\) → 2 files/', $singleOut);
+
+        // Spelling-variant duplicate root: both configured paths name one
+        // disk directory; the walk runs once, on the smallest literal.
+        [$dupFiles, $dupOut] = $scan([$tree . '/', $tree]);
+        self::assertSame($singleFiles, $dupFiles, 'a duplicate root scans the identical file list');
+        self::assertStringContainsString('1 duplicate root path(s) collapsed: 2 configured → 1 distinct', $dupOut);
+        self::assertStringContainsString('scanning 1 path(s) → 2 files', $dupOut);
+
+        // Legitimate nested overlap: the inner root still walks (its own
+        // per-directory layer), but its shared file contributes once.
+        [$overFiles, $overOut] = $scan([$tree, $tree . '/Nested']);
+        self::assertSame($singleFiles, $overFiles, 'the overlapping root contributes no duplicate path');
+        self::assertStringContainsString('1 overlapping root pair(s)', $overOut);
+        self::assertStringContainsString('1 duplicate file path(s) collapsed by disk identity', $overOut);
+        self::assertStringNotContainsString('duplicate root path(s) collapsed', $overOut);
+        self::assertMatchesRegularExpression('/scanning 2 path\(s\) → 2 files/', $overOut);
+
+        // Representative stability: reversing the configured order must not
+        // move a single surviving path literal.
+        [$revFiles, $revOut] = $scan([$tree . '/Nested', $tree]);
+        self::assertSame($overFiles, $revFiles, 'root order never moves a surviving representative');
+        self::assertStringContainsString('1 duplicate file path(s) collapsed by disk identity', $revOut);
     }
 
     /**
