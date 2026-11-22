@@ -497,35 +497,47 @@ final class MlPairClient implements PairScorer
             $ctxOpts['ssl'] = ['peer_name' => $pin['peer_name']];
         }
         $ctx = stream_context_create($ctxOpts);
-        $fh  = @fopen($pin['url'], 'r', false, $ctx);
-        if ($fh === false) {
-            return null;
+        if (function_exists('http_get_last_response_headers')) {
+            // PHP >= 8.5 path: http_get_last_response_headers() replaces the
+            // deprecated $http_response_header magic variable.
+            $fh = @fopen($pin['url'], 'r', false, $ctx);
+            if ($fh === false) {
+                return null;
+            }
+            // engine-015 (bounded read): pull at most MAX_RESPONSE_BYTES + 1
+            // bytes; a longer body is refused without ever being buffered
+            // whole. fopen+stream_get_contents replaces file_get_contents
+            // purely to pass that length bound — the request itself is the
+            // same wrapper operation.
+            $resp = stream_get_contents($fh, MlClient::MAX_RESPONSE_BYTES + 1);
+            fclose($fh);
+            if ($resp === false) {
+                return null;
+            }
+            $headers = (array) http_get_last_response_headers();
+        } else {
+            // PHP < 8.5 path via LegacyStreamPost. The magic variable MUST
+            // NOT be mentioned anywhere in this file: PHP 8.5 deprecates
+            // the COMPILED mention itself, so a literal in the never-taken
+            // ternary branch still fires on every class load (CI-85 leg 5
+            // — MlPairClientTest::testEmptyBaseUrlReturnsNull trips it
+            // without executing the statement), while a variable-variable
+            // read cannot see it at all (the wrapper materialises the
+            // symbol only for direct compiled reads — proven red by
+            // testPinnedStreamTransportConnectsCheckedIpWithoutResolver).
+            // This class is referenced solely below, inside the branch that
+            // can never execute on >= 8.5, so PSR-4 lazy loading keeps the
+            // literal out of every 8.5 opcache: on 8.3/8.4 the identical
+            // fopen+read happens inside the helper's own scope.
+            [$resp, $headers] = LegacyStreamPost::post(
+                $pin['url'],
+                $ctxOpts,
+                MlClient::MAX_RESPONSE_BYTES + 1
+            );
+            if ($resp === null) {
+                return null;
+            }
         }
-        // engine-015 (bounded read): pull at most MAX_RESPONSE_BYTES + 1
-        // bytes; a longer body is refused without ever being buffered
-        // whole. fopen+stream_get_contents replaces file_get_contents
-        // purely to pass that length bound — the request itself is the
-        // same wrapper operation.
-        $resp = stream_get_contents($fh, MlClient::MAX_RESPONSE_BYTES + 1);
-        fclose($fh);
-        if ($resp === false) {
-            return null;
-        }
-        // CI-85: PHP 8.5 deprecates the $http_response_header magic-
-        // variable read; http_get_last_response_headers() replaces it.
-        // The legacy read MUST NOT appear as the literal magic variable in
-        // this file: the 8.5 deprecation flags the COMPILED mention itself,
-        // so even the never-taken ternary branch fires on every load of the
-        // class (CI leg 5: MlPairClientTest::testEmptyBaseUrlReturnsNull
-        // trips it without ever reaching this statement). The name is
-        // therefore assembled at runtime; the ternary stays lazy, so on 8.5
-        // the variable-variable is never even evaluated, and on 8.1-8.4 the
-        // legacy branch reads the same stream-wrapper variable as before.
-        $legacyName = 'http_response_' . 'header';
-        /** @var list<string> $headers */
-        $headers    = function_exists('http_get_last_response_headers')
-            ? (array) http_get_last_response_headers()
-            : (array) ($$legacyName ?? []);
         $httpCode = $this->parseStatusCode($headers);
         if ($httpCode < 200 || $httpCode >= 300) {
             return null;
