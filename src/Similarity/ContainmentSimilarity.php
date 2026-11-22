@@ -114,9 +114,16 @@ final class ContainmentSimilarity
         }
         $smaller = min($sumA, $sumB);
         $larger  = max($sumA, $sumB);
+        // Explicit (float) casts mirror the :float return coercion of
+        // similarity()/sizeRatio(): PHP divides two ints to an INT when the
+        // quotient is exact (4/4 === int(1)), and the scalar return types
+        // silently coerce it to float. An array return has no such coercion,
+        // so without these casts a full-containment pair would emit an int
+        // edge weight where the fork-zone twin emits float — breaking
+        // serial↔fork byte parity (pinned by Clusterer parity tests).
         return [
-            'containment' => $smaller === 0 ? 0.0 : $inter / $smaller,
-            'sizeRatio'   => $larger === 0 ? 0.0 : $smaller / $larger,
+            'containment' => $smaller === 0 ? 0.0 : (float)($inter / $smaller),
+            'sizeRatio'   => $larger === 0 ? 0.0 : (float)($smaller / $larger),
         ];
     }
 }
