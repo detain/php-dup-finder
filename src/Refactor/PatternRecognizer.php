@@ -85,6 +85,10 @@ use Phpdup\Clustering\Cluster;
  *                           singleton/instance/extend/autowire
  *   db-op                 — __DB_*__ synthetic calls or nodes carrying
  *                           the phpdup.dbOp attribute
+ *   trivial-accessor      — a member's whole body is a single
+ *                           `return $var->prop;` (or the arrow-function
+ *                           equivalent) — DTO getter boilerplate
+ *                           (engine-057)
  */
 final class PatternRecognizer
 {
@@ -124,6 +128,7 @@ final class PatternRecognizer
         if ($this->isBuilderChain($cluster, $facts))           $tags[] = 'builder-chain';
         if ($this->isContainerRegistration($cluster, $facts))  $tags[] = 'container-registration';
         if ($this->isDbOp($cluster, $facts))                   $tags[] = 'db-op';
+        if ($this->isTrivialAccessor($cluster, $facts))        $tags[] = 'trivial-accessor';
         $cluster->patternTags = $tags;
     }
 
@@ -720,6 +725,52 @@ final class PatternRecognizer
             }
             // Also check for phpdup.dbOp attribute on any node
             if ($f->hasDbOpAttribute) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Trivial-accessor tag (engine-057): the member's entire body is a
+     * single property read returned verbatim — the DTO getter shape
+     * `function getX() { return $this->x; }` (and its closure/arrow
+     * twins). Fail-closed like every AST-based detector: an unloaded
+     * member AST is no evidence, so it can never carry the tag.
+     *
+     * @param array<int,?MemberFacts> $facts
+     */
+    private function isTrivialAccessor(Cluster $cluster, array $facts): bool
+    {
+        foreach ($cluster->members as $i => $m) {
+            if ($m->ast === null || ($facts[$i] ?? null) === null) {
+                continue;
+            }
+            $node = $m->ast;
+            $expr = null;
+            if ($node instanceof Node\Expr\ArrowFunction) {
+                if ($node->expr instanceof Node\Expr\PropertyFetch) {
+                    $expr = $node->expr;
+                }
+            } elseif ($node instanceof Node\Stmt\ClassMethod
+                || $node instanceof Node\Stmt\Function_
+                || $node instanceof Node\Expr\Closure
+            ) {
+                // Abstract/interface methods carry a null stmts list.
+                $stmts = $node->stmts ?? [];
+                if (count($stmts) === 1
+                    && $stmts[0] instanceof Node\Stmt\Return_
+                    && $stmts[0]->expr instanceof Node\Expr\PropertyFetch
+                ) {
+                    $expr = $stmts[0]->expr;
+                }
+            }
+            // Require a plain, statically-named property read: $obj->prop.
+            // $obj->{$dyn} or $$var->… are not the boilerplate shape.
+            if ($expr instanceof Node\Expr\PropertyFetch
+                && $expr->var instanceof Node\Expr\Variable
+                && $expr->name instanceof Node\Identifier
+            ) {
+                return true;
+            }
         }
         return false;
     }

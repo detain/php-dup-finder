@@ -448,6 +448,68 @@ final class PatternRecognizerTest extends TestCase
         $this->assertNotContains('db-op', $cluster->patternTags);
     }
 
+    // ---------------------------------------------------------------
+    // engine-057: trivial-accessor tag (DTO getter boilerplate)
+    // ---------------------------------------------------------------
+
+    public function testTrivialAccessorTagOnGetterCluster(): void
+    {
+        $blocks = $this->blocksFromCode('<?php function getName() { return $this->name; }');
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('trivial-accessor', $cluster->patternTags);
+    }
+
+    public function testTrivialAccessorTagOnArrowGetter(): void
+    {
+        // The arrow twin of the getter shape — the whole body IS the
+        // property read, just expression-bodied.
+        $blocks = $this->blocksFromCode(
+            '<?php class Dto { public function mk() { return fn() => $this->name; } }'
+        );
+        $arrow = null;
+        foreach ($blocks as $b) {
+            if ($b->kind === 'arrow') {
+                $arrow = $b;
+                break;
+            }
+        }
+        $this->assertNotNull($arrow, 'fixture must produce an arrow block');
+        $cluster = new Cluster('TEST', [$arrow, $arrow], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertContains('trivial-accessor', $cluster->patternTags);
+    }
+
+    public function testTrivialAccessorRejectsMethodCallBody(): void
+    {
+        // return $this->total() is a call, not a bare property read.
+        $blocks = $this->blocksFromCode('<?php function compute() { return $this->total(); }');
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertNotContains('trivial-accessor', $cluster->patternTags);
+    }
+
+    public function testTrivialAccessorRejectsMultiStatementBody(): void
+    {
+        // A read + a local + a return is not the one-statement boilerplate.
+        $blocks = $this->blocksFromCode('<?php function getName() { $v = $this->name; return $v; }');
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertNotContains('trivial-accessor', $cluster->patternTags);
+    }
+
+    public function testTrivialAccessorFailsClosedOnNullAst(): void
+    {
+        // output-021 law: an unloaded member AST is no evidence.
+        $blocks = $this->blocksFromCode('<?php function getName() { return $this->name; }');
+        foreach ($blocks as $b) {
+            $b->ast = null;
+        }
+        $cluster = new Cluster('TEST', [$blocks[0], $blocks[0]], 1.0, false);
+        (new PatternRecognizer())->tag($cluster);
+        $this->assertNotContains('trivial-accessor', $cluster->patternTags);
+    }
+
     private function blockWithDbCall(string $funcName, string $table): Block
     {
         $syntheticCall = new FuncCall(

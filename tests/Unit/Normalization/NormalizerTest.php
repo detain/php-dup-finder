@@ -211,6 +211,85 @@ final class NormalizerTest extends TestCase
         $this->assertNotEmpty($this->canonicalHash($switch), 'switch must normalise without crashing');
     }
 
+    // ---------------------------------------------------------------
+    // engine-036: strict-mode leaks (match/switch fold + __FN wipe)
+    // ---------------------------------------------------------------
+
+    public function testStrictModeDoesNotFoldMatchAgainstSwitch(): void
+    {
+        // The finding's EXACT repro: `match` (===, no fall-through) and
+        // `switch` (==, fall-through) are semantically distinct, so
+        // strict must keep them apart. The __MATCH__ fold stays a
+        // default/aggressive near-dup heuristic (engine-036(a)).
+        // Both snippets share the name f on purpose: if the pair ever
+        // collides again under strict, the collision must come from
+        // the fold itself — never from a name difference masking it.
+        $match  = '<?php function f($x) { return match($x) { 1 => 1, default => 2 }; }';
+        $switch = '<?php function f($x) { switch ($x) { case 1: return 1; default: return 2; } }';
+
+        $this->assertNotSame(
+            $this->canonicalHash($match, 'strict'),
+            $this->canonicalHash($switch, 'strict'),
+            'strict mode must not desugar match/switch into a shared __MATCH__ shape',
+        );
+
+        // Non-strict modes keep the cross-parity fold byte-unchanged.
+        $this->assertSame(
+            $this->canonicalHash($match, 'default'),
+            $this->canonicalHash($switch, 'default'),
+            'default mode keeps the __MATCH__ fold',
+        );
+        $this->assertSame(
+            $this->canonicalHash($match, 'aggressive'),
+            $this->canonicalHash($switch, 'aggressive'),
+            'aggressive mode keeps the __MATCH__ fold',
+        );
+    }
+
+    public function testStrictModeKeepsFunctionAndMethodDeclarationNames(): void
+    {
+        // engine-036(b): the __FN wipe used to run ahead of the strict
+        // bail-out, so same-shape differently-named declarations
+        // canonicalised identically in EVERY mode.
+        $a = '<?php function computeTotal($x) { return $x + 1; }';
+        $b = '<?php function computeSum($x) { return $x + 1; }';
+
+        $this->assertNotSame(
+            $this->canonicalHash($a, 'strict'),
+            $this->canonicalHash($b, 'strict'),
+            'the __FN wipe must not survive the strict bail-out',
+        );
+
+        // ClassMethod twin of the leak: same class name, so the only
+        // strict-mode witness is the method name itself.
+        $c = '<?php class A { public function m($x) { return $x; } }';
+        $d = '<?php class A { public function n($x) { return $x; } }';
+
+        $this->assertNotSame(
+            $this->canonicalHash($c, 'strict'),
+            $this->canonicalHash($d, 'strict'),
+            'method declaration names stay raw under strict',
+        );
+
+        // Default/aggressive still collapse container labels — the
+        // convenience these modes signed up for.
+        $this->assertSame(
+            $this->canonicalHash($a, 'default'),
+            $this->canonicalHash($b, 'default'),
+            'default mode still collapses function names to __FN',
+        );
+        $this->assertSame(
+            $this->canonicalHash($a, 'aggressive'),
+            $this->canonicalHash($b, 'aggressive'),
+            'aggressive mode still collapses function names to __FN',
+        );
+        $this->assertSame(
+            $this->canonicalHash($c, 'aggressive'),
+            $this->canonicalHash($d, 'aggressive'),
+            'aggressive mode still collapses method names to __FN',
+        );
+    }
+
     private function canonicalHash(string $code, string $mode = 'aggressive'): string
     {
         $parser = new AstParser();

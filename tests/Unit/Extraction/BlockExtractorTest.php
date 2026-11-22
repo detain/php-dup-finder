@@ -108,6 +108,26 @@ final class BlockExtractorTest extends TestCase
         $this->assertArrayNotHasKey('runaway', $names);
     }
 
+    public function testSmallArrowDeclarationSurvivesMinSizeFilter(): void
+    {
+        // engine-057: ALL_KINDS mints 'arrow' and the class docblock
+        // promises declaration-shape kinds pass the minSize filter —
+        // but 'arrow' was missing from the exemption, so a tiny `fn`
+        // declaration was silently dropped while its closure twin
+        // survived. The arrow below is a handful of nodes against a
+        // minSize of 40; the fat closure is the always-passing control.
+        $parser = (new ParserFactory())->createForNewestSupportedVersion();
+        $ast = $parser->parse(
+            '<?php $cl = function () { return ' . str_repeat('1 + ', 60) . '1; };'
+            . ' $ar = fn() => 1;'
+        ) ?? [];
+        $blocks = (new BlockExtractor(minSize: 40, maxSize: 2000))->extract('virtual.php', $ast);
+
+        $kinds = array_map(static fn ($b): string => $b->kind, $blocks);
+        $this->assertContains('closure', $kinds, 'control: the closure declaration passes minSize');
+        $this->assertContains('arrow', $kinds, 'a small arrow declaration must pass minSize like other declarations');
+    }
+
     private function specimenNodes(): array
     {
         $parser = (new ParserFactory())->createForNewestSupportedVersion();

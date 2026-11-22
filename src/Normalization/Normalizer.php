@@ -46,8 +46,14 @@ use Phpdup\Util\CanonicalNodePool;
  *      structural similarity.
  *
  * Modes:
- *   strict      — only #1
- *   default     — #1 + #2
+ *   strict      — only #1. Declaration names, match/switch shapes,
+ *                 literals and everything else stay exactly as written.
+ *                 (engine-036 closed two leaks that broke this promise:
+ *                 an ungated Match_/Switch_ fold into a shared
+ *                 __MATCH__ sentinel, and a __FN declaration wipe that
+ *                 ran ahead of the strict bail-out.)
+ *   default     — #1 + #2, plus the match/switch fold (a cross-parity
+ *                 near-dup heuristic, never active under strict)
  *   aggressive  — #1 + #2 + #3   (default for the tool)
  *
  * The original AST is not mutated; the canonical AST lives at
@@ -262,6 +268,16 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
     #[\Override]
     public function leaveNode(Node $node): ?Node
     {
+        // engine-036(a): the Match_/Switch_ desugaring below is a
+        // cross-parity fold — `match` (=== arms, no fall-through) and
+        // `switch` (== arms, fall-through) genuinely differ, and
+        // canonicalising both to one __MATCH__ sentinel made a
+        // match-vs-switch pair report EXACT even under strict mode.
+        // Strict keeps both shapes raw; the fold remains a
+        // default/aggressive near-dup heuristic.
+        if ($this->mode === 'strict') {
+            return null;
+        }
         // Transform Match_ and Switch_ into a shared __MATCH__ synthetic
         // FuncCall so they serialize to identical token streams and can
         // cluster together. Return the replacement node to the traverser.
@@ -312,6 +328,14 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
      * same thing. Both are rewritten to a synthetic `__MATCH__(subject,
      * cond1, body1, cond2, body2, ...)` FuncCall so they produce identical
      * serialized tokens and can cluster.
+     *
+     * Known limitation, accepted under its mode gate (engine-036): a
+     * fall-through switch case (`case 1: foo(); case 2: bar(); break;`)
+     * folds as if its cases were exclusive arms, so the normalised form
+     * does not model the shared execution. The heuristic trades that
+     * fidelity for cross-parity grouping in default/aggressive; strict
+     * never performs the fold at all, so the mis-fold cannot surface as
+     * an EXACT verdict there.
      */
     private function normalizeMatchAsSwitch(Node\Expr\Match_ $node): Node\Expr\FuncCall
     {
@@ -456,6 +480,15 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
                 return; // keep $this — semantically distinct
             }
             $node->name = $this->getOrAssignVar($node->name);
+            return;
+        }
+        // engine-036(b): the __FN wipe is a container-label collapse —
+        // a default/aggressive convenience. It used to run ahead of the
+        // strict bail-out in enterNode, so two same-shape differently-
+        // named methods reported EXACT even under strict, erasing the
+        // very identity strict exists to preserve. Strict now keeps
+        // declaration names verbatim.
+        if ($this->mode === 'strict') {
             return;
         }
         // Function and method declaration names are container labels, not

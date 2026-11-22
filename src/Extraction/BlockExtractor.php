@@ -25,8 +25,11 @@ use SplObjectStorage;
  *   - maxSize: nodes larger than this are dropped (kills the long-tail
  *     functions where bounded TED would be costly).
  *
- * Method/function declarations always pass the minSize filter — those
- * are top-level abstractions worth comparing even if small.
+ * Declaration-shape kinds — function, method, closure and arrow — always
+ * pass the minSize filter: those are top-level abstractions worth
+ * comparing even if small (engine-057: 'arrow' was missing from the
+ * exemption, so tiny `fn` declarations were silently dropped against
+ * this very promise even though ALL_KINDS mints them).
  *
  * Item 1.3 adds a thirteenth kind, 'script': a folded run of top-level
  * statements (requires/includes/auth-guards/bootstrap sequences — the
@@ -249,7 +252,11 @@ final class BlockVisitor extends NodeVisitorAbstract
 
         $size = $this->nodeCount($node);
 
-        $isTopLevel = in_array($kind, ['function', 'method', 'closure'], true);
+        // engine-057: 'arrow' joins the exemption. ALL_KINDS mints the
+        // kind, and a small `fn` declaration is the same top-level
+        // abstraction a closure is — it must not die on minSize while
+        // its function/method/closure siblings pass.
+        $isTopLevel = in_array($kind, ['function', 'method', 'closure', 'arrow'], true);
         if (!$isTopLevel && $size < $this->minSize) {
             return null;
         }
