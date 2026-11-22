@@ -446,4 +446,65 @@ final class NgramInvertedIndexTest extends TestCase
         // And B never sees A, because A was never posted at all.
         $this->assertSame([], $inverted->candidatesFor($b, 1.0));
     }
+
+    // ---------------------------------------------------------------
+    // engine-S18b (php-dup-finder-engine-011, half B): the master gram
+    // dictionary must be invisible to this index — key CONTENT, not
+    // object identity, is what the S18a external contract rides on.
+    // ---------------------------------------------------------------
+
+    private const DICT_INDEX_A = '<?php function ia($x) { $v = 0; $v += 7; $v += 21; $v += 400; return $v; }';
+    private const DICT_INDEX_B = '<?php function ib($y) { $v = 0; $v += 21; $v += 990; $v += 7; return $v; }';
+
+    public function testCandidateStreamsAreIdenticalForInternedAndPlainContentBags(): void
+    {
+        // One fingerprinter interns both bags (shared canonical key strings);
+        // a hand-copied bag has identical key CONTENTS but freshly built
+        // strings. Indexing both must be indistinguishable — internally
+        // (same posting tables) and externally (same list<string> streams).
+        // If dictionary interning ever changed key content (coercion,
+        // trimming, species), this pin breaks first.
+        $fp        = new \Phpdup\Fingerprint\NgramFingerprint(5);
+        $internedA = $fp->fingerprint($this->tree(self::DICT_INDEX_A));
+        $internedB = $fp->fingerprint($this->tree(self::DICT_INDEX_B));
+        $this->assertGreaterThan(0, $fp->dictionarySize(), 'probe must have run through the dictionary');
+
+        $plainA = [];
+        foreach ($internedA as $key => $count) {
+            $plainA['' . $key] = $count;
+        }
+        $plainB = [];
+        foreach ($internedB as $key => $count) {
+            $plainB['' . $key] = $count;
+        }
+
+        $dictIndex  = new NgramInvertedIndex();
+        $dictIndex->build($this->buildIndex([
+            $this->makeBlockWithNgrams('A', 'h_a', $internedA),
+            $this->makeBlockWithNgrams('B', 'h_b', $internedB),
+        ]));
+        $plainIndex = new NgramInvertedIndex();
+        $plainIndex->build($this->buildIndex([
+            $this->makeBlockWithNgrams('A', 'h_a', $plainA),
+            $this->makeBlockWithNgrams('B', 'h_b', $plainB),
+        ]));
+
+        $this->assertSame($this->postingsOf($dictIndex), $this->postingsOf($plainIndex),
+            'posting tables moved between interned and plain-content bags');
+
+        $blockA = $this->makeBlockWithNgrams('A', 'h_a', $internedA);
+        $blockB = $this->makeBlockWithNgrams('B', 'h_b', $internedB);
+        $this->assertSame($dictIndex->candidatesFor($blockA, 1.0), $plainIndex->candidatesFor($blockA, 1.0));
+        $this->assertSame($dictIndex->candidatesFor($blockB, 1.0), $plainIndex->candidatesFor($blockB, 1.0));
+    }
+
+    private function tree(string $code): \PhpParser\Node
+    {
+        $stmts = (new \Phpdup\Parsing\AstParser())->parseCode($code);
+        self::assertNotNull($stmts, 'fixture code must parse');
+        $blocks = (new \Phpdup\Extraction\BlockExtractor(minSize: 1))->extract('t.php', $stmts);
+        self::assertNotEmpty($blocks, 'fixture must yield a block');
+        (new \Phpdup\Normalization\Normalizer('aggressive'))->normalize($blocks[0]);
+        return $blocks[0]->canonical;
+    }
 }

@@ -24,8 +24,12 @@ use Phpdup\Extraction\Block;
  * incidence kept a reference to the block's id string (slot bytes +
  * refcount traffic); engine-011 measured preprocess residency dominated
  * by the per-block ngram bags together with the index's string postings
- * — this half lays the ordered-int substrate, S18b's bag interning
- * carries the residency win. {@see candidatesFor()} decodes
+ * — this half lays the ordered-int substrate, and engine-S18b's master
+ * gram dictionary (NgramFingerprint) took the bag side: every distinct
+ * gram keeps one canonical key string per fingerprinter, and both the
+ * bags and this index's posting keys reference that shared object
+ * instead of a fresh 16-char zend_string per incidence. {@see candidatesFor()}
+ * decodes
  * back to id strings, so the external contract is byte-identical —
  * and now truthful even for an all-decimal id, which the old `$seen`
  * hash would have leaked back as an int key through numeric-string

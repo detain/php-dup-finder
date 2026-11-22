@@ -15,6 +15,20 @@ use Phpdup\Util\IdentifierIds;
  * default — small enough to capture short patterns, large enough to
  * suppress trivial overlap. A bag-of-ngrams representation tolerates
  * minor reorderings (which exact-hash bucketing would not catch).
+ *
+ * Every bagged gram passes through the instance's master gram
+ * dictionary (php-dup-finder-engine-011, engine-S18 half B): the
+ * dictionary holds one canonical key string per distinct digest, so a
+ * gram seen in a thousand blocks allocates one zend_string instead of
+ * a thousand. Before this the dominant residency cost of a large
+ * preprocess run was exactly that per-incidence string — the finding's
+ * "every gram a separate 16-char hex zend_string" measurement — and
+ * the bags (and everything keyed off them: the inverted index, the
+ * serialized Blocks) now share the canonical object instead. Keys
+ * carry identical content, insertion order and numeric-string
+ * coercion as before, so bag bytes, candidate streams and persisted
+ * blobs are unchanged; the int-keyed compact bag under --low-memory
+ * keeps its masked-positive 63-bit keyspace (engine-042) untouched.
  */
 final class NgramFingerprint
 {
@@ -36,9 +50,81 @@ final class NgramFingerprint
     }
 
     /**
+     * Master gram dictionary: digest key → the first-inserted canonical
+     * key string. Bag insertion always runs through internGram(), so
+     * every occurrence of a repeated gram shares this one zend_string
+     * (engine-011 residency; see class docblock).
+     *
+     * @var array<string,string>
+     */
+    private array $gramDictionary = [];
+
+    /**
+     * Stable-id projection over the dictionary — the gram-side mirror
+     * of engine-S18a's internId seam: one gram digest keeps the same
+     * small non-negative int for the lifetime of this fingerprinter
+     * (assigned lazily in first-interned order), and gramForKey()
+     * decodes it back. Ids of grams never asked for are never minted.
+     *
+     * @var array<string,int>
+     */
+    private array $gramIds = [];
+
+    /** @var list<string> gram id → canonical key string (decode table) */
+    private array $gramOrder = [];
+
+    /**
+     * Intern a gram digest to the dictionary's canonical key string.
+     * Content-equal keys collide on the same slot; the object stored
+     * first is the one every later incidence reuses.
+     */
+    private function internGram(string $digest): string
+    {
+        return $this->gramDictionary[$digest] ??= $digest;
+    }
+
+    /**
+     * Stable dictionary id for a gram key already bagged by this
+     * instance, or null if the digest has never been interned here.
+     * Same digest → same int for the instance's lifetime.
+     */
+    public function gramId(string $digest): ?int
+    {
+        $canonical = $this->gramDictionary[$digest] ?? null;
+        if ($canonical === null) {
+            return null; // never-minted — mirrors S18a's -1 sentinel idiom
+        }
+        $id = $this->gramIds[$canonical] ?? -1;
+        if ($id === -1) {
+            $id = count($this->gramOrder);
+            $this->gramIds[$canonical] = $id;
+            $this->gramOrder[]         = $canonical;
+        }
+        return $id;
+    }
+
+    /**
+     * Canonical digest key behind a gramId(), or null for an id that
+     * was never minted (out of range or negative).
+     */
+    public function gramForKey(int $id): ?string
+    {
+        return $this->gramOrder[$id] ?? null;
+    }
+
+    /** Number of distinct gram keys this fingerprinter has interned. */
+    public function dictionarySize(): int
+    {
+        return count($this->gramDictionary);
+    }
+
+    /**
      * @return array<string|int,int> n-gram → count. Keys are xxh64 hex strings
-     *                                  in normal mode; the digest as a positive
-     *                                  63-bit int (sign bit cleared) when lowMemory
+     *                                  in normal mode — shared across bags via
+     *                                  the master gram dictionary, but identical
+     *                                  in content and order to the pre-interning
+     *                                  build; the digest as a positive 63-bit
+     *                                  int (sign bit cleared) when lowMemory
      *                                  is enabled via CompactNgramBag::compact().
      */
     public function fingerprint(Node $node): array
@@ -76,7 +162,13 @@ final class NgramFingerprint
                 'xxh64',
                 implode($sep, array_slice($tokens, $i, $this->n)),
             );
-            $bag[$key] = ($bag[$key] ?? 0) + 1;
+            // Intern through the master gram dictionary: the fresh hash()
+            // output above dies after the lookup, and the bag slot points
+            // at the dictionary's canonical string instead of keeping its
+            // own copy (engine-011). Same key content → same bucket, same
+            // order, same persisted bytes as the pre-dictionary build.
+            $canonical   = $this->internGram($key);
+            $bag[$canonical] = ($bag[$canonical] ?? 0) + 1;
         }
 
         if ($this->lowMemory) {

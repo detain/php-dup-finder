@@ -25,8 +25,18 @@ final class Block
     public string $structuralHash = '';
     public int $size = 0;
 
-    /** @var array<string|int,int>|null token -> count. Keys are string (xxh64 hex)
-     *                               in normal mode; int (hi^lo) when --low-memory. */
+    /** @var array<string|int,int>|null token -> count. Keys are xxh64 hex
+     *                               strings in normal mode, shared canonically
+     *                               via the producing NgramFingerprint's master
+     *                               gram dictionary (engine-011 — the copy is
+     *                               by reference only; serialization carries
+     *                               the key content unchanged). Under
+     *                               --low-memory the keys are the digest as a
+     *                               masked-positive 63-bit int, NOT the old
+     *                               hi^lo 32-bit fold (CompactNgramBag,
+     *                               engine-042). Serialized Blocks carry these
+     *                               keys; bag species separation rides the
+     *                               IndexStore/ClusterCache config keys. */
     public ?array $ngramBag = null;
 
     /**

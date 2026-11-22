@@ -4,10 +4,12 @@ declare(strict_types=1);
 namespace Phpdup\Tests\Unit\Fingerprint;
 
 use PHPUnit\Framework\TestCase;
+use Phpdup\Cli\Config;
 use Phpdup\Extraction\BlockExtractor;
 use Phpdup\Fingerprint\NgramFingerprint;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Parsing\AstParser;
+use Phpdup\Pipeline\Stages\PreprocessStage;
 use Phpdup\Similarity\ContainmentSimilarity;
 use Phpdup\Similarity\JaccardSimilarity;
 use Phpdup\Util\IdentifierIds;
@@ -163,5 +165,36 @@ final class NgramFingerprintModeTest extends TestCase
             $this->assertNotSame($token, $stripped);
             $this->assertSame($stripped, IdentifierIds::strip($stripped), 'strip must be idempotent');
         }
+    }
+
+    public function testPreprocessCacheKeyCarriesNoNewEraTokenAndStaysSpeciesSeparated(): void
+    {
+        // engine-S18b cache-roster adjudication, pinned. This step ships
+        // NO new era token: the pre-S32 stale low-memory species is
+        // already self-healed because shell-S16 (e5eac1d) changed the
+        // serialize-list shape (binding $config->lowMemory) AFTER
+        // engine-S32 (46f9b94) folded the bag keyspace — every pre-S16
+        // snapshot therefore misses cleanly, and adding a token would be
+        // pure churn (ceiling-silence law). What MUST keep holding:
+        //   1) the key separates hex-species runs from compact-species
+        //      runs — bag content stays species-pure per cache directory,
+        //   2) the key is a pure function of config — the new dictionary
+        //      state inside NgramFingerprint must never leak into it,
+        //      so warm replays of byte-identical bags still hit.
+        $stage = new PreprocessStage(useCache: false);
+        $read  = new \ReflectionMethod(PreprocessStage::class, 'indexStoreConfigKey');
+
+        $keyFor = static function (bool $lowMemory) use ($stage, $read): string {
+            return $read->invoke($stage, new Config(
+                paths:   ['/x'],
+                exclude: [],
+                lowMemory: $lowMemory,
+            ));
+        };
+
+        $this->assertNotSame($keyFor(false), $keyFor(true),
+            'bag species separation must keep riding the config key');
+        $this->assertSame($keyFor(false), $keyFor(false),
+            'the config key must be pure function of config — no fingerprinter/dictionary state may leak into it');
     }
 }
