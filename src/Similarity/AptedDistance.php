@@ -41,22 +41,63 @@ use Phpdup\Util\IdentifierIds;
  * holds a strong reference to each keyed node, so an `spl_object_id`
  * can never be recycled under it while its entry is alive.
  *
+ * The memo caches INPUTS only — it can never answer a pair. Every entry
+ * path, cold or cache-warm, runs the same budget-band gate before the
+ * tuple/sketch memos can serve anything (engine-S09 r1, MEDIUM-1: one
+ * gate for both paths, so an over-budget pair is refused identically
+ * whether or not its inputs were already memoised).
+ *
  * The DP itself is budget-banded (engine-009, second half): cells whose
  * positional lower bound |r − c| already exceeds the budget cannot lie
  * on an accepting alignment, so they are never computed and read back as
  * the saturation value. Every cell is held in the capped domain
  * min(true, budget + 1), which is exact for every result the class
  * reports: a pair accepted above threshold carries its true cost
- * unchanged, and a rejected pair reports 0.0 either way.
+ * unchanged. A band-exceeding pair is never reported as a laundered
+ * truncated number — ted() hands back the explicit OVER_BUDGET sentinel
+ * and similarity() refuses it with the same constant the gates use
+ * (engine-S09 r1, MEDIUM-2: explicit refusal, never silent truncation,
+ * matching the engine-S01 df-cap house style).
  *
  * Returns a normalised similarity in [0, 1]:
  *     sim = 1 - TED(a,b) / max(|a|, |b|)
  */
 final class AptedDistance
 {
+    /**
+     * The one refusal value this class reports. Both refusal paths — the
+     * over-budget gates and the band-exceeding DP (via OVER_BUDGET) —
+     * return it, so a cold computation and a memo-warm lookup can never
+     * disagree on a rejected pair (engine-S09 r1, MEDIUM-1/MEDIUM-2).
+     */
+    public const REFUSE = 0.0;
+
+    /**
+     * Sentinel returned by ted() when the true edit distance exceeds the
+     * budget band. Engine-S09 r1 (MEDIUM-2) made this explicit: it lives
+     * in the negative domain, strictly below every legitimate cost and
+     * every reachable saturation value (min budget = 0 → cap ≥ 1), so it
+     * can never be mistaken for — or arithmetically laundered into — a
+     * distance. similarity() maps it to REFUSE.
+     */
+    private const OVER_BUDGET = -1;
+
     private readonly EditCostModel $costModel;
     private readonly int $scaler;
     private readonly bool $unnumbered;
+
+    // engine-S09 r1 (LOW-3): hit-vs-cold and gate-vs-band refusals must
+    // be observable, or the shared-gate pins (MEDIUM-1/MEDIUM-2) cannot
+    // be written non-vacuously. Plain additive counters, process-local
+    // like every memo; see diagnostics().
+    /** @var int DP-input tuple memo lookups served from a cached entry */
+    private int $tupleMemoHits = 0;
+    /** @var int DP-input tuple memo lookups that computed a fresh entry */
+    private int $tupleMemoCold = 0;
+    /** @var int pairs refused by a pre-DP gate (size delta / sketch bound) */
+    private int $gateRefusals = 0;
+    /** @var int pairs refused because their true distance exceeded the budget band */
+    private int $bandRefusals = 0;
 
     /** @var \SplObjectStorage<Node, int> post-order node count per tree root */
     private \SplObjectStorage $countMemo;
@@ -96,6 +137,27 @@ final class AptedDistance
     }
 
     /**
+     * engine-S09 r1 (LOW-3): make the memo paths and the two refusal
+     * sources observable. "hits" counts tuple-memo lookups served from a
+     * cached entry, "cold" counts lookups that computed a fresh entry;
+     * "gate" counts pre-DP refusals (size delta / sketch bound),
+     * "band" counts OVER_BUDGET refusals from the banded DP. A pin that
+     * must prove a cache-hit pair went through the SAME gate as a cold
+     * one reads these instead of trusting a symmetric 0.0 == 0.0.
+     *
+     * @return array{hits: int, cold: int, gate: int, band: int}
+     */
+    public function diagnostics(): array
+    {
+        return [
+            'hits' => $this->tupleMemoHits,
+            'cold' => $this->tupleMemoCold,
+            'gate' => $this->gateRefusals,
+            'band' => $this->bandRefusals,
+        ];
+    }
+
+    /**
      * @param Node $a
      * @param Node $b
      * @param float $threshold  abort as soon as the running cost passes
@@ -103,24 +165,33 @@ final class AptedDistance
      */
     public function similarity(Node $a, Node $b, float $threshold = 0.0): float
     {
-        // Tier-1 pre-filter: size delta. If the trees differ in size by
-        // more than the threshold permits, no number of matches could
-        // close the gap — skip linearisation entirely.
+        // The ONE budget-band gate (engine-S09 r1, MEDIUM-1): evaluated at
+        // the top of EVERY entry path — cold or memo-warm — before the
+        // tuple/sketch memos can serve a pair. A pair of over-budget
+        // trees (size delta beyond what the threshold permits) is refused
+        // here and never reaches the DP inputs, so the cache can never
+        // answer a pair the cold path refuses, nor vice-versa. The sizes
+        // ride countOf()'s input cache (engine-009): a memo count equals
+        // a fresh walk by construction — the trees are immutable while
+        // referenced — and testRefusalGateServesCacheHitPairsIdentically-
+        // ToCold pins gate-equality through the diagnostics seam.
         $sa = $this->countOf($a);
         $sb = $this->countOf($b);
         if ($sa === 0 || $sb === 0) {
-            return $sa === $sb ? 1.0 : 0.0;
+            return $sa === $sb ? 1.0 : self::REFUSE;
         }
         $worstUpfront = max($sa, $sb);
         $sizeBudget = (int)ceil((1.0 - $threshold) * $worstUpfront);
         if (abs($sa - $sb) > $sizeBudget) {
-            return 0.0;
+            $this->gateRefusals++;
+            return self::REFUSE;
         }
 
         // Tier-2 pre-filter: shapelet sketch. A 64-bit (node-type, depth)
         // histogram fingerprint; if Jaccard-by-popcount of the two
         // sketches falls below the threshold, the trees can't possibly
         // be that similar by tree-edit either. ~10 ALU ops vs O(n²) DP.
+        // A sketch-gate refusal likewise never touches the tuple memo.
         if ($threshold > 0.0) {
             $skA = $this->sketchOf($a);
             $skB = $this->sketchOf($b);
@@ -128,7 +199,8 @@ final class AptedDistance
             // fraction of overlapping (type,depth) buckets present in both
             // trees. A bucket overlap below threshold/2 leaves no room.
             if (ShapeletSketch::overlap($skA, $skB) < $threshold / 2.0) {
-                return 0.0;
+                $this->gateRefusals++;
+                return self::REFUSE;
             }
         }
 
@@ -137,7 +209,7 @@ final class AptedDistance
         $n = count($ta['labels']);
         $m = count($tb['labels']);
         if ($n === 0 || $m === 0) {
-            return $n === $m ? 1.0 : 0.0;
+            return $n === $m ? 1.0 : self::REFUSE;
         }
 
         // Worst-case weighted distance is the sum of node costs in the
@@ -146,8 +218,12 @@ final class AptedDistance
         $budget = (int)ceil((1.0 - $threshold) * $worst);
 
         $cost = $this->ted($ta, $tb, $budget);
-        if ($cost > $budget) {
-            return 0.0;
+        if ($cost === self::OVER_BUDGET) {
+            // MEDIUM-2: the band truncated the computation — the true
+            // distance exceeds the budget. Report the explicit refusal,
+            // never a normalisation of the saturation value.
+            $this->bandRefusals++;
+            return self::REFUSE;
         }
         return 1.0 - ($cost / $worst);
     }
@@ -190,8 +266,10 @@ final class AptedDistance
     private function tupleOf(Node $node): array
     {
         if ($this->tupleMemo->contains($node)) {
+            $this->tupleMemoHits++;
             return $this->tupleMemo[$node];
         }
+        $this->tupleMemoCold++;
         $tuple = $this->flatten($node);
         $costs = [];
         $sum = 0;
@@ -211,7 +289,9 @@ final class AptedDistance
      *
      * Budget early-exit is applied at this level: after each forestDp()
      * call returns the minimum cell value of the completed submatrix, if
-     * that minimum exceeds the budget we return $budget+1 immediately.
+     * that minimum exceeds the budget we return the OVER_BUDGET sentinel
+     * immediately (engine-S09 r1, MEDIUM-2: an explicit refusal, not the
+     * saturation value laundered through the acceptance comparison).
      * This ensures all treedist band cells for the current key-root pair
      * are written before the abort decision is made.
      *
@@ -241,11 +321,16 @@ final class AptedDistance
             foreach ($T2['kr'] as $j) {
                 $rowMin = $this->forestDp($i, $j, $T1, $T2, $treedist, $budget, $cap);
                 if ($rowMin > $budget) {
-                    return $cap;
+                    // MEDIUM-2: the true distance exceeded the band — hand
+                    // back the explicit refusal sentinel, never $cap (which
+                    // is a capped DISTANCE value and must not travel the
+                    // acceptance arithmetic).
+                    return self::OVER_BUDGET;
                 }
             }
         }
-        return $treedist[$n - 1][$m - 1] ?? $cap;
+        $final = $treedist[$n - 1][$m - 1] ?? $cap;
+        return $final > $budget ? self::OVER_BUDGET : $final;
     }
 
     /**

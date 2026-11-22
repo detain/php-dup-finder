@@ -293,10 +293,21 @@ final class AptedDistanceTest extends TestCase
      * fresh instance per measurement is the unmemoised baseline (cold
      * flatten/worstCost); the shared instance's second call is fully
      * memo-warm.
+     *
+     * Fix-round-1 (r1 LOW-2): the bare cold==warm compare is vacuous on
+     * a cache-warm pair (both sides could be 0.0 refusals with no memo
+     * activity at all). Every warm measurement now also asserts — via
+     * the diagnostics seam — that the warm call either PASSED the shared
+     * gate and was served from the tuple memo (hits delta 2, zero cold
+     * work), or was refused BY THE GATE itself (gate delta 1, no tuple
+     * memo lookups). A warm call that silently re-computed, or a refusal
+     * that leaked through the memo, cannot satisfy either disjunct.
      */
     public function testMemoisedResultsMatchUnmemoisedAcrossFixturePairs(): void
     {
         $shared = new AptedDistance();
+        $refusedSeen = 0;
+        $acceptedSeen = 0;
         foreach (self::engine009Pairs() as $name => [$codeA, $codeB]) {
             $a = $this->canonical($codeA);
             $b = $this->canonical($codeB);
@@ -304,20 +315,236 @@ final class AptedDistanceTest extends TestCase
                 $cold = (new AptedDistance())->similarity($a, $b, $threshold);
                 // Prime the shared memo on this pair, then read it warm.
                 $shared->similarity($a, $b, $threshold);
+                $before = $shared->diagnostics();
                 $warm = $shared->similarity($a, $b, $threshold);
+                $after = $shared->diagnostics();
                 $this->assertSame(
                     $cold,
                     $warm,
                     "memoised similarity must be bit-identical to cold for pair '$name' at threshold $threshold"
                 );
+                $this->assertWarmPathExplained($before, $after, $name);
+                if ($warm === AptedDistance::REFUSE) {
+                    $refusedSeen++;
+                } else {
+                    $acceptedSeen++;
+                }
             }
         }
+        // The roster must exercise BOTH warm paths, or the parity above
+        // is a coincidence of one of them.
+        $this->assertGreaterThan(0, $acceptedSeen, 'roster never produced an accepted warm pair');
+        $this->assertGreaterThan(0, $refusedSeen, 'roster never produced a refused warm pair');
     }
 
     /**
-     * engine-009 acceptance: the object-identity probe. Inputs are
+     * engine-S09 r1 (LOW-3/MEDIUM-1 support): the diagnostics seam must
+     * actually separate memo hits from cold computation — the pin below
+     * is non-vacuous only because this holds.
+     */
+    public function testDiagnosticsSeparateMemoHitFromColdComputation(): void
+    {
+        $a = $this->canonical('<?php function f($x) { if ($x > 10) { return "a"; } return "b"; }');
+        $b = $this->canonical('<?php function g($y) { return $y * 3; }');
+
+        $d = new AptedDistance();
+        $this->assertSame(
+            ['hits' => 0, 'cold' => 0, 'gate' => 0, 'band' => 0],
+            $d->diagnostics(),
+            'fresh instance reports no memo activity'
+        );
+
+        $d->similarity($a, $b, 0.0);
+        $first = $d->diagnostics();
+        $this->assertSame(2, $first['cold'], 'first pass computes both tuples cold');
+        $this->assertSame(0, $first['hits'], 'first pass cannot hit an empty memo');
+
+        $d->similarity($a, $b, 0.0);
+        $second = $d->diagnostics();
+        $this->assertSame(2, $second['hits'] - $first['hits'], 'warm pass must serve both tuples from the memo');
+        $this->assertSame($first['cold'], $second['cold'], 'warm pass must not recompute any tuple');
+    }
+
+    /**
+     * engine-S09 r1, MEDIUM-1 — the budget-band gate is ONE gate for both
+     * entry paths: a cache-hit pair composed of over-budget trees gets
+     * the same explicit refusal as the cold computation, and the tuple
+     * memo is never reached by a gate-refused pair (no cache bypass in
+     * either direction).
+     */
+    public function testRefusalGateServesCacheHitPairsIdenticallyToCold(): void
+    {
+        // 30- and 32-condition functions: 122 vs 130 nodes, |Δ| = 8 — far
+        // over the budget ceil(0.01 × 130) = 1 at threshold 0.99.
+        $big = $this->canonical('<?php function f() { ' . $this->conditions(30) . ' }');
+        $bigger = $this->canonical('<?php function g() { ' . $this->conditions(32) . ' }');
+
+        $coldSim = (new AptedDistance())->similarity($big, $bigger, 0.99);
+
+        $warm = new AptedDistance();
+        $warm->similarity($big, $bigger, 0.99);
+        $warmSim = $warm->similarity($big, $bigger, 0.99);
+
+        $this->assertSame(
+            AptedDistance::REFUSE,
+            $coldSim,
+            'over-budget pair must be refused explicitly on the cold path'
+        );
+        $this->assertSame($coldSim, $warmSim, 'cache-hit pair must get the SAME refusal as cold');
+
+        $diag = $warm->diagnostics();
+        // The gate answered — the pair never reached the tuple memo, so a
+        // cache-hit over-budget pair CANNOT be served from cache around
+        // the gate (hits stay 0 and the gate counter moved on the second,
+        // already-memo-warm call).
+        $this->assertSame(2, $diag['gate'], 'both entries must have run the shared gate');
+        $this->assertSame(0, $diag['hits'], 'gate-refused pairs must never read the tuple memo');
+        $this->assertSame(0, $diag['cold'], 'gate-refused pairs must never compute tuple memo entries');
+        $this->assertFalse(
+            $warm->hasMemoisedInputs($big),
+            'a gate-refused pair must not even PRIME the tuple memo (r1 MEDIUM-1 leak)'
+        );
+    }
+
+    /**
+     * engine-S09 r1, MEDIUM-2 (+LOW-1) — a band-exceeding pair is an
+     * EXPLICIT refusal with its own observable counter; it is never a
+     * saturation value laundered through the acceptance arithmetic, and
+     * the refusal is identical on cold and cache-hit entries. The DP
+     * band is applied AFTER the tuple memo (by design — memoised inputs
+     * are what the DP consumes), so the pins here read the band counter
+     * rather than a bare 0.0 == 0.0:
+     *
+     * Hand-checked truth table (default cost model, unit costs;
+     * worst = nodes of the larger tree at t=0.99 ⇒ budget 1):
+     *   permuted pair  : d = 8 > 1  ⇒ REFUSE (no truncated 1−8/11)
+     *   op-swap pair   : d = 1 ≤ 1  ⇒ ACCEPTED, exact 1 − 1/8 = 0.875
+     *   op-swap-bad    : d = 2 > 1  ⇒ REFUSE (no truncated 1−2/8 = 0.75)
+     *   exact arm      : threshold 0.0 (no band) reproduces 1 − d/worst.
+     */
+    public function testBandExceedIsExplicitRefusalNotTruncatedDistance(): void
+    {
+        // d = 8: the `$u = 1;` assignment (4 canonical nodes) leaves its
+        // slot and re-enters after the if-block — an ordered-tree distance
+        // charges the full subtree move (delete 4 + insert 4). Both trees
+        // are 11 nodes, so worst = 11 and the exact arm must read 1 − 8/11.
+        $permA = $this->canonical('<?php function f() { $u = 1; if ($u) { g(); } }');
+        $permB = $this->canonical('<?php function f() { if ($u) { g(); } $u = 1; }');
+        // d = 1: a single label substitution (mul → plus); 8 nodes each.
+        $opA = $this->canonical('<?php function f($x) { return $x * 2; }');
+        $opB = $this->canonical('<?php function g($y) { return $y + 2; }');
+        // d = 2: mul → plus plus the literal `$x`/`$y` variable slot
+        // difference surviving normalisation; 8 nodes each.
+        $badA = $this->canonical('<?php function f($x) { return $x * 2; }');
+        $badB = $this->canonical('<?php function g($y) { return $y + $x; }');
+
+        $exactPerm = (new AptedDistance())->similarity($permA, $permB, 0.0);
+        $this->assertEqualsWithDelta(1.0 - 8.0 / 11.0, $exactPerm, 1e-12, 'exact arm: hand-derived d = 8, worst = 11');
+
+        // Warm instance: prime the memo, then measure refusal — a
+        // cache-hit pair must saturate the band identically to cold.
+        $d = new AptedDistance();
+        $d->similarity($permA, $permB, 0.99);
+        $warmPerm = $d->similarity($permA, $permB, 0.99);
+        $afterPerm = $d->diagnostics();
+
+        $this->assertSame(AptedDistance::REFUSE, $warmPerm, 'band-exceeding pair must be REFUSED, not truncated');
+        $this->assertLessThanOrEqual(
+            AptedDistance::REFUSE,
+            $warmPerm,
+            'a refused pair must never report a positive laundered similarity'
+        );
+        $this->assertSame(
+            (new AptedDistance())->similarity($permA, $permB, 0.99),
+            $warmPerm,
+            'cold and cache-hit band refusals must be identical'
+        );
+        $this->assertSame(2, $afterPerm['band'], 'both band refusals (cold + warm) must be counted explicitly');
+        $this->assertSame(2, $afterPerm['hits'], 'the warm refusal must have come through the memo, not around it');
+        $this->assertSame(0, $afterPerm['gate'], 'this pair is refused by the DP band, not the size gate');
+
+        // Accepted arm: the exact value must survive, band counter silent.
+        $accepted = $d->similarity($opA, $opB, 0.99);
+        $this->assertSame(1.0 - 1.0 / 8.0, $accepted, 'accepted pair must report its hand-derived exact distance');
+        $this->assertSame(
+            (new AptedDistance())->similarity($opA, $opB, 0.0),
+            $accepted,
+            'accepted banded value must equal the exact (threshold-0) DP'
+        );
+
+        // Third band row: d = 2 also refuses (no 0.75 truncation).
+        $badSim = $d->similarity($badA, $badB, 0.99);
+        $this->assertSame(AptedDistance::REFUSE, $badSim, 'd = 2 > budget 1 must refuse, not report 1 − 2/8');
+        $this->assertSame(3, $d->diagnostics()['band'], 'every band refusal is counted');
+    }
+
+    /**
+     * engine-S09 r1, LOW-3 — on a symmetric pair the memo-hit answer and
+     * the cold answer are the SAME value, so a value-only pin cannot see
+     * which path ran; the diagnostics seam makes hit-vs-cold observable
+     * and this pins it.
+     */
+    public function testCacheHitRefusalIsObservableNotSilentlySymmetric(): void
+    {
+        $a = $this->canonical('<?php function h($z) { return $z; }');
+        $b = $this->canonical('<?php function i() { echo 1; echo 2; echo 3; echo 4; echo 5; }');
+
+        $d = new AptedDistance();
+        $coldFirst = $d->similarity($a, $b, 0.5);
+        $afterCold = $d->diagnostics();
+        $warmSecond = $d->similarity($a, $b, 0.5);
+        $afterWarm = $d->diagnostics();
+
+        $this->assertSame($coldFirst, $warmSecond, 'symmetric pair: hit and cold answer identically');
+        $this->assertSame(0, $afterCold['hits'], 'the first entry was computed cold');
+        $this->assertSame(2, $afterCold['cold'], 'both tuples computed cold on first entry');
+        $this->assertSame(2, $afterWarm['hits'] - $afterCold['hits'], 'the second entry was served from the memo');
+        $this->assertSame(0, $afterWarm['cold'] - $afterCold['cold'], 'the memo entry performed no cold work');
+        $this->assertSame(
+            $afterCold['band'] + 1,
+            $afterWarm['band'],
+            'the refusal must be re-declared (counted) on the cache-hit entry, never skipped'
+        );
+    }
+
+    /** @return string N stacked `if ($c$i) { return $i; }` conditions */
+    private function conditions(int $count): string
+    {
+        $out = '';
+        for ($i = 1; $i <= $count; $i++) {
+            $out .= "if (\$c$i) { return $i; }\n";
+        }
+        return $out;
+    }
+
+    /**
+     * Assert one warm similarity() call explained its path through the
+     * shared gate (r1 MEDIUM-1/LOW-2/LOW-3 support):
+     *   gate-refused entry ⇒ gate delta 1, no tuple memo traffic;
+     *   DP-reached entry   ⇒ exactly 2 tuple-memo hits (pair already
+     *                        primed), no cold tuple computation.
+     */
+    private function assertWarmPathExplained(array $before, array $after, string $what): void
+    {
+        $dh = $after['hits'] - $before['hits'];
+        $dc = $after['cold'] - $before['cold'];
+        $dg = $after['gate'] - $before['gate'];
+        if ($dg === 1) {
+            $this->assertSame(0, $dh, "gate-refused pair '$what' must not read the tuple memo");
+            $this->assertSame(0, $dc, "gate-refused pair '$what' must not compute tuples");
+            return;
+        }
+        $this->assertSame(2, $dh, "warm pair '$what' must be served from the primed tuple memo");
+        $this->assertSame(0, $dc, "warm pair '$what' must not recompute any tuple");
+    }
+
+    /**
+     * engine-S09 acceptance: the object-identity probe. Inputs are
      * computed once per distinct node object for the instance's life, and
      * a node shared across different pairs rides the same entry.
+     *
+     * Fix-round-1 (r1 LOW-2): strengthened with the diagnostics seam so
+     * the reuse claim is count-verified, not inferred from a value.
      */
     public function testRepeatedCallsReuseMemoisedInputs(): void
     {
@@ -332,13 +559,19 @@ final class AptedDistanceTest extends TestCase
 
         $this->assertTrue($d->hasMemoisedInputs($a), 'similarity() must memoise both trees (object identity)');
         $this->assertTrue($d->hasMemoisedInputs($b));
+        $this->assertSame(2, $d->diagnostics()['cold'], 'first pass must have computed exactly two tuples');
 
         // A third tree seen with the SAME `a` reuses a's entry — proven by
-        // result equality against the cold path plus the warm flag.
+        // result equality against the cold path plus the warm flag AND a
+        // hits delta of exactly 1 (a from memo, c computed).
         $c = $this->canonical('<?php function h($z) { foreach ($z as $q) { echo $q; } }');
+        $before = $d->diagnostics();
         $warm = $d->similarity($a, $c);
+        $after = $d->diagnostics();
         $cold = (new AptedDistance())->similarity($a, $c);
         $this->assertSame($cold, $warm, 'cross-pair memo reuse must not perturb results');
+        $this->assertSame(1, $after['hits'] - $before['hits'], 'node a must ride its existing entry');
+        $this->assertSame(1, $after['cold'] - $before['cold'], 'node c must be computed once');
         $this->assertTrue($d->hasMemoisedInputs($c));
 
         // The memo is per-run instance state, never a shared table: a new
@@ -354,9 +587,16 @@ final class AptedDistanceTest extends TestCase
      * budgeted DP — rejects only pairs whose true score cannot clear it).
      * The threshold-0.0 run is the no-pruning oracle: budget = worstCost
      * ≥ every positional bound, so its band covers the whole matrix.
+     *
+     * Fix-round-1 (r1 LOW-2): the rejection arm used to be a bare
+     * `exact < threshold` which stays green even if the banded path
+     * short-circuited the tuple memo entirely. The rejected arm now
+     * re-runs through a shared instance and asserts the refusal is the
+     * explicit REFUSE constant — gate or band, each refusal is counted.
      */
     public function testBandPruneKeepsAcceptedDistancesExact(): void
     {
+        $shared = new AptedDistance();
         foreach (self::engine009Pairs() as $name => [$codeA, $codeB]) {
             $a = $this->canonical($codeA);
             $b = $this->canonical($codeB);
@@ -370,14 +610,53 @@ final class AptedDistanceTest extends TestCase
                         "banded pair '$name' at $threshold accepted a distance the exact DP disagrees with"
                     );
                 } else {
+                    $this->assertSame(
+                        AptedDistance::REFUSE,
+                        $gated,
+                        "banded pair '$name' at $threshold must return the explicit refusal constant"
+                    );
                     $this->assertLessThan(
                         $threshold,
                         $exact,
                         "banded pair '$name' at $threshold rejected a pair the exact DP scores at or above it"
                     );
+                    // And the shared (warm) instance must refuse the same
+                    // way, having actually run the gate/DP (not skipped).
+                    $before = $shared->diagnostics();
+                    $warmGated = $shared->similarity($a, $b, $threshold);
+                    $after = $shared->diagnostics();
+                    $this->assertSame(AptedDistance::REFUSE, $warmGated);
+                    $this->assertTrue(
+                        ($after['gate'] - $before['gate']) === 1
+                        || ($after['band'] - $before['band']) === 1
+                        || ($after['hits'] - $before['hits']) === 2,
+                        "warm rejection of '$name' at $threshold was not explained by gate, band or memo traffic"
+                    );
                 }
             }
         }
+    }
+
+    /**
+     * engine-S09 r1, LOW-1 — the fixture roster's banded arm must carry
+     * real signal: at least one pair is refused by the size gate, one by
+     * the band, and the accepted arms equal the exact DP. A roster that
+     * only ever hit one refusal path would make the parity tests green by
+     * coincidence; this pins the mix.
+     */
+    public function testRosterExercisesDistinctRefusalPaths(): void
+    {
+        $d = new AptedDistance();
+        $gate = 0;
+        $band = 0;
+        foreach (self::engine009Pairs() as [$codeA, $codeB]) {
+            $a = $this->canonical($codeA);
+            $b = $this->canonical($codeB);
+            $d->similarity($a, $b, 0.99); // tight: refuses must come from gate or band
+        }
+        $diag = $d->diagnostics();
+        $this->assertGreaterThanOrEqual(1, $diag['gate'], 'roster must exercise the shared gate path');
+        $this->assertGreaterThanOrEqual(1, $diag['band'], 'roster must exercise the band-refusal path');
     }
 
     /**
@@ -386,6 +665,11 @@ final class AptedDistanceTest extends TestCase
      * warm agree per instance. The pair below scores 1.0 under the
      * default/semantic cost models but saturates differently under them
      * at tighter thresholds, so the isolation pins carry real signal.
+     *
+     * Fix-round-1 (r1 LOW-2): every configuration arm now asserts the
+     * warm call ran on the memo (hits delta 2), so the cross-instance
+     * inequality cannot be the artifact of an unexercised code path it
+     * was before.
      */
     public function testMemoRespectsInstanceConfiguration(): void
     {
@@ -403,7 +687,12 @@ final class AptedDistanceTest extends TestCase
             $cold = (new AptedDistance($model, $unnumbered))->similarity($a, $b, 0.0);
             $warm = new AptedDistance($model, $unnumbered);
             $warm->similarity($a, $b, 0.0);
-            $this->assertSame($cold, $warm->similarity($a, $b, 0.0), "memo must be consistent for '$label'");
+            $before = $warm->diagnostics();
+            $warmSim = $warm->similarity($a, $b, 0.0);
+            $after = $warm->diagnostics();
+            $this->assertSame($cold, $warmSim, "memo must be consistent for '$label'");
+            $this->assertSame(2, $after['hits'] - $before['hits'], "warm arm for '$label' must be memo-served");
+            $this->assertSame($before['cold'], $after['cold'], "warm arm for '$label' must not recompute");
             $this->assertGreaterThan(0.0, $cold, "fixture pair must score above zero for '$label'");
             $gated[$label] = (new AptedDistance($model, $unnumbered))->similarity($a, $b, 0.99);
         }
