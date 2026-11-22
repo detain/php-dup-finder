@@ -87,6 +87,19 @@ final class PhpdupModel implements Model, ProgressListener
     /** Reload counter shown in the dashboard when watch-mode triggers RestartPipelineMsg. */
     public int $reloadCount = 0;
 
+    /**
+     * Raw halt fact of the live pipeline (once-S07): the message of the
+     * throwable that killed a pump, null while no halt happened. Stored
+     * undisplayed on purpose — the renderer scrubs it through
+     * {@see ViewState::displaySafe()} at paint time, and {@see self::exitCode()}
+     * turns it into the CLI's non-zero posture so a halt can never look
+     * like a clean completion.
+     */
+    public ?string $pipelineError = null;
+
+    /** Class of the throwable behind {@see self::$pipelineError} (diagnostics identity). */
+    public ?string $pipelineErrorClass = null;
+
     public function __construct(
         public PipelineState $state,
         public ViewState $viewState,
@@ -228,7 +241,13 @@ final class PhpdupModel implements Model, ProgressListener
                 $this->iterator->next();
             }
         } catch (\Throwable $e) {
-            $this->viewState->toastQueue[] = 'Pipeline error: ' . $e->getMessage();
+            // once-S07 (php-dup-finder-once-007): a pump that dies is a FAILURE,
+            // not a completion. Record the raw halt fact (panel + exit code read
+            // it), and route the breadcrumb toast through ViewState's display
+            // door so the text is sanitized-and-clipped on the way in.
+            $this->pipelineError = $e->getMessage();
+            $this->pipelineErrorClass = $e::class;
+            $this->viewState->pushToast('Pipeline error: ' . $e->getMessage());
             $this->iterator = null;
             $this->viewState->analysisComplete = true;
             return [$this, null];
@@ -266,6 +285,10 @@ final class PhpdupModel implements Model, ProgressListener
             return;
         }
         [$gen, $state] = ($this->iteratorFactory)();
+        // A fresh run must not inherit the previous run's halt — the error
+        // panel and the exit-1 posture clear together (init + watch restart).
+        $this->pipelineError      = null;
+        $this->pipelineErrorClass = null;
         $this->iterator        = $gen;
         $this->iteratorStarted = false;
         $this->state           = $state;
@@ -301,8 +324,21 @@ final class PhpdupModel implements Model, ProgressListener
         return null;
     }
 
+    /**
+     * Process exit status the TUI must carry (once-S07). A halted pipeline
+     * is the CLI's runtime-error class — exit 1 — not a silent success;
+     * every other outcome (clean completion, user quit) stays 0.
+     */
+    public function exitCode(): int
+    {
+        return $this->pipelineError !== null ? 1 : 0;
+    }
+
     private function taskbarProgress(): Progress
     {
+        if ($this->pipelineError !== null) {
+            return new Progress(ProgressBarState::Error, 100);
+        }
         if ($this->viewState->analysisComplete) {
             return new Progress(ProgressBarState::Normal, 100);
         }
@@ -419,11 +455,71 @@ final class PhpdupModel implements Model, ProgressListener
         ) : '';
 
         return $banner . "\n\n"
+             . $this->renderErrorPanel($cols)
              . $panes->render($cols, max(8, $rows - 8)) . "\n"
              . $statusLine
              . $this->renderTimingsSparkline($cols)
              . $detail
              . $help;
+    }
+
+    /**
+     * Error panel (once-S07): the halted pipeline's reason rendered loudly
+     * under the banner in the same "phpdup: " shape the CLI writes on
+     * stderr. Each source line of the message is display-sanitized and
+     * WORD-WRAPPED (not clipped) at the panel width, so multi-line remedies
+     * — the CandidateBudgetException "Ways forward:" advice — stay readable
+     * at 80 columns instead of losing their tail to a clip.
+     */
+    private function renderErrorPanel(int $cols): string
+    {
+        if ($this->pipelineError === null) {
+            return '';
+        }
+        $width = max(20, $cols - 24); // first line shares space with '✗ phpdup: '
+        $displayLines = [];
+        foreach (explode("\n", $this->pipelineError) as $sourceLine) {
+            foreach (self::wrapToCells(ViewState::displaySafe($sourceLine), $width) as $wrapped) {
+                $displayLines[] = $wrapped;
+            }
+        }
+        $head = array_shift($displayLines) ?? '';
+        $out = "\n" . $this->theme->error->render('✗ phpdup: ' . $head) . "\n";
+        foreach ($displayLines as $line) {
+            $out .= $this->theme->error->render('  ' . $line) . "\n";
+        }
+        return $out . "\n";
+    }
+
+    /**
+     * Greedy word-wrap into display-cell-sized lines. Every word survives —
+     * a word wider than the line is the only thing that gets clipped.
+     *
+     * @return list<string>
+     */
+    private static function wrapToCells(string $text, int $width): array
+    {
+        if ($text === '') {
+            return [''];
+        }
+        $words = preg_split('/ +/', $text, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        $lines   = [];
+        $current = null;
+        foreach ($words as $word) {
+            $word = ViewState::clipToCells($word, $width);
+            if ($current === null) {
+                $current = $word;
+                continue;
+            }
+            if (mb_strwidth($current . ' ' . $word, 'UTF-8') <= $width) {
+                $current .= ' ' . $word;
+                continue;
+            }
+            $lines[]   = $current;
+            $current   = $word;
+        }
+        $lines[] = $current ?? '';
+        return $lines;
     }
 
     private function renderTimingsSparkline(int $cols): string

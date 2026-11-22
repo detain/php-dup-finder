@@ -5,8 +5,11 @@ namespace Phpdup\Tests\Unit\Tui;
 
 use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\Config;
+use Phpdup\Clustering\CandidateBudgetException;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\Stage;
+use Phpdup\Tui\Msg\RestartPipelineMsg;
+use Phpdup\Tui\Msg\StagePumpedMsg;
 use Phpdup\Tui\PhpdupModel;
 use Phpdup\Tui\TuiRunner;
 use Phpdup\Tui\ViewState;
@@ -14,6 +17,7 @@ use SugarCraft\Core\KeyType;
 use SugarCraft\Core\Msg\KeyMsg;
 use SugarCraft\Core\Msg\QuitMsg;
 use SugarCraft\Core\Msg\WindowSizeMsg;
+use SugarCraft\Core\ProgressBarState;
 use SugarCraft\Core\View;
 
 final class PhpdupModelTest extends TestCase
@@ -379,6 +383,197 @@ final class PhpdupModelTest extends TestCase
         $model->update(new \Phpdup\Tui\Msg\RestartPipelineMsg(reload: 1));
         $model->onFileScanned(2, 2); // first callback after the restart
         $this->assertGreaterThan(1, $state->rssBytes, 'a fresh run zeroes the throttle window');
+    }
+
+    /**
+     * once-S07 (php-dup-finder-once-007): a pump that throws must surface as
+     * a loud halt — recorded reason/class, error panel in the body, Error
+     * taskbar state, breadcrumb toast through the display door, and an
+     * exit code the runner can propagate (1, not the old silent 0).
+     */
+    public function testPipelineHaltRecordsErrorShowsPanelAndFlipsExitCode(): void
+    {
+        $model = $this->buildThrowingModel(new \RuntimeException('TED budget blown'));
+        $model->init();
+        $model->update(new StagePumpedMsg()); // rewind → first yield
+        $model->update(new StagePumpedMsg()); // advance → second yield
+        [$_, $cmd] = $model->update(new StagePumpedMsg()); // advance → throw
+
+        $this->assertNull($cmd, 'a halt stops the pump chain');
+        $this->assertSame('TED budget blown', $model->pipelineError);
+        $this->assertSame(\RuntimeException::class, $model->pipelineErrorClass);
+        $this->assertTrue($model->viewState->analysisComplete);
+        $this->assertSame(1, $model->exitCode(), 'halted TUI carries the CLI runtime-error exit');
+
+        $view = $model->view();
+        $this->assertStringContainsString('✗ phpdup: TED budget blown', $view->body);
+        $this->assertSame(ProgressBarState::Error, $view->progressBar->state);
+
+        $toasts = $model->viewState->toastQueue;
+        $this->assertNotSame([], $toasts, 'halt leaves a toast breadcrumb');
+        $this->assertStringContainsString('Pipeline error: TED budget blown', $toasts[count($toasts) - 1]);
+    }
+
+    /**
+     * once-S07 acceptance: a budget halt shows the CLI's remedy text inside
+     * the TUI. At a wide window both physical message lines survive verbatim;
+     * at 80 columns the panel word-wraps instead of clipping, so every
+     * remedy token is still on screen — whitespace-normalised, the full CLI
+     * message is present in the body.
+     */
+    public function testBudgetHaltKeepsTheCliRemedyVisible(): void
+    {
+        $failure = CandidateBudgetException::exceeded(1_000, 500, 10_000);
+        [$lineOne, $lineTwo] = explode("\n", $failure->getMessage());
+
+        $model = $this->buildThrowingModel($failure);
+        $model->update(new WindowSizeMsg(400, 60));
+        $model->init();
+        $model->update(new StagePumpedMsg());
+        $model->update(new StagePumpedMsg());
+        $model->update(new StagePumpedMsg());
+
+        $wide = $model->view()->body;
+        $this->assertStringContainsString('phpdup: ' . $lineOne, $wide, 'wide window keeps source line 1 verbatim');
+        $this->assertStringContainsString($lineTwo, $wide, 'wide window keeps the remedy line verbatim');
+
+        // Same halt in the default narrow viewport: wrapped, never truncated.
+        $narrow = $this->buildThrowingModel($failure);
+        $narrow->init();
+        $narrow->update(new StagePumpedMsg());
+        $narrow->update(new StagePumpedMsg());
+        $narrow->update(new StagePumpedMsg());
+
+        $collapse = static fn(string $text): string => (string) preg_replace('/\s+/u', ' ', $text);
+        $body = $narrow->view()->body;
+        $this->assertStringContainsString(
+            $collapse($failure->getMessage()),
+            $collapse($body),
+            'word-wrap (not clip) keeps the whole CLI message readable at 80 cols',
+        );
+        foreach (['lower --max-df', 'raise --candidate-budget', 'MAX_CANDIDATE_PAIRS'] as $token) {
+            $this->assertStringContainsString($token, $body, "remedy token {$token} visible at 80 cols");
+        }
+    }
+
+    /**
+     * The clean path must keep its old posture: exit 0, no panel, Normal
+     * taskbar — the halt arms are false-positive-free.
+     */
+    public function testCleanRunExitsZeroWithoutPanel(): void
+    {
+        $factory = static function (): array {
+            $gen = (static function (): \Generator {
+                yield Stage::Scanning;
+                yield Stage::Preprocessing;
+            })();
+            return [$gen, new PipelineState(Config::defaults([__DIR__]))];
+        };
+        $model = new PhpdupModel(
+            new PipelineState(Config::defaults([__DIR__])),
+            new ViewState(),
+            TuiRunner::resolveTheme('plain'),
+            $factory,
+        );
+        $model->init();
+        $model->update(new StagePumpedMsg());
+        $model->update(new StagePumpedMsg());
+        $model->update(new StagePumpedMsg()); // exhausts → completion
+
+        $this->assertNull($model->pipelineError);
+        $this->assertSame(0, $model->exitCode());
+        $this->assertTrue($model->viewState->analysisComplete);
+        $this->assertStringNotContainsString('✗ phpdup', $model->view()->body);
+        $this->assertSame(ProgressBarState::Normal, $model->view()->progressBar->state);
+    }
+
+    /**
+     * A watch-mode restart of a halted run wipes the halt: no stale panel,
+     * exit code back to zero (a later crash re-arms it from scratch).
+     */
+    public function testRestartAfterHaltClearsErrorPanelAndExitCode(): void
+    {
+        $calls = 0;
+        $factory = function () use (&$calls): array {
+            $calls++;
+            $gen = $calls === 1
+                ? (static function (): \Generator {
+                    yield Stage::Scanning;
+                    throw new \RuntimeException('first run blows up');
+                })()
+                : (static function (): \Generator {
+                    yield Stage::Scanning;
+                })();
+            return [$gen, new PipelineState(Config::defaults([__DIR__]))];
+        };
+        $model = new PhpdupModel(
+            new PipelineState(Config::defaults([__DIR__])),
+            new ViewState(),
+            TuiRunner::resolveTheme('plain'),
+            $factory,
+        );
+        $model->init();
+        $model->update(new StagePumpedMsg());
+        $model->update(new StagePumpedMsg()); // throw
+        $this->assertSame(1, $model->exitCode());
+        $this->assertStringContainsString('✗ phpdup: first run blows up', $model->view()->body);
+
+        $model->update(new RestartPipelineMsg(reload: 1));
+
+        $this->assertNull($model->pipelineError);
+        $this->assertNull($model->pipelineErrorClass);
+        $this->assertSame(0, $model->exitCode());
+        $this->assertStringNotContainsString('✗ phpdup', $model->view()->body);
+    }
+
+    /**
+     * The halt reason is attacker-influenced text (a message can embed
+     * scanned paths): the panel and the toast must cross the same display
+     * door as every other terminal cell — no raw control byte reaches the
+     * screen, hostile bytes survive as printable notation.
+     */
+    public function testHostileHaltMessageIsDisplaySanitized(): void
+    {
+        $hostile = "boom \x1b[31mred\x07 and \x00 done";
+        $model = $this->buildThrowingModel(new \RuntimeException($hostile));
+        $model->init();
+        $model->update(new StagePumpedMsg());
+        $model->update(new StagePumpedMsg());
+        $model->update(new StagePumpedMsg());
+
+        $body = $model->view()->body;
+        $this->assertStringNotContainsString("\x1b", $body, 'no raw ESC byte on screen');
+        $this->assertStringNotContainsString("\x07", $body, 'no raw BEL byte on screen');
+        $this->assertStringNotContainsString("\x00", $body, 'no raw NUL byte on screen');
+        $this->assertStringContainsString("\u{FFFD}", $body, 'ESC/NUL render as the shared substitute marker');
+        $this->assertStringContainsString('^G', $body, 'BEL renders as caret notation');
+
+        $toast = $model->viewState->toastQueue[count($model->viewState->toastQueue) - 1];
+        $this->assertStringNotContainsString("\x1b", $toast);
+        $this->assertStringNotContainsString("\x00", $toast);
+        $this->assertStringContainsString('Pipeline error: boom', $toast);
+    }
+
+    /**
+     * Model whose live pipeline yields once, then throws the given failure —
+     * the unit-scale stand-in for a ClusterStage halt.
+     */
+    private function buildThrowingModel(\Throwable $failure): PhpdupModel
+    {
+        $factory = static function () use ($failure): array {
+            $gen = (static function (): \Generator {
+                yield Stage::Scanning;
+                yield Stage::Clustering;
+                throw $failure;
+            })();
+            return [$gen, new PipelineState(Config::defaults([__DIR__]))];
+        };
+        return new PhpdupModel(
+            new PipelineState(Config::defaults([__DIR__])),
+            new ViewState(),
+            TuiRunner::resolveTheme('plain'),
+            $factory,
+        );
     }
 
     private function buildModel(): PhpdupModel

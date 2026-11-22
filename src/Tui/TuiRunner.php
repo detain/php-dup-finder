@@ -32,19 +32,35 @@ final class TuiRunner
      * Boot the program with a pre-built model. Used both for post-hoc viewing of a
      * completed pipeline and for live mode where the model carries its own
      * iterator factory.
+     *
+     * once-S07 (php-dup-finder-once-007): the return value is the model's
+     * {@see PhpdupModel::exitCode()} — a pipeline halt that the TUI surfaced
+     * as an error panel exits 1, the same runtime-error posture the CLI
+     * uses, instead of the previous unconditional 0 that made a crash look
+     * like a clean run to scripts and CI.
+     *
+     * @param mixed $input  readable stream handed to the runtime, null = STDIN
+     * @param mixed $output writable stream handed to the runtime, null = STDOUT
      */
-    public function runWithModel(PhpdupModel $model, bool $useAltScreen = true, ?LoopInterface $loop = null): int
-    {
+    public function runWithModel(
+        PhpdupModel $model,
+        bool $useAltScreen = true,
+        ?LoopInterface $loop = null,
+        mixed $input = null,
+        mixed $output = null,
+    ): int {
         $options = new ProgramOptions(
             useAltScreen: $useAltScreen,
             catchInterrupts: true,
             hideCursor: true,
+            input: $input,
+            output: $output,
             loop: $loop,
         );
 
         (new Program($model, $options))->run();
 
-        return 0;
+        return $model->exitCode();
     }
 
     /**
