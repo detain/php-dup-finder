@@ -29,10 +29,12 @@ if [ ! -f "${TOOLS}/phpcpd.phar" ]; then
 fi
 
 # 2. jscpd via npm — only if node is on PATH and bench/tools/node_modules
-# isn't already populated.
+# isn't already populated. npm advisory audit stays ON and lifecycle
+# scripts are disabled (--ignore-scripts) so a bench-only tool
+# install cannot execute upstream package scripts (once-S11 / once-014).
 if command -v npm >/dev/null && [ ! -x "${TOOLS}/node_modules/.bin/jscpd" ]; then
     echo "[bench] installing jscpd"
-    if ! ( cd "${TOOLS}" && timeout 120 npm install --silent --no-fund --no-audit jscpd@4 2>&1 | tail -5 ); then
+    if ! ( cd "${TOOLS}" && timeout 120 npm install --silent --no-fund --ignore-scripts jscpd@4 2>&1 | tail -5 ); then
         echo "[bench] jscpd install failed — skipping"
     fi
 fi

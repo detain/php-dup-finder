@@ -40,6 +40,73 @@ jobs:
         env:
           BOX_PHAR: 1
 
+      - name: Record reproducible build metadata (once-S11 / once-015)
+        # Emits two files that make the release auditable + reproducible:
+        #   * phpdup.build.json      — the resolved sugarcraft dist/source
+        #     references (the exact upstream commits frozen by the
+        #     dev-master#<sha> pins), the composer content-hash, the PHP
+        #     runtime, and the build instant. This is where date()/buildTime
+        #     is recorded: in a METADATA FILE, so the timestamp never has to
+        #     be baked into the artifact bytes to make a release
+        #     attributable. (build-phar.php still stamps {{BUILT}} into the
+        #     stub today — that in-artifact stamp is scheduled to move to
+        #     this metadata file in once-S31, which owns build-phar.php.)
+        #   * phpdup.releasenotes.md — a human summary that the publish job
+        #     attaches as the GitHub release body, so the recorded hashes are
+        #     visible in the release itself (the once-015 "publish dist
+        #     hashes in release notes" compromise, chosen over committing the
+        #     gitignored composer.lock).
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          php -r '
+            $lock = json_decode((string) @file_get_contents("composer.lock"), true);
+            $deps = [];
+            if (is_array($lock)) {
+              foreach (array_merge($lock["packages"] ?? [], $lock["packages-dev"] ?? []) as $p) {
+                $name = (string) ($p["name"] ?? "");
+                if (str_starts_with($name, "sugarcraft/")) {
+                  $ref = $p["dist"]["reference"] ?? ($p["source"]["reference"] ?? null);
+                  $deps[$name] = ["version" => $p["version"] ?? null, "reference" => $ref];
+                }
+              }
+            }
+            if ($deps === []) {
+                fwrite(STDERR, "release.yml: no sugarcraft packages found in composer.lock — refusing to publish an unattributable build\n");
+                exit(1);
+            }
+            $built = (new DateTimeImmutable("now", new DateTimeZone("UTC")))->format(DateTimeInterface::ATOM);
+            $tag   = (string) getenv("RELEASE_TAG");
+            if ($tag === "") { fwrite(STDERR, "release.yml: empty tag in build metadata\n"); exit(1); }
+            $meta = [
+              "schema"              => 1,
+              "tag"                 => $tag,
+              "built_utc"           => $built,
+              "composer_content_hash" => $lock["content-hash"] ?? null,
+              "php"                 => PHP_VERSION,
+              "sugarcraft_pins"     => $deps,
+            ];
+            file_put_contents("phpdup.build.json", json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+            $lines = [];
+            $lines[] = "## Reproducible build (once-S11)";
+            $lines[] = "";
+            $lines[] = "- Tag: `$tag`";
+            $lines[] = "- Build time (UTC, recorded in `phpdup.build.json`, not in artifact bytes): `$built`";
+            $lines[] = "- Composer content-hash: `" . ($lock["content-hash"] ?? "n/a") . "`";
+            $lines[] = "- PHP runtime: `" . PHP_VERSION . "`";
+            $lines[] = "";
+            $lines[] = "SugarCraft dependencies are frozen to recorded commits (`dev-master#<sha>`); the effective resolved references are:";
+            $lines[] = "";
+            $lines[] = "| package | resolved ref |";
+            $lines[] = "| --- | --- |";
+            ksort($deps);
+            foreach ($deps as $n => $d) {
+              $lines[] = "| $n | `" . ($d["reference"] ?? "?") . "` |";
+            }
+            file_put_contents("phpdup.releasenotes.md", implode("\n", $lines) . "\n");
+            echo "Wrote phpdup.build.json (" . count($deps) . " sugarcraft refs) + phpdup.releasenotes.md\n";
+          '
+
       - name: Compute SHA-256 checksum
         # Informational sidecar for manual installs (sha256sum). NOT used
         # by self:update verification anymore — the artifact hash the
@@ -85,6 +152,8 @@ jobs:
             phpdup.phar.sha256
             phpdup.release.json
             phpdup.release.json.sig
+            phpdup.build.json
+            phpdup.releasenotes.md
           if-no-files-found: error
 
   # Acceptance gate for php-dup-finder-once-005: the CI round-trip.
@@ -170,6 +239,13 @@ jobs:
             phpdup.phar.sha256
             phpdup.release.json
             phpdup.release.json.sig
+            phpdup.build.json
+            phpdup.releasenotes.md
+          # once-S11: attach the recorded-hash release notes as the body so
+          # the exact upstream commits behind this build are public on the
+          # release page (the publish-dist-hashes compromise over shipping
+          # the gitignored composer.lock).
+          body_path: phpdup.releasenotes.md
           draft: false
           prerelease: false
         env:

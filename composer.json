@@ -23,22 +23,22 @@
     "sebastian/diff": "^5.1 || ^6.0",
     "psr/log": "^3.0",
     "react/event-loop": "^1.6",
-    "sugarcraft/sugar-core": "dev-master",
-    "sugarcraft/sugar-mouse": "dev-master",
-    "sugarcraft/sugar-quickpick": "dev-master",
-    "sugarcraft/sugar-cli": "dev-master",
-    "sugarcraft/sugar-log": "dev-master",
-    "sugarcraft/sugar-colorprofile": "dev-master",
-    "sugarcraft/sugar-style": "dev-master",
-    "sugarcraft/sugar-widgets": "dev-master",
-    "sugarcraft/sugar-charts": "dev-master",
-    "sugarcraft/sugar-navstack": "dev-master",
-    "sugarcraft/sugar-forms": "dev-master",
-    "sugarcraft/candy-ansi-inspect": "dev-master",
-    "sugarcraft/sugar-flexbox": "dev-master",
-    "sugarcraft/sugar-table": "dev-master",
-    "sugarcraft/sugar-toast": "dev-master",
-    "sugarcraft/sugar-overlay": "dev-master"
+    "sugarcraft/sugar-core": "dev-master#434e4e936a5418392b8f8bb8c2e7a8ab28ebbbf9",
+    "sugarcraft/sugar-mouse": "dev-master#0fd7814a3a50e6852760d83a00d1da508b067cb4",
+    "sugarcraft/sugar-quickpick": "dev-master#122256148c3f0572d946bf12ae24c99c21371c17",
+    "sugarcraft/sugar-cli": "dev-master#9db5a262eff06aa93fcc357928657e38d8dbb75d",
+    "sugarcraft/sugar-log": "dev-master#d2f7e861a650e88cd3ebc3a696173bbe19cc72a5",
+    "sugarcraft/sugar-colorprofile": "dev-master#26a12965e511b864befe6478b90693455e04794a",
+    "sugarcraft/sugar-style": "dev-master#2d1e0950de3ebe5de769a2b31cbf88808e9638a2",
+    "sugarcraft/sugar-widgets": "dev-master#daebb2b886037c40f20f60da2a6f639be67a4a4f",
+    "sugarcraft/sugar-charts": "dev-master#56b0c39516700105996e950109c6dc539e44d4a3",
+    "sugarcraft/sugar-navstack": "dev-master#704710c604f0a613d01fb7ffd6a7d27718eab7f9",
+    "sugarcraft/sugar-forms": "dev-master#b392817d3965c69376fa0a547c3cf30d12160aaa",
+    "sugarcraft/candy-ansi-inspect": "dev-master#95ea4af98e86a67d3f2e6bfda4063faf89c13962",
+    "sugarcraft/sugar-flexbox": "dev-master#0f44b8f2bf1c48f20f407b4eae0ff2facfd380f8",
+    "sugarcraft/sugar-table": "dev-master#4c6edb9e40217b856a4c5164a8a77b286d1875a5",
+    "sugarcraft/sugar-toast": "dev-master#c021e87f9e41aeb33626941631016acce9440419",
+    "sugarcraft/sugar-overlay": "dev-master#cd2768ee3fc751faea139e2f42644cb6b5bebe04"
   },
   "require-dev": {
     "phpstan/phpstan": "^2.1",
@@ -49,6 +49,17 @@
     "ext-gmp": "Accelerates the n-gram similarity popcount fast path; a byte-table fallback runs automatically when gmp is absent.",
     "sugarcraft/candy-scriptui": "spin/choose/filter/confirm CLI helpers for shell-script integration",
     "sugarcraft/candy-ssh-launcher": "Example SSH endpoint picker app illustrating SugarCraft component usage"
+  },
+  "extra": {
+    "phpdup": {
+      "dependency-pinning": {
+        "policy": "recorded-hash compromise",
+        "owner-row": "once-S11 sugarcraft dev-master tag freeze vs recorded-hash compromise",
+        "rationale": "None of the 25 sugarcraft/* VCS deps publish stable semver tags (verified via git ls-remote: only 'candy-core-final' exists; no 1.x/2.x releases). A true tag freeze therefore cannot be performed today and is an UPSTREAM OWNER action. Until tags land, every direct sugarcraft dep is frozen to an exact commit via the dev-master#<sha> constraint so that a lock-free 'composer install' (release.yml, ci.yml and any fresh clone — composer.lock is gitignored and never published) resolves deterministically to the same source bytes instead of the drifting upstream master HEAD.",
+        "minimum-stability": "left at 'dev' because dev-master branch aliases are dev stability; flipping to 'stable' would make all 16 sugarcraft deps unresolvable. Revisit to 'stable' only once the owner freezes sugarcraft to tagged releases.",
+        "refresh": "bump the 16 dev-master#<sha> refs deliberately (one reviewed commit), never silently; ci.yml 'audit' + release.yml 'Reproducible build metadata' surface the effective resolved hashes on every run."
+      }
+    }
   },
   "autoload": {
     "psr-4": {

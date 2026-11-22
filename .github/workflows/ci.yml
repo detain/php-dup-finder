@@ -5,6 +5,13 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
+  # once-S11 (once-014): the `audit` job runs as a green leg on every
+  # push/PR (below) AND on a separate weekly cron so a newly-published
+  # advisory is caught even on a quiet repo. The scheduled run is the
+  # "weekly composer audit" the finding asked for; the push/PR leg is the
+  # standing floor that fails the build on a known-advisory dependency.
+  schedule:
+    - cron: "17 4 * * 1"  # Mondays 04:17 UTC
 
 permissions:
   contents: read
@@ -34,7 +41,29 @@ jobs:
           tools: composer:v2
 
       - name: Validate composer.json
-        run: composer validate --strict
+        # once-S11 (php-dup-finder-once-015) pins the 16 direct SugarCraft
+        # deps to recorded commit SHAs (`dev-master#<sha>`) so a lock-free
+        # `composer install` (composer.lock is gitignored/never published)
+        # resolves reproducibly instead of tracking the drifting upstream
+        # master HEAD. That pin style is schema-valid but makes
+        # `composer validate --strict` emit one intentional
+        # "pointing to a commit-ref" warning per dep, which --strict alone
+        # would treat as a build failure. Keep strictness for EVERY other
+        # problem: run --strict, then fail only when a reported validation
+        # line is not one of the expected commit-ref pins. Do not widen this
+        # exemption — a real manifest error must still break the build.
+        run: |
+          set +e
+          out="$(composer validate --strict 2>&1)"
+          rc=$?
+          printf '%s\n' "$out"
+          offenders="$(printf '%s\n' "$out" | grep -E '^[[:space:]]*- ' | grep -v 'pointing to a commit-ref')"
+          if [ "$rc" -ne 0 ] && [ -n "$offenders" ]; then
+            echo "::error::composer validate --strict reported non-commit-ref problems"
+            printf '%s\n' "$offenders"
+            exit 1
+          fi
+          exit 0
 
       - name: Get composer cache directory
         id: composer-cache
@@ -131,3 +160,38 @@ jobs:
         run: vendor/bin/phpstan analyse --memory-limit=1G --no-progress
       - name: Psalm
         run: vendor/bin/psalm --no-progress --no-cache
+
+  # once-S11 (php-dup-finder-once-014) — the dependency-audit floor.
+  # Runs the production dependency graph (the graph actually shipped inside
+  # the phar/zipball built by release.yml) through `composer audit` and
+  # fails closed on any published advisory. It is wired to fire on every
+  # push/PR (green leg) AND on the weekly cron declared in `on:`. The dev
+  # toolchain (phpstan/psalm/phpunit) is audited transitively by the same
+  # command but is intentionally out of this job's fail-closed scope —
+  # --no-dev keeps the gate aligned to what a user installs.
+  #
+  # It also installs from a lock-free checkout, so it doubles as the
+  # standing proof that once-015's dev-master#<sha> pins resolve cleanly:
+  # a dangling/unfetchable upstream ref breaks this leg before it can
+  # reach a release.
+  audit:
+    name: Dependency audit (composer audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: hash, mbstring, gmp
+          coverage: none
+          tools: composer:v2
+
+      - name: Install production dependencies (lock-free resolve)
+        run: composer install --no-interaction --no-progress --prefer-dist --no-dev
+
+      - name: composer audit
+        # No blanket ignore. A suppressed advisory must live in
+        # composer.json `config.audit.ignore` (empty today) with a dated
+        # justification, never a per-run --ignore flag.
+        run: composer audit --format=github --no-dev

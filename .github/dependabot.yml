@@ -1,0 +1,51 @@
+# once-S11 (php-dup-finder-once-014) — dependency-audit floor.
+#
+# Dependabot gives the repo a second, upstream-independent advisory lane
+# alongside the `composer audit` CI job (ci.yml "audit") and the release
+# metadata stamp (release.yml): it opens weekly version reviews AND
+# on-advisory security patches for BOTH ecosystems that can pull executable
+# code into a build here —
+#   * github-actions  — the pinned `uses:` action refs in ci.yml/release.yml
+#   * composer        — the PHP dependency graph (incl. the 16 sugarcraft
+#                       VCS deps that once-015 froze to recorded hashes)
+#
+# Security updates share the two ecosystem entries below and are enabled for
+# them in Settings → Code security → Dependabot; the weekly `schedule` rows
+# govern version reviews. Keep this file in sync with any new ecosystem.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      time: "04:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      actions-minor:
+        patterns:
+          - "*"
+
+  - package-ecosystem: composer
+    directory: /
+    schedule:
+      interval: weekly
+      time: "04:15"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - composer
+    commit-message:
+      prefix: chore(deps)
+    # SugarCraft deps are dev-master#<sha> pins owned by once-S11; a bump is
+    # a deliberate reviewed commit, so limit churn and group the rest.
+    groups:
+      composer-minor:
+        patterns:
+          - "*"
