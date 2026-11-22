@@ -160,11 +160,15 @@ final class PreprocessWorker
         $pluginRegistry = $this->config->normalizationPlugins !== []
             ? PluginRegistry::fromClassNames($this->config->normalizationPlugins)
             : null;
-        $lowMemory = $this->config->lowMemory;
-        $nodePool  = $lowMemory ? new CanonicalNodePool() : null;
-        $toolFor = static function (Config $cfg) use (&$tooling, $pluginRegistry, $lowMemory, $nodePool): array {
+        // shell-027: the canonical-node pool is per-WORKER shared (its whole
+        // point is corpus-wide dedup), but whether it exists at all is now
+        // decided by the EFFECTIVE config, not the root's — a per-directory
+        // low_memory:true must get pool-backed normalization for its subtree.
+        // Lazily minted inside $toolFor on the first lowMemory entry.
+        $nodePool = null;
+        $toolFor = static function (Config $cfg) use (&$tooling, $pluginRegistry, &$nodePool): array {
             $key = sprintf(
-                '%d|%d|%s|%d|%s|%s|%d|%d|%s|%s|%s|%s',
+                '%d|%d|%s|%d|%s|%s|%d|%d|%s|%s|%s|%s|%d',
                 $cfg->minBlockSize, $cfg->maxBlockSize,
                 $cfg->normalizationMode, $cfg->ngramSize,
                 implode(',', $cfg->allowedKinds),
@@ -181,6 +185,14 @@ final class PreprocessWorker
                 // misfeed refusal) — one forgotten key = silently
                 // mixed-mode bags in a warm cache.
                 $cfg->fingerprintIdMode,
+                // shell-027: exactly the Item-1.1 argument one knob over.
+                // low_memory swaps the bag to CompactNgramBag's int-keyed
+                // 63-bit form (and Normalizer's node-pool path), so a
+                // per-directory low_memory subtree must never share one
+                // tooling entry with the root's default. Key-namespace
+                // route only: no PARSER_VERSION bump (fingerprintIdMode
+                // precedent).
+                $cfg->lowMemory ? 1 : 0,
             );
             if (!isset($tooling[$key])) {
                 // Build the DbOpRegistry with the user's symbol overlay
@@ -192,6 +204,16 @@ final class PreprocessWorker
                         customMethodOps: $cfg->dbSymbolsMethods,
                         customFunctionOps: $cfg->dbSymbolsFunctions,
                     );
+                // shell-027: low_memory is read from the EFFECTIVE per-file
+                // config, never the root capture the old closure made —
+                // that capture is the bug that made per-dir low_memory a
+                // silent no-op in the fork zone. The pool itself stays one
+                // per worker (dedup is corpus-wide): minted on the first
+                // lowMemory entry, shared by every later one.
+                $lowMemory = $cfg->lowMemory;
+                if ($lowMemory && $nodePool === null) {
+                    $nodePool = new CanonicalNodePool();
+                }
                 $tooling[$key] = [
                     'extractor'  => new BlockExtractor($cfg->minBlockSize, $cfg->maxBlockSize, $cfg->allowedKinds),
                     'normalizer' => new Normalizer(

@@ -29,6 +29,11 @@ use Symfony\Component\Console\Output\NullOutput;
  * And the engine-019 cache-policy thread: with astDiskCache disabled (what
  * PreprocessStage passes for --no-cache) the worker neither writes parser
  * blobs nor serves planted ones — fresh parses only, cache dir byte-still.
+ *
+ * And shell-027: low_memory is read from the EFFECTIVE per-file config in
+ * the tooling closure (per-dir subtrees really fingerprint compact), and
+ * the flag rides the IndexStore config key (a --low-memory warmed cache
+ * never replays into a default run).
  */
 final class PreprocessWorkerIsolationTest extends TestCase
 {
@@ -337,6 +342,125 @@ final class PreprocessWorkerIsolationTest extends TestCase
         $names = array_map(static fn (Block $b): string => (string) $b->name, $state->blocks);
         $this->assertSame(['stage_real'], $names, 'the stage must fingerprint the fresh parse, never the planted decoy');
         $this->assertSame($before, $this->snapshotCacheDir($cacheDir), 'cache dir byte-unchanged through a --no-cache stage run');
+    }
+
+    /**
+     * shell-027 acceptance, arm 1 (per-dir capture): a per-directory
+     * `.phpdup.json`-style override with low_memory:true on subdir b/ only
+     * must make b/ files fingerprint with the CompactNgramBag int-keyed
+     * form while a/ files keep the 64-bit-hex string keys — inside ONE
+     * worker run, which is only possible if the tooling closure reads
+     * lowMemory from the effective per-file config (pre-fix it captured
+     * the ROOT's false and the override was a silent no-op: both files
+     * came out string-keyed and the b/ assertion below is RED).
+     * Bag COUNTS match across the two forms: compact() only re-renders
+     * the digest, so the knob must not change what is bagged.
+     */
+    public function testPerDirectoryLowMemoryCompactsOnlyThatSubtree(): void
+    {
+        mkdir($this->tmpDir . '/a', 0o775, true);
+        mkdir($this->tmpDir . '/b', 0o775, true);
+        $src = "<?php\nfunction alpha(\$v) { return helper(\$v) + 1; }\nfunction beta(\$v) { return other(\$v) + 2; }\n";
+        $pathA = $this->tmpDir . '/a/lowmem_a.php';
+        $pathB = $this->tmpDir . '/b/lowmem_b.php';
+        file_put_contents($pathA, $src);
+        file_put_contents($pathB, $src);
+
+        $config = new Config(
+            paths: [$this->tmpDir],
+            exclude: [],
+            minBlockSize: 1,
+            cacheDir: $this->tmpDir . '/cache',
+            perDirectoryOverrides: [$this->tmpDir . '/b' => ['low_memory' => true]],
+        );
+        $rows = (new PreprocessWorker($config))->process([$pathA, $pathB]);
+
+        $blocksByFile = [];
+        foreach ($rows as $row) {
+            if ($row['type'] === 'block') {
+                $blocksByFile[$row['file']][] = $row['block'];
+            }
+        }
+        $this->assertCount(2, $blocksByFile[$pathA] ?? [], 'dir A extracted both functions');
+        $this->assertCount(2, $blocksByFile[$pathB] ?? [], 'dir B extracted both functions');
+
+        foreach ($blocksByFile[$pathA] as $i => $block) {
+            $keys = array_keys($block->ngramBag);
+            $this->assertNotEmpty($keys, "A block $i must carry a bag");
+            foreach ($keys as $k) {
+                $this->assertIsString($k, "A (root low_memory:false) bag keys must stay hex strings, got int $k");
+            }
+        }
+        foreach ($blocksByFile[$pathB] as $i => $block) {
+            $keys = array_keys($block->ngramBag);
+            $this->assertNotEmpty($keys, "B block $i must carry a bag");
+            foreach ($keys as $k) {
+                $this->assertIsInt($k, "B (per-dir low_memory:true) bag keys must be compact ints, got string $k");
+                $this->assertGreaterThanOrEqual(0, $k, 'compact() clears the sign bit — keys are positive');
+            }
+        }
+        $this->assertCount(
+            count(array_keys($blocksByFile[$pathA][0]->ngramBag)),
+            array_keys($blocksByFile[$pathB][0]->ngramBag),
+            'compact is a re-render of the SAME grams — per-dir low_memory must not change bag cardinality',
+        );
+    }
+
+    /**
+     * shell-027 acceptance, arm 2 (end-to-end cache refusal): a corpus
+     * indexed under low_memory:true (what --low-memory drives) then
+     * re-run without it must MISS the on-disk snapshots — the flag rides
+     * the IndexStore config key. The same-flag control run in between
+     * proves the refusal is about the flag alone, not about the cache
+     * being broken in this environment (non-vacuity), and the served /
+     * recomputed bag key shapes name the misfeed the fix refuses.
+     */
+    public function testStageRefusesLowMemoryWarmedCacheOnDefaultRerun(): void
+    {
+        $path     = $this->writePhp('lowmem_corpus.php', "<?php\nfunction one() { x(); y(); z(); }\n");
+        $cacheDir = $this->tmpDir . '/cache';
+
+        $mk = fn (bool $lowMemory): Config => new Config(
+            paths: [$this->tmpDir],
+            exclude: [],
+            minBlockSize: 1,
+            cacheDir: $cacheDir,
+            lowMemory: $lowMemory,
+        );
+
+        // Cold run under --low-memory: processes, saves the snapshot.
+        $s1 = new PipelineState($mk(true));
+        $s1->files = [$path];
+        (new PreprocessStage(useCache: true))->run($s1, new NullOutput());
+        $this->assertSame(1, $s1->processedFiles, 'precondition: the cold run processes the file');
+        $this->assertFileExists($cacheDir . '/' . sha1($path) . '.idx',
+            'precondition: the run persisted the per-file IndexStore snapshot');
+
+        // Control: same flags → genuine HIT, serving the compact bags.
+        $s2 = new PipelineState($mk(true));
+        $s2->files = [$path];
+        (new PreprocessStage(useCache: true))->run($s2, new NullOutput());
+        $this->assertSame(1, $s2->reusedFiles, 'control: the same-flag rerun must hit the cache');
+        foreach ($s2->blocks as $block) {
+            foreach (array_keys($block->ngramBag) as $k) {
+                $this->assertIsInt($k, 'the hit snapshot must replay compact (int-keyed) bags');
+            }
+        }
+
+        // Acceptance: default run must NOT replay the compact snapshots.
+        // Pre-fix this reused the warm cache (reusedFiles === 1) and the
+        // blocks carried int keys — compact bags poisoning a 64-bit run.
+        $s3 = new PipelineState($mk(false));
+        $s3->files = [$path];
+        (new PreprocessStage(useCache: true))->run($s3, new NullOutput());
+        $this->assertSame(0, $s3->reusedFiles, 'a low-memory warmed cache must never replay into a default run');
+        $this->assertSame(1, $s3->processedFiles, 'the file is reprocessed instead');
+        $this->assertNotEmpty($s3->blocks, 'non-vacuity: the file does yield blocks');
+        foreach ($s3->blocks as $block) {
+            foreach (array_keys($block->ngramBag) as $k) {
+                $this->assertIsString($k, 'the recompute must mint default (hex-string) bag keys');
+            }
+        }
     }
 
     /**

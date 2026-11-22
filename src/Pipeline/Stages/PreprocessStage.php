@@ -80,41 +80,7 @@ final class PreprocessStage implements CooperativeStageInterface
         $config = $state->config;
         $files  = $state->files;
 
-        $configKey = sha1(serialize([
-            $config->minBlockSize, $config->maxBlockSize,
-            $config->normalizationMode, $config->ngramSize,
-            // Include dbAware + trinityCollapse + the custom DB
-            // symbol maps so caches are invalidated when the user
-            // toggles flags or changes the symbol-equivalence
-            // registry between runs (the canonical AST is
-            // structurally different in each case).
-            $config->dbAware,
-            $config->trinityCollapse,
-            $config->dbSymbolsMethods,
-            $config->dbSymbolsFunctions,
-            // Scorer mode controls whether IR token bags are
-            // pre-computed during preprocessing; flipping it must
-            // invalidate so the cached Block records carry (or omit)
-            // their irBag consistently with the live config.
-            $config->scorer,
-            // Item 1.1 (§5a): fingerprint_id_mode rewrites every stored
-            // n-gram bag key (normalized ASTs themselves are untouched —
-            // the strip happens at bagging time). A numbered cache
-            // served to an un-numbered run (or the reverse) would mix
-            // bag species inside one candidate index with no error —
-            // refuse cross-mode reuse at the key instead. No
-            // PARSER_VERSION bump: the mode value in this key already
-            // separates the two namespaces byte-exactly.
-            $config->fingerprintIdMode,
-            // Item 1.3: the extraction KIND SET changes which blocks a
-            // file yields at all — 'script' folds exist only for opt-in
-            // runs. A cache written without a kind replayed to a run that
-            // requested it (or vice-versa) would silently under- or
-            // over-report; bind the per-run kind set into the key the
-            // same way the mode knobs above are bound. No PARSER_VERSION
-            // bump: distinct key values namespace the stores byte-exactly.
-            $config->allowedKinds,
-        ]));
+        $configKey = $this->indexStoreConfigKey($config);
         $store = ($this->useCache && $config->incremental)
             ? new IndexStore($config->cacheDir, $configKey)
             : null;
@@ -306,6 +272,68 @@ final class PreprocessStage implements CooperativeStageInterface
         }
 
         $this->checkMemory($output);
+    }
+
+    /**
+     * Build the per-file IndexStore config-key from the fields that
+     * change what a cached Block snapshot would carry (shell-S16 /
+     * finding shell-027: extracted from iter() so the binding is a
+     * nameable, testable contract — ClusterStage::cacheConfigKey
+     * precedent, mirrored by tests/Unit/Persistence/IndexStoreTest.php
+     * through reflection).
+     */
+    private function indexStoreConfigKey(\Phpdup\Cli\Config $config): string
+    {
+        return sha1(serialize([
+            $config->minBlockSize, $config->maxBlockSize,
+            $config->normalizationMode, $config->ngramSize,
+            // Include dbAware + trinityCollapse + the custom DB
+            // symbol maps so caches are invalidated when the user
+            // toggles flags or changes the symbol-equivalence
+            // registry between runs (the canonical AST is
+            // structurally different in each case).
+            $config->dbAware,
+            $config->trinityCollapse,
+            $config->dbSymbolsMethods,
+            $config->dbSymbolsFunctions,
+            // Scorer mode controls whether IR token bags are
+            // pre-computed during preprocessing; flipping it must
+            // invalidate so the cached Block records carry (or omit)
+            // their irBag consistently with the live config.
+            $config->scorer,
+            // Item 1.1 (§5a): fingerprint_id_mode rewrites every stored
+            // n-gram bag key (normalized ASTs themselves are untouched —
+            // the strip happens at bagging time). A numbered cache
+            // served to an un-numbered run (or the reverse) would mix
+            // bag species inside one candidate index with no error —
+            // refuse cross-mode reuse at the key instead. No
+            // PARSER_VERSION bump: the mode value in this key already
+            // separates the two namespaces byte-exactly.
+            $config->fingerprintIdMode,
+            // Item 1.3: the extraction KIND SET changes which blocks a
+            // file yields at all — 'script' folds exist only for opt-in
+            // runs. A cache written without a kind replayed to a run that
+            // requested it (or vice-versa) would silently under- or
+            // over-report; bind the per-run kind set into the key the
+            // same way the mode knobs above are bound. No PARSER_VERSION
+            // bump: distinct key values namespace the stores byte-exactly.
+            $config->allowedKinds,
+            // shell-027: --low-memory rewrites every stored n-gram bag
+            // into CompactNgramBag's int-keyed 63-bit form (and folds the
+            // canonical AST through the shared node pool). A low-memory
+            // cache replayed into a default run would feed compact bags
+            // next to freshly minted 64-bit-hex ones with no error — the
+            // exact misfeed the fingerprintIdMode binding above exists to
+            // refuse, one knob over. Key-namespace route only: no
+            // PARSER_VERSION bump (fingerprintIdMode precedent). The
+            // consequence is a one-time invalidation of every existing
+            // .idx tree — a pre-027 snapshot carries a key computed
+            // WITHOUT this field, so its config_key line simply mismatches
+            // and the store misses cleanly into a fresh save (shell-S18's
+            // header gate does the work; nothing crashes, nothing serves
+            // stale bags). Disclosed in the lane report.
+            $config->lowMemory,
+        ]));
     }
 
     /**
