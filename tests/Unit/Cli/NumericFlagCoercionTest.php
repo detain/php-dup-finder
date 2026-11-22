@@ -32,10 +32,18 @@ use Symfony\Component\Console\Tester\CommandTester;
  * helpers via ConfigLoader::coerceRuntimeInt/Float. Blind casts are gone:
  * `(int)'abc'`/`(float)'hot'` no longer launder garbage into sentinels
  * behind a full exit-0 run.
+ *
+ * once-S49 (php-dup-finder-once-054) closes the `--limit` story: the
+ * negative arm of the admitted domain exits 2 like the rest, and the
+ * render-side semantics are pinned as measured truth — `0` prints NO
+ * detail cards (it is NOT the family's show-all sentinel), `1` prints
+ * exactly one card while file sinks stay unlimited, and a large `N`
+ * prints every card (the documented show-all recipe).
  */
 final class NumericFlagCoercionTest extends TestCase
 {
     private ?string $tmpDir = null;
+    private ?string $s49Dir = null;
 
     protected function tearDown(): void
     {
@@ -48,6 +56,15 @@ final class NumericFlagCoercionTest extends TestCase
             @rmdir($this->tmpDir);
         }
         $this->tmpDir = null;
+        if ($this->s49Dir !== null && is_dir($this->s49Dir)) {
+            foreach (glob($this->s49Dir . '/*') ?: [] as $f) {
+                if (is_file($f)) {
+                    unlink($f);
+                }
+            }
+            @rmdir($this->s49Dir);
+        }
+        $this->s49Dir = null;
     }
 
     // ── Boundary matrix: ConfigLoader casts ─────────────────────────────
@@ -185,6 +202,10 @@ final class NumericFlagCoercionTest extends TestCase
             // explicitly pinned unchanged (shell-S24 acceptance): workers
             // already exited 2 here before this step; the recipe holds.
             'workers-banana'    => ['--workers',            'banana',  'workers must be an integer'],
+            // once-S49 (php-dup-finder-once-054): the whole admitted domain
+            // is "integer >= 0" — the negative arm closes the fence the same
+            // way 'abc' does (was laundered to the 0-sentinel pre-S24).
+            'limit-negative'    => ['--limit',              '-1',      'limit must be >= 0'],
         ];
     }
 
@@ -291,6 +312,95 @@ final class NumericFlagCoercionTest extends TestCase
         $this->assertSame(0, $exit, $tester->getDisplay());
         $this->assertStringNotContainsString('TypeError', $tester->getDisplay());
         $this->assertStringNotContainsString('must be', $tester->getDisplay());
+    }
+
+    // ── once-S49 (php-dup-finder-once-054): --limit render semantics ──────
+    //
+    // The finding's live half (`--limit abc` laundering into the 0-sentinel
+    // behind exit 0) was cured by shell-S24's admission fence, pinned above
+    // (now incl. the negative arm). What stayed undocumented was what `0`
+    // MEANS: measured on this checkout (and with min() in CliReporter since
+    // the initial release), `--limit 0` prints NO detail cards — it is not
+    // the show-all sentinel the `--candidate-budget`/`max_clusters` family
+    // idiom suggests. docs/CLI.md now states that truth; these legs pin it
+    // so a future flip to family semantics must land as a deliberate,
+    // test-visible change. The show-all recipe is a large N, pinned too.
+
+    public function testLimitZeroPrintsNoClusterCardsButKeepsSummaryTruth(): void
+    {
+        // Sanity: the corpus must actually cluster before any absence claim
+        // means anything (a dead corpus would pin a vacuous zero).
+        $baseline = $this->commandTester();
+        $this->assertSame(0, $baseline->execute([
+            'paths'  => [$this->s49CorpusDir()],
+            '--plain' => true,
+        ]));
+        $this->assertSame(3, substr_count($baseline->getDisplay(), 'Cluster #'),
+            'the pinned corpus must carry exactly 3 cluster cards by default');
+
+        $tester = $this->commandTester();
+        $this->assertSame(0, $tester->execute([
+            'paths'   => [$this->s49CorpusDir()],
+            '--limit' => '0',
+            '--plain' => true,
+        ]));
+        $display = $tester->getDisplay();
+
+        $this->assertStringContainsString('showing top 0', $display);
+        $this->assertSame(0, substr_count($display, 'Cluster #'),
+            '0 is not unlimited: no detail cards are printed');
+        // The totals banner and the trailer still describe the FULL set —
+        // that half of the output is limit-blind and stays honest.
+        $this->assertStringContainsString('3 clusters', $display);
+        $this->assertStringContainsString('summary', $display);
+    }
+
+    public function testLimitOnePrintsExactlyOneClusterCardWhileFileSinksStayUnlimited(): void
+    {
+        $jsonPath = $this->s49CorpusDir() . '/s49.json';
+        @unlink($jsonPath);
+
+        $tester = $this->commandTester();
+        $this->assertSame(0, $tester->execute([
+            'paths'   => [$this->s49CorpusDir()],
+            '--limit' => '1',
+            '--json'  => $jsonPath,
+            '--plain' => true,
+        ]));
+        $display = $tester->getDisplay();
+
+        // CLI: exactly one card — #1 present, #2/#3 not.
+        $this->assertStringContainsString('showing top 1', $display);
+        $this->assertSame(1, substr_count($display, 'Cluster #'));
+        $this->assertStringContainsString('Cluster #1', $display);
+        $this->assertStringNotContainsString('Cluster #2', $display);
+        $this->assertStringNotContainsString('Cluster #3', $display);
+
+        // JSON sink: --limit is render-only presentation; every cluster is
+        // written regardless (docs/CLI.md "Doesn't affect file outputs").
+        $this->assertFileExists($jsonPath);
+        $decoded = json_decode((string)file_get_contents($jsonPath), true);
+        $this->assertIsArray($decoded);
+        $this->assertArrayHasKey('clusters', $decoded);
+        $this->assertCount(3, $decoded['clusters'],
+            'the terminal cap must not reach the file sink');
+        @unlink($jsonPath);
+    }
+
+    public function testLargeLimitPrintsEveryClusterCard(): void
+    {
+        // docs/CLI.md tells users to "pass a large N" to see everything —
+        // pin that the cap saturates at the cluster count, not at overflow.
+        $tester = $this->commandTester();
+        $this->assertSame(0, $tester->execute([
+            'paths'   => [$this->s49CorpusDir()],
+            '--limit' => '999999',
+            '--plain' => true,
+        ]));
+        $display = $tester->getDisplay();
+
+        $this->assertStringContainsString('showing top 3', $display);
+        $this->assertSame(3, substr_count($display, 'Cluster #'));
     }
 
     private function commandTester(): CommandTester
@@ -440,6 +550,33 @@ final class NumericFlagCoercionTest extends TestCase
             $this->tmpDir = $dir;
         }
         return $this->tmpDir;
+    }
+
+    /**
+     * once-S49: eight tiny files forming four clone pairs, three of which
+     * cluster on this checkout's extractor (measured: 3 cards / 3 clusters
+     * in a default run — the baseline sanity legs above re-prove it, so a
+     * drift that silences the corpus fails loudly instead of pinning
+     * absence vacuously). <8 files, so the fork path never spawns.
+     */
+    private function s49CorpusDir(): string
+    {
+        if ($this->s49Dir === null) {
+            $dir = sys_get_temp_dir() . '/phpdup-s49-' . getmypid() . '-' . spl_object_id($this);
+            if (!is_dir($dir)) {
+                mkdir($dir, 0777, true);
+            }
+            file_put_contents($dir . '/w1.php', "<?php\nfunction sendMail(\$to, \$body) { \$m = newMailer(); \$m->to(\$to); \$m->subject('hi'); \$m->body(\$body); \$m->send(); }\n");
+            file_put_contents($dir . '/w2.php', "<?php\nfunction sendNote(\$to, \$body) { \$m = newMailer(); \$m->to(\$to); \$m->subject('yo'); \$m->body(\$body); \$m->send(); }\n");
+            file_put_contents($dir . '/x1.php', "<?php\nfunction fetchUser(\$id) { \$q = 'SELECT * FROM users WHERE id = ?'; \$s = prep(\$q); \$s->bind(\$id); return \$s->execute(); }\n");
+            file_put_contents($dir . '/x2.php', "<?php\nfunction fetchOrder(\$id) { \$q = 'SELECT * FROM orders WHERE id = ?'; \$s = prep(\$q); \$s->bind(\$id); return \$s->execute(); }\n");
+            file_put_contents($dir . '/y1.php', "<?php\nfunction parseA(\$txt) { \$r = preg_split('/,/', \$txt); \$o = []; foreach (\$r as \$v) { \$o[] = trim(\$v); } return \$o; }\n");
+            file_put_contents($dir . '/y2.php', "<?php\nfunction parseB(\$txt) { \$r = preg_split('/;/', \$txt); \$o = []; foreach (\$r as \$v) { \$o[] = ltrim(\$v); } return \$o; }\n");
+            file_put_contents($dir . '/z1.php', "<?php\nfunction sumA(\$xs) { \$t = 0.0; foreach (\$xs as \$x) { \$t += (float)\$x; } return \$t; }\n");
+            file_put_contents($dir . '/z2.php', "<?php\nfunction sumB(\$xs) { \$t = 0.0; foreach (\$xs as \$x) { \$t += (float)\$x; } return round(\$t, 2); }\n");
+            $this->s49Dir = $dir;
+        }
+        return $this->s49Dir;
     }
 
     private static function fieldFor(Config $config, string $key): int|float
