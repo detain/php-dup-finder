@@ -901,9 +901,10 @@ final class ConfigLoaderTest extends TestCase
         // tree that the laravel profile excludes but the stock defaults do
         // not. At the default tinyMax=200 the WITH-excludes probe reads
         // "tiny (190)"; a probe without the merge reads "small (220)" — the
-        // exact regression. Bodies stay one statement long (under every
-        // min_block_size) so the pipeline extracts nothing: only the
-        // rationale line is pinned, and the run is exit-clean in both arms.
+        // exact regression. Bodies stay one statement long — parse-cheap
+        // filler the run shrugs off as one tiny cluster; the pin is only
+        // about the user-facing rationale line, and the profile arm must
+        // additionally stay exit-clean end to end.
         $dir = $this->scratchDir();
         $corpus = $this->mintStraddleCorpus($dir . '/s25-straddle', 190, 30);
 
