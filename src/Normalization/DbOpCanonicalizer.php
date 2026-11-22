@@ -23,7 +23,17 @@ use PhpParser\NodeVisitorAbstract;
  *   - `$pdo->query("SELECT * FROM users WHERE id = ?")` /
  *     `mysqli_query($db, "SELECT * FROM users WHERE id = ?")` /
  *     `pg_query($conn, "SELECT * FROM users WHERE id = $1")` →
- *     `__DB_QUERY__("SELECT", "users")`.
+ *     `__DB_READ__("users", "SELECT", __DB_COLS_*())`.
+ *
+ *   SQL-promoted synthetics carry a **payload signature**: the third
+ *   argument is a structural name token `__DB_COLS_<sorted set>`
+ *   holding the statement's column set, so "same table + verb,
+ *   different columns" lands in the near-duplicate tiers instead of
+ *   the fabricated type-1 EXACT class (engine-003 half B). The set
+ *   rides a name token because aggressive mode erases literal values
+ *   to `__STR`; the deliberately unterminated name (no trailing `__`)
+ *   keeps it out of {@see \Phpdup\Semantic\DbOperationTagger}'s
+ *   synthetic-op parse so it never mints a bogus op tag.
  *
  *   - `$user->save()` / `$em->flush()` / `Model::create([...])` →
  *     `__DB_WRITE__("?", ...)` (table inferred from receiver when
@@ -63,8 +73,10 @@ use PhpParser\NodeVisitorAbstract;
  * default**. Tier-1 AST-only clustering remains the unmodified path.
  *
  * One exception to pure-name matching: the **generic name tier**
- * (`get` / `all` / `save` — see {@see DbOpRegistry::GENERIC_NAME_TIER})
- * is folded only when the call carries DB evidence. Those verbs are
+ * (`get` / `all` / `save` — the stock METHOD_OPS entries flagged
+ * {@see DbOpRegistry::ENTRY_FLAG_GENERIC}, surfaced by
+ * {@see DbOpRegistry::genericNameTier()}) is folded only when the
+ * call carries DB evidence. Those verbs are
  * ubiquitous on non-DB objects (a cache `store->get()`, a
  * `logger->get()` or a `Cache::get()` facade read are not database
  * reads), and name-only folding of them fabricated EXACT "DB clones"
@@ -78,14 +90,24 @@ use PhpParser\NodeVisitorAbstract;
  * a *different* op than the stock classification in the registry
  * bypasses the gate; a verbatim re-statement (what bundled profiles
  * ship) does not. Composer-backed class signals for plain domain
- * models (`User::all()`) are owned by the registry-shape leg; until
- * those land, such chains stay unfolded — under-folding is lossless,
- * fabrication is not.
+ * models (`User::all()`) are admitted through the constructor seam
+ * {@see $extraReceiverEvidenceNames}; wiring a config bucket for them
+ * (db_symbols class names) is a booked follow-up that touches files
+ * outside this leg's locks, so until it lands such chains stay
+ * unfolded — under-folding is lossless, fabrication is not.
  */
 final class DbOpCanonicalizer extends NodeVisitorAbstract
 {
     /** AST attribute key for the canonical op. */
     public const ATTR_OP = 'phpdup.dbOp';
+
+    /**
+     * Cap on payload-signature members: statements touching more
+     * columns than this contribute their first (sorted) {@see
+     * MAX_SIGNATURE_COLUMNS} members plus an `n<total>` arity tail —
+     * coarse by design, deterministic always (engine-003 half B).
+     */
+    private const MAX_SIGNATURE_COLUMNS = 12;
 
     /**
      * Receiver-name evidence for the generic name tier: lower-cased
@@ -185,8 +207,9 @@ final class DbOpCanonicalizer extends NodeVisitorAbstract
         // need the same proof here, with the class' last segment as
         // the name-evidence candidate. Non-tier verbs (`User::find()`)
         // keep folding on the registry name alone, as before. Plain
-        // model names without composer class signals (`User::all()`)
-        // stay unfolded until the registry-shape leg lands — see the
+        // model names (`User::all()`) fold once `user` is admitted as
+        // evidence via the constructor seam; the config bucket that
+        // would feed it automatically is a booked follow-up — see the
         // class docblock.
         if (
             $this->registry->requiresReceiverEvidence($node->name->name)
@@ -208,6 +231,7 @@ final class DbOpCanonicalizer extends NodeVisitorAbstract
                         $table,
                         $node->getAttributes(),
                         $verb,
+                        $this->extractColumnSet($sqlArg),
                     );
                 }
             }
@@ -258,6 +282,7 @@ final class DbOpCanonicalizer extends NodeVisitorAbstract
                         $table,
                         $node->getAttributes(),
                         $verb,
+                        $this->extractColumnSet($sqlArg),
                     );
                 }
             }
@@ -305,6 +330,7 @@ final class DbOpCanonicalizer extends NodeVisitorAbstract
                         $table,
                         $node->getAttributes(),
                         $verb,
+                        $this->extractColumnSet($sqlArg),
                     );
                 }
             }
@@ -314,22 +340,38 @@ final class DbOpCanonicalizer extends NodeVisitorAbstract
     }
 
     /**
-     * Build the canonical `__DB_<OP>__("table"[, "VERB"])` FuncCall.
+     * Build the canonical `__DB_<OP>__("table"[, "VERB"[,
+     * __DB_COLS_<set>()]])` FuncCall.
      *
      * The synthetic call deliberately discards user-supplied arguments
-     * — the table + (optional) SQL verb tuple is the load-bearing
-     * signal for clustering. Keeping arity stable across ORM/raw-SQL
-     * variants is the whole point: Eloquent's `User::find($id)` and
-     * Doctrine's `$em->find(User::class, $id)` both fold to
+     * — the table + (optional) SQL verb + (optional) payload column
+     * set is the load-bearing signal for clustering. Keeping arity
+     * stable across ORM/raw-SQL variants is the whole point:
+     * Eloquent's `User::find($id)` and Doctrine's
+     * `$em->find(User::class, $id)` both fold to
      * `__DB_READ__("user")`, regardless of the user-supplied args.
      *
      * @param array<string,mixed> $attrs
+     * @param string|null $columnSet Sorted payload column set joined
+     *                               with `_` (see
+     *                               {@see extractColumnSet()}); rides
+     *                               a structural nested call name
+     *                               `__DB_COLS_<set>` instead of a
+     *                               string literal, because the
+     *                               aggressive literal pass erases
+     *                               string values to `__STR` — and
+     *                               is deliberately NOT terminated
+     *                               with `__`, so
+     *                               {@see \Phpdup\Semantic\DbOperationTagger}
+     *                               's `__DB_<OP>__` fallback parse
+     *                               never mistakes it for an op tag.
      */
     private function buildSynthetic(
         string $op,
         ?string $tableOrEntity,
         array $attrs,
         ?string $verb = null,
+        ?string $columnSet = null,
     ): Node\Expr\FuncCall {
         $synthName = '__DB_' . strtoupper(str_replace('db.', '', $op)) . '__';
 
@@ -342,6 +384,11 @@ final class DbOpCanonicalizer extends NodeVisitorAbstract
         if ($verb !== null) {
             $synthArgs[] = new Node\Arg(new Node\Scalar\String_(strtoupper($verb)));
         }
+        if ($columnSet !== null && $columnSet !== '') {
+            $synthArgs[] = new Node\Arg(new Node\Expr\FuncCall(
+                new Node\Name('__DB_COLS_' . $columnSet),
+            ));
+        }
 
         $call = new Node\Expr\FuncCall(
             new Node\Name($synthName),
@@ -350,6 +397,151 @@ final class DbOpCanonicalizer extends NodeVisitorAbstract
         );
         $call->setAttribute(self::ATTR_OP, $op);
         return $call;
+    }
+
+    /**
+     * Coarse payload signature for SQL-promoted synthetics
+     * (engine-003 half B): the sorted, de-duplicated, lower-cased set
+     * of column identifiers a raw statement explicitly names —
+     * INSERT/REPLACE column lists, SET assignment targets and SELECT
+     * projection terms. `null` when the statement names none (e.g.
+     * `DELETE FROM …`, `SET NAMES …`), which keeps the synthetic's
+     * shape identical to the pre-signature form for payload-less
+     * statements.
+     *
+     * Two clones on the same table+verb that touch different columns
+     * then produce different canonical streams — near-duplicate
+     * territory — instead of the fabricated type-1 EXACT class the
+     * finding repros. Two spellings of the same column set (case,
+     * order, backtick quoting, `t.` qualification) stay identical, so
+     * genuine same-payload clones still cluster.
+     *
+     * Deliberately coarse: WHERE predicates are ignored, `*` is one
+     * member, expressions reduce to their leading identifier, and
+     * more than {@see MAX_SIGNATURE_COLUMNS} members are truncated to
+     * the alphabetically-first slice plus an `n<total>` arity tail
+     * (payloads sharing the first slice and total collide — a known,
+     * accepted coarseness). Members join with `_`, so a single column
+     * literally named `credits_updated` aliases the set
+     * {credits, updated}; another accepted coarseness.
+     */
+    private function extractColumnSet(string $sql): ?string
+    {
+        /** @var array<string,true> $cols */
+        $cols = [];
+
+        // 1) INSERT/REPLACE `(c1, c2, …)` list. The `(?!values)` guard
+        //    stops the no-column-list form `INSERT INTO t VALUES (…)`
+        //    from reading its VALUES tuple as the list.
+        if (
+            preg_match(
+                '/\b(?:INSERT|REPLACE)\s+(?:IGNORE\s+)?(?:INTO\s+)?(?!values\b)[^\s(]+\s*\(([^()]*)\)/i',
+                $sql,
+                $m
+            ) === 1
+        ) {
+            foreach (explode(',', $m[1]) as $part) {
+                $id = self::signatureColumn($part);
+                if ($id !== null) {
+                    $cols[$id] = true;
+                }
+            }
+        }
+
+        // 2) SET assignment targets — the identifier left of each `=`
+        //    between SET and WHERE. Covers `UPDATE … SET` and the
+        //    MySQL `INSERT … SET` variant.
+        if (preg_match('/\bSET\b(.*?)(?=\bWHERE\b|$)/is', $sql, $m) === 1) {
+            if (preg_match_all('/(`?[A-Za-z_][A-Za-z0-9_`"]*(?:\s*\.\s*`?[A-Za-z_][A-Za-z0-9_`"]*)?)\s*=(?!=)/', $m[1], $mm) > 0) {
+                foreach ($mm[1] as $part) {
+                    $id = self::signatureColumn($part);
+                    if ($id !== null) {
+                        $cols[$id] = true;
+                    }
+                }
+            }
+        }
+
+        // 3) SELECT projection list — between SELECT (after an
+        //    optional modifier) and the first FROM. Sub-queries see
+        //    only the outer projection's leading terms; coarse.
+        if (
+            preg_match(
+                '/\bSELECT\s+(?:DISTINCT\s+|HIGH_PRIORITY\s+|SQL_CALC_FOUND_ROWS\s+)?(.*?)\s+FROM\s/is',
+                $sql,
+                $m
+            ) === 1
+        ) {
+            foreach (explode(',', $m[1]) as $part) {
+                $id = self::projectionColumn($part);
+                if ($id !== null) {
+                    $cols[$id] = true;
+                }
+            }
+        }
+
+        if ($cols === []) {
+            return null;
+        }
+
+        $set = array_keys($cols);
+        sort($set, SORT_STRING);
+        $total = count($set);
+        if ($total > self::MAX_SIGNATURE_COLUMNS) {
+            $set   = array_slice($set, 0, self::MAX_SIGNATURE_COLUMNS);
+            $set[] = 'n' . $total;
+        }
+        return implode('_', $set);
+    }
+
+    /**
+     * Bare column identifier from one raw SQL fragment: trims, strips
+     * every backtick/`"`/`[]` quoting layer from each dotted segment,
+     * reduces a dotted name to its last segment, lower-cases. Null
+     * when the fragment is not a plain (possibly qualified, possibly
+     * quoted) identifier.
+     */
+    private static function signatureColumn(string $raw): ?string
+    {
+        // Identifier quoting is removed per-segment so `` `u`.`col` ``
+        // and `u.col` and `col` all reduce to `col`.
+        $unquoted = str_replace(['`', '"', '[', ']'], '', trim($raw));
+        if ($unquoted === '') {
+            return null;
+        }
+        if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*(\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*$/', $unquoted) !== 1) {
+            return null;
+        }
+        $segments = preg_split('/\s*\.\s*/', $unquoted) ?: [$unquoted];
+        return strtolower((string) end($segments));
+    }
+
+    /**
+     * Signature member for one SELECT projection term: `*` and
+     * `t.*` collapse to `*`; an `AS alias` tail is dropped; a plain
+     * (qualified) identifier contributes its last segment; anything
+     * else (function calls, expressions) contributes its first
+     * identifier, so `COUNT(*)` reads as `count`. Null only when the
+     * term holds no identifier at all (a bare number).
+     */
+    private static function projectionColumn(string $part): ?string
+    {
+        $part = trim($part);
+        if ($part === '') {
+            return null;
+        }
+        if ($part === '*' || preg_match('/[`A-Za-z_][A-Za-z0-9_`]*\s*\.\s*\*$/', $part) === 1) {
+            return '*';
+        }
+        $part = (string) preg_replace('/\s+AS\s+\S+$/i', '', $part);
+        $bare = self::signatureColumn($part);
+        if ($bare !== null) {
+            return $bare;
+        }
+        if (preg_match('/[A-Za-z_][A-Za-z0-9_]*/', $part, $m) === 1) {
+            return strtolower($m[0]);
+        }
+        return null;
     }
 
     /**
@@ -457,9 +649,9 @@ final class DbOpCanonicalizer extends NodeVisitorAbstract
      *   3. **Evidence class seed** — the chain bottoms out at a
      *      static call whose class' last segment is itself an
      *      evidence name (`Model::where(…)->get()`). Domain models
-     *      without composer class signals (`User::where(…)->get()`)
-     *      are the registry-shape leg's half-B gap; until then they
-     *      stay unfolded, which is the lossless direction.
+     *      whose class name has not been admitted via the evidence
+     *      seam (`User::where(…)->get()`) stay unfolded, which is the
+     *      lossless direction until the config wiring leg feeds them.
      *
      * Stops at anything that is not a plain property/method/array hop
      * (function-call results, expressions); no hop, no evidence.

@@ -206,7 +206,7 @@
         "db_aware": {
             "type": "boolean",
             "default": false,
-            "description": "ORM-/DB-aware semantic deduplication (option 1 of docs/plans/orm-db-semantic-dedup.md). When true, the Normalizer runs DbOpCanonicalizer as a pre-pass: recognised database calls across Eloquent, Doctrine, query builders, PDO, mysqli, pg_*, and raw SQL strings rewrite to canonical __DB_<OP>__(\"table\") tokens so equivalent ORM and raw-SQL variants of the same operation cluster together. Off by default — enabling it broadens clustering but raises the false-positive ceiling, so it's an explicit opt-in. CLI: --db-aware."
+            "description": "ORM-/DB-aware semantic deduplication (option 1 of docs/plans/orm-db-semantic-dedup.md). When true, the Normalizer runs DbOpCanonicalizer as a pre-pass: recognised database calls across Eloquent, Doctrine, query builders, PDO, mysqli, pg_*, and raw SQL strings rewrite to canonical __DB_<OP>__(\"table\") tokens so equivalent ORM and raw-SQL variants of the same operation cluster together. Two honesty guards ride on it (engine-003): the generic verbs get/all/save fold only when the receiver chain carries DB evidence (builder table-literal seed, a recognised DB receiver/class name, or an informative user mapping), and SQL-promoted synthetics retain a coarse payload signature — the sorted column set as a structural __DB_COLS_<set> name argument — so same table+verb payloads touching different columns cluster as near-duplicates instead of exact clones. Off by default — enabling it broadens clustering but raises the false-positive ceiling, so it's an explicit opt-in. CLI: --db-aware."
         },
         "trinity_collapse": {
             "type": "boolean",
@@ -241,7 +241,7 @@
         "db_symbols": {
             "type": "object",
             "additionalProperties": false,
-            "description": "User-extensible DB symbol equivalence registry (option 4 of docs/plans/orm-db-semantic-dedup.md). Custom method/function name → canonical-op mappings merged on top of the stock DbOpRegistry entries. Lower-cased keys; values are one of db.read | db.write | db.delete | db.execute | db.query. Profiles ship symbol packs (db-aware-laravel, db-aware-doctrine, db-aware-cake) that can be loaded via --profile.",
+            "description": "User-extensible DB symbol equivalence registry (option 4 of docs/plans/orm-db-semantic-dedup.md). Custom method/function name → canonical-op mappings merged on top of the stock DbOpRegistry entries. Keys are matched case-insensitively (both stored keys and looked-up call names are lower-cased), so the lower-case convention and camelCase pack keys both work; values are one of db.read | db.write | db.delete | db.execute | db.query. Profiles ship symbol packs (db-aware-laravel, db-aware-doctrine, db-aware-cake) that can be loaded via --profile.",
             "properties": {
                 "methods": {
                     "type": "object",
@@ -249,7 +249,7 @@
                         "type": "string",
                         "enum": ["db.read", "db.write", "db.delete", "db.execute", "db.query"]
                     },
-                    "description": "Method-name → canonical-op map. Matches against StaticCall, MethodCall, and NullsafeMethodCall names regardless of receiver. Lower-cased keys."
+                    "description": "Method-name → canonical-op map. Matches against StaticCall, MethodCall, and NullsafeMethodCall names regardless of receiver; name matching is case-insensitive (camelCase keys fold to the same entry as lower-case). Exempt from the receiver-evidence gate only when the mapped op differs from the stock classification of a generic tier name (get/all/save) — a verbatim re-statement keeps the gate (engine-003)."
                 },
                 "functions": {
                     "type": "object",
@@ -257,7 +257,7 @@
                         "type": "string",
                         "enum": ["db.read", "db.write", "db.delete", "db.execute", "db.query"]
                     },
-                    "description": "Function-name → canonical-op map. Matches against FuncCall names. Lower-cased keys."
+                    "description": "Function-name → canonical-op map. Matches against FuncCall names; name matching is case-insensitive (camelCase keys fold to the same entry as lower-case). Not subject to the receiver-evidence gate."
                 }
             }
         },

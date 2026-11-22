@@ -200,4 +200,63 @@ final class DbOpRegistryTest extends TestCase
         $this->assertSame(DbOpRegistry::OP_WRITE,   $r->lookupFunction('memcached_set'));
         $this->assertSame(DbOpRegistry::OP_DELETE,  $r->lookupFunction('memcached_delete'));
     }
+
+    // ---------------------------------------------------------------
+    // Registry entry shape (engine-003 half B, r1 L-7): the generic
+    // name tier is derived from ENTRY_FLAG_GENERIC on the METHOD_OPS
+    // entries themselves — there is no parallel list to drift.
+    // ---------------------------------------------------------------
+
+    public function testGenericNameTierDerivesFromEntryFlags(): void
+    {
+        $this->assertSame(['all', 'get', 'save'], DbOpRegistry::default()->genericNameTier());
+    }
+
+    public function testGateAndDerivedTierAgreeForEveryProbeName(): void
+    {
+        // The drift guard: the predicate and the surfaced list are two
+        // reads of ONE source. Any stock or unknown name must answer
+        // identically through both, whatever case it arrives in.
+        $r = DbOpRegistry::default();
+        $tier = $r->genericNameTier();
+        $probes = [
+            'get', 'GET', 'Get', 'all', 'ALL', 'save', 'Save',
+            'find', 'update', 'delete', 'query', 'exec', 'flush',
+            'create', 'count', 'memcached_get', 'frobnicate',
+        ];
+        foreach ($probes as $name) {
+            $inTier = in_array(strtolower($name), $tier, true);
+            $this->assertSame(
+                $inTier,
+                $r->requiresReceiverEvidence($name),
+                "gate/tier disagreement for '{$name}' — the tier is derived, it may not diverge",
+            );
+        }
+    }
+
+    public function testCustomMappingsNeverAlterTheDerivedTier(): void
+    {
+        // Informative reclassification (`save` as a read) exempts the
+        // gate (pinned end-to-end in CustomDbSymbolsTest) but must not
+        // add or remove members of the derived tier, and custom names
+        // never land in it regardless of op.
+        $r = new DbOpRegistry(
+            customMethodOps: ['save' => DbOpRegistry::OP_READ, 'frobnicate' => DbOpRegistry::OP_QUERY],
+        );
+        $this->assertSame(['all', 'get', 'save'], $r->genericNameTier());
+        $this->assertFalse($r->requiresReceiverEvidence('frobnicate'));
+        $this->assertFalse($r->requiresReceiverEvidence('save'));
+        $this->assertTrue($r->requiresReceiverEvidence('get'));
+    }
+
+    public function testFlattenedOpsLeakNoEntryListShape(): void
+    {
+        // METHOD_OPS stores [op, ...flags] lists; the public lookup
+        // surface must hand out the scalar op only — including for the
+        // flagged tier names.
+        $r = DbOpRegistry::default();
+        foreach (['get' => DbOpRegistry::OP_READ, 'all' => DbOpRegistry::OP_READ, 'save' => DbOpRegistry::OP_WRITE] as $name => $op) {
+            $this->assertSame($op, $r->lookupMethod($name));
+        }
+    }
 }

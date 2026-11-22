@@ -4,11 +4,13 @@ declare(strict_types=1);
 namespace Phpdup\Tests\Unit\Normalization;
 
 use PHPUnit\Framework\TestCase;
+use PhpParser\Node;
 use Phpdup\Extraction\BlockExtractor;
 use Phpdup\Fingerprint\SubtreeHasher;
 use Phpdup\Normalization\DbOpCanonicalizer;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Parsing\AstParser;
+use Phpdup\Semantic\DbOperationTagger;
 use Phpdup\Util\AstSerializer;
 
 /**
@@ -176,9 +178,12 @@ final class DbOpCanonicalizerTest extends TestCase
             '<?php function f($k) { return Store::make("x")->get($k); }', true,
         ));
         // Plain domain-model seeds (`User::where(…)->get()`) are
-        // refused by the same rule; restoring them needs composer
-        // class signals — owned by the engine-S06b registry-shape leg
-        // (follow-up row in the S06a fix report), not a disclosure.
+        // refused by the same rule; the AST alone cannot tell a model
+        // class from a facade. Admitting them is the constructor
+        // evidence seam (pinned in
+        // testPlainModelStaticFoldsWhenClassAdmittedViaSeam); a config
+        // bucket feeding it composer class signals stays a booked
+        // follow-up row in the S06b impl report.
     }
 
     public function testSeedLiteralClustersWithRawSqlReadOfSamePayload(): void
@@ -217,8 +222,10 @@ final class DbOpCanonicalizerTest extends TestCase
         }
         // `User::all()` was pinned as folding here pre-cure; it now
         // refuses for the same reason the facades do — the AST alone
-        // cannot tell a model class from a facade. Restoring it is
-        // the half-B composer class-signal leg (owned row above).
+        // cannot tell a model class from a facade. It folds once `user`
+        // is admitted via the evidence seam (see
+        // testPlainModelStaticFoldsWhenClassAdmittedViaSeam); config
+        // wiring into that seam is a booked follow-up (S06b report).
         $this->assertNotContains('Name|n:__DB_READ__', $this->canonicalTokens(
             '<?php function f() { return User::all(); }', true,
         ));
@@ -356,6 +363,154 @@ final class DbOpCanonicalizerTest extends TestCase
         $tokens = $this->canonicalTokens($withHole, dbAware: true);
         $this->assertContains('Name|n:__DB_READ__', $tokens);
         $this->assertSame($tokens, $this->canonicalTokens($plain, dbAware: true));
+    }
+
+    // ---------------------------------------------------------------
+    // Payload signature (engine-003 half B): "same table+verb,
+    // different columns" must be near-dup, not fabricated type-1.
+    // ---------------------------------------------------------------
+
+    public function testDifferentColumnPayloadsNoLongerFoldExact(): void
+    {
+        // The finding's repro, verbatim in spirit: three `exec()`
+        // UPDATEs on the same table and verb touching different
+        // column payloads. At HEAD all three folded to one EXACT
+        // hash (022d7653 aggressive / 4534c6a6 strict) because the
+        // aggressive literal pass erases the synthetic table/verb
+        // strings to __STR and nothing else carried the payload.
+        $credits = '<?php function f($db, $id) { $db->exec("UPDATE users SET credits = credits + ? WHERE id = ?"); }';
+        $password = '<?php function g($db, $id) { $db->exec("UPDATE users SET password = ? WHERE id = ?"); }';
+        $both = '<?php function h($db, $id) { $db->exec("UPDATE users SET credits = credits * 2, updated = ? WHERE id = ?"); }';
+
+        $this->assertContains('Name|n:__DB_COLS_credits', $this->canonicalTokens($credits, true));
+        $this->assertContains('Name|n:__DB_COLS_password', $this->canonicalTokens($password, true));
+        $this->assertContains('Name|n:__DB_COLS_credits_updated', $this->canonicalTokens($both, true));
+
+        $ha = $this->canonicalHashDbAware($credits);
+        $hb = $this->canonicalHashDbAware($password);
+        $hc = $this->canonicalHashDbAware($both);
+        $this->assertNotSame($ha, $hb, 'different SET payloads must not fold EXACT');
+        $this->assertNotSame($ha, $hc, 'different SET payloads must not fold EXACT');
+        $this->assertNotSame($hb, $hc, 'different SET payloads must not fold EXACT');
+
+        // …and all three still carry the shared __DB_WRITE__ op token,
+        // which is what pulls them into the near-duplicate tiers.
+        foreach ([$credits, $password, $both] as $code) {
+            $this->assertContains('Name|n:__DB_WRITE__', $this->canonicalTokens($code, true));
+        }
+    }
+
+    public function testSelectProjectionAndInsertListsCarrySignatures(): void
+    {
+        $star = '<?php function f($db) { return $db->query("SELECT * FROM users WHERE active = 1"); }';
+        $cols = '<?php function f($db) { return $db->query("SELECT credits, password FROM users WHERE active = 1"); }';
+        $this->assertContains('Name|n:__DB_COLS_*', $this->canonicalTokens($star, true));
+        $this->assertContains('Name|n:__DB_COLS_credits_password', $this->canonicalTokens($cols, true));
+        $this->assertNotSame(
+            $this->canonicalHashDbAware($star),
+            $this->canonicalHashDbAware($cols),
+        );
+
+        $insA = '<?php function f($db) { return $db->exec("INSERT INTO users (credits) VALUES (?)"); }';
+        $insB = '<?php function f($db) { return $db->exec("INSERT INTO users (password) VALUES (?)"); }';
+        $this->assertContains('Name|n:__DB_COLS_credits', $this->canonicalTokens($insA, true));
+        $this->assertContains('Name|n:__DB_COLS_password', $this->canonicalTokens($insB, true));
+        $this->assertNotSame(
+            $this->canonicalHashDbAware($insA),
+            $this->canonicalHashDbAware($insB),
+        );
+    }
+
+    public function testSameColumnSetSpellingVariantsStillFold(): void
+    {
+        // Genuine same-payload clones must keep clustering through
+        // the signature: case, member order, qualified (`u.`) and
+        // backtick-quoted spellings all reduce to the same set…
+        $plain = '<?php function f($db) { return $db->exec("UPDATE t SET updated_at = ?, credits = ?"); }';
+        $variant = '<?php function g($db) { return $db->exec("UPDATE t SET CREDITS=?, `u`.`updated_at` = ?"); }';
+        $this->assertSame(
+            $this->canonicalHashDbAware($plain),
+            $this->canonicalHashDbAware($variant),
+        );
+        $this->assertContains('Name|n:__DB_COLS_credits_updated_at', $this->canonicalTokens($variant, true));
+
+        // …and the same payload through different driver entry points
+        // (exec vs mysqli_query) folds identically.
+        $cross = '<?php function h($db) { return mysqli_query($db, "UPDATE t SET credits = ?, updated_at = ?"); }';
+        $this->assertSame(
+            $this->canonicalHashDbAware($plain),
+            $this->canonicalHashDbAware($cross),
+        );
+    }
+
+    public function testSignatureTruncatesWidePayloadsWithArityTail(): void
+    {
+        $make = static fn (array $cols): string => '<?php function f($db) { return $db->exec("UPDATE t SET '
+            . implode(', ', array_map(static fn (string $c): string => $c . ' = ?', $cols)) . '"); }';
+        $fourteen = $make(array_map(static fn (int $i): string => "c$i", range(1, 14)));
+        $thirteen = $make(array_map(static fn (int $i): string => "c$i", range(1, 13)));
+
+        // Sorted slice keeps the alphabetically-first twelve; the
+        // `n<total>` tail preserves the size signal past the cap.
+        $toks14 = $this->canonicalTokens($fourteen, true);
+        $this->assertContains('Name|n:__DB_COLS_c1_c10_c11_c12_c13_c14_c2_c3_c4_c5_c6_c7_n14', $toks14);
+        $this->assertContains('Name|n:__DB_COLS_c1_c10_c11_c12_c13_c2_c3_c4_c5_c6_c7_c8_n13',
+            $this->canonicalTokens($thirteen, true));
+
+        // Documented coarse-by-design alias: two different 14-column
+        // payloads that share the sorted first twelve collide. Pin the
+        // behaviour so a future tightening notices the contract here.
+        $twelveShared = array_map(static fn (int $i): string => "c$i", range(1, 12));
+        $tailA = $make([...$twelveShared, 'z1', 'z2']);
+        $tailB = $make([...$twelveShared, 'y1', 'y2']);
+        $this->assertSame(
+            $this->canonicalHashDbAware($tailA),
+            $this->canonicalHashDbAware($tailB),
+            'truncated signatures alias by design (first sorted slice + arity tail)',
+        );
+    }
+
+    public function testPredicateOnlyVariantsStayCoarselyFolded(): void
+    {
+        // Coarse by design: WHERE predicates are NOT part of the
+        // signature. Two DELETEs that name no payload columns keep
+        // folding — pinning the accepted scope against a future
+        // silent tightening.
+        $d1 = '<?php function f($db) { return $db->exec("DELETE FROM users WHERE id = ?"); }';
+        $d2 = '<?php function g($db) { return $db->exec("DELETE FROM users WHERE email = ?"); }';
+        $this->assertSame($this->canonicalHashDbAware($d1), $this->canonicalHashDbAware($d2));
+        $this->assertStringNotContainsString(
+            '__DB_COLS',
+            implode(' ', $this->canonicalTokens($d1, true)),
+            'payload-less statements keep the pre-signature two-arg synthetic',
+        );
+    }
+
+    public function testPayloadMarkerIsNeverParsedAsAnOpTag(): void
+    {
+        // Consumers that re-derive the op from a `__DB_<OP>__` name
+        // after a cache round-trip drops the attribute (the tagger's
+        // documented fallback) must not mistake the marker for an op.
+        // The unterminated name is the guard — pin both directions.
+        $tagger = new DbOperationTagger();
+        $write = new Node\Expr\FuncCall(new Node\Name('__DB_WRITE__'));
+        $this->assertSame(['db.write' => 1], $tagger->tag($write));
+        $marker = new Node\Expr\FuncCall(new Node\Name('__DB_COLS_credits'));
+        $this->assertSame([], $tagger->tag($marker));
+    }
+
+    public function testPlainModelStaticFoldsWhenClassAdmittedViaSeam(): void
+    {
+        // engine-003 F-2 end state: `User::all()` refuses on the bare
+        // --db-aware path (pinned in
+        // testStaticTierVerbsCarryTheirOwnEvidenceArms) and folds as
+        // soon as `user` is admitted through the evidence seam. The
+        // follow-up that is NOT this leg: a config bucket feeding
+        // composer class signals into that seam (needs ConfigLoader/
+        // Config locks; booked row in the S06b impl report).
+        $code = '<?php function f() { return User::all(); }';
+        $this->assertNotContains('Name|n:__DB_READ__', $this->canonicalTokens($code, true));
+        $this->assertContains('Name|n:__DB_READ__', $this->tokensWithExtraEvidence($code, ['user']));
     }
 
     /** @return list<string> Canonicalised token stream of the first block. */

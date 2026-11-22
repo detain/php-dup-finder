@@ -115,9 +115,9 @@ final class CustomDbSymbolsTest extends TestCase
         $this->assertNotContains('Name|n:__DB_READ__', $this->canonicalTokens(
             '<?php function f($x, $k) { return $x->get($k); }', $restated,
         ));
-        // The stock default registry still gates it (classification
-        // lives on the registry; pins kept here so half B can own
-        // DbOpRegistryTest without collision).
+        // The stock default registry still gates it (the entry-flag
+        // derivation itself is pinned in DbOpRegistryTest —
+        // genericNameTier()/gate-agreement — since engine-S06b).
         $this->assertTrue(DbOpRegistry::default()->requiresReceiverEvidence('get'));
         $this->assertTrue(DbOpRegistry::default()->requiresReceiverEvidence('ALL'));
         $this->assertTrue(DbOpRegistry::default()->requiresReceiverEvidence('save'));
@@ -155,6 +155,26 @@ final class CustomDbSymbolsTest extends TestCase
         );
         $this->assertNotContains('Name|n:__DB_READ__', $tokens,
             'store->get() must not fold into a DB clone under an auto-applied pack');
+    }
+
+    public function testCamelCasePackKeysFoldDespiteLowerCasedStockConvention(): void
+    {
+        // Key-casing convention disclosure (engine-S06b): the stock
+        // tables and this file's JSON round-trip use lower-cased keys,
+        // but the six orphan db-aware-* packs re-registered by
+        // shell-S32 carry camelCase method keys (`findAll`,
+        // `queryAll`, …). Both lookup sides lower-case, so camelCase
+        // keys already match — the packs were NOT mass-rewritten to
+        // avoid churn against a live lane. This pin keeps that
+        // equivalence load-bearing rather than accidental: a camelCase
+        // custom key folds the camelCase call, and the lower-case
+        // spelling of the same name reaches the same entry.
+        $registry = new DbOpRegistry(customMethodOps: ['findAll' => DbOpRegistry::OP_READ]);
+        $this->assertContains('Name|n:__DB_READ__', $this->canonicalTokens(
+            '<?php function f($repo) { return $repo->findAll(); }', $registry,
+        ));
+        $this->assertSame(DbOpRegistry::OP_READ, $registry->lookupMethod('findALL'));
+        $this->assertSame(DbOpRegistry::OP_READ, $registry->lookupMethod('findall'));
     }
 
     public function testBundledLaravelDbSymbolsLoadCleanly(): void

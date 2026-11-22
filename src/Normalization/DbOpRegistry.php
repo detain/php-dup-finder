@@ -39,8 +39,11 @@ namespace Phpdup\Normalization;
  * among the most common method names in PHP (cache stores, loggers,
  * collections, form models all define them), so pure-name folding of
  * those three fabricates DB clones of non-DB code. They are excluded
- * from the name-only tier: {@see self::GENERIC_NAME_TIER} and
- * {@see self::requiresReceiverEvidence()} mark them, and
+ * from the name-only tier by an **entry flag** on their
+ * {@see self::METHOD_OPS} entries — {@see self::ENTRY_FLAG_GENERIC} —
+ * with no parallel list to drift out of sync (engine-003 half B,
+ * r1 L-7): {@see self::genericNameTier()} and
+ * {@see self::requiresReceiverEvidence()} read the same metadata, and
  * {@see DbOpCanonicalizer} refuses to fold a call for a tier member
  * unless the receiver (instance chains) or the class name (static
  * calls) carries DB evidence. A `customMethodOps` entry for a tier
@@ -66,53 +69,62 @@ final class DbOpRegistry
     public const OP_QUERY   = 'db.query';
 
     /**
-     * Stock method names too generic for pure-name folding.
+     * Entry flag marking a stock method whose name is too generic for
+     * pure-name folding. Tier membership is derived from this flag on
+     * the METHOD_OPS entry itself — there is deliberately no parallel
+     * list that could drift out of agreement with the dispatch table
+     * (engine-003 half B, r1 L-7).
      *
-     * An instance call carrying one of these names is only rewritten
-     * into a `__DB_*__` synthetic when the receiver chain supplies DB
+     * An instance call carrying a flagged name is only rewritten into
+     * a `__DB_*__` synthetic when the receiver chain supplies DB
      * evidence (builder seed literal or a recognised DB receiver
      * name) — see {@see DbOpCanonicalizer}. Static tier calls consult
      * the same predicate with the class' last segment as the name
      * candidate. A `customMethodOps` (db_symbols profile) entry
      * exempts the name only when its op differs from the stock
-     * classification below; a verbatim re-statement keeps the gate.
-     *
-     * @var list<string>
+     * classification on the entry below; a verbatim re-statement
+     * keeps the gate.
      */
-    public const GENERIC_NAME_TIER = ['get', 'all', 'save'];
+    public const ENTRY_FLAG_GENERIC = 'generic';
 
     /**
-     * Method names → canonical op (case-insensitive lookup).
+     * Stock method names → `[canonical-op, ...entry flags]`
+     * (case-insensitive lookup).
      *
-     * @var array<string,string>
+     * The first element is always one of the OP_* constants; the rest
+     * are metadata flags — currently only
+     * {@see self::ENTRY_FLAG_GENERIC}, which puts the name in the
+     * receiver-evidence tier ({@see requiresReceiverEvidence()}).
+     *
+     * @var array<string,non-empty-list<string>>
      */
     private const METHOD_OPS = [
         // Reads
-        'find'           => self::OP_READ,
-        'findorfail'     => self::OP_READ,
-        'findbyid'       => self::OP_READ,
-        'findone'        => self::OP_READ,
-        'findoneby'      => self::OP_READ,
-        'findall'        => self::OP_READ,
-        'first'          => self::OP_READ,
-        'firstorfail'    => self::OP_READ,
-        // NOTE: `get`, `all` and `save` live in the generic name tier —
-        // {@see GENERIC_NAME_TIER}. The canonicalizer refuses to fold
-        // them on an instance or static receiver without DB evidence,
+        'find'           => [self::OP_READ],
+        'findorfail'     => [self::OP_READ],
+        'findbyid'       => [self::OP_READ],
+        'findone'        => [self::OP_READ],
+        'findoneby'      => [self::OP_READ],
+        'findall'        => [self::OP_READ],
+        'first'          => [self::OP_READ],
+        'firstorfail'    => [self::OP_READ],
+        // NOTE: `get`, `all` and `save` carry ENTRY_FLAG_GENERIC — the
+        // generic name tier. The canonicalizer refuses to fold them
+        // on an instance or static receiver without DB evidence,
         // unless a configuration mapping for the name differs from
         // its stock op below (see {@see requiresReceiverEvidence()}).
-        'get'            => self::OP_READ,
-        'all'            => self::OP_READ,
-        'fetch'          => self::OP_READ,
-        'fetchall'       => self::OP_READ,
-        'fetchone'       => self::OP_READ,
-        'fetchassoc'     => self::OP_READ,
-        'fetchcolumn'    => self::OP_READ,
-        'fetchrow'       => self::OP_READ,
-        'fetchobject'    => self::OP_READ,
-        'getresult'      => self::OP_READ,
-        'select'         => self::OP_READ,
-        'selectone'      => self::OP_READ,
+        'get'            => [self::OP_READ, self::ENTRY_FLAG_GENERIC],
+        'all'            => [self::OP_READ, self::ENTRY_FLAG_GENERIC],
+        'fetch'          => [self::OP_READ],
+        'fetchall'       => [self::OP_READ],
+        'fetchone'       => [self::OP_READ],
+        'fetchassoc'     => [self::OP_READ],
+        'fetchcolumn'    => [self::OP_READ],
+        'fetchrow'       => [self::OP_READ],
+        'fetchobject'    => [self::OP_READ],
+        'getresult'      => [self::OP_READ],
+        'select'         => [self::OP_READ],
+        'selectone'      => [self::OP_READ],
         // NOTE: `where`, `whereIn`, `orderBy`, `limit`, `select` (as a
         // builder), `with`, `join` and other intermediate query-builder
         // chain methods are intentionally NOT mapped — they return a
@@ -123,39 +135,39 @@ final class DbOpRegistry
         // table/entity name from the seed call.
 
         // Writes
-        'save'           => self::OP_WRITE,
-        'create'         => self::OP_WRITE,
-        'update'         => self::OP_WRITE,
-        'updateorcreate' => self::OP_WRITE,
-        'firstorcreate'  => self::OP_WRITE,
-        'insert'         => self::OP_WRITE,
-        'insertgetid'    => self::OP_WRITE,
-        'persist'        => self::OP_WRITE,
-        'flush'          => self::OP_WRITE,
-        'push'           => self::OP_WRITE,
-        'replace'        => self::OP_WRITE,
-        'upsert'         => self::OP_WRITE,
-        'begintransaction' => self::OP_WRITE,
-        'commit'         => self::OP_WRITE,
-        'rollback'       => self::OP_WRITE,
-        'affectedrows'   => self::OP_READ,
-        'insertid'       => self::OP_WRITE,
-        'count'          => self::OP_READ,
+        'save'           => [self::OP_WRITE, self::ENTRY_FLAG_GENERIC],
+        'create'         => [self::OP_WRITE],
+        'update'         => [self::OP_WRITE],
+        'updateorcreate' => [self::OP_WRITE],
+        'firstorcreate'  => [self::OP_WRITE],
+        'insert'         => [self::OP_WRITE],
+        'insertgetid'    => [self::OP_WRITE],
+        'persist'        => [self::OP_WRITE],
+        'flush'          => [self::OP_WRITE],
+        'push'           => [self::OP_WRITE],
+        'replace'        => [self::OP_WRITE],
+        'upsert'         => [self::OP_WRITE],
+        'begintransaction' => [self::OP_WRITE],
+        'commit'         => [self::OP_WRITE],
+        'rollback'       => [self::OP_WRITE],
+        'affectedrows'   => [self::OP_READ],
+        'insertid'       => [self::OP_WRITE],
+        'count'          => [self::OP_READ],
 
         // Deletes
-        'delete'         => self::OP_DELETE,
-        'destroy'        => self::OP_DELETE,
-        'remove'         => self::OP_DELETE,
-        'forcedelete'    => self::OP_DELETE,
-        'truncate'       => self::OP_DELETE,
+        'delete'         => [self::OP_DELETE],
+        'destroy'        => [self::OP_DELETE],
+        'remove'         => [self::OP_DELETE],
+        'forcedelete'    => [self::OP_DELETE],
+        'truncate'       => [self::OP_DELETE],
 
         // Generic execute / query
-        'execute'        => self::OP_EXECUTE,
-        'exec'           => self::OP_EXECUTE,
-        'query'          => self::OP_QUERY,
-        'rawquery'       => self::OP_QUERY,
-        'prepare'        => self::OP_EXECUTE,
-        'statement'      => self::OP_EXECUTE,
+        'execute'        => [self::OP_EXECUTE],
+        'exec'           => [self::OP_EXECUTE],
+        'query'          => [self::OP_QUERY],
+        'rawquery'       => [self::OP_QUERY],
+        'prepare'        => [self::OP_EXECUTE],
+        'statement'      => [self::OP_EXECUTE],
     ];
 
     /**
@@ -330,7 +342,7 @@ final class DbOpRegistry
         'memcached_flush'     => self::OP_WRITE,
     ];
 
-    /** @var array<string,string> Method-name lookup, lower-cased. */
+    /** @var array<string,string> Method-name lookup, lower-cased, op-flattened. */
     private array $methodOps;
 
     /** @var array<string,string> Function-name lookup, lower-cased. */
@@ -339,13 +351,27 @@ final class DbOpRegistry
     /** @var array<string,string> Lower-cased method names supplied via customMethodOps → configured op. */
     private array $configuredMethodOps = [];
 
+    /** @var array<string,true> Lower-cased stock method names carrying ENTRY_FLAG_GENERIC, ready for isset(). */
+    private readonly array $genericTier;
+
     /**
      * @param array<string,string> $customMethodOps   Additional or overriding method → op entries.
      * @param array<string,string> $customFunctionOps Additional or overriding function → op entries.
      */
     public function __construct(array $customMethodOps = [], array $customFunctionOps = [])
     {
-        $this->methodOps = self::METHOD_OPS;
+        $methodOps  = [];
+        $genericTier = [];
+        foreach (self::METHOD_OPS as $name => $entry) {
+            $key            = strtolower((string) $name);
+            $methodOps[$key] = $entry[0];
+            if (in_array(self::ENTRY_FLAG_GENERIC, $entry, true)) {
+                $genericTier[$key] = true;
+            }
+        }
+        $this->methodOps  = $methodOps;
+        $this->genericTier = $genericTier;
+
         foreach ($customMethodOps as $name => $op) {
             $key = strtolower((string) $name);
             $this->methodOps[$key] = $op;
@@ -374,14 +400,15 @@ final class DbOpRegistry
      * synthetic when the receiver (instance call) or class name
      * (static call) carries DB evidence.
      *
-     * True for every stock tier name ({@see GENERIC_NAME_TIER})
-     * except when a `customMethodOps` mapping for that name carries
-     * information the stock table lacks: an op **different** from the
-     * stock classification (the user asserting, e.g., that their
-     * `get()` is a write). A verbatim re-statement of the stock op
-     * adds nothing and keeps the gate — decisive because bundled
-     * db-aware-* packs re-state these very names verbatim (18 of the
-     * 29 packs map tier names; every bundled mapping is a
+     * True for every stock name carrying {@see ENTRY_FLAG_GENERIC} on
+     * its METHOD_OPS entry ({@see genericNameTier()} — derived, no
+     * parallel list) except when a `customMethodOps` mapping for that
+     * name carries information the stock table lacks: an op
+     * **different** from the stock classification (the user asserting,
+     * e.g., that their `get()` is a write). A verbatim re-statement of
+     * the stock op adds nothing and keeps the gate — decisive because
+     * bundled db-aware-* packs re-state these very names verbatim
+     * (18 of the 29 packs map tier names; every bundled mapping is a
      * re-statement) and auto-applied profiles must never be able to
      * silently switch the gate off. Case-insensitive on the name;
      * op values are compared verbatim (the `db.*` enum).
@@ -389,16 +416,32 @@ final class DbOpRegistry
     public function requiresReceiverEvidence(string $name): bool
     {
         $key = strtolower($name);
-        if (!in_array($key, self::GENERIC_NAME_TIER, true)) {
+        if (!isset($this->genericTier[$key])) {
             return false;
         }
         $configured = $this->configuredMethodOps[$key] ?? null;
         if ($configured === null) {
             return true;
         }
-        // Every GENERIC_NAME_TIER member is by definition a stock entry,
-        // so the index below is guaranteed present past the tier guard.
-        return $configured === self::METHOD_OPS[$key];
+        // Every genericTier member is by definition a stock entry, so
+        // the METHOD_OPS lookup below is guaranteed present past the
+        // tier guard (custom entries never carry the flag).
+        return $configured === self::METHOD_OPS[$key][0];
+    }
+
+    /**
+     * The generic name tier — stock method names flagged
+     * {@see ENTRY_FLAG_GENERIC} on their METHOD_OPS entry, lower-cased
+     * and sorted. Derived from the dispatch table itself, so it can
+     * never drift out of agreement with it (engine-003 half B, r1 L-7).
+     *
+     * @return list<string>
+     */
+    public function genericNameTier(): array
+    {
+        $names = array_keys($this->genericTier);
+        sort($names, SORT_STRING);
+        return $names;
     }
 
     /**
