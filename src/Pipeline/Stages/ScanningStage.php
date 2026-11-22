@@ -12,6 +12,7 @@ use Phpdup\Pipeline\Stage;
 use Phpdup\Scanning\FileScanner;
 use Phpdup\Util\MemoryDebug;
 use Phpdup\Util\PathCanonical;
+use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Output\OutputInterface;
 
 final class ScanningStage implements CooperativeStageInterface
@@ -141,7 +142,13 @@ final class ScanningStage implements CooperativeStageInterface
                 $files[] = $path;
                 $state->totalFiles++;
                 if ($output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG && $state->totalFiles % 100 === 0) {
-                    $msg = sprintf('scanning: discovered file %s [%s]', $path, MemoryDebug::getMemoryUsage());
+                    // shell-S34 (php-dup-finder-shell-025): $path is raw
+                    // filesystem bytes — markup escape it before it enters
+                    // a writeln line, so `<info>`-shaped names arrive as
+                    // literal text instead of steering the formatter (the
+                    // OutputInterface::escape convention this step makes
+                    // law for path bytes).
+                    $msg = sprintf('scanning: discovered file %s [%s]', self::escapeMarkup($path), MemoryDebug::getMemoryUsage());
                     $output->writeln($msg);
                     $state->pushDebugMessage($msg);
                 }
@@ -196,11 +203,14 @@ final class ScanningStage implements CooperativeStageInterface
         // position so happy-path output order is unchanged.
         if ($diffBaseFiles !== null) {
             $state->diffBaseFiles = $diffBaseFiles;
+            // shell-S34 (php-dup-finder-shell-025): the ref is a raw argv
+            // value — SEC's repro fed it `<error>`-shaped bytes and the
+            // formatter swallowed them mid-line. Escape at the echo.
             $output->writeln(sprintf(
                 "<info>phpdup</info> diff-base %s: %d changed file(s) from git diff --name-only %s..HEAD",
-                $config->diffBase,
+                self::escapeMarkup($config->diffBase),
                 count($diffBaseFiles),
-                $config->diffBase,
+                self::escapeMarkup($config->diffBase),
             ));
         }
 
@@ -357,5 +367,21 @@ final class ScanningStage implements CooperativeStageInterface
         @unlink($errPath);
 
         return [$stdout, $stderr, $code];
+    }
+
+    /**
+     * shell-S34 (php-dup-finder-shell-025): $bytes as literal console text.
+     * Symfony's formatter consumes `<...>` inside any writeln() line, so
+     * raw path/ref bytes embedded mid-line are markup — and injection —
+     * material (SEC proved `<fg=red>` swallowing). OutputFormatter::escape()
+     * carries Symfony's round-trip guarantee: the formatter prints the
+     * result byte-for-byte as the original value (trailing-backslash and
+     * all — its escape() already pads that case for the restore pass), and
+     * values without `<`/`>`/trailing "\" pass through unchanged, so every
+     * pre-existing render pin stays byte-exact.
+     */
+    private static function escapeMarkup(string $bytes): string
+    {
+        return OutputFormatter::escape($bytes);
     }
 }

@@ -24,6 +24,7 @@ use Phpdup\Reporting\BaselineStore;
 use Phpdup\Scanning\FileScanner;
 use Symfony\Component\Console\Command\Command as SymfonyCommand;
 use Symfony\Component\Console\Exception\RuntimeException as ConsoleRuntimeException;
+use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
@@ -467,13 +468,18 @@ HELP;
         if ($config->diffBase !== null) {
             $cohort = FileScanner::resolveDiffCohort($config->paths, $config->diffBase);
             if ($cohort['error'] !== null) {
-                $output->writeln('<error>' . $cohort['error'] . '</error>');
+                // shell-S34 (php-dup-finder-shell-025): the error string
+                // embeds the probed directory name and git's raw stderr —
+                // untrusted bytes, markup-escaped before they touch the
+                // <error> line.
+                $output->writeln('<error>' . self::escapeMarkup($cohort['error']) . '</error>');
                 return 2;
             }
             if ($cohort['paths'] === []) {
                 $output->writeln(sprintf(
                     '<error>phpdup: --diff-base %s: no changed files match the named scan root(s); refusing the unscoped full scan%s</error>',
-                    $config->diffBase,
+                    // shell-S34: the refusal echoes the raw argv ref.
+                    self::escapeMarkup($config->diffBase),
                     $cohort['unmatched'] === []
                         ? ''
                         : ' — ' . count($cohort['unmatched']) . ' changed path(s) in range are not on disk under the roots',
@@ -481,19 +487,21 @@ HELP;
                 return 2;
             }
             $diffCohort = $cohort['paths'];
+            // shell-S34: the count echo carries the raw ref twice.
             $output->writeln(sprintf(
                 "<info>phpdup</info> diff-base %s: %d changed file(s) from git diff --name-only %s..HEAD",
-                $config->diffBase,
+                self::escapeMarkup($config->diffBase),
                 count($diffCohort),
-                $config->diffBase,
+                self::escapeMarkup($config->diffBase),
             ));
             if ($cohort['unmatched'] !== []) {
                 // XP-03's "report unmatched" leg: changed-but-gone paths
                 // under a named root are disclosed, never silently dropped.
+                // shell-S34: every disclosed path is a raw git output byte.
                 $output->writeln(sprintf(
                     '<comment>phpdup: --diff-base: %d changed path(s) under the named root(s) are no longer on disk (deleted or renamed away); excluded from the cohort: %s</comment>',
                     count($cohort['unmatched']),
-                    implode(', ', $cohort['unmatched']),
+                    implode(', ', array_map(static fn (string $p): string => self::escapeMarkup($p), $cohort['unmatched'])),
                 ));
             }
             // Re-load with an explicit null so BOTH sources of diff_base
@@ -688,6 +696,23 @@ HELP;
             $roots[] = $abs;
         }
         return $roots;
+    }
+
+    /**
+     * shell-S34 (php-dup-finder-shell-025): $bytes as literal console text.
+     * Symfony's formatter consumes `<...>` inside any writeln() line, so
+     * raw path/ref/message bytes embedded mid-line are markup — and
+     * injection — material (SEC proved `<fg=red>` swallowing). This is the
+     * Command-side embodiment of the OutputInterface::escape convention the
+     * step makes law for path bytes: OutputFormatter::escape() carries
+     * Symfony's round-trip guarantee (the formatter prints the result
+     * byte-for-byte as the original value, trailing-backslash cases
+     * included), and innocuous values pass through unchanged, so the
+     * shell-S28/once-S15 render pins stay byte-exact.
+     */
+    private static function escapeMarkup(string $bytes): string
+    {
+        return OutputFormatter::escape($bytes);
     }
 
     /**
@@ -1389,14 +1414,21 @@ HELP;
             // (0 = ok incl findings, 2 = invalid invocation, 3 = gate trip).
             // Item 1.3: the script-kind apply refusal rides the SAME
             // posture — a typed runtime refusal, not a crash, not exit 2.
-            $output->writeln('<error>phpdup: ' . $e->getMessage() . '</error>');
+            // shell-S34: its forBlock message embeds the offending file's
+            // raw path bytes — escape at the render.
+            $output->writeln('<error>phpdup: ' . self::escapeMarkup($e->getMessage()) . '</error>');
             return 1;
         } finally {
             SignalHandler::uninstall();
         }
 
         if ($state->scanError !== null) {
-            $output->writeln('<error>' . $state->scanError . '</error>');
+            // shell-S34 (php-dup-finder-shell-025 leg (b)): the scanError
+            // string embeds the probed path and git's raw stderr — the
+            // finding's exact Command sink (old :667-669). Escape at the
+            // render; the composed string itself (and its substring pins)
+            // stays untouched.
+            $output->writeln('<error>' . self::escapeMarkup($state->scanError) . '</error>');
             return 2;
         }
 

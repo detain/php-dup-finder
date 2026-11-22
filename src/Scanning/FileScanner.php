@@ -436,10 +436,29 @@ final class FileScanner
 
     private function addSkipNote(string $note): void
     {
+        // shell-S34 (php-dup-finder-shell-025): a skip note embeds raw
+        // filesystem bytes — an ESC sequence inside a crafted directory
+        // name is terminal-injection material, and this leg has no Symfony
+        // formatter to stand between the bytes and the terminal (the
+        // plan's split: control-char scrubbing here, markup escaping at
+        // the OutputInterface sinks). Scrub ONCE at the chokepoint, before
+        // the note is stored, so skipNotes() and the stderr line can never
+        // diverge and any future consumer inherits the same safety.
+        $note = self::scrubControl($note);
         $this->skipNotes[] = $note;
         if ($this->warnOnSkip) {
             fwrite(STDERR, "phpdup: warning: {$note}\n");
         }
+    }
+
+    /**
+     * Control bytes shown in addcslashes octal form (\033 for ESC, \012
+     * for a note-forging newline), every other byte passed through
+     * untouched — printable ASCII and UTF-8 multibyte sequences alike.
+     */
+    private static function scrubControl(string $text): string
+    {
+        return addcslashes($text, "\x00..\x1F\x7F");
     }
 
     /**

@@ -1340,4 +1340,145 @@ final class FileScannerTest extends TestCase
         $again = iterator_to_array((new FileScanner($excludes, warnOnSkip: false))->scan($base . '/'), false);
         $this->assertSame($files, $again);
     }
+
+    // ── shell-S34 — php-dup-finder-shell-025: escape untrusted FS bytes ───
+
+    /**
+     * Skip notes are composed from raw filesystem bytes (paths, SPL
+     * messages). A crafted tree carrying a raw ESC sequence and a newline
+     * inside names must never store or emit live control bytes — the note
+     * (and the stderr line built from the same string) shows the
+     * addcslashes octal form instead. Anti-collateral legs: a UTF-8 name
+     * and a plain name pass through byte-identical.
+     */
+    public function testS34SkipNotesCarryScrubbedControlBytes(): void
+    {
+        $base = sys_get_temp_dir() . '/phpdup-s34c-' . (++$this->s34Seq) . '-' . getmypid() . '-' . spl_object_id($this);
+        $this->s34Dirs[] = $base;
+        $escDir = $base . '/e' . "\x1b[31m" . "scape";
+        $this->assertNotFalse(mkdir($escDir, 0777, true));
+        $this->assertNotFalse(mkdir($base . '/naïve', 0777, true));
+
+        // Dangling symlinks → noteSkipSymlink embeds the link pathname.
+        $this->assertNotFalse(symlink($base . '/gone-target', $escDir . '/dead.php'));
+        $this->assertNotFalse(symlink($base . '/gone-target', $escDir . "/we\nird.php"));
+        $this->assertNotFalse(symlink($base . '/gone-target', $base . '/naïve/héllo.php'));
+        $this->assertNotFalse(symlink($base . '/gone-target', $base . '/plain.php'));
+        file_put_contents($base . '/ok.php', "<?php\nfunction ok() { return 1; }\n");
+
+        $scanner = new FileScanner([], warnOnSkip: false);
+        iterator_to_array($scanner->scan($base), false);
+        $notes = $scanner->skipNotes();
+
+        $this->assertCount(4, $notes, 'one honest note per dangling link');
+        foreach ($notes as $note) {
+            $this->assertStringNotContainsString("\x1b", $note, 'live ESC bytes must never reach the note stream');
+            $this->assertStringNotContainsString("\n", $note, 'a newline inside a name must not forge extra note lines');
+        }
+        $this->assertNotNull($this->noteFor($notes, '\\033[31m'), 'ESC shown in octal escape form');
+        // addcslashes renders LF in its C-style short form (backslash+n,
+        // two visible bytes — proven by the assertion loop below: no raw
+        // newline survives in ANY note).
+        $this->assertNotNull($this->noteFor($notes, '\n'), 'newline shown in escape form');
+
+        // UTF-8 pass-through: multibyte names survive byte-identical…
+        $this->assertNotNull($this->noteFor($notes, '/naïve/héllo.php'));
+        // …and a plain path is byte-identical to the pre-scrub posture.
+        $this->assertNotNull($this->noteFor(
+            $notes,
+            'skipped symlinked path ' . $base . '/plain.php (target does not resolve)',
+        ));
+    }
+
+    /**
+     * shell-S34 leg (b), admission git-failure echo: the refusal embeds
+     * the probed directory's raw name. A directory literally named with an
+     * <error> tag must arrive LITERAL in the rendered line — pre-escape,
+     * Symfony's formatter consumed the tag bytes (the SEC repro class).
+     */
+    public function testS34AdmissionGitFailureEchoesMarkupDirLiterally(): void
+    {
+        $dir = sys_get_temp_dir() . '/phpdup-s34m-' . (++$this->s34Seq) . '-' . getmypid() . '-p<error>wn';
+        $this->assertNotFalse(mkdir($dir, 0777, true));
+        $this->s34Dirs[] = $dir;
+        file_put_contents($dir . '/seen.php', "<?php\nfunction seen() { return 1; }\n");
+
+        $tester = $this->s34CommandTester();
+        $exit   = $tester->execute(
+            ['paths' => [$dir], '--diff-base' => 'HEAD~1'],
+            ['capture_stderr_separately' => true],
+        );
+
+        $combined = $tester->getErrorOutput() . $tester->getDisplay();
+        $this->assertSame(2, $exit, 'display was: ' . $combined);
+        $this->assertStringContainsString(
+            '--diff-base git diff failed in ' . $dir,
+            $combined,
+            'the refusal must echo the directory name literally, markup and all',
+        );
+        $this->assertStringNotContainsString('scanning ', $combined, 'the refusal still precedes any pipeline output');
+    }
+
+    /**
+     * shell-S34 leg (b), admission count + refusal lines: the configured
+     * --diff-base ref is raw argv. Git accepts `<error>`-bearing ref names
+     * (check-ref-format verified), so both echoes of the ref — the
+     * happy-path count line and the empty-cohort refusal — must show it
+     * literally instead of handing the formatter live markup.
+     */
+    public function testS34AdmissionEchoesMarkupRefLiterally(): void
+    {
+        $repo = $this->s34Repo();
+        $clone = "<?php\nfunction twinX() { return 1; }\n";
+        $this->s34Commit($repo, ['code/a.php' => $clone]);
+        $this->s34Commit($repo, ['code/b.php' => $clone]);
+        $this->s34Git($repo, ['tag', '<error>boom', 'HEAD~1']);
+        $this->assertNotFalse(mkdir($repo . '/empty', 0777, true));
+
+        $tester = $this->s34CommandTester();
+        $exit   = $tester->execute(['paths' => [$repo], '--diff-base' => '<error>boom']);
+        $this->assertSame(0, $exit, 'display was: ' . $tester->getDisplay());
+        $this->assertStringContainsString(
+            'diff-base <error>boom: 1 changed file(s) from git diff --name-only <error>boom..HEAD',
+            $tester->getDisplay(),
+            'the count echo must render the ref literally, not as markup',
+        );
+
+        $refusal = $this->s34CommandTester();
+        $exit    = $refusal->execute(
+            ['paths' => [$repo . '/empty'], '--diff-base' => '<error>boom'],
+            ['capture_stderr_separately' => true],
+        );
+        $this->assertSame(2, $exit, 'display was: ' . $refusal->getDisplay());
+        $this->assertStringContainsString(
+            '--diff-base <error>boom: no changed files match',
+            $refusal->getErrorOutput() . $refusal->getDisplay(),
+            'the empty-cohort refusal echoes the ref literally too',
+        );
+    }
+
+    /**
+     * shell-S34 leg (b), XP-03 unmatched disclosure: git reports the
+     * deleted path with its raw name; the disclosure line must print it
+     * literally — pre-escape the embedded <fg=red> is a REAL style tag,
+     * the exact markup-consumption SEC proved.
+     */
+    public function testS34AdmissionUnmatchedDisclosureEscapesGitPathBytes(): void
+    {
+        $repo = $this->s34Repo();
+        // Distinct bodies: identical contents would fold into a RENAME in
+        // git's name-only view (one line, no unmatched entry) — the point
+        // of this pin is the deleted-path line.
+        $this->s34Commit($repo, ['gone<fg=red>q.php' => "<?php\nfunction goneQ(string \$a): array { return array_map('trim', explode(',', \$a)); }\n", 'keep.php' => "<?php\nfunction keepMe() { return 2; }\n"]);
+        $this->s34Commit($repo, ['gone<fg=red>q.php' => null, 'new.php' => "<?php\nfunction brandOther(int \$x): int { return \$x * 7 + 3; }\n"]);
+
+        $tester = $this->s34CommandTester();
+        $exit   = $tester->execute(['paths' => [$repo], '--diff-base' => 'HEAD~1']);
+        $this->assertSame(0, $exit, 'display was: ' . $tester->getDisplay());
+        $this->assertStringContainsString(
+            'no longer on disk (deleted or renamed away); excluded from the cohort: gone<fg=red>q.php',
+            $tester->getDisplay(),
+            'a git output path carrying markup must arrive literally, never as style',
+        );
+    }
 }

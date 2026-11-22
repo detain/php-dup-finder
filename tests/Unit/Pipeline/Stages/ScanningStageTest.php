@@ -6,12 +6,23 @@ namespace Phpdup\Tests\Unit\Pipeline\Stages;
 use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\Config;
 use Phpdup\Cli\Command;
+use Phpdup\Extraction\Block;
+use Phpdup\Pipeline\Pipeline;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\Stage;
 use Phpdup\Pipeline\Stages\ScanningStage;
+use Phpdup\Pipeline\StageInterface;
+use Phpdup\Refactor\ScriptKindApplyRefusal;
+use Phpdup\Util\LineRange;
+use Phpdup\Watch\FileChangeType;
+use Phpdup\Watch\WatchRunner;
+use PhpParser\Node\Stmt\Nop;
+use Psr\Log\NullLogger;
 use Symfony\Component\Console\Application;
+use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\NullOutput;
+use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Tester\CommandTester;
 
 final class ScanningStageTest extends TestCase
@@ -324,5 +335,216 @@ final class ScanningStageTest extends TestCase
         $app->add(new Command());
 
         return new CommandTester($app->find('analyze'));
+    }
+
+    // ── shell-S34 — php-dup-finder-shell-025: escape untrusted FS bytes ───
+    //
+    // Render-side pins for the sinks whose bytes arrive raw: the stage's
+    // diff-base echo and discovery debug line (ScanningStage), the pump's
+    // scanError and typed-halt renders (Command::dispatch), and the watch
+    // change/failure lines (WatchRunner). OutputFormatter::escape() is
+    // identity for innocuous values, so every pre-existing render pin in
+    // this file (and in tests/Unit/Watch/WatchRunnerTest.php) holds
+    // byte-exact — those suites are the anti-collateral belt here.
+
+    public function testS34StageDiffBaseEchoEscapesMarkupRef(): void
+    {
+        $repo = $this->makeRepo([['hp3.php', "<?php\nfunction hp3() { return 3; }\n"]]);
+        // Git accepts <> in ref names (check-ref-format verified at lane
+        // time) — so the echo is the ONLY defence between argv bytes and
+        // the formatter.
+        $this->git($repo, ['tag', '<error>boom', 'HEAD~1']);
+
+        $config = Config::defaults([$repo])->withOverrides(['diff_base' => '<error>boom']);
+        $state  = new PipelineState($config);
+        $buf    = new BufferedOutput();
+        (new ScanningStage())->run($state, $buf);
+
+        $this->assertNull($state->scanError, 'the weird ref must still resolve: ' . var_export($state->scanError, true));
+        $display = str_replace("\r", '', $buf->fetch());
+        $this->assertStringContainsString(
+            'phpdup diff-base <error>boom: 1 changed file(s) from git diff --name-only <error>boom..HEAD',
+            $display,
+            'ref bytes must arrive literally — pre-escape Symfony consumes <error> as markup',
+        );
+    }
+
+    public function testS34DebugDiscoveryLineEscapesMarkupPaths(): void
+    {
+        $dir = $this->scratchDir('dbg100');
+        // Every candidate name carries markup, so the one line the leg
+        // emits (totalFiles hits 100) is guaranteed to hold a raw tag
+        // whatever walk order the filesystem used.
+        for ($k = 0; $k < 100; $k++) {
+            $this->assertNotFalse(file_put_contents($dir . '/f' . $k . "<error>z.php", "<?php\nfunction f{$k}() { return 1; }\n"));
+        }
+
+        $config = Config::defaults([$dir]);
+        $state  = new PipelineState($config);
+        $buf    = new BufferedOutput(BufferedOutput::VERBOSITY_DEBUG);
+        (new ScanningStage())->run($state, $buf);
+
+        $display = str_replace("\r", '', $buf->fetch());
+        $this->assertStringContainsString('discovered file', $display, 'the debug leg must have fired');
+        $this->assertMatchesRegularExpression(
+            '/\d+<error>z\.php/',
+            $display,
+            'the discovered path must be rendered literally, not consumed as markup',
+        );
+    }
+
+    public function testS34ScanErrorRenderEscapesMarkupBytes(): void
+    {
+        $dir  = $this->scratchDir('pump-<error>wn');
+        $this->assertNotFalse(file_put_contents($dir . '/seen.php', "<?php\nfunction seen() { return 1; }\n"));
+
+        // Post-once-S34, admission nulls diff_base on the analyze pipeline
+        // config, so the scanError pump render is no longer reachable via
+        // CommandTester — drive the private dispatch() directly. The
+        // constructed scanError string stays RAW (its substring pins prove
+        // that); only the render is escaped.
+        $config = Config::defaults([$dir])->withOverrides(['diff_base' => 'HEAD~1']);
+        $output = new BufferedOutput();
+        $code   = $this->driveDispatch(
+            $config,
+            static fn (): Pipeline => new Pipeline([new ScanningStage()]),
+            $output,
+        );
+        // fetch() consumes — capture once, then assert.
+        $display = str_replace("\r", '', $output->fetch());
+
+        $this->assertSame(2, $code, 'rendered display was: ' . $display);
+        $this->assertStringContainsString('--diff-base git diff failed in ' . $dir, $display);
+        $this->assertStringContainsString('<error>wn', $display, 'the path markup must survive as literal text');
+    }
+
+    public function testS34TypedHaltRenderEscapesMarkupBytes(): void
+    {
+        $dir    = $this->scratchDir('pump-halt');
+        $config = Config::defaults([$dir]);
+        $stage  = new class implements StageInterface {
+            public function name(): Stage
+            {
+                return Stage::Clustering;
+            }
+
+            public function run(PipelineState $state, OutputInterface $output): void
+            {
+                throw ScriptKindApplyRefusal::forBlock(
+                    new Block('/tmp/p<error>q.php', new LineRange(1, 2), 'script', null, null, null, new Nop()),
+                    'ast loader',
+                );
+            }
+        };
+
+        $output = new BufferedOutput();
+        $code   = $this->driveDispatch(
+            $config,
+            // NOT static: the arrow fn must bind $stage.
+            fn (): Pipeline => new Pipeline([$stage]),
+            $output,
+        );
+        $display = str_replace("\r", '', $output->fetch());
+
+        $this->assertSame(1, $code, 'a typed runtime refusal keeps exit 1 (ft-n2 posture); display was: ' . $display);
+        $this->assertStringContainsString(
+            '/tmp/p<error>q.php',
+            $display,
+            'the refusal message embeds the block file path — raw bytes must render literally',
+        );
+    }
+
+    public function testS34WatchChangeAndFailureLinesEscapeUntrustedBytes(): void
+    {
+        $scratch = $this->scratchDir('watchesc');
+        $this->assertNotFalse(file_put_contents($scratch . '/a.php', "<?php\nfunction a() { return 1; }\n"));
+
+        $crashStage = new class implements StageInterface {
+            public function name(): Stage
+            {
+                return Stage::Preprocessing;
+            }
+
+            public function run(PipelineState $state, OutputInterface $output): void
+            {
+                throw new \RuntimeException('poisoned <error>cache row');
+            }
+        };
+
+        $output = new BufferedOutput();
+        $runner = new WatchRunner(
+            new Pipeline([$crashStage]),
+            static fn (): PipelineState => new PipelineState(Config::defaults([sys_get_temp_dir()])),
+            $output,
+            new NullLogger(),
+            $scratch,
+        );
+        // Public seam convention (WatchRunnerTest): drive handleChange
+        // directly, never enter the blocking loop.
+        $runner->handleChange('a<error>b.php', FileChangeType::Modified);
+
+        $display = str_replace("\r", '', $output->fetch());
+        $this->assertStringContainsString(
+            'change detected (modified: a<error>b.php)',
+            $display,
+            'the watched path must render literally inside the line',
+        );
+        $this->assertStringContainsString(
+            'watch pass failed (RuntimeException): poisoned <error>cache row',
+            $display,
+            'the crash message bytes (which routinely carry paths) must render literally',
+        );
+
+        // The typed-halt arm of runGuarded (the watch mirror of the
+        // Command pump catch): ScriptKindApplyRefusal embeds a path too.
+        $haltStage = new class implements StageInterface {
+            public function name(): Stage
+            {
+                return Stage::Refactoring;
+            }
+
+            public function run(PipelineState $state, OutputInterface $output): void
+            {
+                throw ScriptKindApplyRefusal::forBlock(
+                    new Block('/tmp/p<error>q.php', new LineRange(1, 2), 'script', null, null, null, new Nop()),
+                    'ast loader',
+                );
+            }
+        };
+        $haltOut  = new BufferedOutput();
+        $haltRun  = new WatchRunner(
+            new Pipeline([$haltStage]),
+            static fn (): PipelineState => new PipelineState(Config::defaults([sys_get_temp_dir()])),
+            $haltOut,
+            new NullLogger(),
+            $scratch,
+        );
+        $this->assertTrue($haltRun->runGuarded(new PipelineState(Config::defaults([$scratch]))));
+        $this->assertStringContainsString(
+            '/tmp/p<error>q.php',
+            str_replace("\r", '', $haltOut->fetch()),
+            'the typed-halt line embeds the block file path — escape at the render',
+        );
+    }
+
+    /**
+     * Drive Command's private dispatch() pump (the sole render site for
+     * the scanError and typed-halt lines outside the watch loop). The
+     * plain-path branch reads only the tuiMode/watchMode keys of $opts
+     * before the renders under test.
+     */
+    private function driveDispatch(Config $config, \Closure $buildPipeline, BufferedOutput $output): int
+    {
+        $dispatch = new \ReflectionMethod(Command::class, 'dispatch');
+
+        return $dispatch->invoke(
+            new Command(),
+            new ArrayInput([]),
+            $output,
+            $config,
+            $buildPipeline,
+            ['tuiMode' => false, 'watchMode' => false],
+            null,
+        );
     }
 }

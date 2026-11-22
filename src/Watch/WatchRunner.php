@@ -10,6 +10,7 @@ use Phpdup\Refactor\ScriptKindApplyRefusal;
 use Phpdup\Util\CountPhrase;
 use Psr\Log\LoggerInterface;
 use React\EventLoop\Loop;
+use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Output\OutputInterface;
 
 /**
@@ -197,9 +198,13 @@ final class WatchRunner
 
         $this->reloadCount++;
         $coalesced = count($batch) > 1 ? sprintf(' · %d files coalesced', count($batch)) : '';
+        // shell-S34 (php-dup-finder-shell-025): $path arrives from the
+        // watched tree — untrusted filesystem bytes. Markup-escape before
+        // embedding it inside the writeln line (escape() is identity for
+        // every innocuous path, so the shell-S33 render pins hold byte-exact).
         $this->output->writeln(sprintf(
             '<info>phpdup</info> change detected (%s: %s%s) — reload #%d',
-            $type->value, $path, $coalesced, $this->reloadCount,
+            $type->value, self::escapeMarkup($path), $coalesced, $this->reloadCount,
         ));
 
         // once-S08 (php-dup-finder-once-008 closure): the WHOLE dispatch —
@@ -245,7 +250,9 @@ final class WatchRunner
             $this->consecutivePassFailures = 0;
             return true;
         } catch (CandidateBudgetException | ScriptKindApplyRefusal $e) {
-            $this->output->writeln('<error>phpdup: ' . $e->getMessage() . '</error>');
+            // shell-S34: a ScriptKindApplyRefusal::forBlock message embeds
+            // the offending block's file path — raw filesystem bytes.
+            $this->output->writeln('<error>phpdup: ' . self::escapeMarkup($e->getMessage()) . '</error>');
             return true;
         } catch (\Throwable $e) {
             $this->notePassFailure($e);
@@ -265,10 +272,12 @@ final class WatchRunner
     private function notePassFailure(\Throwable $e): void
     {
         $this->consecutivePassFailures++;
+        // shell-S34: $e::class is PHP-internal (trusted); the message often
+        // embeds filesystem bytes from whatever leg crashed — escape them.
         $this->output->writeln(sprintf(
             '<error>phpdup: watch pass failed (%s): %s</error>',
             $e::class,
-            $e->getMessage(),
+            self::escapeMarkup($e->getMessage()),
         ));
     }
 
@@ -282,5 +291,19 @@ final class WatchRunner
             '<comment>watching %s · last update %s</comment>',
             CountPhrase::files($fileCount), date('H:i:s'),
         ));
+    }
+
+    /**
+     * shell-S34 (php-dup-finder-shell-025): $bytes as literal console text.
+     * Symfony's formatter consumes `<...>` inside any writeln() line, so
+     * raw path/message bytes embedded mid-line are markup — and injection —
+     * material (SEC proved `<fg=red>` swallowing). OutputFormatter::escape()
+     * carries Symfony's round-trip guarantee: the formatter prints the
+     * result byte-for-byte as the original value, and innocuous values pass
+     * through unchanged, so the shell-S33 render pins stay byte-exact.
+     */
+    private static function escapeMarkup(string $bytes): string
+    {
+        return OutputFormatter::escape($bytes);
     }
 }
