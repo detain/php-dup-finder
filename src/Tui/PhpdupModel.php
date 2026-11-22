@@ -43,8 +43,33 @@ final class PhpdupModel implements Model, ProgressListener
 
     private float $startedAt;
 
-    /** Cooperative pipeline iterator — null when the model isn't driving live (Phase 2 mode). */
+    /**
+     * Cooperative pipeline iterator — null when the model isn't driving live (Phase 2 mode).
+     */
     private ?\Generator $iterator = null;
+
+    /**
+     * shell-S40 (php-dup-finder-shell-051): minimum interval between RSS
+     * samples, seconds. The progress callbacks fire per file / per pair —
+     * thousands of times per stage on a hot corpus — while the dashboard's
+     * memory gauge is only worth re-reading a few times a second; in
+     * particular memory_get_peak_usage(true) reaches the allocator's real
+     * figures, a syscall on the per-yield path. Inside the window the last
+     * reading is kept as-is (a gauge, not an alarm: staleness costs a
+     * repaint, not correctness).
+     */
+    private const RSS_SAMPLE_INTERVAL_SECONDS = 0.25;
+
+    /**
+     * Clock backing the RSS throttle ({@see self::$lastRssSampleAt}).
+     * Injectable so unit tests pin the window without sleeping; the
+     * default is wall-clock seconds like every other timer in this model.
+     *
+     * @var \Closure(): float
+     */
+    private readonly \Closure $nowSeconds;
+
+    private ?float $lastRssSampleAt = null;
 
     /** True once the iterator has been rewound; tracks whether to call rewind() vs next() on the next pump. */
     private bool $iteratorStarted = false;
@@ -67,10 +92,12 @@ final class PhpdupModel implements Model, ProgressListener
         public ViewState $viewState,
         private readonly Theme $theme,
         ?\Closure $iteratorFactory = null,
+        ?\Closure $nowSeconds = null,
     ) {
         $this->spinner         = Spinner::new(SpinnerStyle::miniDot());
         $this->startedAt       = microtime(true);
         $this->iteratorFactory = $iteratorFactory;
+        $this->nowSeconds      = $nowSeconds ?? static fn(): float => microtime(true);
     }
 
     #[\Override]
@@ -97,8 +124,7 @@ final class PhpdupModel implements Model, ProgressListener
         // PipelineState already tracks this; surface to the dashboard via state.
         $this->state->scannedFiles = $scanned;
         $this->state->totalFiles   = $total;
-        $this->state->rssBytes = memory_get_usage(false);
-        $this->state->peakBytes = memory_get_peak_usage(true);
+        $this->sampleRss();
     }
 
     #[\Override]
@@ -107,8 +133,7 @@ final class PhpdupModel implements Model, ProgressListener
         $this->state->processedFiles = $processed;
         $this->state->reusedFiles    = $reused;
         $this->state->parseErrors    = $errors;
-        $this->state->rssBytes = memory_get_usage(false);
-        $this->state->peakBytes = memory_get_peak_usage(true);
+        $this->sampleRss();
     }
 
     #[\Override]
@@ -116,14 +141,27 @@ final class PhpdupModel implements Model, ProgressListener
     {
         $this->state->scoredPairs    = $scored;
         $this->state->candidatePairs = $total;
-        $this->state->rssBytes = memory_get_usage(false);
-        $this->state->peakBytes = memory_get_peak_usage(true);
+        $this->sampleRss();
     }
 
     #[\Override]
     public function onClusterRefactored(int $refactored, int $total): void
     {
         $this->state->refactoredClusters = $refactored;
+        $this->sampleRss();
+    }
+
+    /**
+     * Read the memory gauges at most once per {@see self::RSS_SAMPLE_INTERVAL_SECONDS};
+     * inside the window the previous reading survives untouched.
+     */
+    private function sampleRss(): void
+    {
+        $now = ($this->nowSeconds)();
+        if ($this->lastRssSampleAt !== null && $now - $this->lastRssSampleAt < self::RSS_SAMPLE_INTERVAL_SECONDS) {
+            return;
+        }
+        $this->lastRssSampleAt = $now;
         $this->state->rssBytes = memory_get_usage(false);
         $this->state->peakBytes = memory_get_peak_usage(true);
     }
@@ -233,6 +271,9 @@ final class PhpdupModel implements Model, ProgressListener
         $this->state           = $state;
         $this->stageDurations  = [];
         $this->startedAt       = microtime(true);
+        // A fresh run must not inherit the previous run's throttle window —
+        // the new dashboard's first progress callback samples immediately.
+        $this->lastRssSampleAt = null;
     }
 
     private function scheduleNextPump(): \Closure

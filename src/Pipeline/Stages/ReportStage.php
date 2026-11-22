@@ -218,8 +218,9 @@ final class ReportStage implements StageInterface
         $state->clusters = $clusters;
 
         // Cache cluster ids so the `phpdup completion` drill-down can
-        // suggest them. One id per line; refreshed on every run so
-        // stale ids age out automatically.
+        // suggest them. One id per line; refreshed when the id list
+        // changes, so stale ids age out automatically without a
+        // per-run rewrite (shell-S40).
         $this->writeClusterIdCache($config->cacheDir, $clusters);
 
         if ($this->pagerMode !== Pager::MODE_NEVER) {
@@ -302,16 +303,38 @@ final class ReportStage implements StageInterface
         }
     }
 
-    /** @param list<\Phpdup\Clustering\Cluster> $clusters */
+    /**
+     * Refresh the cluster-id cache. shell-S40 (php-dup-finder-shell-051)
+     * removes the unconditional per-run I/O: the payload is built first
+     * and compared against the current file, an identical list is not
+     * rewritten, and a zero-cluster run over a cache dir that does not
+     * exist yet creates neither the dir nor an empty list — nothing was
+     * recorded before, nothing is recorded now, so the state is
+     * unchanged. A stale non-empty list IS still aged out: the empty
+     * payload differs from it and lands as a truncate.
+     *
+     * @param list<\Phpdup\Clustering\Cluster> $clusters
+     */
     private function writeClusterIdCache(string $cacheDir, array $clusters): void
     {
-        if ($cacheDir === '' || !@is_dir($cacheDir) && !@mkdir($cacheDir, 0o775, true)) {
+        if ($cacheDir === '') {
             return;
         }
         $payload = '';
         foreach ($clusters as $c) {
             $payload .= $c->id . "\n";
         }
-        @file_put_contents($cacheDir . '/clusters.list', $payload);
+        $path = $cacheDir . '/clusters.list';
+        $current = @is_file($path) ? @file_get_contents($path) : null;
+        if ($current === $payload) {
+            return;
+        }
+        if ($current === null && $payload === '') {
+            return;
+        }
+        if (!@is_dir($cacheDir) && !@mkdir($cacheDir, 0o775, true)) {
+            return;
+        }
+        @file_put_contents($path, $payload);
     }
 }

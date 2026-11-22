@@ -291,18 +291,25 @@ final class FileWatcher
     /**
      * Detect files whose mtime changed since the last snapshot.
      *
+     * shell-S40 (php-dup-finder-shell-051): the stat-cache clear is
+     * hoisted to once per scan instead of once per file. Every path is
+     * stat'd at most once after the clear within this walk, so the
+     * scan-wide clear gives exactly the same read-freshness guarantee
+     * the per-file clears did, with N calls fewer on a hot corpus.
+     *
      * @param SplFileInfo[] $currentFiles
      * @return array<string> paths of modified files
      */
     public function detectModifiedFiles(array $currentFiles): array
     {
+        clearstatcache(true);
+
         $modified = [];
         foreach ($currentFiles as $file) {
             $path = $file instanceof SplFileInfo ? $file->getPathname() : (string)$file;
             if (!array_key_exists($path, $this->snapshot)) {
                 continue;
             }
-            clearstatcache(true, $path);
             $mtime = @filemtime($path);
             if ($mtime !== false && $mtime !== $this->snapshot[$path]) {
                 $modified[] = $path;

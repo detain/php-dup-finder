@@ -314,6 +314,73 @@ final class PhpdupModelTest extends TestCase
         $this->assertSame(0, $model->reloadCount);
     }
 
+    /**
+     * shell-S40 (php-dup-finder-shell-051): the RSS sample behind the four
+     * progress callbacks is throttled to one allocator read per
+     * PhpdupModel::RSS_SAMPLE_INTERVAL_SECONDS window — between windows the
+     * last reading survives untouched (a stale gauge, not a syscall storm).
+     * Fake clock via the injected seam: zero wall-clock, CI-safe.
+     */
+    public function testRssSamplingIsThrottledToTheIntervalWindow(): void
+    {
+        $now = 1000.0;
+        $clock = static function () use (&$now): float { return $now; };
+
+        $state = new PipelineState(Config::defaults([__DIR__]));
+        $model = new PhpdupModel(
+            $state,
+            new ViewState(),
+            TuiRunner::resolveTheme('plain'),
+            null,
+            $clock,
+        );
+
+        $model->onFileScanned(1, 2);
+        $this->assertGreaterThan(0, $state->rssBytes, 'first callback samples the gauges');
+
+        $state->rssBytes = 1; // poison: any re-sample overwrites with real usage
+        $model->onPairScored(1, 2);
+        $model->onFilePreprocessed(1, 0, 0);
+        $model->onClusterRefactored(1, 1);
+        $this->assertSame(1, $state->rssBytes, 'no allocator read inside the throttle window');
+
+        $now += 0.25; // exactly the window: the next callback lands a fresh sample
+        $model->onFileScanned(2, 2);
+        $this->assertGreaterThan(1, $state->rssBytes, 'sampling resumes once the interval elapsed');
+    }
+
+    public function testRssThrottleResetsOnFreshRun(): void
+    {
+        // Watch-mode restarts hand the dashboard a fresh state; its first
+        // progress callback must not be swallowed by the previous run's window.
+        $now = 5000.0;
+        $clock = static function () use (&$now): float { return $now; };
+
+        $state = new PipelineState(Config::defaults([__DIR__]));
+        $model = new PhpdupModel(
+            $state,
+            new ViewState(),
+            TuiRunner::resolveTheme('plain'),
+            static function () use ($state): array {
+                $state->rssBytes = 0;
+                return [
+                    (static function (): \Generator { yield Stage::Scanning; })(),
+                    $state,
+                ];
+            },
+            $clock,
+        );
+
+        $model->init();
+        $model->onFileScanned(1, 1);
+        $this->assertGreaterThan(0, $state->rssBytes, 'first sample of a run lands immediately');
+
+        $state->rssBytes = 1; // poison mid-window
+        $model->update(new \Phpdup\Tui\Msg\RestartPipelineMsg(reload: 1));
+        $model->onFileScanned(2, 2); // first callback after the restart
+        $this->assertGreaterThan(1, $state->rssBytes, 'a fresh run zeroes the throttle window');
+    }
+
     private function buildModel(): PhpdupModel
     {
         $state = new PipelineState(Config::defaults([__DIR__]));
