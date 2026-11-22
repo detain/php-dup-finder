@@ -42,8 +42,18 @@ use Symfony\Component\Console\Output\OutputInterface;
  */
 final class PreprocessWorker
 {
-    public function __construct(private readonly Config $config)
-    {
+    /**
+     * @param bool $astDiskCache The run's cache policy for the on-disk AST
+     *        cache (engine-019). PreprocessStage threads its useCache flag
+     *        (--no-cache clears it); false collapses the worker's AstCache
+     *        to its disabled ''-dir no-op form so the run neither writes
+     *        parser blobs nor serves pre-planted ones. Defaults to true so
+     *        every array-API caller keeps the historic behaviour.
+     */
+    public function __construct(
+        private readonly Config $config,
+        private readonly bool $astDiskCache = true,
+    ) {
     }
 
     /**
@@ -129,7 +139,14 @@ final class PreprocessWorker
             $output->writeln(sprintf('worker: processing %d files in batch [%s]', count($files), MemoryDebug::getMemoryUsage()));
         }
 
-        $cache  = new AstCache($this->config->cacheDir);
+        // engine-019: honour the run's cache policy here, not just at the
+        // stage's IndexStore gate. Historically this line passed
+        // config->cacheDir unconditionally, so a --no-cache run still wrote
+        // fresh parser blobs AND still fingerprinted from pre-planted ones
+        // (SEC-02's escape hatch). '' makes AstCache::isEnabled() false, so
+        // get()/put() no-op and every file parses fresh — the same policy
+        // shape RefactorStage applies to its BlockAstLoader's AstCache.
+        $cache  = new AstCache($this->astDiskCache ? $this->config->cacheDir : '');
         $parser = new AstParser();
         $hasher = new SubtreeHasher();
 

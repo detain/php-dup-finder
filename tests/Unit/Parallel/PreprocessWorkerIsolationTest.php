@@ -6,8 +6,14 @@ namespace Phpdup\Tests\Unit\Parallel;
 use PhpParser\Node;
 use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\Config;
+use Phpdup\Extraction\Block;
 use Phpdup\Normalization\NormalizationPlugin;
 use Phpdup\Parallel\PreprocessWorker;
+use Phpdup\Parsing\AstCache;
+use Phpdup\Parsing\AstParser;
+use Phpdup\Pipeline\PipelineState;
+use Phpdup\Pipeline\Stages\PreprocessStage;
+use Symfony\Component\Console\Output\NullOutput;
 
 /**
  * Pins for the Hazard-1 companion fix (improve_logic.md item 0.3): a file
@@ -19,6 +25,10 @@ use Phpdup\Parallel\PreprocessWorker;
  *
  * Also pins the shell-008 streaming twin: PreprocessWorker::processStream
  * yields per file (early-arrival + array/generator parity).
+ *
+ * And the engine-019 cache-policy thread: with astDiskCache disabled (what
+ * PreprocessStage passes for --no-cache) the worker neither writes parser
+ * blobs nor serves planted ones — fresh parses only, cache dir byte-still.
  */
 final class PreprocessWorkerIsolationTest extends TestCase
 {
@@ -217,6 +227,142 @@ final class PreprocessWorkerIsolationTest extends TestCase
         );
         // process() is currently a drain of processStream(), so this equality arm guards a future re-implementation of process(), not current parity.
         $this->assertSame($shape($arrayRows), $shape($streamRows), 'the array API and the generator twin are row-identical');
+    }
+
+    /**
+     * engine-019 acceptance, arm A: a worker with astDiskCache disabled
+     * completes extraction + hashing + fingerprinting from fresh parses
+     * (rows carry live structuralHash/ngramBag values) and leaves the
+     * cache dir byte-empty — while the SAME batch through an enabled
+     * worker (the historic default) does populate it. Without the control
+     * the empty-dir assert would be vacuous: it would only prove that
+     * nobody in this test ever reaches the write path.
+     */
+    public function testDisabledAstDiskCacheParsesFreshAndWritesNoBlobs(): void
+    {
+        $path     = $this->writePhp('nocache_fresh.php', "<?php\nfunction alpha() { one(); }\nfunction beta() { two(); }\n");
+        $cacheDir = $this->tmpDir . '/cache';
+
+        $rows = (new PreprocessWorker($this->config(poisoned: false), astDiskCache: false))->process([$path]);
+
+        $this->assertCount(2, $rows, 'both blocks still come out — fingerprinting completes from fresh parses');
+        foreach ($rows as $row) {
+            $this->assertSame('block', $row['type']);
+            /** @var Block $block */
+            $block = $row['block'];
+            $this->assertSame($path, $block->file);
+            $this->assertNotSame('', $block->structuralHash, 'block must carry a live structural hash');
+            $this->assertNotEmpty($block->ngramBag, 'block must carry a live n-gram bag');
+        }
+        $this->assertSame([], $this->snapshotCacheDir($cacheDir), 'a disabled run must not create a single cache file');
+
+        // Control arm: default (enabled) worker on the same file writes blobs.
+        $control = (new PreprocessWorker($this->config(poisoned: false)))->process([$path]);
+        $this->assertCount(2, $control);
+        $this->assertNotSame([], $this->snapshotCacheDir($cacheDir), 'the enabled default must still populate the parser cache');
+    }
+
+    /**
+     * engine-019 acceptance, arm B (SEC-02 mirror, worker level): a forged
+     * parser-v6 blob planted for a real file via the legitimate cache
+     * writer (framing-valid, allow-listed classes — exactly the poisoning
+     * shape) IS served to an enabled worker (control: the hazard is real
+     * and observable through block names) but never touches a disabled
+     * run: fresh-parse rows, and the decoy blob byte-untouched afterwards
+     * (never consumed, never rewritten).
+     */
+    public function testPlantedDecoyServedWhenEnabledNeverServedWhenDisabled(): void
+    {
+        $path = $this->writePhp('decoy_target.php', "<?php\nfunction real_alpha() { one(); }\n");
+
+        $parser = new AstParser();
+        $forged = $parser->parseCode("<?php\nfunction forged_beta() { two(); }\n");
+        $this->assertIsArray($forged);
+        (new AstCache($this->tmpDir . '/cache'))->put($path, $forged);
+
+        $cacheDir = $this->tmpDir . '/cache';
+        $planted  = $this->snapshotCacheDir($cacheDir);
+        $this->assertCount(1, $planted, 'the decoy blob must be in place before the runs');
+
+        // Control: with the parser cache live, the poisoned blob decides
+        // what the worker fingerprints — this is the escape hatch breaking.
+        $served = (new PreprocessWorker($this->config(poisoned: false)))->process([$path]);
+        $this->assertSame(
+            ['forged_beta'],
+            array_map(static fn (array $r): string => (string) $r['block']->name, $served),
+            'the enabled run proves the decoy is served (control, not desired behaviour)',
+        );
+
+        // Fixed path: --no-cache semantics (astDiskCache: false) refuse it.
+        $fresh = (new PreprocessWorker($this->config(poisoned: false), astDiskCache: false))->process([$path]);
+        $this->assertSame(
+            ['real_alpha'],
+            array_map(static fn (array $r): string => (string) $r['block']->name, $fresh),
+            'the disabled run must fingerprint the fresh parse, never the planted AST',
+        );
+        $this->assertSame($planted, $this->snapshotCacheDir($cacheDir), 'decoy blob neither consumed nor rewritten by the disabled run');
+    }
+
+    /**
+     * engine-019 end-to-end mirror at the stage seam: a PreprocessStage
+     * built with useCache: false — exactly what Command.php threads for
+     * --no-cache — must drive its (possibly forked) workers to ignore the
+     * planted decoy: the real block reaches $state->blocks, the forged
+     * name never does, and the cache dir is byte-still after the run.
+     */
+    public function testStageWithUseCacheFalseNeverServesPlantedDecoy(): void
+    {
+        $path = $this->writePhp('stage_decoy_target.php', "<?php\nfunction stage_real() { one(); }\n");
+
+        $parser = new AstParser();
+        $forged = $parser->parseCode("<?php\nfunction stage_forged() { two(); }\n");
+        $this->assertIsArray($forged);
+        $cacheDir = $this->tmpDir . '/cache';
+        (new AstCache($cacheDir))->put($path, $forged);
+        $before = $this->snapshotCacheDir($cacheDir);
+        $this->assertCount(1, $before, 'the decoy blob must be in place before the stage run');
+
+        $config = new Config(
+            paths: [$this->tmpDir],
+            exclude: [],
+            minBlockSize: 1,
+            cacheDir: $cacheDir,
+        );
+        $state = new PipelineState($config);
+        $state->files = [$path];
+
+        (new PreprocessStage(useCache: false))->run($state, new NullOutput());
+
+        $this->assertSame(0, $state->parseErrors);
+        $names = array_map(static fn (Block $b): string => (string) $b->name, $state->blocks);
+        $this->assertSame(['stage_real'], $names, 'the stage must fingerprint the fresh parse, never the planted decoy');
+        $this->assertSame($before, $this->snapshotCacheDir($cacheDir), 'cache dir byte-unchanged through a --no-cache stage run');
+    }
+
+    /**
+     * Recursive name => content-sha1 census of a directory ('' map when the
+     * dir does not exist). Used as the byte-identity witness for the
+     * engine-019 cache-refusal pins.
+     *
+     * @return array<string,string>
+     */
+    private function snapshotCacheDir(string $dir): array
+    {
+        if (!is_dir($dir)) {
+            return [];
+        }
+        $out = [];
+        $walk = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::SELF_FIRST,
+        );
+        foreach ($walk as $entry) {
+            /** @var \SplFileInfo $entry */
+            $rel = substr($entry->getPathname(), strlen($dir));
+            $out[$rel] = $entry->isDir() ? '<dir>' : (sha1_file($entry->getPathname()) ?: '<unreadable>');
+        }
+        ksort($out);
+        return $out;
     }
 
     private function config(bool $poisoned, array $plugins = []): Config

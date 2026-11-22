@@ -173,7 +173,13 @@ final class PreprocessStage implements CooperativeStageInterface
         // assignCanonicalIds below, independent of arrival order).
         $tPre = microtime(true);
         if ($toProcess) {
-            $worker = new PreprocessWorker($config);
+            // engine-019: --no-cache must reach the worker's on-disk AST
+            // cache too, not only the IndexStore above. Threading useCache
+            // into the worker makes a no-cache run parse fresh and leave
+            // the cache dir byte-untouched (no blob writes, no serving of
+            // planted blobs); cache-enabled runs keep the historic warm
+            // parser cache exactly as before.
+            $worker = new PreprocessWorker($config, astDiskCache: $this->useCache);
             $workerCount = $config->workers > 0 ? $config->workers : WorkerPool::detectCpuCount();
             $pool = new WorkerPool(workers: $workerCount);
             $task = static function (array $batch) use ($worker, $output): \Generator {
