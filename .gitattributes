@@ -1,0 +1,47 @@
+# phpdup distribution hygiene (php-dup-finder-once-097).
+#
+# `git archive HEAD` (and composer's VCS dist) is how downstream consumers
+# materialise this repo; without these rules the export carried the 21 MB
+# bench corpus, the 25 MB logo/gif gallery, the whole test suite and the
+# docs tree — i.e. the artifact's largest non-runtime bytes.
+#
+# The runtime surface that MUST stay in the export:
+#   src/  bin/  profiles/  composer.json  LICENSE  README.md
+#   build-phar.php  (the single phar build path)
+#   .phpdup-cache-key.version  (read at RUNTIME by the persistence layer —
+#                               not dev metadata, do not export-ignore it)
+
+# --- dev-only directories ---
+/bench/                   export-ignore
+/docs/                    export-ignore
+/gallery/                 export-ignore
+/logo/                    export-ignore
+/tests/                   export-ignore
+/tools/                   export-ignore
+/.claude/                 export-ignore
+/.github/                 export-ignore
+/.gitlab/                 export-ignore
+/.opencode/               export-ignore
+
+# --- dev-only root files (agent guides, planning docs, QA configs) ---
+/AGENTS.md                export-ignore
+/CALIBER_LEARNINGS.md     export-ignore
+/CLAUDE.md                export-ignore
+/improve_logic.md         export-ignore
+/improve_logic_info.md    export-ignore
+/plan_review.md           export-ignore
+/plan_review.queue.tsv    export-ignore
+/prompt_review.md         export-ignore
+/phpunit.xml              export-ignore
+/phpstan.neon             export-ignore
+/psalm.xml                export-ignore
+/psalm-baseline.xml       export-ignore
+/.gitignore               export-ignore
+
+# --- entrypoint scripts: keep LF on every checkout ---
+# These launchers are `#!/usr/bin/env php` scripts executed directly;
+# a CRLF smudge on a Windows checkout turns the shebang into
+# `/usr/bin/env\r php` (ENOEXEC) and breaks the PATH-drop story.
+# Only these two carry shebangs that git must never convert.
+/bin/phpdup               text eol=lf
+/bin/phpdup-worker        text eol=lf
