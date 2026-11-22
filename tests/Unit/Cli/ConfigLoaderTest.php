@@ -5,6 +5,8 @@ namespace Phpdup\Tests\Unit\Cli;
 
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Console\Application;
+use Symfony\Component\Console\Input\ArrayInput;
+use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Tester\CommandTester;
 use Phpdup\Cli\Command;
 use Phpdup\Cli\ConfigLoader;
@@ -769,6 +771,151 @@ final class ConfigLoaderTest extends TestCase
             self::assertSame([], $emitted,
                 "shapeOverrides must not admit '$key' per-directory (engine-S25 posture)");
         }
+    }
+
+    // ---- shell-S25 profile-admission legs ----
+
+    public function testBogusProfileExitsTwoBeforeThePipeline(): void
+    {
+        // php-dup-finder-shell-012: the old posture printed the error line,
+        // then ANALYZED WITH DEFAULTS and exited 0. Admission failure is
+        // now fatal: exit 2, no scan output, no report file.
+        $dir = $this->scratchDir();
+        $corpus = $this->mintTinyCorpus($dir . '/s25-corpus-a');
+        $jsonPath = $dir . '/s25-bogus.json';
+
+        [$exit, $display] = $this->analyzeWithProfile($corpus, $jsonPath, 'bogus-not-a-profile');
+
+        self::assertSame(2, $exit, 'invalid config posture — exit 2, never the old exit 0: ' . $display);
+        self::assertStringContainsString('phpdup: --profile must be one of', $display,
+            'the user-facing line keeps the exact wording of the old writeln');
+        self::assertStringContainsString('|auto', $display, 'the whitelist line still names the escape hatch');
+        self::assertStringNotContainsString('scanning', $display,
+            'nothing runs after the refusal — the pipeline must never start');
+        self::assertFileDoesNotExist($jsonPath, 'a rejected run writes no report');
+    }
+
+    public function testBogusProfileBeatsAutoTuneInCallOrder(): void
+    {
+        // shell-S25 ordering pin: profile resolves before the tuner (the
+        // probe now consumes the profile's excludes). With --auto-tune also
+        // set, the bogus profile must short-circuit BEFORE any probe walk
+        // or 'auto-tune:' rationale line reaches the user.
+        $dir = $this->scratchDir();
+        $corpus = $this->mintTinyCorpus($dir . '/s25-corpus-b');
+        $jsonPath = $dir . '/s25-order.json';
+
+        [$exit, $display] = $this->analyzeWithProfile($corpus, $jsonPath, 'bogus-not-a-profile', ['--auto-tune' => true]);
+
+        self::assertSame(2, $exit, $display);
+        self::assertStringContainsString('phpdup: --profile must be one of', $display);
+        self::assertStringNotContainsString('auto-tune:', $display,
+            'RED if tune() moves before resolveProfile — the probe needs its excludes');
+    }
+
+    public function testProfileIsNeverAdmittedByPath(): void
+    {
+        // A user pointing --profile at a profile FILE (readable or not) is
+        // refused at the registry whitelist — exit 2 before any open() of
+        // the given path. An unreadable profile file at a LISTED name exits
+        // 2 through the same RuntimeException door in execute(); that leg is
+        // pinned registry-side in ProjectProfileDetectorTest.
+        $dir = $this->scratchDir();
+        $profileFile = $dir . '/my-profile.json';
+        file_put_contents($profileFile, '{"exclude": ["never/**"]}');
+        $corpus = $this->mintTinyCorpus($dir . '/s25-corpus-c');
+
+        [$exit, $display] = $this->analyzeWithProfile($corpus, $dir . '/s25-path.json', $profileFile);
+
+        self::assertSame(2, $exit, 'a path-shaped --profile value dies at admission: ' . $display);
+        self::assertStringContainsString('phpdup: --profile must be one of', $display);
+        self::assertStringNotContainsString('scanning', $display);
+    }
+
+    public function testAutoProfileLegUnaffected(): void
+    {
+        // Acceptance: --profile=auto still runs to completion — detection
+        // always answers a bundled name (generic is the fallback), so the
+        // new fatal posture never fires on the auto leg.
+        $dir = $this->scratchDir();
+        $corpus = $this->mintTinyCorpus($dir . '/s25-corpus-d');
+
+        [$exit, $display] = $this->analyzeWithProfile($corpus, $dir . '/s25-auto.json', 'auto');
+
+        self::assertSame(0, $exit, 'auto stays a normal run: ' . $display);
+        self::assertStringContainsString('profile auto-detect:', $display);
+        self::assertStringContainsString('scanning', $display, 'the pipeline actually ran');
+    }
+
+    public function testValidNamedProfileStillRuns(): void
+    {
+        // Success-leg guard: 'generic' is shipped, so the tightened
+        // admission must not turn valid names into refusals.
+        $dir = $this->scratchDir();
+        $corpus = $this->mintTinyCorpus($dir . '/s25-corpus-e');
+
+        [$exit, $display] = $this->analyzeWithProfile($corpus, $dir . '/s25-valid.json', 'generic');
+
+        self::assertSame(0, $exit, 'a bundled profile still exits 0: ' . $display);
+        self::assertStringContainsString('scanning', $display);
+    }
+
+    public function testResolveProfileThrowsInsteadOfReturningNullForUnknownName(): void
+    {
+        // The contract flip itself: null now means ONLY "flag absent".
+        // An unknown name throws (the message is prefix-free — execute()'s
+        // catch adds the `phpdup: ` frame), so the caller can tell the
+        // two apart. Reflection idiom without setAccessible(): a no-op
+        // since PHP 8.1 anyway (repo law).
+        $cmd = new Command();
+        $input = new ArrayInput(['--profile' => 'bogus-not-a-profile'], $cmd->getDefinition());
+        $resolve = new \ReflectionMethod($cmd, 'resolveProfile');
+
+        $overrides = [];
+        $args = [$input, new BufferedOutput(), [], &$overrides];
+        try {
+            $resolve->invokeArgs($cmd, $args);
+            self::fail('unknown --profile must throw, not null-return');
+        } catch (\RuntimeException $e) {
+            self::assertStringStartsWith('--profile must be one of', $e->getMessage(),
+                'message carries no `phpdup: ` prefix — the catch adds it exactly once');
+        }
+
+        // Absent flag keeps answering null (no exception, no overrides).
+        $absent = new ArrayInput([], $cmd->getDefinition());
+        $overridesAbsent = [];
+        self::assertNull($resolve->invokeArgs($cmd, [$absent, new BufferedOutput(), [], &$overridesAbsent]));
+    }
+
+    /**
+     * @param array<string, mixed> $extra
+     * @return array{0: int, 1: string} [exit, display]
+     */
+    private function analyzeWithProfile(string $corpus, string $jsonPath, string $profileValue, array $extra = []): array
+    {
+        @unlink($jsonPath);
+        $app = new Application('phpdup', '0.1.0');
+        $app->add(new Command());
+        $tester = new CommandTester($app->find('analyze'));
+        $exit = $tester->execute(array_merge([
+            'paths'      => [$corpus],
+            '--profile'  => $profileValue,
+            '--json'     => $jsonPath,
+            '--no-cache' => true,
+        ], $extra));
+
+        return [$exit, $tester->getDisplay()];
+    }
+
+    private function mintTinyCorpus(string $dir): string
+    {
+        if (!is_dir($dir)) {
+            mkdir($dir, 0o777, true);
+        }
+        file_put_contents($dir . '/a.php', "<?php\nfunction s25_util(int \$n): int {\n    \$t = 0;\n    for (\$i = 0; \$i < \$n; \$i++) {\n        \$t += \$i;\n    }\n    return \$t;\n}\n");
+        file_put_contents($dir . '/b.php', "<?php\nfunction s25_util2(int \$n): int {\n    \$t = 0;\n    for (\$i = 0; \$i < \$n; \$i++) {\n        \$t += \$i;\n    }\n    return \$t;\n}\n");
+
+        return $dir;
     }
 
     // ---- engine-S25 r1 helpers ----

@@ -40,10 +40,17 @@ use Symfony\Component\Console\Output\OutputInterface;
  *                             flat override dict; returns null on error (an
  *                             empty dict is a legal bare run, not a failure).
  *  2. resolveProfile()       — load a --profile preset and merge its values
- *                             into $overrides (only for unset keys).
+ *                             into $overrides (only for unset keys). An
+ *                             unknown name or an unloadable profile file
+ *                             throws — admission failure is fatal, exit 2
+ *                             (shell-S25; the returned null now means
+ *                             "flag absent" only).
  *  3. resolveAutoTune()      — probe the corpus and append auto-suggested
  *                             overrides; also returns whether --exact-only
- *                             was forced by the tuner.
+ *                             was forced by the tuner. The probe's exclude
+ *                             list carries the resolved profile's excludes
+ *                             so the band is computed on the tree the run
+ *                             will actually scan (shell-S25).
  *  4. ConfigLoader::load()   — applies the three-tier precedence chain
  *                             (overrides → config file → defaults) and
  *                             returns a frozen Config object.
@@ -214,11 +221,18 @@ HELP;
             return 2; // parseCliOverrides emitted the specific error and rejected the input
         }
 
-        $profileExclude = $this->resolveProfile($input, $output, $paths, $overrides);
-
-        $autoTuneExactOnly = $this->resolveAutoTune($input, $output, $paths, $overrides);
-
+        // shell-S25 (php-dup-finder-shell-012): profile admission now shares
+        // the parseCliOverrides failure door — a rejected --profile throws
+        // out of resolveProfile and lands in the exit-2 catch below, never
+        // degrading into a silent default-settings run with exit 0. The
+        // auto-tune probe sits in the same door: its band must see the
+        // profile's exclude list (php-dup-finder-shell-043), and every
+        // admission failure short-circuits before the pipeline.
         try {
+            $profileExclude = $this->resolveProfile($input, $output, $paths, $overrides);
+
+            $autoTuneExactOnly = $this->resolveAutoTune($input, $output, $paths, $overrides, $profileExclude);
+
             $config = (new ConfigLoader())->load(
                 paths: $paths,
                 configFile: $input->getOption('config'),
@@ -226,8 +240,9 @@ HELP;
                 profileExclude: $profileExclude,
             );
         } catch (\RuntimeException | \InvalidArgumentException $e) {
-            // Invalid config / un-coercible numeric flag values surface as
-            // the conventional friendly exit 2, never as a raw stack trace.
+            // Invalid config, un-coercible numeric flag values, and rejected
+            // --profile values surface as the conventional friendly exit 2,
+            // never as a raw stack trace.
             $output->writeln('<error>phpdup: ' . $e->getMessage() . '</error>');
             return 2;
         }
@@ -586,9 +601,19 @@ HELP;
      * Modifies $overrides in place: profile values fill in only keys
      * the user did not already set via CLI flags.
      *
+     * shell-S25 (php-dup-finder-shell-012): failures are FATAL. The old
+     * posture printed an error line and returned null — indistinguishable
+     * from an absent flag — so `--profile=bogus` ran with default settings
+     * and exited 0. An unknown name now throws with the same message the
+     * old writeln emitted (byte-identical user-facing line via the caller's
+     * `phpdup: ` prefix), and ProfileRegistry::load()'s RuntimeException
+     * for a missing/unreadable/invalid profile file propagates untouched.
+     * execute() maps both onto the conventional exit 2.
+     *
      * @param list<string> $paths
      * @param array<string, mixed> $overrides
-     * @return list<string>|null $profileExclude
+     * @return list<string>|null $profileExclude null only when the flag is absent
+     * @throws \RuntimeException when the profile name is unknown or its file cannot be loaded
      */
     private function resolveProfile(InputInterface $input, OutputInterface $output, array $paths, array &$overrides): ?array
     {
@@ -604,19 +629,15 @@ HELP;
             $profileName = (new ProjectProfileDetector())->detect($paths);
             $output->writeln("<info>phpdup</info> profile auto-detect: {$profileName}");
         } elseif (!in_array($profileName, $registry->listAvailable(), true)) {
-            $output->writeln(sprintf(
-                '<error>phpdup: --profile must be one of %s|auto</error>',
+            throw new \RuntimeException(sprintf(
+                '--profile must be one of %s|auto',
                 implode('|', $registry->listAvailable()),
             ));
-            return null;
         }
 
-        try {
-            $profileData = $registry->load($profileName);
-        } catch (\RuntimeException $e) {
-            $output->writeln('<error>phpdup: ' . $e->getMessage() . '</error>');
-            return null;
-        }
+        // Unknown / unreadable / invalid profile JSON throws RuntimeException
+        // straight through — the exit-2 door in execute() renders it.
+        $profileData = $registry->load($profileName);
 
         $profileOverrides = $this->profileToOverrides($profileData);
         foreach ($profileOverrides as $k => $v) {
@@ -635,19 +656,31 @@ HELP;
     /**
      * Run auto-tune and merge suggestions into $overrides.
      *
+     * shell-S25 (php-dup-finder-shell-043): the probe samples the tree the
+     * run will actually scan. The old posture probed with stock defaults
+     * only — on a laravel-shaped corpus the profile's vendor/storage/node_
+     * modules trees counted into the band, a "medium" corpus read as
+     * "large", and exact_only silently disabled tier scoring. Per-directory
+     * overrides still merge later inside ConfigLoader; the profile is the
+     * dominant pre-pipeline exclusion term and is now folded in.
+     *
      * @param list<string> $paths
      * @param array<string, mixed> $overrides
+     * @param list<string>|null $profileExclude excludes resolved from --profile (null = absent)
      * @return bool $autoTuneExactOnly
      */
-    private function resolveAutoTune(InputInterface $input, OutputInterface $output, array $paths, array &$overrides): bool
+    private function resolveAutoTune(InputInterface $input, OutputInterface $output, array $paths, array &$overrides, ?array $profileExclude): bool
     {
         if (!$input->getOption('auto-tune')) {
             return false;
         }
 
         $base = Config::defaults($paths);
+        $probeExclude = $profileExclude === null
+            ? $base->exclude
+            : array_merge($base->exclude, $profileExclude);
         $tuner = new AutoTuner();
-        $suggestion = $tuner->tune($paths, $base->exclude);
+        $suggestion = $tuner->tune($paths, $probeExclude);
         $output->writeln(sprintf(
             '<info>phpdup</info> auto-tune: %s',
             $suggestion->rationale,

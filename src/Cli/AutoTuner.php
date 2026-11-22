@@ -24,8 +24,11 @@ use Phpdup\Scanning\FileScanner;
  * Returns a {@see Suggestion} value object with the override dict and a
  * human-readable rationale string the CLI can print.
  *
- * Pure / side-effect-free aside from filesystem stat() calls — no AST
- * parsing happens during the probe, so it stays cheap on huge corpora.
+ * The probe is counting-only: the band decision consumes the file count
+ * alone, so no per-file stat() runs on top of the scanner traversal
+ * (shell-S25 / php-dup-finder-shell-043 — a --auto-tune run must not pay
+ * for a third full tree walk). Suggestion::$bytes stays 0 from tune();
+ * {@see pick()} still accepts a byte figure for direct callers.
  */
 final class AutoTuner
 {
@@ -38,29 +41,35 @@ final class AutoTuner
 
     /**
      * @param list<string> $paths
-     * @param list<string> $excludeGlobs
+     * @param list<string> $excludeGlobs the full effective exclude list of the
+     *                                   run to be — defaults merged with the
+     *                                   resolved profile's excludes (shell-S25:
+     *                                   defaults alone let a profile's vendor
+     *                                   trees inflate the band)
      */
     public function tune(array $paths, array $excludeGlobs): Suggestion
     {
         $totalFiles = 0;
-        $totalBytes = 0;
         foreach ($paths as $root) {
             $scanner = new FileScanner($excludeGlobs);
             foreach ($scanner->scan($root) as $file) {
                 $totalFiles++;
-                $size = @filesize($file);
-                if ($size !== false) {
-                    $totalBytes += $size;
-                }
             }
         }
 
-        return $this->pick($totalFiles, $totalBytes);
+        // Counting-only: bytes never drove a band and the real scan reads
+        // every file anyway — stat-ing the whole tree here was pure tax.
+        return $this->pick($totalFiles, 0);
     }
 
     public function pick(int $totalFiles, int $totalBytes): Suggestion
     {
         if ($totalFiles < $this->tinyMax) {
+            // shell-S25 outside-merge (ENGINE-PDDETECT o-o-g 2): this tier's
+            // max_df=0.5 relaxation flows through the single df-cap seat,
+            // NgramInvertedIndex::candidatesFor()'s max(2, ceil(N × ratio))
+            // floor (engine-S01) — so it can no longer stay dead at N ≤ 3
+            // and needs no separate floored copy here.
             return new Suggestion(
                 profile: 'tiny',
                 files:   $totalFiles,
