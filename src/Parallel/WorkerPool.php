@@ -410,9 +410,10 @@ final class WorkerPool
         // graphs, and 'allowed_classes' => false turned every such object
         // arriving here into __PHP_Incomplete_Class, corrupting downstream
         // consumers (BUG-B: `analyze src` died at PreprocessStage id-assign).
-        // Hoisted per run: parserClasses() is memoized internally, but
-        // blockCacheClasses() re-runs the array merge on each call and this
-        // is the hot decode path.
+        // Hoisted per run; since shell-S11 the list itself is memoized
+        // inside SerializedClassAllowList (shell-034), so even a fresh
+        // call is a pointer reuse — the hoist stays because this is the
+        // hot decode path and the frame loop reads it per record.
         $allowList = SerializedClassAllowList::blockCacheClasses();
 
         // shell-028: the try/finally that owns pipe-closing and child-reaping
@@ -756,14 +757,26 @@ final class WorkerPool
      * Decode one framed worker record, failing loud on anything the stream
      * contract forbids, and return the decoded value otherwise.
      *
-     * Two reject classes, both previously silent corruption:
+     * Three reject classes, all previously silent corruption or silent
+     * slowness:
      *  - @unserialize() returning false on a non-decodable payload. A valid
      *    record can never serialize to an invalid payload (writeRecord owns
      *    the encoder), so false here means a broken/truncated frame — the
      *    old code yielded that false straight into the results stream.
      *  - an object whose class is missing from the allow-list arriving as
      *    __PHP_Incomplete_Class (a new wire type whose author forgot to
-     *    extend the list).
+     *    extend the list). Since shell-S11 (shell-011) this is screened on
+     *    the payload BYTES before decoding — a linear framing pass over a
+     *    string the loop already holds, replacing the recursive walk of
+     *    the whole decoded graph that cost 2.13x the unserialize it gated.
+     *    The verdict is identical for every payload the byte grammar can
+     *    frame (parity pinned in WorkerPoolTest), and an undecidable
+     *    payload falls back to the shared graph screen — never weaker.
+     *    Side effect worth naming: a blocked class parked in a TYPED slot
+     *    used to escape decodeFrame as a raw "Cannot assign
+     *    __PHP_Incomplete_Class to property ..." TypeError mid-decode; the
+     *    bytes screen now refuses it descriptively before unserialize
+     *    ever runs.
      *
      * Sentinel precedence is unaffected: __error/__done frames are plain
      * arrays of string/bool (the child writes only those shapes), so the
@@ -774,6 +787,10 @@ final class WorkerPool
      */
     private static function decodeFrame(int $idx, string $payload, array $allowList): mixed
     {
+        $screen = SerializedClassAllowList::findBlockedClassInPayload($payload, $allowList);
+        if ($screen !== null && $screen !== SerializedClassAllowList::SCAN_UNDECIDABLE) {
+            throw self::blockedFrameException($idx, $screen);
+        }
         $record = @unserialize($payload, ['allowed_classes' => $allowList]);
         if ($record === false) {
             $preview = addcslashes(substr($payload, 0, 32), "\0..\37\177..\377");
@@ -783,93 +800,39 @@ final class WorkerPool
                 'Refusing to continue with corrupt data.'
             );
         }
-        // Fail loud instead of yielding silently-corrupt data: an incomplete
-        // class here means the worker channel now ships a class that is
-        // missing from the allow-list (see SerializedClassAllowList).
-        $blocked = self::findBlockedClassName($record);
-        if ($blocked !== null) {
-            throw new \RuntimeException(
-                "Worker $idx returned an object of class '$blocked', which is missing from the " .
-                "unserialize allow-list (SerializedClassAllowList::blockCacheClasses()) — " .
-                'extend the allow-list for the new wire class. Refusing to continue with corrupt data.'
-            );
+        if ($screen === SerializedClassAllowList::SCAN_UNDECIDABLE) {
+            // Strict-parity fallback: the byte walk could not frame this
+            // payload, so the shared graph screen — the walk the bytes
+            // form replaced — owns the verdict (shell-011 posture). It is
+            // bounded; an out-budget frame can be neither screened nor
+            // trusted, so it fails loud rather than yielding unchecked
+            // data (the stores' miss posture has no wire analogue).
+            $blocked = SerializedClassAllowList::findIncompleteClass($record);
+            if ($blocked === SerializedClassAllowList::SCAN_UNRESOLVED) {
+                throw new \RuntimeException(
+                    "Worker $idx sent a frame whose payload the byte screen could not frame AND whose " .
+                    'decoded graph exceeded the blocked-class scan budget — refusing to yield unchecked data.'
+                );
+            }
+            if ($blocked !== null) {
+                throw self::blockedFrameException($idx, $blocked);
+            }
         }
         return $record;
     }
 
     /**
-     * Recursively scan a decoded record for blocked classes.
-     *
-     * unserialize() converts every instance whose class is absent from the
-     * allow-list into __PHP_Incomplete_Class; left unchecked those poison the
-     * pipeline downstream (the property-access / substr() crash class this
-     * guard retires). The scan walks array values and object properties —
-     * every class legitimately shipped over the worker wire (Block, LineRange,
-     * Hole, Cluster and all PhpParser nodes) keeps its state in public
-     * properties, which get_object_vars() sees from this scope. Node
-     * PROTECTED $attributes are deliberately not traversed — and they are
-     * NOT scalar-only as once claimed here: every wire Block parsed from
-     * commented source carries an object-valued 'comments' attribute
-     * (array<PhpParser\Comment|Comment\Doc>, attached by the parser's own
-     * CommentAnnotatingVisitor at the end of every parse()), alongside
-     * scalar position fields (line/token/file offsets, rawValue, kind)
-     * and the string ATTR_OP markers of DbOpCanonicalizer/TrinityCollapser.
-     * The skip is beneficial, not lucky: every class that legitimately
-     * appears inside an attribute is a PhpParser class already inside
-     * blockCacheClasses(), so it can never arrive as __PHP_Incomplete_Class,
-     * while the guard's real trigger — a foreign off-list class leaking over
-     * the wire — keeps its state in the public properties this scan sees.
-     * AstParser runs no NameResolver. Standing rule for wire-graph growth:
-     * never place an object the allow-list does not cover into a node
-     * attribute.
-     *
-     * Object ids are visited once: DAG-shaped payloads (the same node shared
-     * by many holes) cost a single pass, and a pathological cycle cannot hang
-     * the scan.
-     *
-     * @return string|null the blocked instance's original class name, or null
-     *                     when the record decodes clean.
+     * The one blocked-class refusal wording, shared by the bytes screen
+     * and its graph fallback so both arms speak identically (WireTest
+     * pins: the message carries 'allow-list' and the offending name).
      */
-    private static function findBlockedClassName(mixed $record): ?string
+    private static function blockedFrameException(int $idx, string $blocked): \RuntimeException
     {
-        /** @var array<int, true> $seen */
-        $seen = [];
-        return self::scanForBlockedClass($record, $seen);
-    }
-
-    /** @param array<int, true> $seen spl_object_id() set of visited objects */
-    private static function scanForBlockedClass(mixed $value, array &$seen): ?string
-    {
-        if (is_array($value)) {
-            foreach ($value as $item) {
-                $blocked = self::scanForBlockedClass($item, $seen);
-                if ($blocked !== null) {
-                    return $blocked;
-                }
-            }
-            return null;
-        }
-        if (!is_object($value)) {
-            return null;
-        }
-        $oid = spl_object_id($value);
-        if (isset($seen[$oid])) {
-            return null;
-        }
-        $seen[$oid] = true;
-        if ($value instanceof \__PHP_Incomplete_Class) {
-            /** @var array<string, mixed> $vars */
-            $vars = get_object_vars($value);
-            $name = $vars['__PHP_Incomplete_Class_Name'] ?? null;
-            return is_string($name) && $name !== '' ? $name : '<unknown>';
-        }
-        foreach (get_object_vars($value) as $propertyValue) {
-            $blocked = self::scanForBlockedClass($propertyValue, $seen);
-            if ($blocked !== null) {
-                return $blocked;
-            }
-        }
-        return null;
+        return new \RuntimeException(
+            "Worker $idx sent a frame embedding an object of class '$blocked', which is missing from the " .
+            "unserialize allow-list (SerializedClassAllowList::blockCacheClasses()) — " .
+            'extend the allow-list for the new wire class. Refusing to continue with corrupt data.'
+        );
     }
 
     /**

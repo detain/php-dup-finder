@@ -73,8 +73,10 @@ final class IndexStore
      * is ~24k graph nodes ≈ 9 ms; the 8 MB whole-corpus cluster graph
      * ~127k nodes ≈ 65 ms), so legitimate blobs never brush the cap
      * while a reference-cycle poison is still caught in milliseconds.
+     * (Value aliased to the canonical home since shell-S11 — the walk
+     * moved to SerializedClassAllowList; the budget number is single.)
      */
-    private const SHAPE_SCAN_EDGES = 5_000_000;
+    private const SHAPE_SCAN_EDGES = SerializedClassAllowList::SHAPE_SCAN_EDGES;
 
     /**
      * Returned by {@see self::findIncompleteClass()} when the walk ran
@@ -82,8 +84,13 @@ final class IndexStore
      * verdict. Both stores translate it into an ordinary cache miss
      * (recompute, never serve unchecked data) instead of refusing a
      * blob that may be perfectly honest and merely enormous.
+     *
+     * shell-S11: the sentinel — and the walk producing it — are canonically
+     * homed in {@see SerializedClassAllowList::SCAN_UNRESOLVED}; this public
+     * alias keeps every shell-S19 comparison site and pin on the same
+     * string value, spelled from one place.
      */
-    public const SCAN_UNRESOLVED = '<unresolved: bounded shape walk exceeded>';
+    public const SCAN_UNRESOLVED = SerializedClassAllowList::SCAN_UNRESOLVED;
 
     // 'floatbytes': AstSerializer renders float literals as IEEE-754
     // bytes instead of the ini-dependent decimal cast, moving every
@@ -319,23 +326,14 @@ final class IndexStore
      * inside a Cluster's `holes` slot — deeper than the flat pre-S19
      * screens could see).
      *
-     * A reference-decoded graph is a DAG at best (serialized ASTs
-     * share subtrees) and cyclic at worst (a poison can weave `R:`
-     * self-references), so the walk expands each object at most once
-     * (identity set) and charges every graph edge against
-     * $edgeBudget. Out-budget graphs are never declared clean — they
-     * come back {@see self::SCAN_UNRESOLVED} and the caller falls back
-     * to a plain miss.
-     *
-     * get_object_vars() from outside a declaring class fires no magic
-     * accessor, and every allow-listed class is plain public data, so
-     * the walk is side-effect free. It touches only what the load path
-     * already decoded — no new memory is manufactured.
-     *
-     * Shared by BOTH framed persistence classes through this single
-     * implementation (shell-S11's hoist target is
-     * SerializedClassAllowList — until that lands, do not fork a second
-     * copy; ClusterCache calls this method).
+     * The walk itself is homed in {@see
+     * SerializedClassAllowList::findIncompleteClass()} since shell-S11
+     * (the plan names the allow-list class as the single shared
+     * blocked-class screen; shell-S19 grew it here first, and S11's
+     * hoist moved the body). This entry is kept so both framed
+     * persistence classes — ClusterCache included — and every shell-S19
+     * pin call the ONE implementation through one stable name with one
+     * stable budget default.
      *
      * @param int $edgeBudget traversal cap; the public signature lets
      *                        the shape tests inject a small budget and
@@ -348,46 +346,7 @@ final class IndexStore
      */
     public static function findIncompleteClass(mixed $root, int $edgeBudget = self::SHAPE_SCAN_EDGES): ?string
     {
-        /** @var list<mixed> $pending */
-        $pending = [$root];
-        /** @var array<int,true> $expanded */
-        $expanded = [];
-        $edges = 0;
-
-        while ($pending !== []) {
-            $node = array_pop($pending);
-
-            if (is_array($node)) {
-                foreach ($node as $child) {
-                    if (++$edges > $edgeBudget) return self::SCAN_UNRESOLVED;
-                    if (is_array($child) || is_object($child)) {
-                        $pending[] = $child;
-                    }
-                }
-                continue;
-            }
-
-            if (!is_object($node)) continue;   // scalars cannot hide anything
-
-            $objectId = spl_object_id($node);
-            if (isset($expanded[$objectId])) continue;   // shared subtree: walked once
-            $expanded[$objectId] = true;
-
-            if ($node instanceof \__PHP_Incomplete_Class) {
-                $vars = get_object_vars($node);
-                $name = $vars['__PHP_Incomplete_Class_Name'] ?? null;
-                return is_string($name) && $name !== '' ? $name : '<unknown>';
-            }
-
-            foreach (get_object_vars($node) as $child) {
-                if (++$edges > $edgeBudget) return self::SCAN_UNRESOLVED;
-                if (is_array($child) || is_object($child)) {
-                    $pending[] = $child;
-                }
-            }
-        }
-
-        return null;
+        return SerializedClassAllowList::findIncompleteClass($root, $edgeBudget);
     }
 
     /**

@@ -276,4 +276,255 @@ final class SerializedClassAllowListTest extends TestCase
         }
         return null;
     }
+
+    // ── shell-S11 (php-dup-finder-shell-034): the merged list memo ───────
+    //
+    // shell-034: blockCacheClasses() re-ran array_merge + array_unique
+    // over ~200 classes EVERY call (AstCache loads, the fork loop, the
+    // index stores). The memoized form returns the identical list — for
+    // arrays userland cannot see zval identity directly, so the pin is
+    // the literal === re-comparison AND a reflection witness that the
+    // memo slot is populated with exactly what the callers receive.
+
+    public function testBlockCacheClassesIsMemoized(): void
+    {
+        $first  = SerializedClassAllowList::blockCacheClasses();
+        $second = SerializedClassAllowList::blockCacheClasses();
+
+        // The acceptance === assert: same elements, same order, every call.
+        self::assertTrue($first === $second);
+
+        // Structural witness that this is MEMOIZED, not merely
+        // deterministic: the private slot holds the list after the call.
+        $prop = new \ReflectionProperty(SerializedClassAllowList::class, 'blockCacheClasses');
+        $prop->setAccessible(true);
+        $slot = $prop->getValue();
+        self::assertIsArray($slot, 'the memo slot must be populated after a call');
+        self::assertTrue($slot === $first, 'callers must receive the memoized instance');
+
+        // And the memo must equal the documented union, not some shorter
+        // lazy stand-in.
+        $expected = array_values(array_unique(array_merge(
+            SerializedClassAllowList::blockObjectClasses(),
+            SerializedClassAllowList::parserClasses(),
+        )));
+        self::assertSame($expected, $first);
+    }
+
+    // ── shell-S11 (php-dup-finder-shell-011): the bytes screen ───────────
+
+    /**
+     * The fuzz the acceptance demands: randomized graphs with AT MOST
+     * one poison CLASS per payload (multiple distinct classes could be
+     * reported in different first-hit orders by the two walks — a
+     * refusal-name difference, not a verdict difference), over small
+     * hermetic allow-lists. Both the byte screen and the graph screen
+     * must answer with the same verdict AND the same name.
+     */
+    public function testBytesAndGraphScreensAgreeOnFuzzVectors(): void
+    {
+        mt_srand(0xC0FFEE);
+        $allow = [\Phpdup\Util\LineRange::class];
+        $lookalikes = [
+            'O:8:"Evil":1:{s:1:"x";i:1;}',
+            's:5:"hello";a:1:{i:0;O:6:"Evil_2":0:{}}',
+            "nul\x00byte O:9:\"EvilNul\":0:{}",
+            'E:12:"Missing:Evil";',
+            'C:11:"EvilClosure":1:{}',
+            '',
+        ];
+
+        for ($case = 0; $case < 240; $case++) {
+            $poison = null; // one poison CLASS per payload, at most
+            $value  = self::buildFuzzNode($lookalikes, $poison);
+            $payload = serialize($value);
+
+            $byteVerdict  = SerializedClassAllowList::findBlockedClassInPayload($payload, $allow);
+            $decoded      = @unserialize($payload, ['allowed_classes' => $allow]);
+            self::assertNotFalse($decoded, "fuzz case $case must be decodable — builder emitted a broken shape");
+            $graphVerdict = SerializedClassAllowList::findIncompleteClass($decoded);
+
+            self::assertSame(
+                $graphVerdict,
+                $byteVerdict,
+                "verdict parity broke for case $case: " . $payload
+            );
+        }
+    }
+
+    /**
+     * Random tree over scalars/arrays/allowed LineRange objects, mixing
+     * in ONE foreign object class at a random depth (sometimes none,
+     * sometimes nested three-plus levels inside allowed containers —
+     * the acceptance's "blocked class nested 3 deep" shape).
+     *
+     * @param list<string> $lookalikes serialized-looking string bait
+     */
+    private static function buildFuzzNode(array $lookalikes, ?string &$poison): mixed
+    {
+        $roll = mt_rand(1, 100);
+        if ($roll <= 22) {
+            return mt_rand(1, 5) === 1
+                ? $lookalikes[mt_rand(0, count($lookalikes) - 1)]
+                : [mt_rand(-9999, 9999), (float) mt_rand(0, 100) / 3, true, null];
+        }
+        if ($roll <= 40) {
+            return new \Phpdup\Util\LineRange(mt_rand(1, 50), mt_rand(51, 99));
+        }
+        if ($roll <= 88) {
+            $out = [];
+            $n   = mt_rand(0, 4);
+            for ($k = 0; $k < $n; $k++) {
+                $out['k' . $k] = self::buildFuzzNode($lookalikes, $poison);
+            }
+            return $out;
+        }
+        // The poison roll: one CLASS per payload (both arms always agree
+        // on the first refusal name then); repeats of the roll reuse the
+        // class, weaving the shared-DAG shapes the R: markers serialize to.
+        if ($poison === null) {
+            $poison = [
+                \stdClass::class,
+                \ArrayObject::class,
+                \PhpParser\Error::class,
+            ][mt_rand(0, 2)];
+        }
+        $cls = $poison;
+        return $cls === \stdClass::class
+            ? (object) ['evil' => new \stdClass()]
+            : ($cls === \ArrayObject::class
+                ? new \ArrayObject(['evil' => 1])
+                : new \PhpParser\Error('evil'));
+    }
+
+    public function testBytesScreenNeverFalsePositivesOnSerializedLookalikeData(): void
+    {
+        $allow = SerializedClassAllowList::blockCacheClasses();
+        // Bait that any naive /O:\d+:"([^"]+)"/ pre-filter would refuse:
+        // poisoned-looking text inside string DATA, including inside
+        // real node scalars and comment payloads.
+        $payload = serialize([
+            's:8:"EvilFake":0:{}',
+            'key' => '/* O:17:"EvilGadgetClass":1:{s:4:"func";s:6:"system";} */',
+            'nested' => ['deep' => ["\x00O:6:\"Zero\":1:{}\x00", 'E:12:"Missing:Evil";', 'C:13:"ClosurePoison":1:{}']],
+        ]);
+        self::assertNull(SerializedClassAllowList::findBlockedClassInPayload($payload, $allow));
+    }
+
+    public function testBytesScreenReportsDeepPoisonInsideNestedContainers(): void
+    {
+        // The literal acceptance shape "blocked class nested three deep":
+        // three container levels stand between the root and the first
+        // blocked O: — the graph screen caught this only by walking the
+        // decoded tree; the bytes screen frames it without building the
+        // tree. (The ALLOWED-CLASS container variants — poison parked in
+        // a Block's public slot, or in a protected node attribute the old
+        // walk could not see at all — get their own pins below and in
+        // WorkerPoolTest's nested-fork regression.)
+        $allow = SerializedClassAllowList::blockCacheClasses();
+        $hidden = ['x' => [['y' => (object) ['evil' => new \ArrayObject()]]]];
+        $payload = serialize(['rows' => ['block' => $hidden]]);
+        self::assertSame(
+            'stdClass',
+            SerializedClassAllowList::findBlockedClassInPayload($payload, $allow),
+            'a blocked class three containers deep must still be refused by name'
+        );
+    }
+
+    public function testBytesScreenAgreesWithGraphOnProtectedSlotSmuggle(): void
+    {
+        // The posture the screen swap STRENGTHENS: poison parked in a
+        // protected property (a node attribute) is invisible to the old
+        // get_object_vars-from-foreign-scope walk but unmistakable in
+        // the payload bytes. Acceptance is the byte arm refusing where
+        // the graph arm goes blind — never the reverse.
+        $node = new \PhpParser\Node\Stmt\Nop();
+        $node->setAttribute('probe', new \ArrayObject(['evil' => true]));
+        $payload = serialize(['stmts' => [$node]]);
+
+        $byte = SerializedClassAllowList::findBlockedClassInPayload($payload, SerializedClassAllowList::blockCacheClasses());
+        self::assertSame(\ArrayObject::class, $byte, 'the bytes screen sees attribute slots');
+
+        $decoded = unserialize($payload, ['allowed_classes' => SerializedClassAllowList::blockCacheClasses()]);
+        self::assertNull(
+            SerializedClassAllowList::findIncompleteClass($decoded),
+            'the public-slot graph walk stays blind here by design (its docblock) — the byte screen is what closes the gap'
+        );
+    }
+
+    public function testBytesScreenStopsWithTheRootIgnoresTail(): void
+    {
+        // Parity with PHP: trailing bytes never decode into the graph,
+        // so neither screen may invent a verdict from dead tail.
+        $allow = SerializedClassAllowList::blockCacheClasses();
+        $payload = serialize(['ok' => 1]) . serialize(new \stdClass());
+        self::assertNull(SerializedClassAllowList::findBlockedClassInPayload($payload, $allow));
+    }
+
+    public function testBytesScreenUndecidablePayloadsFallBackCleanly(): void
+    {
+        // A payload the byte grammar does not frame (S: tag — PHP's own
+        // decoder accepts it) must return the sentinel, NOT null — and
+        // the documented chain (decode + graph screen) must answer.
+        $allow = SerializedClassAllowList::blockCacheClasses();
+        $count = 0;
+        $exotic = str_replace('s:', 'S:', serialize(['n' => 'hi']), $count);
+        self::assertGreaterThan(0, $count, 'the fixture must actually contain an s: header');
+        self::assertSame(
+            SerializedClassAllowList::SCAN_UNDECIDABLE,
+            SerializedClassAllowList::findBlockedClassInPayload($exotic, $allow)
+        );
+        $decoded = @unserialize($exotic, ['allowed_classes' => $allow]);
+        self::assertNotFalse($decoded, 'PHP decodes the exotic form — which is exactly why undecidable must not equal clean');
+        self::assertNull(SerializedClassAllowList::findIncompleteClass($decoded));
+    }
+
+    public function testEnumTokensMatchTheGraphScreensVerdicts(): void
+    {
+        // PHP consults allowed_classes NOT AT ALL for enums: an existing
+        // enum restores its real case whatever the list, a missing one
+        // fails the WHOLE decode. Neither arm ever met an incomplete
+        // through an E:, so both answer clean — and the byte arm must
+        // frame E: without desyncing the walk.
+        $allow = SerializedClassAllowList::blockCacheClasses();
+        $payload = serialize(['e' => \Phpdup\Pipeline\Stage::Scanning]);
+        self::assertNull(SerializedClassAllowList::findBlockedClassInPayload($payload, $allow));
+        $decoded = unserialize($payload, ['allowed_classes' => $allow]);
+        self::assertInstanceOf(\Phpdup\Pipeline\Stage::class, $decoded['e']);
+        self::assertNull(SerializedClassAllowList::findIncompleteClass($decoded));
+
+        // Missing-enum poison: PHP rejects the payload entirely — the
+        // byte screen may answer null (nothing framed wrongly) and the
+        // caller's corrupt-frame guard owns it, exactly as before S11.
+        $ghost = 'a:1:{s:1:"e";E:15:"NopeMissing:Yes";}';
+        self::assertFalse(@unserialize($ghost, ['allowed_classes' => $allow]));
+    }
+
+    public function testFlipMemoSwapsCorrectlyAcrossDifferentLists(): void
+    {
+        // The flip is memoized against the last list passed — interleaved
+        // lists must each decide by THEIR OWN contents, never replay the
+        // previous one's verdict.
+        $payload = serialize(['k' => new \Phpdup\Util\LineRange(1, 2)]);
+        $std = serialize(['k' => new \stdClass()]);
+
+        self::assertNull(
+            SerializedClassAllowList::findBlockedClassInPayload($payload, [\Phpdup\Util\LineRange::class]),
+            'admitted under list A'
+        );
+        self::assertSame(
+            'stdClass',
+            SerializedClassAllowList::findBlockedClassInPayload($std, [\Phpdup\Util\LineRange::class]),
+            'refused under list A'
+        );
+        self::assertSame(
+            \Phpdup\Util\LineRange::class,
+            SerializedClassAllowList::findBlockedClassInPayload($payload, []),
+            'the same payload refuses under list B — the flip must have swapped'
+        );
+        self::assertNull(
+            SerializedClassAllowList::findBlockedClassInPayload($payload, [\Phpdup\Util\LineRange::class]),
+            'and back under list A — swapped again, verdict A restored'
+        );
+    }
 }

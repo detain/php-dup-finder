@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Phpdup\Tests\Unit\Parallel;
 
 use PHPUnit\Framework\TestCase;
+use Phpdup\Persistence\SerializedClassAllowList;
 use Phpdup\Parallel\WorkerPool;
 
 final class WorkerPoolTest extends TestCase
@@ -665,5 +666,132 @@ final class WorkerPoolTest extends TestCase
             }
             $this->assertCount(5, $pids, 'five real children — proof the request was honoured');
         });
+    }
+
+    // ── shell-S11 (php-dup-finder-shell-011): the reworked decode guard ───
+    //
+    // decodeFrame is private static; the reflection seam is the pattern
+    // WorkerPoolWireTest already uses for the corrupt-frame path. These
+    // pins exercise the GUARD CHAIN (bytes screen → unserialize → graph
+    // fallback) without forking — the end-to-end fork regressions for the
+    // same verdicts live in WorkerPoolWireTest (top-level and
+    // nested-in-Block poison), and they must stay green: the message
+    // still carries 'allow-list' and the offending class name.
+
+    /** @param list<class-string> $allowList */
+    private function invokeDecodeFrame(int $idx, string $payload, array $allowList): mixed
+    {
+        $ref = new \ReflectionMethod(WorkerPool::class, 'decodeFrame');
+        $ref->setAccessible(true);
+        return $ref->invoke(null, $idx, $payload, $allowList);
+    }
+
+    public function testDecodeFrameAdmitsRealGraphWireRecord(): void
+    {
+        $parser = new \PhpParser\ParserFactory();
+        $ast    = $parser->createForNewestSupportedVersion()
+            ->parse("<?php\n// c\nfunction greet(\$n) { /* inline */ echo \$n; }\n") ?: [];
+        $blocks = (new \Phpdup\Extraction\BlockExtractor(minSize: 1))->extract('s11-probe.php', $ast);
+        $this->assertNotEmpty($blocks);
+        $blocks[0]->canonical = $ast[0];
+        // DAG-shaped frame: the same block twice → R: reference markers.
+        $payload = serialize(['type' => 'pair', 'a' => $blocks[0], 'b' => $blocks[0]]);
+
+        $record = $this->invokeDecodeFrame(0, $payload, SerializedClassAllowList::blockCacheClasses());
+        $this->assertIsArray($record);
+        $this->assertInstanceOf(\Phpdup\Extraction\Block::class, $record['a']);
+        $this->assertSame($record['a'], $record['b'], 'the shared DAG node must restore shared');
+    }
+
+    public function testDecodeFrameRefusesPoisonNestedThreeDeepByName(): void
+    {
+        $payload = serialize(['rows' => ['block' => ['x' => ['y' => ['z' => (object) ['evil' => new \ArrayObject()]]]]]]);
+        try {
+            $this->invokeDecodeFrame(3, $payload, SerializedClassAllowList::blockCacheClasses());
+            $this->fail('nested blocked class must throw');
+        } catch (\RuntimeException $e) {
+            $this->assertMatchesRegularExpression('/allow-list/', $e->getMessage());
+            $this->assertStringContainsString('stdClass', $e->getMessage(), 'the FIRST blocked class on the bytes is named');
+            $this->assertStringContainsString('Worker 3', $e->getMessage());
+        }
+    }
+
+    public function testDecodeFrameRefusesTypedSlotPoisonDescriptivelyNotAsRawTypeError(): void
+    {
+        // Pre-S11, a foreign object dressed as Block::$range (typed
+        // LineRange) escaped @unserialize as a raw "Cannot assign
+        // __PHP_Incomplete_Class to property" TypeError from mid-decode.
+        // The bytes screen now refuses it BEFORE the decode — same fail-
+        // loud posture, descriptive message, no type-system leak.
+        $block = new \Phpdup\Extraction\Block(
+            file: 'x.php',
+            range: new \Phpdup\Util\LineRange(1, 2),
+            kind: 'function',
+            namespace: null,
+            class: null,
+            name: 'f',
+            ast: new \PhpParser\Node\Stmt\Nop(),
+        );
+        $block->canonical = new \PhpParser\Node\Stmt\Nop();
+        $real = serialize([$block]);
+        $evil = serialize(new \stdClass());
+        $needle = 'O:21:"Phpdup\Util\LineRange":2:{s:5:"start";i:1;s:3:"end";i:2;}';
+        $this->assertStringContainsString($needle, $real, 'fixture: the typed slot must serialize in the expected form');
+        $forged = str_replace($needle, $evil, $real);
+
+        try {
+            $this->invokeDecodeFrame(1, $forged, SerializedClassAllowList::blockCacheClasses());
+            $this->fail('typed-slot poison must throw');
+        } catch (\RuntimeException $e) {
+            $this->assertMatchesRegularExpression('/allow-list/', $e->getMessage());
+            $this->assertStringContainsString('stdClass', $e->getMessage());
+        } catch (\TypeError $e) {
+            $this->fail('raw TypeError escaped the guard — the bytes screen must run before decode: ' . $e->getMessage());
+        }
+    }
+
+    public function testDecodeFrameStillRefusesCorruptFramesAndPassesSentinels(): void
+    {
+        // S10 early-out interaction (shell-011 acceptance note): the
+        // reworked guard must not swallow the corrupt-frame path, and
+        // the __done/__error sentinel shapes are plain scalar arrays —
+        // the byte screen passes them through untouched so the drain
+        // loop's control-frame inspection still happens first.
+        try {
+            $this->invokeDecodeFrame(2, "\xff\xfe not serialized", SerializedClassAllowList::blockCacheClasses());
+            $this->fail('corrupt frame must throw');
+        } catch (\RuntimeException $e) {
+            $this->assertMatchesRegularExpression('/failed to decode/', $e->getMessage());
+        }
+        foreach ([['__done' => true], ['__error' => 'boom']] as $sentinel) {
+            $record = $this->invokeDecodeFrame(0, serialize($sentinel), SerializedClassAllowList::blockCacheClasses());
+            $this->assertSame($sentinel, $record, 'control frames sail through both screens');
+        }
+    }
+
+    public function testDecodeFrameUndecidablePayloadKeepsOldVerdictViaGraphArm(): void
+    {
+        // An exotic payload the byte grammar cannot frame (S: tag —
+        // PHP decodes it) falls back to the shared graph screen: clean
+        // payload → yields; poisoned payload → still refused by name.
+        $allow = SerializedClassAllowList::blockCacheClasses();
+        $count = 0;
+        $exotic = str_replace('s:', 'S:', serialize(['t' => 'pair', 'msg' => 'hello']), $count);
+        $this->assertGreaterThan(0, $count);
+        $record = $this->invokeDecodeFrame(0, $exotic, $allow);
+        $this->assertSame(['t' => 'pair', 'msg' => 'hello'], $record, 'fallback walk must admit the honest exotic form');
+
+        // Same exotic framing, but the payload carries a blocked object:
+        // the graph arm (not the byte arm) owns the refusal.
+        $evilCount = 0;
+        $evilExotic = str_replace('s:', 'S:', serialize(['obj' => new \stdClass()]), $evilCount);
+        $this->assertGreaterThan(0, $evilCount);
+        try {
+            $this->invokeDecodeFrame(4, $evilExotic, $allow);
+            $this->fail('graph-arm fallback must still refuse nested poison');
+        } catch (\RuntimeException $e) {
+            $this->assertMatchesRegularExpression('/allow-list/', $e->getMessage());
+            $this->assertStringContainsString('stdClass', $e->getMessage());
+        }
     }
 }
