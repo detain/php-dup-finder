@@ -14,12 +14,18 @@ use PhpParser\NodeFinder;
  *   - vars       set of distinct variable names defined or used
  *   - returns    list of return-statement shapes
  *   - calls      multiset of called method/function names
- *   - sideEffects   bool: language-construct writes (echo/print/
- *                   exit/die/header, exact function names) or a
- *                   method-call name carrying a side-effect verb
- *                   (log/logger/send/emit/dispatch/fire/publish/
- *                   notify — full camelCase/snake_case words, never
- *                   substrings: engine-028 fold-in)
+ *   - sideEffects   bool: writes the walk can see — echo via
+ *                   Stmt\Echo_, an exact-name `header()` call via
+ *                   FuncCall, or a method-call name carrying a
+ *                   side-effect verb (log/logger/send/emit/dispatch/
+ *                   fire/publish/notify — full camelCase/snake_case
+ *                   words, never substrings: engine-028 fold-in).
+ *                   print/exit/die are modelled by dedicated
+ *                   php-parser expression nodes (Expr\Print_ /
+ *                   Expr\Exit_) this summary does NOT yet walk, so
+ *                   they never set the flag; adding Exit_/Print_
+ *                   arms is a separate behavior leg, out of this
+ *                   step's scope (engine-S31c r1).
  *
  * Uses NodeFinder to traverse all descendant nodes including nested
  * closures, so nested functions contribute their variables, calls,
@@ -39,8 +45,14 @@ use PhpParser\NodeFinder;
 final class DataflowSummarizer
 {
     /**
-     * Function names whose call is itself a write (exact match — a
+     * Exact names the FuncCall arm accepts as a write (exact match — a
      * qualified `Foo\header` name never equals 'header', by design).
+     * Of the listed names only `header()` is reachable through the
+     * FuncCall arm: echo is caught by its own Stmt\Echo_ arm, and
+     * print/exit/die are modelled by dedicated php-parser expression
+     * nodes (Expr\Print_ / Expr\Exit_) this walker does not visit —
+     * arming them is a separate behavior leg, out of this row's
+     * scope (engine-S31c r1).
      */
     private const SIDE_EFFECT_FUNCTIONS = ['echo', 'print', 'exit', 'die', 'header'];
 
