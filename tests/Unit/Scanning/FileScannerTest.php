@@ -919,6 +919,7 @@ final class FileScannerTest extends TestCase
     public function testS34ChangesOutsideNamedRootYieldEmptyCohort(): void
     {
         $repo = $this->s34Repo();
+        $this->s34Commit($repo, ['code/stable.php' => "<?php\nfunction stable() { return 1; }\n"], 'seed');
         $this->s34Commit($repo, ['other/o.php' => "<?php\nfunction o() { return 3; }\n"]);
 
         $result = FileScanner::resolveDiffCohort([$repo . '/code'], 'HEAD~1');
@@ -1093,6 +1094,7 @@ final class FileScannerTest extends TestCase
     public function testS34CommandEmptyCohortExitsTwoWithMessage(): void
     {
         $repo = $this->s34Repo();
+        $this->s34Commit($repo, ['code/stable.php' => "<?php\nfunction stable() { return 1; }\n"], 'seed');
         $this->s34Commit($repo, ['other/o.php' => "<?php\nfunction o() { return 3; }\n"]);
 
         $tester = $this->s34CommandTester();
