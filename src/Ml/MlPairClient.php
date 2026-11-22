@@ -235,7 +235,7 @@ final class MlPairClient implements PairScorer
             CURLOPT_CONNECTTIMEOUT => $this->timeoutSec,
             CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_PROTOCOLS      => CURLPROTO_HTTP | CURLPROTO_HTTPS,
-            CURLOPT_WRITEFUNCTION  => function (string $chunk) use (&$buffer, &$overflowed): int {
+            CURLOPT_WRITEFUNCTION  => function (\CurlHandle $handle, string $chunk) use (&$buffer, &$overflowed): int {
                 if (strlen($chunk) > MlClient::MAX_RESPONSE_BYTES - strlen($buffer)) {
                     $overflowed = true;
                     return 0;

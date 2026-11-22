@@ -521,7 +521,7 @@ final class MlClient
             // — only http(s) on the original request is allowed.
             CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_PROTOCOLS      => CURLPROTO_HTTP | CURLPROTO_HTTPS,
-            CURLOPT_WRITEFUNCTION  => function (string $chunk) use (&$buffer, &$overflowed): int {
+            CURLOPT_WRITEFUNCTION  => function (\CurlHandle $handle, string $chunk) use (&$buffer, &$overflowed): int {
                 if (strlen($chunk) > self::MAX_RESPONSE_BYTES - strlen($buffer)) {
                     $overflowed = true;
                     return 0;
