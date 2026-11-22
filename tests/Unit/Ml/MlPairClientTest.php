@@ -1351,8 +1351,70 @@ final class MlPairClientTest extends TestCase
         }
     }
 
+    /**
+     * once-S92 fix1 / r1-L1(ii): the stream transport's honesty has a
+     * documented LIMIT — it refuses a reply that is late, or short
+     * against a DECLARED Content-Length, but a body whose framing
+     * declares NO length (chunked sidecar, HTTP-1.0-style
+     * close-delimited) is handed up unchanged: with the CL absent,
+     * {@see Http::declaredLengthMismatch()} has "nothing to cross-check".
+     * The once-S46 honest-fail duty for that shape lives ONE layer up,
+     * at the caller's decode fence. This pin holds that boundary in
+     * behavior rather than prose: the transport surfaces the 20-byte
+     * fragment — the reviewer's len=20 probe, identical to parent
+     * 161e715 (a documented residual, not a regression) — AND the fence
+     * refuses that same fragment, so a cut-short no-CL sidecar reply
+     * still never becomes a verdict.
+     */
+    public function testStreamTransportHandsNoLengthFragmentUpAndDecodeFenceRefusesIt(): void
+    {
+        $frag     = '{"similarity":0.5,"c'; // a valid verdict cut short -> malformed json, no framing length
+        $response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n" . $frag;
+        [$pid, $port, $server] = $this->forkHttpServer(
+            static fn(string $request): string => $response,
+            5,
+            2
+        );
+        try {
+            $client   = new MlPairClient('http://127.0.0.1', timeoutSec: 5);
+            $decision = ['host' => '127.0.0.1', 'port' => $port, 'addresses' => ['127.0.0.1']];
+            // (1) Transport residual: no Content-Length => nothing to
+            // cross-check, so the bytes the sidecar wrote come back as a
+            // truncated body exactly as they did pre-once-S92.
+            $raw = (new \ReflectionMethod($client, 'postJsonStream'))
+                ->invoke($client, "http://127.0.0.1:$port/score-pair", '{}', $decision);
+            self::assertSame(
+                $frag,
+                $raw,
+                'a no-CL cut-short reply is the transport residual — handed up byte-exact, not length-refused (r1-L1 probe: len=20)'
+            );
+            // (2) Honesty one layer up: the decode fence refuses the
+            // fragment (malformed json), so it never launders into a
+            // score — the fence is selective (the in-domain pins above
+            // show it ACCEPTS a complete verdict), so this is a real
+            // refusal, not a blanket null.
+            self::assertNull(
+                (new \ReflectionMethod($client, 'parseVerdict'))->invoke($client, $raw),
+                'the transport residual must die at the decode fence, never mint a score from a truncated body'
+            );
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
     // ----- readStreamWithDeadline seam (branch-independent) ----------
 
+    // once-S92 fix1 / r1-L2 (arm-equivalence): on AF_UNIX socketpair and
+    // http-wrapper fixtures a per-read window that expires surfaces as
+    // fread()===false, so the refusal THIS name's shape carries is the
+    // false arm (:303). The loop-top total-deadline arm (:296-299) and
+    // the ''-without-EOF arm (:310-314) refuse identically (null) but a
+    // periodic drip never reaches :296 in-call — a read times out first
+    // (measured on 8.3: the 1-byte@0.2s/deadline-1s shape lands on :303
+    // in 10/10 runs). "In-call" here names the wall-clock bound, not a
+    // claim that :296 fired; laundering :296 or :310 keeps this pin and
+    // the stalled one green, laundering :303 flips both.
     public function testDeadlineReaderRefusesDrippingStreamInCall(): void
     {
         [$pid, $stream] = $this->socketpairDrip(array_fill(0, 20, 'x'), 0.3);
@@ -1367,6 +1429,11 @@ final class MlPairClientTest extends TestCase
         }
     }
 
+    // once-S92 fix1 / r1-L2: same arm-equivalence as the drip pin above —
+    // the stalled read times out to fread()===false (:303), NOT the
+    // ''-without-EOF arm (:310-314); both refuse to null, so this pins
+    // the stall BEHAVIOR (bytes-then-silence is never returned as a
+    // short body) and names :303 as the arm that carries it on 8.3.
     public function testDeadlineReaderRefusesStalledStream(): void
     {
         [$pid, $stream] = $this->socketpairDrip(['AB'], 0.0, 3.0);

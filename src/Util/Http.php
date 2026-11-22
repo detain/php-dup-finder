@@ -58,9 +58,13 @@ use Phpdup\Ml\LegacyStreamPost;
  * ({@see self::readStreamWithDeadline()}, PHP >= 8.4 arm), and on
  * every arm a total check that refuses a transfer finishing after the
  * deadline plus a declared-length cross-check that turns an
- * inactivity-aborted partial read into a protocol refusal. A late or
- * cut-short sidecar reply is therefore never surfaced as a plausible
- * verdict (once-S46 honest-fail doctrine).
+ * inactivity-aborted partial read into a protocol refusal. A reply is
+ * therefore never surfaced as a plausible verdict when it is late, or
+ * short against a declared Content-Length (once-S46 honest-fail
+ * doctrine); a cut-short reply that declares NO length is the residual
+ * the transport hands up unchanged (absent CL → nothing to cross-check,
+ * {@see self::declaredLengthMismatch()}), the honest-fail duty falling
+ * one layer up to the caller's decode fence (parseVerdict/parseBatch).
  */
 final class Http
 {
@@ -175,7 +179,7 @@ final class Http
      * @param null|array{url: string, header: string, peer_name: string|null} $pin pinnedStreamRequest() shape; null = refusal, dial nothing
      * @param int $timeoutSec total-transfer deadline per this method's docblock; <= 0 disables the total bound and keeps the wrapper's per-operation behavior
      *
-     * @return string|null raw response body, or null on refusal/transport error/non-2xx/over-cap/truncated/late
+     * @return string|null raw response body, or null on refusal/transport error/non-2xx/over-cap/late, or short against a declared Content-Length; a cut-short body that declares NO length is handed up unchanged for the caller's decode fence to refuse (see {@see self::declaredLengthMismatch()}'s absent-CL note)
      */
     public static function streamPost(?array $pin, string $body, int $timeoutSec, int $maxResponseBytes): ?string
     {
@@ -203,7 +207,7 @@ final class Http
             $ctxOpts['ssl'] = ['peer_name' => $pin['peer_name']];
         }
         if (function_exists('http_get_last_response_headers')) {
-            // PHP >= 8.5 path: http_get_last_response_headers() replaces the
+            // PHP >= 8.4 arm: http_get_last_response_headers() replaces the
             // deprecated magic variable.
             $ctx = stream_context_create($ctxOpts);
             $fh  = @fopen($pin['url'], 'r', false, $ctx);
