@@ -300,25 +300,50 @@ final class NumericFlagCoercionTest extends TestCase
         }
     }
 
+    /**
+     * shell-S10 fix (review L-1): this leg runs bin/phpdup as a real
+     * subprocess with STDERR redirected to a file. CommandTester cannot
+     * capture ConfigLoader's raw fwrite(STDERR), so the previous in-process
+     * form leaked the note line into the Unit suite's output stream. The
+     * subprocess shape is hermetic AND pins the note end-to-end: exit 0,
+     * no crash, and the warning text on the real error stream.
+     */
     public function testHugeWorkersFlagRunsCleanlyAndExitsZero(): void
     {
         $original = getenv('PHPDUP_WORKERS');
         putenv('PHPDUP_WORKERS=2');
+        $stderrPath = $this->corpusDir() . '/huge-workers.err';
         try {
-            $tester = $this->commandTester();
-            $exit = $tester->execute([
-                'paths'        => [$this->corpusDir()],
-                '--workers'    => '100000',
-                '--limit'      => '3',
-                '--stage'      => 'scanning',
-                '--plain'      => true,
-            ]);
+            @unlink($stderrPath);
+            $binary = dirname(__DIR__, 3) . '/bin/phpdup';
+            $this->assertFileExists($binary);
+            $exit      = -1;
+            $stdout    = [];
+            exec(sprintf(
+                '%s %s analyze %s --workers=100000 --limit=3 --stage=scanning --plain 2>%s',
+                PHP_BINARY,
+                escapeshellarg($binary),
+                escapeshellarg($this->corpusDir()),
+                escapeshellarg($stderrPath),
+            ) . ' < /dev/null', $stdout, $exit);
             // The documented posture for this lane ruling: an oversized
             // request is NOT invalid invocation (exit 2) and never a crash —
             // the run happens, clamped.
             $this->assertSame(0, $exit);
-            $this->assertStringNotContainsString('Uncaught', $tester->getDisplay());
+            $display = implode("\n", $stdout);
+            $this->assertStringNotContainsString('Uncaught', $display);
+            // The clamp note must land on the subprocess' STDERR — the same
+            // text the runtime echo produces, now asserted instead of leaked.
+            $note = is_file($stderrPath) ? (string)file_get_contents($stderrPath) : '';
+            $this->assertStringContainsString('phpdup: warning:', $note);
+            $this->assertStringContainsString('workers=100000', $note);
+            $this->assertStringContainsString(
+                'ceiling of 8',
+                $note,
+                'the note is the user-visible counterpart of the pool clamp'
+            );
         } finally {
+            @unlink($stderrPath);
             if ($original === false) {
                 putenv('PHPDUP_WORKERS');
             } else {

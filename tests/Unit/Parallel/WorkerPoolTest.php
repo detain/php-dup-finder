@@ -140,6 +140,9 @@ final class WorkerPoolTest extends TestCase
     // test forces PHPDUP_WORKERS=2 so the fork set is 8 or fewer), no sleeps
     // and no timing races — every awaited event is a waitpid/EOF the pool
     // itself guarantees, so CI matrix runners cannot flake on scheduling.
+    // Sole exception: the wedged-grace pin deliberately waits out a scaled
+    // verification grace (setVerifyGraceScale seam) because a SIGSTOPped
+    // child stays stopped — its outcome is monotone, only its clock is real.
 
     /** Restore PHPDUP_WORKERS exactly as it was (same idiom as the header tests). */
     private function withCpuEnv(string $value, callable $body): void
@@ -255,6 +258,60 @@ final class WorkerPoolTest extends TestCase
             }
             $this->assertNotNull($caught, 'a nonzero exit with no __error frame must throw');
             $this->assertMatchesRegularExpression('/Worker \d+ exited with status 3 mid-chunk/', $caught->getMessage());
+        });
+    }
+
+    /**
+     * shell-S10 fix (review L-2): a child that stops on the way out — AFTER
+     * its __done sentinel, so the drain loop ends cleanly and the exit-status
+     * verification pass is what meets it — must fail loud within the bounded
+     * collect escalation, never as an infinite blocking wait. The pre-fix
+     * single pcntl_waitpid on the happy path hangs forever on exactly this
+     * shape (a SIGSTOPped child cannot acknowledge SIGTERM; only the SIGKILL
+     * leg, which the kernel delivers through the stop, clears it).
+     */
+    public function testWedgedChildAfterSentinelFailsLoudWithinBoundedGrace(): void
+    {
+        if (!WorkerPool::isAvailable()) {
+            $this->markTestSkipped('pcntl unavailable');
+        }
+        $this->withCpuEnv('2', function (): void {
+            $pool   = new WorkerPool(workers: 2);
+            $start  = microtime(true);
+            $caught = null;
+            // Scale the production graces (5/2/2 s) down to 0.5/0.2/0.2 s.
+            WorkerPool::setVerifyGraceScale(0.1);
+            try {
+                iterator_to_array($pool->runStreaming(range(1, 16), static function (array $batch): array {
+                    if (in_array(1, $batch, true)) {
+                        // exit(0) runs shutdown functions AFTER the harness
+                        // wrote __done and closed the child socket: the
+                        // parent drains this stream through the sentinel, so
+                        // the stopped child is met only in the verification
+                        // pass — the exact L-2 surface.
+                        register_shutdown_function(static function (): void {
+                            posix_kill(getmypid(), SIGSTOP);
+                        });
+                    }
+                    return $batch;
+                }), false);
+            } catch (\RuntimeException $e) {
+                $caught = $e;
+            } finally {
+                WorkerPool::setVerifyGraceScale(null);
+            }
+            $elapsed = microtime(true) - $start;
+            $this->assertNotNull($caught, 'a wedged post-sentinel child must fail loud, not block forever');
+            $this->assertMatchesRegularExpression(
+                '/was killed by signal \d+ \(SIG(?:TERM|KILL)\) after its __done sentinel/',
+                $caught->getMessage(),
+                'the escalation must reap the child and name the killing signal honestly'
+            );
+            // The escalated windows total 0.9 s. A regression to the unbounded
+            // blocking wait cannot fail THIS assertion — it hangs the test and
+            // turns red via the runner's outer timeout instead; the 15 s
+            // ceiling only absorbs slow-CI scheduling jitter on the live path.
+            $this->assertLessThan(15.0, $elapsed, 'bounded escalation must land far inside an infinite hang');
         });
     }
 

@@ -43,6 +43,30 @@ final class WorkerPool
     public const WORKERS_CEILING_MULTIPLIER = 4;
 
     /**
+     * shell-S10 fix (review L-2): how long the exit-status verification pass
+     * waits for a child whose stream has already ended to be collectable on
+     * its own before escalating to SIGTERM, then (after the term grace) to
+     * SIGKILL. The windows are bounded BY DESIGN: the pre-fix single
+     * blocking pcntl_waitpid could stall the whole analyze forever on a
+     * SIGSTOPped or shutdown-stalled child — a wedged child must surface as
+     * a descriptive error, never as an infinite hang.
+     */
+    private const VERIFY_COLLECT_GRACE_SECONDS = 5.0;
+    private const VERIFY_TERM_GRACE_SECONDS    = 2.0;
+    private const VERIFY_KILL_GRACE_SECONDS    = 2.0;
+
+    /** Poll cadence inside the verification grace windows. */
+    private const VERIFY_POLL_MICROSECONDS = 20000;
+
+    /**
+     * Test seam shrinking the three verification graces by a factor
+     * (1.0 = production timing). Production never sets it; tests MUST
+     * restore null in a finally — same discipline as
+     * {@see setSocketPairFactory()}.
+     */
+    private static ?float $verifyGraceScale = null;
+
+    /**
      * Test seam for the socketpair creation inside the fork loop
      * (shell-028): lets a test force a mid-loop failure after k children
      * were already spawned and prove the partial set is reaped. Production
@@ -94,6 +118,21 @@ final class WorkerPool
     public static function setSocketPairFactory(?\Closure $factory): void
     {
         self::$socketPairFactory = $factory;
+    }
+
+    /**
+     * Install the verification-grace scale (see $verifyGraceScale); pass
+     * null to restore production timing. Tests MUST restore it in a finally.
+     */
+    public static function setVerifyGraceScale(?float $scale): void
+    {
+        self::$verifyGraceScale = $scale;
+    }
+
+    /** Production grace scaled through the test seam. */
+    private static function verifyGrace(float $production): float
+    {
+        return self::$verifyGraceScale === null ? $production : $production * self::$verifyGraceScale;
     }
 
     /** @return false|array{0: resource, 1: resource} child end first */
@@ -170,7 +209,9 @@ final class WorkerPool
      *
      * @throws \RuntimeException if a child dies mid-chunk, exits nonzero,
      *         exits without its __done sentinel, reports an __error frame,
-     *         or the fork set cannot be completed (shell-005, shell-028).
+     *         is a wedged post-sentinel child killed by the bounded
+     *         verification escalation, or the fork set cannot be completed
+     *         (shell-005, shell-028, shell-S10).
      */
     public function runStreaming(array $items, \Closure $task): \Generator
     {
@@ -346,21 +387,18 @@ final class WorkerPool
             // is exit(0) with the __done sentinel observed. Signal deaths,
             // nonzero exits and sentinel-less clean exits throw — a partially
             // filled chunk is never silently dropped again, and a child that
-            // raced past the fast-fail's WNOHANG window is caught here (the
-            // blocking wait returns once its shutdown has completed).
+            // raced past the fast-fail's WNOHANG window is caught here.
+            // shell-S10 fix (review L-2): collection is bounded and escalates
+            // (WNOHANG grace → SIGTERM → SIGKILL) instead of an unbounded
+            // blocking wait, so a SIGSTOPped or shutdown-stalled child turns
+            // into a descriptive throw, never a hung analyze.
             foreach ($pids as $idx => $childPid) {
-                $status    = 0;
-                $collected = 0;
-                do {
-                    $collected = pcntl_waitpid($childPid, $status);
-                } while (
-                    $collected === -1
-                    && function_exists('pcntl_get_last_error')
-                    && pcntl_get_last_error() === PCNTL_EINTR
-                );
-                // Collected (or gone): it has been dealt with — the finally
-                // must not wait on it again.
+                // Dealt with whatever the outcome — reaped, vanished, or
+                // escalated past the graces (the child has then taken a
+                // terminal signal): the finally must never wait on it again.
                 unset($pids[$idx]);
+                $status    = 0;
+                $collected = self::collectVerificationChild($idx, $childPid, $status);
                 if ($collected !== $childPid) {
                     // ECHILD/-1 without status: the child vanished from
                     // under us. Without the sentinel that is a failed chunk;
@@ -393,6 +431,80 @@ final class WorkerPool
     }
 
     /**
+     * Bounded re-collection of one verification-pass child (shell-S10 fix,
+     * review L-2). Mirrors the finally leg's SIGTERM posture and hardens it:
+     * poll WNOHANG through the collect grace, then SIGTERM + its grace, then
+     * SIGKILL + its grace. A child that somehow survives even SIGKILL without
+     * ever becoming collectable raises a descriptive RuntimeException rather
+     * than blocking the run forever (the kernel delivers SIGKILL through a
+     * stop, so in practice this arm is a safety net, not an expected path).
+     *
+     * @return int the child's pid once reaped (inspect $status), or -1 when
+     *              it vanished from under the pool before a window closed
+     * @throws \RuntimeException when no window reaped it and it never vanished
+     */
+    private static function collectVerificationChild(int $idx, int $childPid, int &$status): int
+    {
+        $graces = [
+            self::verifyGrace(self::VERIFY_COLLECT_GRACE_SECONDS),
+            self::verifyGrace(self::VERIFY_TERM_GRACE_SECONDS),
+            self::verifyGrace(self::VERIFY_KILL_GRACE_SECONDS),
+        ];
+        $signals = [null, SIGTERM, SIGKILL];
+        foreach ($graces as $leg => $grace) {
+            if ($signals[$leg] !== null) {
+                @posix_kill($childPid, $signals[$leg]);
+            }
+            $collected = self::pollVerificationChild($childPid, $status, $grace);
+            if ($collected === $childPid || $collected === -1) {
+                return $collected;
+            }
+        }
+        throw new \RuntimeException(sprintf(
+            'Worker %d (pid %d) was still not collectable %.1f s after SIGTERM and %.1f s after SIGKILL '
+            . '(on top of a %.1f s collect grace). Refusing to block the run on a wedged child.',
+            $idx,
+            $childPid,
+            $graces[1],
+            $graces[2],
+            $graces[0],
+        ));
+    }
+
+    /**
+     * WNOHANG-poll one child until it is reaped, vanishes, or the grace runs
+     * out. EINTR from waitpid only means a signal interrupted the call — the
+     * poll continues inside the window; any other -1 (ECHILD) is "vanished".
+     *
+     * @return int the child's pid (reaped), 0 (grace expired, still
+     *              uncollectable), or -1 (vanished from under the pool)
+     */
+    private static function pollVerificationChild(int $childPid, int &$status, float $grace): int
+    {
+        $deadline = microtime(true) + $grace;
+        while (true) {
+            $collected = @pcntl_waitpid($childPid, $status, WNOHANG);
+            if ($collected === $childPid) {
+                return $childPid;
+            }
+            if ($collected === -1) {
+                if (function_exists('pcntl_get_last_error') && pcntl_get_last_error() === PCNTL_EINTR) {
+                    if (microtime(true) >= $deadline) {
+                        return 0;
+                    }
+                    usleep(self::VERIFY_POLL_MICROSECONDS);
+                    continue;
+                }
+                return -1;
+            }
+            if (microtime(true) >= $deadline) {
+                return 0;
+            }
+            usleep(self::VERIFY_POLL_MICROSECONDS);
+        }
+    }
+
+    /**
      * The stream contract's single verdict for one reaped child: exit(0)
      * WITH the __done sentinel observed is the only success. Signal deaths,
      * nonzero exits and sentinel-less clean exits all throw, each with the
@@ -411,6 +523,20 @@ final class WorkerPool
     {
         if (pcntl_wifsignaled($status)) {
             $signal = pcntl_wtermsig($status);
+            if ($sawDone) {
+                // shell-S10 fix (review L-2): a child struck down AFTER its
+                // stream completed — the wedged-then-escalated shape the
+                // bounded verification collect produces — must not be
+                // described as a mid-chunk loss. The sentinel arrived; a
+                // clean exit never did; the run still refuses success.
+                throw new \RuntimeException(sprintf(
+                    'Worker %d was killed by signal %d (%s) after its __done sentinel had arrived; it never '
+                    . 'completed a clean exit. Refusing to report success on a signal-killed worker.',
+                    $idx,
+                    $signal,
+                    self::signalName($signal),
+                ));
+            }
             throw new \RuntimeException(sprintf(
                 'Worker %d was killed by signal %d (%s) mid-chunk%s; its stream never reached the '
                 . '__done sentinel. Refusing to report a partial result stream as success.',
