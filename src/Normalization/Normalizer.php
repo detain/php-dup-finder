@@ -363,29 +363,55 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
         return null;
     }
 
+    /**
+     * once-029 (php-dup-finder-once-029): the user-plugin loop used to
+     * sit below BOTH mode bail-outs, so a registered plugin only ever
+     * saw nodes on the aggressive path — silently dead under
+     * strict/default, contradicting the NormalizationPlugin contract.
+     * The invocation now closes every mode branch: plugins run once
+     * per node, after the built-in passes that particular mode
+     * performs, and `visit()` receives the real mode name so a plugin
+     * can self-gate. Aggressive ordering is unchanged (same position,
+     * factored into runPlugins); strict/default are the newly-honest
+     * legs. With no plugins registered the traversal is byte-identical
+     * to before in all three modes.
+     */
     #[\Override]
     public function enterNode(Node $node)
     {
         $this->canonicalizeVariables($node);
         if ($this->mode === 'strict') {
+            $this->runPlugins($node);
             return null;
         }
         $this->canonicalizeLiterals($node);
         $this->canonicalizeNamedArgs($node);
         if ($this->mode !== 'aggressive') {
+            $this->runPlugins($node);
             return null;
         }
         $this->canonicalizeNames($node);
         $this->canonicalizeAttributes($node);
-
-        // User-defined passes run last so they see the canonical form
-        // produced by the built-in passes.
-        if ($this->plugins !== null) {
-            foreach ($this->plugins->plugins() as $plugin) {
-                $plugin->visit($node, $this->mode);
-            }
-        }
+        $this->runPlugins($node);
         return null;
+    }
+
+    /**
+     * Hand the node to every registered plugin once this mode's
+     * built-in passes have run over it — user-defined passes run last
+     * within their mode so they see the canonical form the built-ins
+     * produced (strict: identifier pass; default: + literals, named
+     * args; aggressive: + name and attribute passes. The match/switch
+     * fold replaces the node in leaveNode, after this visit).
+     */
+    private function runPlugins(Node $node): void
+    {
+        if ($this->plugins === null) {
+            return;
+        }
+        foreach ($this->plugins->plugins() as $plugin) {
+            $plugin->visit($node, $this->mode);
+        }
     }
 
     /**
