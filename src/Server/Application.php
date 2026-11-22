@@ -651,6 +651,13 @@ final class Application
             if ($status === JobQueue::STATUS_PENDING) {
                 $this->queue->markRunning($jobId);
             }
+            // An ack is evidence of life: it ends this reconcile. Falling
+            // through would let the absence-backstop below false-fail a
+            // just-acked worker when the first observation lands past the
+            // window (deep backlog). asyncDispatchedAt is deliberately not
+            // re-anchored here — a channel that goes silent again still
+            // settles past the deadline on the next reconcile.
+            return;
         } elseif ($event['kind'] === self::CHANNEL_FAIL) {
             $this->forgetAsyncJob($jobId);
             $this->queue->markFailed($jobId, $event['reason'] ?? 'worker reported a failure');

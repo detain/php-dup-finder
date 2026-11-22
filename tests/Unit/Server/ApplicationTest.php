@@ -1376,6 +1376,49 @@ final class ApplicationTest extends TestCase
         $this->assertStringContainsString('did not produce a result', $poll['error']);
     }
 
+    public function testLateAckPastWindowStaysRunningAndNextSilentPollStillFails(): void
+    {
+        // once-S02 r1 MEDIUM-1 pin: a late ack is evidence of life — the
+        // opposite of the silence the absence-deadline polices. A buffered
+        // admission whose first observation happens past the deadline (deep
+        // worker backlog) must flip to RUNNING, not be false-failed by the
+        // backstop the ack arm used to fall through into. And the cure must
+        // not mask genuine wedges: asyncDispatchedAt is deliberately NOT
+        // re-anchored on ack, so the next still-silent reconcile of the
+        // same row still hits the window (second leg).
+        $now = 11_000_000.0;
+        $app = $this->makeAsyncApp($now);
+        $app->asyncResultDeadlineSeconds = 300;
+        $app->workerAckProbe = static function (string $socketPath, string $message): string {
+            return ''; // frame written; busy worker answered nothing
+        };
+        /** @var list<array{kind:string, reason?:string}> $events */
+        $events = [];
+        $app->workerChannelProbe = static function () use (&$events): ?array {
+            return array_shift($events);
+        };
+
+        $response = $app->handle('POST', '/jobs', '{"paths":["src"]}', []);
+        $this->assertSame(202, $response['status']);
+        $id = json_decode($response['body'], true)['job_id'];
+
+        // Deep backlog: the whole deadline window elapses before the first
+        // read of the held channel — the ack arrives already overdue.
+        $now += 1_000.0;
+        $events[] = ['kind' => 'ack'];
+
+        $poll = json_decode($app->handle('GET', '/jobs/' . $id, '', [])['body'], true);
+        $this->assertSame(JobQueue::STATUS_RUNNING, $poll['status'], 'an ack observed past the window is life, not a timeout');
+
+        // Non-masking leg: the channel goes silent again on the next
+        // reconcile — the row must still settle via the backstop.
+        $events[] = ['kind' => 'still'];
+
+        $poll = json_decode($app->handle('GET', '/jobs/' . $id, '', [])['body'], true);
+        $this->assertSame(JobQueue::STATUS_FAILED, $poll['status']);
+        $this->assertStringContainsString('did not produce a result', $poll['error']);
+    }
+
     public function testRealHeldChannelObservesLateAckThenCompletionOverASocket(): void
     {
         // Seam-free transport leg: a real unix listener accepts our
