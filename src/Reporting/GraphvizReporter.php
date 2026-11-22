@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Phpdup\Reporting;
 
-use Phpdup\Clustering\Cluster;
+use Phpdup\Util\ControlText;
 
 /**
  * Renders the cluster set to Graphviz DOT, ready for rendering with
@@ -57,7 +57,10 @@ final class GraphvizReporter
                 "  %s [shape=ellipse, style=\"filled\", fillcolor=%s, label=%s];\n",
                 $this->id('cluster_' . $c->id),
                 $this->dotString($colour),
-                $this->dotString(sprintf("%s\\nimpact %d · %d members", $c->id, $c->impact, $c->size())),
+                // Real LF, not a hand-escaped \n: dotString is now the sole
+                // place that decides how a break reaches the wire (the old
+                // literal survived double-escaping and rendered as text).
+                $this->dotString(sprintf("%s\nimpact %d · %d members", $c->id, $c->impact, $c->size())),
             );
         }
         $out .= "\n  // memberships\n";
@@ -82,9 +85,25 @@ final class GraphvizReporter
         return 'n_' . substr(md5($raw), 0, 12);
     }
 
+    /**
+     * Quote a string as a single DOT label (output-047). The pre-fix escaper
+     * covered only backslash and double quote, so a newline in a scanned
+     * basename split the quoted label into arbitrary DOT statements — the
+     * audit-integrity class (humans trust the rendered graph). This maps
+     * every byte with a faithful DOT escape sequence (backslash, quote,
+     * LF/CR/TAB) onto its two-char form, and substitutes the unquotable
+     * residue (NUL, ESC) with the shared visible marker, so the emitted
+     * label is always ONE physical line and round-trips under DOT's own
+     * unescaping rules.
+     */
     private function dotString(string $s): string
     {
-        return '"' . str_replace(['\\', '"'], ['\\\\', '\\"'], $s) . '"';
+        $escaped = str_replace(
+            ['\\', '"', "\n", "\r", "\t"],
+            ['\\\\', '\\"', '\\n', '\\r', '\\t'],
+            $s,
+        );
+        return '"' . strtr($escaped, ["\0" => ControlText::SUBSTITUTE, "\x1b" => ControlText::SUBSTITUTE]) . '"';
     }
 
     private function colourForImpact(int $impact): string

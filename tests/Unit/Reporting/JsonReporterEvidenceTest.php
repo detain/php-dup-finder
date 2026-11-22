@@ -172,6 +172,43 @@ final class JsonReporterEvidenceTest extends TestCase
         $this->assertLessThanOrEqual(8400, strlen((string)$c['source']['text']));
     }
 
+    // ── output-011: the evidence diff header is a stream surface too ────────
+
+    public function testEvidenceDiffRefusesNewlineBearingFilePaths(): void
+    {
+        // The evidence field is a decoded consumer's patch stream: a forged
+        // `--- a/…` / `+++ b/…` header rides inside it. Both embedding sites
+        // must refuse, each naming its field.
+        foreach ([0 => 'template file path', 1 => 'evidence peer file path'] as $i => $what) {
+            $cluster = $this->pairCluster();          // real, differing sources → evidence emits
+            $cluster->members[$i]->file .= "\n--- /dev/null";
+            try {
+                $this->payloadFor($cluster, 1.0);
+                $this->fail("member[{$i}] path with a newline must refuse the build");
+            } catch (\RuntimeException $e) {
+                $this->assertStringContainsString('JsonReporter', $e->getMessage());
+                $this->assertStringContainsString($what, $e->getMessage());
+                $this->assertStringContainsString('newline (0x0A)', $e->getMessage());
+            }
+        }
+    }
+
+    public function testEvidenceDiffStillEmitsForCleanPathsSchemaUnchanged(): void
+    {
+        // Belt: the guard is inert on honest corpora — the 1.6 payload shape
+        // (and therefore the goldens) is byte-identical to before.
+        $cluster = $this->pairCluster();
+        $payload = $this->payloadFor($cluster, 1.0);
+        $this->assertSame(JsonSchemaSpec::SCHEMA_VERSION, $payload['schema_version']);
+        $ev = $payload['clusters'][0]['evidence_diff'];
+        $this->assertNotNull($ev);
+        // The evidence diff's own header still pairs the real paths.
+        $this->assertStringContainsString(
+            '--- a/' . $cluster->members[0]->file . "\n+++ b/" . $cluster->members[1]->file . "\n",
+            (string)$ev['diff'],
+        );
+    }
+
     // ── fixtures ────────────────────────────────────────────────────────────
 
     /** @return array<string,mixed> */

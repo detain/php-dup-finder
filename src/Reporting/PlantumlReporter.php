@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Phpdup\Reporting;
 
-use Phpdup\Clustering\Cluster;
+use Phpdup\Util\ControlText;
 
 /**
  * Renders the cluster set as a PlantUML class diagram.
@@ -36,13 +36,22 @@ final class PlantumlReporter
         $aliasFor = [];
         foreach ($report->clusters as $c) {
             foreach ($c->members as $m) {
+                // output-047: the basename lands inside a quoted `class … as
+                // "…"` label and PlantUML grammar carries NO escape for a
+                // double quote — a `"` + newline pair in a scanned name
+                // closes the string and opens top-level `!` preprocessor
+                // directives (`!include` ⇒ file read / SSRF at render time,
+                // SEC-05 proof). Control-byte paths are refused outright at
+                // this boundary (reject arm); a bare quote is softened to an
+                // apostrophe in label() so no name can ever close its label.
+                ControlText::reject($m->file, 'PlantumlReporter', 'member file path');
                 if (!isset($aliasFor[$m->file])) {
                     $aliasFor[$m->file] = 'F' . substr(md5($m->file), 0, 8);
                 }
             }
         }
         foreach ($aliasFor as $file => $alias) {
-            $out .= sprintf("class %s as \"%s\"\n", $alias, basename($file));
+            $out .= sprintf("class %s as \"%s\"\n", $alias, $this->label($file));
         }
         $out .= "\n";
 
@@ -65,5 +74,17 @@ final class PlantumlReporter
 
         $out .= "@enduml\n";
         return $out;
+    }
+
+    /**
+     * Render a scanned path as a PlantUML-safe quoted label: the basename,
+     * with a literal double quote softened to an apostrophe (the only way
+     * to keep a name from closing its own label in this grammar) and any
+     * surviving control byte substituted visibly — belt behind the
+     * boundary reject in build().
+     */
+    private function label(string $file): string
+    {
+        return ControlText::substitute(str_replace('"', "'", basename($file)));
     }
 }

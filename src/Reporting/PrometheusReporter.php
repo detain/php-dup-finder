@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Phpdup\Reporting;
 
 use Phpdup\Clustering\Cluster;
+use Phpdup\Util\ControlText;
 
 /**
  * Prometheus text-format exposition.
@@ -88,8 +89,19 @@ final class PrometheusReporter
         $lines[] = "{$name} {$value}";
     }
 
+    /**
+     * Quote a label value for the exposition format (output-047): the Go
+     * client's escape set — backslash, double quote, LF, CR, TAB are mapped
+     * to their two-char escapes, so a control byte in a tag/kind can never
+     * split or forge an exposition line (the pre-fix set missed \r, leaving
+     * a CR free to break line framing on tolerant readers). The two bytes
+     * the format has no escape for at all (NUL, ESC) are substituted with
+     * the shared visible marker — the same scrub-arm doctrine as Graphviz
+     * labels, via Util\ControlText rather than a forked sanitizer.
+     */
     private function labelValue(string $s): string
     {
-        return '"' . addcslashes($s, "\"\\\n") . '"';
+        $escaped = addcslashes($s, "\"\\\n\r\t");
+        return '"' . strtr($escaped, ["\0" => ControlText::SUBSTITUTE, "\x1b" => ControlText::SUBSTITUTE]) . '"';
     }
 }

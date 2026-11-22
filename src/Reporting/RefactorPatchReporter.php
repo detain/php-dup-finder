@@ -8,6 +8,7 @@ use Phpdup\Extraction\Block;
 use Phpdup\Refactor\ApplyExtractor;
 use Phpdup\Refactor\FunctionNameRegistry;
 use Phpdup\Refactor\ScriptKindApplyRefusal;
+use Phpdup\Util\ControlText;
 
 /**
  * Emits one .patch file per cluster — a heuristic, **manual-review-required**
@@ -52,6 +53,13 @@ final class RefactorPatchReporter
         // makes that moot by design.)
         foreach ($report->clusters as $cluster) {
             foreach ($cluster->members as $member) {
+                // output-011 (SEC-03 shape): a newline in a member path lets
+                // the "# member[i] @ file:range" hint (or a raw diff header)
+                // forge `+++ b/evil` stream lines — the audit proof was
+                // `patch -p1` CREATING attacker-named files from this exact
+                // output. Refuse the whole surface, loudly, before any file
+                // or directory is created.
+                ControlText::reject($member->file, 'RefactorPatchReporter', 'member file path');
                 if ($member->kind === 'script') {
                     throw ScriptKindApplyRefusal::forCluster($cluster, 'RefactorPatchReporter');
                 }
@@ -135,6 +143,13 @@ final class RefactorPatchReporter
      */
     public function buildPatch(Cluster $cluster, ?string $safeId = null): string
     {
+        // Boundary guard for direct callers (writeTo pre-scans the whole
+        // report, but buildPatch is public and embeds every member path in
+        // the "# member[i] @" hints): refuse an unsafe path here too.
+        foreach ($cluster->members as $member) {
+            ControlText::reject($member->file, 'RefactorPatchReporter', 'member file path');
+        }
+
         $safeId ??= Slug::safe($cluster->id);
         $unsafe = $this->detectUnsafe($cluster);
         $header = "# phpdup refactor patch — cluster {$cluster->id}\n"

@@ -6,6 +6,7 @@ namespace Phpdup\Reporting;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
 use Phpdup\Refactor\HoleCoverage;
+use Phpdup\Util\ControlText;
 use SebastianBergmann\Diff\Differ;
 use SebastianBergmann\Diff\Output\UnifiedDiffOutputBuilder;
 
@@ -22,6 +23,13 @@ final class DiffReporter
 {
     public function writeDir(Report $report, string $dir): void
     {
+        // output-011: a newline-bearing scanned path would forge standalone
+        // `--- /dev/null` / `+++ b/…` / `@@ … @@` lines inside every .diff
+        // written below. The whole surface refuses BEFORE anything is
+        // created (ScriptKindApplyRefusal posture — a partial artifact set
+        // masquerading as the complete one is the misfeed class).
+        $this->requireStreamSafe($report);
+
         if (!is_dir($dir)) {
             @mkdir($dir, 0o775, true);
         }
@@ -37,6 +45,10 @@ final class DiffReporter
 
     public function writePatch(Report $report, string $file): void
     {
+        // output-011: same boundary law as writeDir — refuse the whole
+        // stream before the parent directory is even created.
+        $this->requireStreamSafe($report);
+
         $parentDir = dirname($file);
         if ($parentDir !== '' && !is_dir($parentDir)) {
             @mkdir($parentDir, 0o775, true);
@@ -104,6 +116,23 @@ final class DiffReporter
         $start = max(0, $block->range->start - 1);
         $end   = min(count($lines), $block->range->end);
         return implode("\n", array_slice($lines, $start, $end - $start)) . "\n";
+    }
+
+    /**
+     * Boundary guard (output-011): every member file path is about to be
+     * embedded raw in a diff header (`--- a/{file}` / `+++ b/{file}`) and in
+     * the `## member[i]: {file}:{range}` anchors. Control bytes there are not
+     * cosmetic — they forge whole stream lines. Reject the report with a
+     * named diagnostic instead of emitting a patch a maintainer cannot
+     * distinguish from an attacker's.
+     */
+    private function requireStreamSafe(Report $report): void
+    {
+        foreach ($report->clusters as $cluster) {
+            foreach ($cluster->members as $member) {
+                ControlText::reject($member->file, 'DiffReporter', 'member file path');
+            }
+        }
     }
 
     private function indent(string $text, string $prefix): string
