@@ -5,11 +5,14 @@ namespace Phpdup\Reporting;
 
 use PhpParser\Node;
 use PhpParser\NodeFinder;
+use Phpdup\Cli\Config;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
 use Phpdup\Parsing\AstParser;
 use Phpdup\Refactor\ApplyExtractor;
 use Phpdup\Refactor\FunctionNameRegistry;
+use Phpdup\Refactor\Hole;
+use Phpdup\Refactor\HoleCoverage;
 use Phpdup\Refactor\ScriptKindApplyRefusal;
 use Phpdup\Util\ControlText;
 
@@ -67,6 +70,16 @@ use Phpdup\Util\ControlText;
  * `$this->`/`self::` inside comments and strings. Text scanning survives
  * only demoted: it appends suspect names to an unverified fail-closed
  * reason and can never clear a member.
+ *
+ * output-020 (S51): the F1b branch also gates template EVIDENCE, not just
+ * member safety. A cluster whose hole coverage exceeds the configured
+ * {@see Config::$maxHoleCoverage} ceiling — the same threshold the JSON/CLI
+ * reports mark `re_expressed` with — or whose holes carry degraded evidence
+ * ({@see HoleCoverage::isDegraded()}, S26's apply-side surface) is refused
+ * with a NAMED reason in the apply summary instead of being hoisted as if a
+ * mostly-hole or gap-riddled generalized template were a sound refactor.
+ * Default config (ceiling 1.0) keeps the coverage leg inert; the knob is
+ * the operator's stance, shared with the report surfaces.
  */
 final class RefactorPatchReporter
 {
@@ -191,6 +204,19 @@ final class RefactorPatchReporter
                     }
                     if ($cluster->generalizedAst === null || $cluster->signature === null) {
                         $skipped[] = "# cluster " . CsvReporter::defuseFormula($cluster->id) . ": no signature";
+                        continue;
+                    }
+                    // output-020 (S51): evidence gate between "looks safe to
+                    // hoist" and "hoist it". The member scan above rules on
+                    // CONTEXT; this rules on the TEMPLATE — a mostly-hole or
+                    // degraded-evidence generalization is not a sound
+                    // refactor no matter how clean every member reads. The
+                    // named reason rides the summary Skipped rows, so
+                    // "why did a signature-bearing cluster skip apply?" has
+                    // an answer on the artifact itself.
+                    $refusal = $this->evidenceRefusal($cluster, $report->config);
+                    if ($refusal !== null) {
+                        $skipped[] = "# cluster " . CsvReporter::defuseFormula($cluster->id) . ": {$refusal}";
                         continue;
                     }
                     try {
@@ -371,6 +397,50 @@ final class RefactorPatchReporter
             }
         }
         return $this->unsafeVerdicts[$key] = $verdict;
+    }
+
+    /**
+     * Evidence gate for the F1b branch (php-dup-finder-output-020): a
+     * cluster that survived the member scan can still rest on template
+     * evidence phpdup itself does not trust.
+     *
+     *  - Hole-coverage floor: {@see HoleCoverage::coverage()} measured above
+     *    {@see Config::$maxHoleCoverage} — the SAME predicate the JSON and
+     *    CLI reports use to mark a cluster `re_expressed` (threshold
+     *    semantics consumed from the S26 era, not re-invented). A template
+     *    that is mostly holes has little shared structure left to hoist;
+     *    applying it would ship a parameter shell dressed as a refactor.
+     *    Default ceiling 1.0 keeps this leg inert — the knob is the
+     *    operator's stance and gates reports and apply identically.
+     *  - Degraded holes: {@see HoleCoverage::isDegraded()} — S26's surface
+     *    built for exactly this refusal chain. A degraded hole row is a
+     *    structural gap or an unverified presence claim; the apply path
+     *    would bake those gaps into every rewritten member.
+     *
+     * @return string|null the named refusal reason for the summary, or null
+     *         when the cluster's template evidence is sound enough to apply
+     */
+    private function evidenceRefusal(Cluster $cluster, Config $config): ?string
+    {
+        // Beyond the "no signature" gate the template is guaranteed non-null,
+        // so coverage() cannot be null here; the belt mirrors the consumer
+        // precedent (CliReporter, JsonReporter) rather than trusting it.
+        $coverage = HoleCoverage::coverage($cluster);
+        if ($coverage !== null && $coverage > $config->maxHoleCoverage) {
+            return 'hole coverage ' . sprintf('%.2f', $coverage)
+                 . ' exceeds max_hole_coverage ' . sprintf('%.2f', $config->maxHoleCoverage)
+                 . ' — generalized template is mostly holes; apply refused';
+        }
+        if (HoleCoverage::isDegraded($cluster)) {
+            $names = array_map(
+                static fn (Hole $hole): string => CsvReporter::defuseFormula($hole->placeholder),
+                HoleCoverage::degradedHoles($cluster),
+            );
+            return count($names) . ' of ' . count($cluster->holes)
+                 . ' holes carry degraded evidence (' . implode(', ', $names)
+                 . ') — hole values are structural gaps or unverified claims; apply refused';
+        }
+        return null;
     }
 
     /**

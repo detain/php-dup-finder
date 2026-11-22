@@ -22,6 +22,15 @@ use PhpParser\Node;
  * template. Hole paths come from {@see Cluster::$holePaths}, which are
  * template-relative, so this needs no AST reload beyond what the cluster
  * already carries (null AST → null coverage, e.g. residue-only clusters).
+ *
+ * The threshold semantics defined here — coverage above the ceiling reads
+ * "mostly holes", degraded rows read "untrustworthy evidence" — are
+ * consumed on BOTH sides of the pipeline: the report surfaces mark such a
+ * cluster `re_expressed` (CliReporter, JsonReporter) and the F1b apply
+ * branch refuses to hoist it mechanically
+ * ({@see \Phpdup\Reporting\RefactorPatchReporter}, php-dup-finder-output-020):
+ * one measurement, one knob, evidence that is annotated in reports and
+ * refused at apply — never silently trusted.
  */
 final class HoleCoverage
 {
