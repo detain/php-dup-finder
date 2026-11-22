@@ -20,9 +20,12 @@ use Phpdup\Extraction\Block;
  * strings (php-dup-finder-engine-011, engine-S18 half A): each block
  * id is interned once per build and every posting slot is then a
  * packed int, so a 16-char id zend_string is referenced by the decode
- * table exactly once instead of once per posting. The old shape cost
- * ~one id string per (gram, block) incidence and dominated preprocess
- * residency on WordPress-scale corpora. {@see candidatesFor()} decodes
+ * table exactly once instead of once per posting. Each posting
+ * incidence kept a reference to the block's id string (slot bytes +
+ * refcount traffic); engine-011 measured preprocess residency dominated
+ * by the per-block ngram bags together with the index's string postings
+ * — this half lays the ordered-int substrate, S18b's bag interning
+ * carries the residency win. {@see candidatesFor()} decodes
  * back to id strings, so the external contract is byte-identical —
  * and now truthful even for an all-decimal id, which the old `$seen`
  * hash would have leaked back as an int key through numeric-string

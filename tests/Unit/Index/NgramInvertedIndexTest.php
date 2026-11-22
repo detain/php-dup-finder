@@ -313,11 +313,12 @@ final class NgramInvertedIndexTest extends TestCase
 
     public function testPostingsStoreSequentialIntsNotBlockIdStrings(): void
     {
-        // The residency fix itself: every posting slot is a sequential int
+        // The int-posting substrate: every posting slot is a sequential int
         // (0..k-1 in build/insertion order), never a block-id string. The id
-        // strings live once each in the decode table. A 16-char hex id is ~34
-        // bytes of zend_string + refcount churn per posting; an int slot is 8
-        // bytes in a packed array and no string traffic (engine-011).
+        // strings live once each in the decode table. The old shape stored an
+        // ~8-byte slot pointing at one shared zend_string, plus refcount
+        // traffic, per posting; an int slot removes the string indirection
+        // and the intern tables make ids addressable (engine-011).
         $a = $this->makeBlockWithNgrams('A', 'hash_a', ['shared' => 1, 'only_a' => 1]);
         $b = $this->makeBlockWithNgrams('B', 'hash_b', ['shared' => 1, 'only_b' => 1]);
 
