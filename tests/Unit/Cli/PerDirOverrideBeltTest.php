@@ -35,6 +35,13 @@ use Phpdup\Cli\ConfigLoader;
  * in consumed (fix withOverrides), in orphans (fix or BANK it), or the
  * emitted count grows (only then bump assertCount(EMITTED/CONSUMED) —
  * never to silence a failure, only to record genuinely-new admission).
+ *
+ * SHRINK PROTOCOL (shell-S22): dropping a key from the per-dir admit list
+ * means dropping it from the payload too and lowering BOTH counts (the
+ * emitted set went 27→23 when the path/ref-bearing family went root-only;
+ * consumed 21→17, banked untouched at 6). The shrink is pinned from the
+ * other side by testPathRefBearingKeysAreNotAdmittedPerDirectory, so a
+ * re-admission cannot sneak back through the payload half alone.
  */
 final class PerDirOverrideBeltTest extends TestCase
 {
@@ -76,9 +83,6 @@ final class PerDirOverrideBeltTest extends TestCase
             'fail_on_impact'       => 11,
             'max_clusters'         => 12,
             'candidate_budget'     => 777,
-            'baseline'             => '/belt/baseline.json',
-            'baseline_out'         => '/belt/baseline-out.json',
-            'diff_base'            => 'belt-ref',
             'kinds'                => ['method'],
             // item 5.2: both exclude keys are admitted and CONSUMED
             // (append-merge + reset opt-out in Config::mergeExclude()).
@@ -95,7 +99,6 @@ final class PerDirOverrideBeltTest extends TestCase
                 'methods'   => ['BeltEntity::probe' => 'db.read'],
                 'functions' => ['belt_fn' => 'db.write'],
             ],
-            'debug_log'  => '/belt/debug.log',
             'low_memory' => true,
         ];
     }
@@ -103,7 +106,7 @@ final class PerDirOverrideBeltTest extends TestCase
     public function testEveryEmittedPerDirKeyIsConsumedOrBanked(): void
     {
         $emitted = self::emittedKeys();
-        self::assertCount(27, $emitted, 'fully-populated payload must exercise every admitted shape');
+        self::assertCount(23, $emitted, 'fully-populated payload must exercise every admitted shape');
 
         [$consumed, $orphans] = self::classifyKeys($emitted);
 
@@ -117,7 +120,32 @@ final class PerDirOverrideBeltTest extends TestCase
             . implode(', ', array_diff($orphans, $banked))
             . ' — a newly admitted key must be consumed in Config::withOverrides() or consciously BANKED there.',
         );
-        self::assertCount(21, $consumed, 'the consumed half of the belt is 27 emitted minus 6 banked');
+        self::assertCount(17, $consumed, 'the consumed half of the belt is 23 emitted minus 6 banked');
+    }
+
+    /**
+     * shell-S22 (php-dup-finder-shell-026): the emitted-set pin has a
+     * negative half. The path/ref-bearing family — the keys that choose a
+     * file to WRITE or an external ref to shell out to — must never be
+     * admitted per-directory, not even as a silent drop: a payload made of
+     * nothing else must shape to NOTHING. Re-admitting any of the four (or
+     * inventing a fifth write-bearing key and shipping it through
+     * shapeOverrides) fails here before it can ever reach a derived Config.
+     */
+    public function testPathRefBearingKeysAreNotAdmittedPerDirectory(): void
+    {
+        $loader = new ConfigLoader();
+        $method = new \ReflectionMethod($loader, 'shapeOverrides');
+
+        foreach (['baseline', 'baseline_out', 'diff_base', 'debug_log'] as $rootOnlyKey) {
+            /** @var array<string,mixed> $emitted */
+            $emitted = $method->invoke($loader, [$rootOnlyKey => '/belt/planted-' . $rootOnlyKey]);
+            self::assertSame(
+                [],
+                $emitted,
+                "shapeOverrides must not admit the root-only key '$rootOnlyKey' per-directory (shell-S22)",
+            );
+        }
     }
 
     /**

@@ -281,17 +281,17 @@
         "baseline": {
             "type": "string",
             "default": null,
-            "description": "CI baseline file for incremental duplication gating. If file exists: load baseline and exit 4 if new clusters are found (clusters whose member content hashes are not all present in some baseline cluster). If file does not exist: write baseline snapshot and exit 0 (first-run auto-baseline). CLI: --baseline."
+            "description": "CI baseline file for incremental duplication gating. If file exists: load baseline and exit 4 if new clusters are found (clusters whose member content hashes are not all present in some baseline cluster). If file does not exist: write baseline snapshot and exit 0 (first-run auto-baseline). CLI: --baseline. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load — it names a file the run reads and writes, so no scanned subtree may choose it (shell-S22)."
         },
         "baseline_out": {
             "type": "string",
             "default": null,
-            "description": "Write current clusters as a baseline snapshot to FILE (overwrites existing). Useful for explicitly creating or updating baselines. CLI: --baseline-out."
+            "description": "Write current clusters as a baseline snapshot to FILE (overwrites existing). Useful for explicitly creating or updating baselines. CLI: --baseline-out. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load — it names a file phpdup OVERWRITES, so no scanned subtree may choose it (shell-S22)."
         },
         "diff_base": {
             "type": "string",
             "default": null,
-            "description": "Git ref for diff-scoped analysis. When set, phpdup scans only files changed in `git diff --name-only <ref>..HEAD` plus their clone cohort (files sharing n-gram fingerprints with the changed files). Useful for per-PR analysis in CI. CLI: --diff-base."
+            "description": "Git ref for diff-scoped analysis. When set, phpdup scans only files changed in `git diff --name-only <ref>..HEAD` plus their clone cohort (files sharing n-gram fingerprints with the changed files). Useful for per-PR analysis in CI. CLI: --diff-base. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load — the ref becomes argv of an external git call, so no scanned subtree may choose it (shell-S22; argv confinement of the ref itself lands shell-S23/output-S52)."
         }
     }
 }

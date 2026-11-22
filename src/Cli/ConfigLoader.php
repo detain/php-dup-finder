@@ -508,7 +508,11 @@ final class ConfigLoader
      *    out-of-range values, the root-only stance-key refusals below) keep
      *    throwing: once excluded trees are never read, failing loudly on a
      *    subtree the user DID ask to scan carries no false-positive risk,
-     *    and shell-S22's root-only posture pins the throw.
+     *    and shell-S22's root-only posture pins the throw. Root-only now
+     *    covers two families: report-level stance keys (refused above) and
+     *    the path/ref-bearing write-target keys baseline/baseline_out/
+     *    diff_base/debug_log (shell-026), likewise refused here and absent
+     *    from the per-dir admit list in shapeOverrides().
      *
      * Found files override only the subtree rooted at their directory;
      * the actual layered merge happens in {@see Config::effectiveFor()}.
@@ -645,6 +649,27 @@ final class ConfigLoader
                         );
                     }
 
+                    // shell-S22 (shell-026, ENGINE-SEC out-of-group 2): the
+                    // PATH/REF-BEARING family is root-only. These four keys
+                    // steer WRITES and EXTERNAL references — debug_log names
+                    // the file the run logs into, baseline/baseline_out name
+                    // files read and overwritten, diff_base becomes argv of a
+                    // git call. No subtree config may choose them: the
+                    // discovery walk lets any directory plant such a file, so
+                    // a future per-dir-aware consumer would inherit
+                    // attacker-chosen file targets. Refused loudly (same
+                    // posture as the stance family above), and the keys are
+                    // absent from shapeOverrides() — the derived per-file
+                    // Config copy can no longer receive them at all.
+                    foreach (['baseline', 'baseline_out', 'diff_base', 'debug_log'] as $pathKey) {
+                        if (array_key_exists($pathKey, $payload)) {
+                            throw new \RuntimeException(
+                                $pathKey . ' is not a per-directory key (root phpdup.json only): '
+                                . $file->getPathname()
+                            );
+                        }
+                    }
+
                     $dir = realpath($file->getPath());
                     if ($dir === false) {
                         continue;
@@ -747,6 +772,13 @@ final class ConfigLoader
      * to the flat override-dict shape that {@see Config::withOverrides()} accepts
      * (e.g. `optional_blocks_containment => 0.9`).
      *
+     * The loop below IS the per-directory admit list. Keys that steer writes
+     * or external references (baseline, baseline_out, diff_base, debug_log)
+     * were removed from it by shell-S22 (shell-026): they are root-config
+     * knobs, discovery refuses them in any `.phpdup.json`, and a per-file
+     * derived Config therefore never copies them. The belt guard
+     * (tests/Unit/Cli/PerDirOverrideBeltTest.php) pins the emitted set here.
+     *
      * @param array<string,mixed> $data
      * @return array<string,mixed>
      */
@@ -756,8 +788,8 @@ final class ConfigLoader
         foreach (['min_block_size', 'max_block_size', 'normalization_mode',
                   'similarity_threshold', 'tree_threshold', 'min_cluster_impact',
                   'max_df', 'ngram_size', 'sort',
-                  'fail_on_impact', 'max_clusters', 'candidate_budget', 'baseline', 'baseline_out',
-                  'diff_base', 'exclude', 'exclude_reset'] as $k) {
+                  'fail_on_impact', 'max_clusters', 'candidate_budget',
+                  'exclude', 'exclude_reset'] as $k) {
             if (array_key_exists($k, $data)) {
                 $out[$k] = $data[$k];
             }
@@ -782,9 +814,10 @@ final class ConfigLoader
                 $out['db_symbols_functions'] = $ds['functions'];
             }
         }
-        if (array_key_exists('debug_log', $data)) {
-            $out['debug_log'] = $data['debug_log'];
-        }
+        // shell-S22: debug_log is NOT admitted (path/ref-bearing root-only
+        // family, shell-026) — discovery refuses it before this method ever
+        // sees such a payload, and the key stays out of the emit list so the
+        // per-file derived Config never copies it.
         if (array_key_exists('low_memory', $data)) {
             $out['low_memory'] = $data['low_memory'];
         }

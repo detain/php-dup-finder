@@ -234,6 +234,107 @@ final class PerDirectoryConfigTest extends TestCase
     }
 
     /**
+     * shell-S22 (php-dup-finder-shell-026, ENGINE-SEC out-of-group 2): the
+     * path/ref-bearing family is root-only. baseline/baseline_out name files
+     * the run reads and OVERWRITES, debug_log names the log sink, diff_base
+     * becomes argv of a git call — keys an attacker-planted subtree config
+     * must never choose. Same loud-refusal posture as the stance family
+     * above (fingerprint_id_mode precedent), asserted per key.
+     *
+     * @return array<string, array{0: string, 1: string}>
+     */
+    public static function perDirectoryPathRefKeyProvider(): array
+    {
+        return [
+            'baseline'     => ['baseline', '/belt/baseline.json'],
+            'baseline_out' => ['baseline_out', '/belt/baseline-out.json'],
+            'diff_base'    => ['diff_base', 'HEAD~1'],
+            'debug_log'    => ['debug_log', '/belt/debug.log'],
+        ];
+    }
+
+    /**
+     * @param array<string,string>|string $value
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('perDirectoryPathRefKeyProvider')]
+    public function testPerDirectoryPathRefKeysRefusedLoudly(string $key, string $value): void
+    {
+        $tmp = self::tmpRoot('perdir-pathref');
+        try {
+            file_put_contents($tmp . '/.phpdup.json', (string)json_encode([$key => $value]));
+
+            try {
+                (new ConfigLoader(warnOnSkip: false))->load(paths: [$tmp], configFile: null);
+                $this->fail("per-directory {$key} must throw");
+            } catch (\RuntimeException $e) {
+                $this->assertStringContainsString($key, $e->getMessage());
+                $this->assertStringContainsString('not a per-directory key', $e->getMessage());
+                $this->assertStringContainsString('root phpdup.json only', $e->getMessage());
+                $this->assertStringContainsString('.phpdup.json', $e->getMessage(), 'the offending file is named');
+            }
+        } finally {
+            self::rmTree($tmp);
+        }
+    }
+
+    public function testPathRefRefusalIsNotMaskedByValidAdmittedKeys(): void
+    {
+        // The refusal must not evaporate behind successful shaping of a
+        // well-behaved sibling key in the same subtree file.
+        $tmp = self::tmpRoot('perdir-pathref-mask');
+        try {
+            file_put_contents(
+                $tmp . '/.phpdup.json',
+                (string)json_encode(['min_block_size' => 4, 'debug_log' => '/belt/debug.log']),
+            );
+
+            try {
+                (new ConfigLoader(warnOnSkip: false))->load(paths: [$tmp], configFile: null);
+                $this->fail('a valid admitted key must not shelter a root-only one');
+            } catch (\RuntimeException $e) {
+                $this->assertStringContainsString('debug_log', $e->getMessage());
+                $this->assertStringContainsString('not a per-directory key', $e->getMessage());
+            }
+        } finally {
+            self::rmTree($tmp);
+        }
+    }
+
+    public function testRootConfigStillAdmitsThePathRefFamily(): void
+    {
+        // Root-only means root-ALLOWED: the same four keys in the root
+        // phpdup.json keep working (flat resolve -> Config constructor),
+        // and none of them leaks into the per-directory override maps.
+        $tmp = self::tmpRoot('perdir-rootok');
+        try {
+            mkdir($tmp . '/sub', 0777, true);
+            file_put_contents(
+                $tmp . '/phpdup.json',
+                (string)json_encode([
+                    'baseline'     => $tmp . '/b.json',
+                    'baseline_out' => $tmp . '/o.json',
+                    'diff_base'    => 'HEAD~1',
+                    'debug_log'    => $tmp . '/d.log',
+                ]),
+            );
+
+            $cfg = (new ConfigLoader(warnOnSkip: false))->load(paths: [$tmp . '/sub'], configFile: $tmp . '/phpdup.json');
+
+            $this->assertSame($tmp . '/b.json', $cfg->baselineFile);
+            $this->assertSame($tmp . '/o.json', $cfg->baselineOutFile);
+            $this->assertSame('HEAD~1', $cfg->diffBase);
+            $this->assertSame($tmp . '/d.log', $cfg->debugLog);
+            foreach ($cfg->perDirectoryOverrides as $dict) {
+                foreach (['baseline', 'baseline_out', 'diff_base', 'debug_log'] as $rootOnlyKey) {
+                    $this->assertArrayNotHasKey($rootOnlyKey, $dict);
+                }
+            }
+        } finally {
+            self::rmTree($tmp);
+        }
+    }
+
+    /**
      * Review m2 pin: an unreadable subtree must be SKIPPED by the
      * discovery walk, not re-thrown. SPL's UnexpectedValueException is a
      * RuntimeException, so escaping here would have been reclassified by

@@ -465,6 +465,15 @@ final class Config
      * allowlist under owner-gate R8 (ft-r2 M-1). New admitted keys must be
      * consumed here or consciously banked there — never silently ignored.
      *
+     * The converse direction is programmatic-only by design: shell-S22
+     * (shell-026) dropped the path/ref-bearing family (baseline,
+     * baseline_out, diff_base, debug_log) from the per-directory admit
+     * list, so their isset() legs below can no longer be reached through
+     * discovery — per-file derived configs never carry a subtree-chosen
+     * write target. They survive for hand-built callers, joining the
+     * consumed-but-not-admitted shape already occupied by db_aware,
+     * scorer and apply.
+     *
      * @param array<string, mixed> $overrides
      */
     public function withOverrides(array $overrides): self
@@ -515,6 +524,14 @@ final class Config
             irThreshold:                    isset($overrides['ir_threshold']) ? (float)$overrides['ir_threshold'] : $this->irThreshold,
             mlPairUrl:                      isset($overrides['ml_pair_url']) ? (string)$overrides['ml_pair_url']  : $this->mlPairUrl,
             mlPairThreshold:                isset($overrides['ml_pair_threshold']) ? (float)$overrides['ml_pair_threshold'] : $this->mlPairThreshold,
+            // shell-S22 (shell-026): debug_log, baseline, baseline_out and
+            // diff_base are ROOT-ONLY on the per-directory route — discovery
+            // refuses them in any .phpdup.json and shapeOverrides() no longer
+            // admits them, so a per-file derived Config can never receive a
+            // subtree-chosen write target. The isset() legs below survive for
+            // hand-built callers only (pipeline tests and the serve/watch
+            // payload construct configs programmatically), the same
+            // consumed-but-not-admitted shape as db_aware / scorer / apply.
             debugLog:                       isset($overrides['debug_log']) ? (string)$overrides['debug_log'] : $this->debugLog,
             lowMemory:                      isset($overrides['low_memory']) ? (bool)$overrides['low_memory'] : $this->lowMemory,
             failOnImpact:                   isset($overrides['fail_on_impact']) ? (int)$overrides['fail_on_impact'] : $this->failOnImpact,
