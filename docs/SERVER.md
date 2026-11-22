@@ -121,7 +121,7 @@ on` line echoes exactly that, and clients use the RFC 2732 authority too
 
 ```bash
 $ phpdup serve --host ::1 --port 8080
-phpdup serve: listening on tcp://[::1]:8080
+phpdup serve listening on tcp://[::1]:8080
 
 $ curl -g http://[::1]:8080/healthz
 ok
