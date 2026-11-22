@@ -61,10 +61,15 @@ final class ContainmentSimilarityTest extends TestCase
     /**
      * Deterministic mini-LCG (no global RNG state, PHP 8.1 floor).
      * Yields reproducible pseudo-random ints in [0, modulus).
+     *
+     * glibc-style 31-bit parameters: the worst-case intermediate
+     * (2^31-1) * 1103515245 + 12345 ≈ 2.38e18 stays inside PHP_INT_MAX
+     * on 64-bit hosts, so every step is exact integer math — no float
+     * overflow, no implicit-conversion deprecation.
      */
-    private static function nextRandom(int $state, int $modulus): int
+    private static function nextRandom(int &$state, int $modulus): int
     {
-        $state = ($state * 6364136223846793005 + 1442695040888963407) & PHP_INT_MAX;
+        $state = ($state * 1103515245 + 12345) % 2147483648;
         return $state % $modulus;
     }
 
