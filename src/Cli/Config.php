@@ -356,6 +356,25 @@ final class Config
     }
 
     /**
+     * shell-035 memo: derived Configs keyed by MATCHED-GROUP IDENTITY —
+     * the length-sorted list of override keys effectiveFor() matched for
+     * a path. Every file whose chain resolves to the same group reuses
+     * one derived instance, so the 60-field withOverrides() rebuild runs
+     * once per distinct group per process instead of once per file
+     * (measured ~2ms/file on the real repo before this memo existed).
+     *
+     * Keyed by the group itself, not by directory, so the match set stays
+     * a per-path computation exactly as before: even a degenerate
+     * file-shaped override key (impossible from discovery, only from a
+     * hand-built Config) gets its own group and can never bleed into its
+     * directory siblings. Group strings join keys with NUL, which cannot
+     * appear in a path key, so no two groups can alias.
+     *
+     * @var array<string, self>
+     */
+    private array $effectiveMemo = [];
+
+    /**
      * Build the effective Config for a given file path by overlaying any
      * per-directory `.phpdup.json` overrides whose directory is an
      * ancestor of $filePath. Deeper overrides win over shallower ones —
@@ -365,6 +384,13 @@ final class Config
      * Falls back to $this when there are no per-directory overrides
      * (the common case), so callers can call this unconditionally and
      * pay no cost when the feature is unused.
+     *
+     * Memoized per matched group (shell-035): the hot callers (the
+     * forked PreprocessWorker and BlockAstLoader::normalizerFor) ask per
+     * file, and consecutive files overwhelmingly share one group — the
+     * memo turns those repeats into an O(1) instance reuse with zero
+     * behavior delta (derived Configs are pure functions of the group,
+     * so a reused instance is value-identical to a rebuilt one).
      */
     public function effectiveFor(string $filePath): self
     {
@@ -386,6 +412,15 @@ final class Config
             return $this;
         }
         uksort($matches, static fn(string $a, string $b) => strlen($a) <=> strlen($b));
+
+        // shell-035: the sorted key list IS the group identity — PHP 8's
+        // stable sort makes it deterministic per match set, so every file
+        // in the group takes the identical cache slot.
+        $groupKey = implode("\0", array_keys($matches));
+        $memo = $this->effectiveMemo[$groupKey] ?? null;
+        if ($memo !== null) {
+            return $memo;
+        }
 
         $merged = [];
         foreach ($matches as $overrides) {
@@ -415,7 +450,9 @@ final class Config
                 }
             }
         }
-        return $this->withOverrides($merged);
+        $derived = $this->withOverrides($merged);
+        $this->effectiveMemo[$groupKey] = $derived;
+        return $derived;
     }
 
     /**

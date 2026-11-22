@@ -154,6 +154,16 @@ final class PreprocessWorker
         // config don't pay reconstruction cost. Keyed by a small fingerprint
         // of the fields the extractor / normalizer / fingerprinter read.
         $tooling = [];
+        // shell-035: identity last-hit ahead of the fingerprint key. Config's
+        // per-group memo hands every file of one matched group the SAME
+        // derived instance, so consecutive same-group files no longer need
+        // the sprintf key rebuilt at all (the 13-token key costs two
+        // serializeStringMap ksort passes per call when db symbols are
+        // configured). A different instance falls through to the keyed
+        // cache unchanged — tooling is a pure function of the config's
+        // fields, so serving by object identity is value-identical.
+        $lastCfg   = null;
+        $lastTools = null;
         // Build the plugin registry once per worker (plugin classes are
         // typically cheap to instantiate; we pass the same registry into
         // every Normalizer below).
@@ -166,7 +176,10 @@ final class PreprocessWorker
         // low_memory:true must get pool-backed normalization for its subtree.
         // Lazily minted inside $toolFor on the first lowMemory entry.
         $nodePool = null;
-        $toolFor = static function (Config $cfg) use (&$tooling, $pluginRegistry, &$nodePool): array {
+        $toolFor = static function (Config $cfg) use (&$tooling, &$lastCfg, &$lastTools, $pluginRegistry, &$nodePool): array {
+            if ($cfg === $lastCfg && $lastTools !== null) {
+                return $lastTools;
+            }
             $key = sprintf(
                 '%d|%d|%s|%d|%s|%s|%d|%d|%s|%s|%s|%s|%d',
                 $cfg->minBlockSize, $cfg->maxBlockSize,
@@ -233,7 +246,9 @@ final class PreprocessWorker
                     'irPrinter'  => $cfg->scorer === 'ir' ? new IrPrinter() : null,
                 ];
             }
-            return $tooling[$key];
+            $lastCfg   = $cfg;
+            $lastTools = $tooling[$key];
+            return $lastTools;
         };
 
         $fileIdx = 0;

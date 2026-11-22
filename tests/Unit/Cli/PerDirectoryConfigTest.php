@@ -68,6 +68,89 @@ final class PerDirectoryConfigTest extends TestCase
         $this->assertSame(4, $cfg->effectiveFor('/tmp/foo/x.php')->minBlockSize);
     }
 
+    // ------------------------------------------------------------------
+    // shell-S17 — shell-035: per-group memo. The hot callers ask
+    // effectiveFor() once per file; every file of one matched override
+    // GROUP must reuse one derived Config, so the 60-field withOverrides()
+    // rebuild runs once per distinct group (instance census == invocation
+    // count), not once per file. Distinct groups still mint distinct
+    // instances, and the values each instance carries are untouched.
+    // ------------------------------------------------------------------
+
+    public function testEffectiveForReusesOneDerivedConfigPerMatchedGroup(): void
+    {
+        $cfg = new Config(
+            paths: ['/s17-root'],
+            exclude: [],
+            minBlockSize: 8,
+            perDirectoryOverrides: [
+                '/s17-root'     => ['min_block_size' => 4],
+                '/s17-root/sub' => ['min_block_size' => 2, 'normalization_mode' => 'strict'],
+            ],
+        );
+
+        $shallow1 = $cfg->effectiveFor('/s17-root/a.php');
+        $shallow2 = $cfg->effectiveFor('/s17-root/b.php');
+        $again    = $cfg->effectiveFor('/s17-root/a.php');
+        $deep1    = $cfg->effectiveFor('/s17-root/sub/c.php');
+        $deep2    = $cfg->effectiveFor('/s17-root/sub/d.php');
+        // Different DIRECTORY, same matched group as the shallow files: the
+        // memo keys on the group, so this is a reuse too (the dir-keyed
+        // alternative fix shape would rebuild here and fail this assert).
+        $sibling  = $cfg->effectiveFor('/s17-root/other/e.php');
+        $unhit    = $cfg->effectiveFor('/elsewhere/x.php');
+
+        $this->assertSame($shallow1, $shallow2, 'same-directory files reuse one derived Config');
+        $this->assertSame($shallow1, $again, 'repeat lookups never rebuild');
+        $this->assertSame($shallow1, $sibling, 'distinct dirs resolving to one group share the instance');
+        $this->assertSame($deep1, $deep2, 'the deep group reuses too');
+        $this->assertNotSame($shallow1, $deep1, 'distinct groups mint distinct derived configs');
+        $this->assertSame($cfg, $unhit, 'unmatched paths still return the root itself');
+
+        // The instance census IS the withOverrides-invocation count: every
+        // derived object effectiveFor can hand out was minted by exactly
+        // one withOverrides call; the root arrives via the early return.
+        $ids = [];
+        foreach ([$shallow1, $shallow2, $again, $deep1, $deep2, $sibling, $unhit] as $eff) {
+            $ids[spl_object_id($eff)] = true;
+        }
+        $this->assertCount(3, $ids, '7 lookups over 2 matched groups + the root mint exactly 3 instances');
+
+        // Values land where they did pre-memo (no behavior delta).
+        $this->assertSame(4, $shallow1->minBlockSize);
+        $this->assertSame('aggressive', $shallow1->normalizationMode);
+        $this->assertSame(2, $deep1->minBlockSize);
+        $this->assertSame('strict', $deep1->normalizationMode);
+        $this->assertSame(8, $cfg->minBlockSize, 'root config untouched by derivation');
+    }
+
+    public function testMemoCannotBleedFileShapedKeyIntoDirectorySiblings(): void
+    {
+        // Pathological but pinned: discovery only ever registers DIRECTORY
+        // keys, yet a hand-built Config may carry a file-shaped one. The
+        // match set (and therefore the group identity) stays a per-path
+        // computation, so the special file and its siblings sit in
+        // different memo slots — the dir-keyed alternative would serve
+        // them one instance and silently apply the special override to
+        // every sibling.
+        $cfg = new Config(
+            paths: ['/s17-degen'],
+            exclude: [],
+            minBlockSize: 8,
+            perDirectoryOverrides: [
+                '/s17-degen/special.php' => ['min_block_size' => 1],
+            ],
+        );
+
+        $special = $cfg->effectiveFor('/s17-degen/special.php');
+        $repeat  = $cfg->effectiveFor('/s17-degen/special.php');
+        $plain   = $cfg->effectiveFor('/s17-degen/other.php');
+
+        $this->assertSame(1, $special->minBlockSize, 'the file-shaped key still binds its own path');
+        $this->assertSame($special, $repeat, 'and memoizes for repeats of that same path');
+        $this->assertSame($cfg, $plain, 'directory siblings never inherit the special group');
+    }
+
     public function testConfigLoaderDiscoversPerDirectoryFiles(): void
     {
         $tmp = sys_get_temp_dir() . '/phpdup-perdir-' . uniqid();

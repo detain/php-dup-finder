@@ -463,6 +463,157 @@ final class PreprocessWorkerIsolationTest extends TestCase
         }
     }
 
+    // ------------------------------------------------------------------
+    // shell-S17 — shell-035: Config's per-group memo hands the worker one
+    // derived instance per matched group, and the tooling closure answers
+    // consecutive same-instance files with an identity last-hit instead of
+    // rebuilding the 13-token sprintf key. Both fast paths must keep every
+    // tooling boundary the keyed cache had — pins below.
+    // ------------------------------------------------------------------
+
+    /**
+     * Group switches AND consecutive same-group files, in both orders: the
+     * identity guard hits (a1→a2, b1→b2) and misses (a2→b1). If it ever
+     * keyed on something weaker than the derived instance, b's compact
+     * tooling would serve an a file (or the reverse) and the bag-key types
+     * below would break. The keyed cache is the backstop on every miss —
+     * this exercises both routes in one batch each.
+     */
+    public function testPerDirectoryGroupsNeverShareToolingInEitherOrder(): void
+    {
+        mkdir($this->tmpDir . '/a', 0o775, true);
+        mkdir($this->tmpDir . '/b', 0o775, true);
+        $src = "<?php\nfunction alpha(\$v) { return helper(\$v) + 1; }\nfunction beta(\$v) { return other(\$v) + 2; }\n";
+        $a1  = $this->tmpDir . '/a/f1.php';
+        $a2  = $this->tmpDir . '/a/f2.php';
+        $b1  = $this->tmpDir . '/b/f1.php';
+        $b2  = $this->tmpDir . '/b/f2.php';
+        foreach ([$a1, $a2, $b1, $b2] as $path) {
+            file_put_contents($path, $src);
+        }
+
+        $config = new Config(
+            paths: [$this->tmpDir],
+            exclude: [],
+            minBlockSize: 1,
+            cacheDir: $this->tmpDir . '/cache',
+            perDirectoryOverrides: [$this->tmpDir . '/b' => ['low_memory' => true]],
+        );
+
+        foreach ([[$a1, $a2, $b1, $b2], [$a1, $b1, $a2, $b2]] as $order) {
+            $rows = (new PreprocessWorker($config, astDiskCache: false))->process($order);
+
+            $byFile = [];
+            foreach ($rows as $row) {
+                if ($row['type'] === 'block') {
+                    $byFile[$row['file']][] = $row['block'];
+                }
+            }
+            foreach ([$a1, $a2] as $path) {
+                $this->assertNotEmpty($byFile[$path], 'non-vacuity: ' . $path . ' yielded blocks');
+                foreach ($byFile[$path] as $block) {
+                    foreach (array_keys($block->ngramBag) as $k) {
+                        $this->assertIsString($k, "a/ (root low_memory:false) must stay hex-keyed: $path");
+                    }
+                }
+            }
+            foreach ([$b1, $b2] as $path) {
+                $this->assertNotEmpty($byFile[$path], 'non-vacuity: ' . $path . ' yielded blocks');
+                foreach ($byFile[$path] as $block) {
+                    foreach (array_keys($block->ngramBag) as $k) {
+                        $this->assertIsInt($k, "b/ (per-dir low_memory:true) must stay compact-keyed: $path");
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Route equivalence = the acceptance's "outputs byte-identical to
+     * pre-change run", committed as a hermetic twin of the --json probe.
+     * The memo route shares one root Config across the batch (after the
+     * first file of each group every lookup answers from the memo/identity
+     * path). The rebuild route hands every file a FRESH Config — empty
+     * memo, empty last-hit — i.e. the exact from-scratch per-file
+     * computation this step replaced. Row-census equality (type, file,
+     * block name, structural hash, full n-gram bag) proves zero delta.
+     */
+    public function testPerFileRowsAreRouteIndependent(): void
+    {
+        mkdir($this->tmpDir . '/b', 0o775, true);
+        // Every body carries stock db method calls (find/all/fetch/
+        // fetchone): under db_aware the canonicalizer folds them into
+        // __DB_*__ tokens, under root they stay verbatim MethodCalls — so
+        // the two groups really run different tooling inside this batch.
+        $corpus = [
+            $this->writePhp('r_shared_1.php', "<?php\nfunction one(\$db) { return \$db->find(1); }\nfunction two(\$db) { return \$db->all(); }\n"),
+            $this->writePhp('r_shared_2.php', "<?php\nfunction three(\$db) { return \$db->fetch(); }\n"),
+            $this->tmpDir . '/b/r_dir_1.php',
+            $this->tmpDir . '/b/r_dir_2.php',
+        ];
+        file_put_contents($corpus[2], "<?php\nfunction four(\$db) { return \$db->find(2); }\n");
+        file_put_contents($corpus[3], "<?php\nfunction five(\$db) { \$x = \$db->find(3); return \$db->fetchone(\$x); }\n");
+
+        // db_aware (not low_memory) on the b/ group: the derived configs
+        // differ from the root in a field the tooling key consumes, so a
+        // wrongly shared entry would change the CANONICALIZED bags, not
+        // just the key shape — a stronger discriminator here. Either leak
+        // direction (compact-ish b tooling onto a root file, or root
+        // tooling onto a b file) moves the structuralHash/ngramBag of the
+        // affected rows and breaks the equality below.
+        $factory = fn (): Config => new Config(
+            paths: [$this->tmpDir],
+            exclude: [],
+            minBlockSize: 1,
+            cacheDir: $this->tmpDir . '/cache',
+            perDirectoryOverrides: [$this->tmpDir . '/b' => ['db_aware' => true]],
+        );
+
+        $memoRows = (new PreprocessWorker($factory(), astDiskCache: false))->process($corpus);
+
+        $freshRows = [];
+        foreach ($corpus as $path) {
+            foreach ((new PreprocessWorker($factory(), astDiskCache: false))->process([$path]) as $row) {
+                $freshRows[] = $row;
+            }
+        }
+
+        $shape = static fn (array $rows): array => array_map(
+            static fn (array $r): array => [
+                $r['type'],
+                $r['file'],
+                isset($r['block']) ? (string) $r['block']->name : null,
+                isset($r['block']) ? $r['block']->structuralHash : null,
+                isset($r['block']) ? $r['block']->ngramBag : null,
+            ],
+            $rows,
+        );
+
+        $this->assertNotEmpty($shape($memoRows), 'non-vacuity: the corpus produces rows');
+
+        // Control for the control: without the override the b/ rows must
+        // look DIFFERENT — proof that the db_aware group really changes
+        // tooling in this corpus, so the route equality below is an
+        // equality over genuinely two-kind tooling, not over a no-op.
+        $bareRows = (new PreprocessWorker(
+            (fn (): Config => new Config(
+                paths: [$this->tmpDir],
+                exclude: [],
+                minBlockSize: 1,
+                cacheDir: $this->tmpDir . '/cache',
+            ))(),
+            astDiskCache: false,
+        ))->process($corpus);
+        $hashes = static fn (array $rows): array => array_values(array_map(
+            static fn (array $r): string => (string) $r['block']->structuralHash,
+            array_filter($rows, static fn (array $r): bool => $r['type'] === 'block' && $r['file'] === $corpus[2]),
+        ));
+        $this->assertNotEmpty($hashes($memoRows), 'non-vacuity: the override dir yields blocks');
+        $this->assertNotSame($hashes($bareRows), $hashes($memoRows), 'the db_aware group must be observable in the b/ hashes');
+
+        $this->assertSame($shape($freshRows), $shape($memoRows), 'group memo + identity last-hit change no output');
+    }
+
     /**
      * Recursive name => content-sha1 census of a directory ('' map when the
      * dir does not exist). Used as the byte-identity witness for the
