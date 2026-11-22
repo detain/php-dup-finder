@@ -505,7 +505,19 @@ final class BlockAstLoaderTest extends TestCase
         self::assertTrue($m2->isAstUnloaded());
     }
 
-    public function testRebaseSweepStarvedThirdMemberFailsLoud(): void
+    /**
+     * engine-040 (half A): the escalation sweep's starve law is
+     * always-skip + note, never run death. Geometry unchanged from the
+     * old FailsLoud pin — three same-class members, two live content
+     * twins — but the surplus tail now drops: the ghost leaves the
+     * (shared) cluster by object identity, the honest prefix pairs onto
+     * truth, and a relocated-degrade note names the skipped block, its
+     * kind and its hinted range. The cluster mutation is visible through
+     * the caller's own Cluster object because members ride the shared
+     * instance (below-two clusters are inert downstream by existing
+     * guards).
+     */
+    public function testRebaseSweepStarvedThirdMemberDegradesToLoudSkip(): void
     {
         $file = $this->write('r4f.php', self::decoyGeometry());
         $pair = $this->decoyMembers($file);
@@ -518,12 +530,129 @@ final class BlockAstLoaderTest extends TestCase
         $this->deleteFileLines($file, 6, 10);
 
         $cluster = new Cluster('Ffeedfacefeedface1', [$pair[0], $pair[1], $ghost], 1.0, true);
-        try {
-            $this->loaderWithConfig($file)->rebaseClusters([$cluster]);
-            self::fail('count law: three members, two content twins — must go loud');
-        } catch (\RuntimeException $e) {
-            self::assertStringContainsString('could not relocate', $e->getMessage());
-            self::assertStringContainsString('kind if', $e->getMessage());
+        $loader  = $this->loaderWithConfig($file);
+        $loader->rebaseClusters([$cluster]);        // no throw: the run lives on
+
+        self::assertSame([$pair[0], $pair[1]], $cluster->members, 'the starved ghost leaves the cluster by identity');
+        self::assertSame([6, 9], [$pair[0]->range->start, $pair[0]->range->end], 'honest prefix still pairs onto truth');
+        self::assertSame([14, 17], [$pair[1]->range->start, $pair[1]->range->end]);
+        self::assertSame([24, 27], [$ghost->range->start, $ghost->range->end], 'a degraded member keeps its stale hint — it reports nothing');
+        self::assertTrue($ghost->isAstUnloaded(), 'the drop never fake-resolves the ghost');
+
+        $notes = $loader->relocationDegrades();
+        self::assertCount(1, $notes, 'always-skip carries its note');
+        self::assertStringContainsString('relocated-degrade', $notes[0]);
+        self::assertStringContainsString('kind if', $notes[0]);
+        self::assertStringContainsString('hinted range 24-27', $notes[0]);
+        self::assertStringContainsString('3 stale member(s), 2 live content twin(s)', $notes[0]);
+
+        $stats = $loader->rebaseStats();
+        self::assertSame(1, $stats['degrades'], 'the degrade counter is the sweep-level evidence');
+        self::assertSame(1, $stats['keys']);
+        self::assertSame(0, $stats['freshKeys'], 'the starved key escalated, never booked fresh');
+        self::assertGreaterThan(0, $stats['hashes'], 'the content law was honestly paid before the skip');
+    }
+
+    /**
+     * The total-loss leg of the degrade law: a class whose live bodies
+     * are ALL gone starves every member — the cluster drains to empty
+     * (its <2 arms are inert downstream) and each drop is separately
+     * noted. Nothing throws; nothing is guessed.
+     */
+    public function testEscalationDegradesEntireClassWhenNoTwinLives(): void
+    {
+        $file = $this->write('r4g.php', self::decoyGeometry());
+        $pair = $this->decoyMembers($file);         // live [16,19] + [24,27]
+        $this->mintHashes($file, $pair[0], $pair[1]);
+        [$m1, $m2] = $pair;
+        $m1->unloadAst();
+        $m2->unloadAst();
+
+        // Both twin bodies vanish; the same-scope echo decoys survive.
+        file_put_contents($file, "<?php\n\nnamespace F1Land;\n\nfunction twin_gate(int \$x): int {\n"
+            . "    if (\$x > 5) {\n        echo 'd1';\n        \$junk = 1;\n    }\n"
+            . "    if (\$x > 6) {\n        echo 'd2';\n        \$junk = 2;\n    }\n"
+            . "    return \$x;\n}\n");
+
+        $cluster = new Cluster('Fdeadbeef0000de1', [$m1, $m2], 1.0, true);
+        $loader  = $this->loaderWithConfig($file);
+        $loader->rebaseClusters([$cluster]);        // empty live corpus ⇒ full escalation
+
+        self::assertSame([], $cluster->members, 'zero live twins ⇒ the whole class degrades');
+        $notes = $loader->relocationDegrades();
+        self::assertCount(2, $notes);
+        self::assertStringContainsString('hinted range 16-19', $notes[0]);
+        self::assertStringContainsString('hinted range 24-27', $notes[1]);
+        self::assertStringContainsString('2 stale member(s), 0 live content twin(s)', $notes[0]);
+        self::assertSame(2, $loader->rebaseStats()['degrades']);
+        self::assertSame(1, $loader->rebaseStats()['keys'], 'one key swept, once');
+    }
+
+    /**
+     * ROOT-CAUSE pin (engine-040 half A): the shape that killed the PERF
+     * vendor run. A compact one-line
+     * `if (...) { ... } else if (...) { ... } else { ... };` nests TWO
+     * If_ nodes sharing ONE start==end span (nikic/php-parser
+     * Parser/Php7.php:1635 — and :1787 — hosts exactly that), so the
+     * finding's 'hinted range 1635-1635' is a collision span. With
+     * span-equality claims the outer member's anchor SHADOWS the
+     * physically distinct inner node: the inner either dies loud or —
+     * with a content-twin decoy line below, as real files provide —
+     * silently mis-anchors onto the decoy. Node-identity claims reach
+     * past the claimed span to the inner node: both legs anchor on
+     * their own line, in BOTH resolve orders, and claim-ledger re-entry
+     * keeps serving the two distinct nodes.
+     */
+    public function testCompactOneLineIfElseifChainRelocatesBothNestedNodes(): void
+    {
+        $file = $this->write('s17a.php', self::compactElseIfChain());
+
+        // The acceptance's degenerate-hint reproduction from the fixture
+        // itself: two distinct if-nodes on one [18,18] span (pre-order,
+        // outer first).
+        $nodes = (new NodeFinder())->findInstanceOf(
+            (new AstParser())->parseFile($file) ?? [],
+            Node\Stmt\If_::class
+        );
+        $chain = array_values(array_filter(
+            $nodes,
+            static fn (Node $n): bool => $n->getStartLine() === 18 && $n->getEndLine() === 18
+        ));
+        self::assertCount(2, $chain, 'the compact chain must host outer + nested else-if on one span');
+        [$outerNode, $innerNode] = $chain;
+
+        $printer = new Standard();
+        self::assertSame('$x > 1', $printer->prettyPrintExpr($outerNode->cond), 'pre-order: outer first');
+        self::assertSame('$x > 2', $printer->prettyPrintExpr($innerNode->cond), 'the elseif subtree is its own node');
+
+        foreach ([['outer-first', false], ['inner-first', true]] as [$label, $innerFirst]) {
+            $ob = new Block($file, new LineRange(18, 18), 'if', 'OL1', 'CompactHost', null, $outerNode);
+            $ib = new Block($file, new LineRange(18, 18), 'if', 'OL1', 'CompactHost', null, $innerNode);
+            $this->mintHashes($file, $ob, $ib);
+            self::assertNotSame($ob->structuralHash, $ib->structuralHash,
+                'chain and elseif subtree are distinct content classes');
+            $ob->unloadAst();
+            $ib->unloadAst();
+            $loader = $this->loaderWithConfig($file);
+            if ($innerFirst) {
+                $ni = $loader->resolve($ib);
+                $no = $loader->resolve($ob);
+            } else {
+                $no = $loader->resolve($ob);
+                $ni = $loader->resolve($ib);
+            }
+            self::assertSame([18, 18], [$ob->range->start, $ob->range->end], "$label: outer stays on its line");
+            self::assertSame([18, 18], [$ib->range->start, $ib->range->end],
+                "$label: pre-fix the span-shadowed inner member mis-anchored onto the content-twin decoy at line 20");
+            self::assertSame('$x > 1', $printer->prettyPrintExpr($no->cond), "$label: outer attached bytes");
+            self::assertSame('$x > 2', $printer->prettyPrintExpr($ni->cond), "$label: inner attached bytes");
+
+            // Claim-ledger re-entry must keep both distinct identities.
+            $ob->unloadAst();
+            $ib->unloadAst();
+            self::assertSame($no, $loader->resolve($ob), "$label: re-entry serves the outer node again");
+            self::assertSame($ni, $loader->resolve($ib), "$label: re-entry serves the inner node again");
+            self::assertSame(0, $loader->rebaseStats()['degrades'], 'resolve-path relocations are never degrades');
         }
     }
 
@@ -693,7 +822,7 @@ final class BlockAstLoaderTest extends TestCase
         $trusted = $this->loaderWithConfig($file);
         $trusted->trustFreshScan();
         $trusted->rebaseClusters([new Cluster('F13579bdfcafebab', [$trustedPair[0]], 1.0, true)]);
-        self::assertSame(['keys' => 0, 'freshKeys' => 0, 'hashes' => 0, 'memo' => 0, 'walks' => 0], $trusted->rebaseStats(),
+        self::assertSame(['keys' => 0, 'freshKeys' => 0, 'hashes' => 0, 'memo' => 0, 'walks' => 0, 'degrades' => 0], $trusted->rebaseStats(),
             'a trusted run has nothing replayed — the sweep must be a no-op');
 
         $node = $trusted->resolve($trustedPair[0]);
@@ -2061,5 +2190,29 @@ final class BlockAstLoaderTest extends TestCase
                 }
             }
             PHP;
+    }
+
+    /**
+     * The Php7.php:1635 shape as a mini-fixture: two content-identical
+     * compact if/else-if/else one-liners inside one class method. Line
+     * 19 hosts TWO If_ nodes on the same [19,19] span (the chain and
+     * its nested else-if); line 21 is the content-twin decoy pair a
+     * span-shadowed inner member silently fell onto before engine-040
+     * half A (21 = 19 + one blank line).
+     */
+    private static function compactElseIfChain(): string
+    {
+        $fillers = '';
+        for ($i = 1; $i <= 10; $i++) {
+            $fillers .= sprintf("        // f%02d\n", $i);
+        }
+        $chain = "        if (\$x > 1) { \$x += 1; } else if (\$x > 2) { \$x = min(\$x, 2); } else { \$x += 3; };\n";
+        return "<?php\n\nnamespace OL1;\n\nclass CompactHost\n{\n"
+            . "    public function gate(int \$x): int {\n"
+            . $fillers
+            . $chain
+            . "\n"
+            . $chain
+            . "        return \$x;\n    }\n}\n";
     }
 }

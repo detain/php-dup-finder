@@ -55,14 +55,26 @@ use Phpdup\Util\LineRange;
  *     neighbours — the k-th stale member maps onto the k-th live
  *     candidate.
  * Within those constraints insertion drift re-anchors cleanly (span
- * preserved, nearest to the hint, below-or-at the hint wins ties). When
- * the re-anchor pool is exactly the group's live content twins, deletion
- * drift either pairs honestly or exhausts a member — an exhausted pool
- * or a truly ambiguous survivor set then fails LOUD by design. A silent
- * mis-anchor poisons every downstream consumer (reports, --apply), while
- * a loud relocation error merely costs one honest cache miss the operator
- * can force. Guessing a signature from the wrong sibling is never
- * acceptable.
+ * preserved, nearest to the hint, below-or-at the hint wins ties). A
+ * survivor-less pool or an exact tie returns null so the caller keeps
+ * its loud failure. A silent mis-anchor poisons every downstream
+ * consumer (reports, --apply), while a loud relocation error merely
+ * costs one honest cache miss the operator can force. Guessing a
+ * signature from the wrong sibling is never acceptable.
+ *
+ * The escalation sweep inside rebaseClusters() carries the other half of
+ * the engine-040 posture: when stale members outnumber the live content
+ * twins of a hash class the excess bodies are GONE, and no assignment
+ * law can resurrect them — but killing the whole run over one drifted
+ * cache entry is not what 'loud' was ever meant to cost on a mainstream
+ * corpus. Such members are dropped from their (shared, by-reference)
+ * clusters, the clusters ride the existing inert <2-member guards
+ * downstream (ApplyExtractor::apply, Ranker), and every drop is recorded
+ * as a relocated-degrade note (relocationDegrades(), rebaseStats()
+ * 'degrades') for the run surface. Fail-loud survives as fail-INFORMED:
+ * the poison is named, the surviving members stay anchored on truth, and
+ * resolve()'s per-block throw remains the strict-path backstop for flows
+ * the sweep cannot speak for.
  *
  * The claim ledger is PER LOADER INSTANCE (per process); cross-process
  * dedup is not its job — the fork parent rebases merged members through
@@ -78,9 +90,22 @@ final class BlockAstLoader
 
     /**
      * Claims per group key: hint range (as served, pre-refresh), the
-     * assigned live range, and the owning Block's object id.
+     * assigned live range, the physically claimed NODE, and the owning
+     * Block's object id.
      *
-     * @var array<string, list<array{hint: array{int,int}, assigned: array{int,int}, owner: int}>>
+     * engine-040 (half A): physical distinctness is enforced against the
+     * node reference, never its span. A compact one-line
+     * `if (...) { ... } else if (...) { ... } else { ... };` (the shape
+     * that killed the PERF vendor run on Parser/Php7.php:1635) nests TWO
+     * If_ nodes sharing one start==end line, so a span-keyed ledger lets
+     * the outer's claim shadow the physically distinct inner node —
+     * exactly the door the law was meant to close, reopened as a
+     * run-fatal starve. The claim pins the node object itself; the
+     * batched index and the per-process stmt cache keep every served
+     * node alive for the loader's lifetime, so the reference can never
+     * dangle into an id reuse, and `===` is the belt.
+     *
+     * @var array<string, list<array{hint: array{int,int}, assigned: array{int,int}, node: Node, owner: int}>>
      */
     private array $claims = [];
 
@@ -177,6 +202,18 @@ final class BlockAstLoader
      * @var array<string, true>
      */
     private array $freshKeys = [];
+
+    /**
+     * Relocated-degrade notes recorded by the escalation sweep
+     * (engine-040 half A: always-skip + note, never run death). Plain
+     * strings, in-process only — they never ride a worker wire
+     * (Socketpair law neutral). Collect-in-class, surface-elsewhere,
+     * exactly the FileScanner::skipNotes() posture; see
+     * relocationDegrades().
+     *
+     * @var list<string>
+     */
+    private array $degradeNotes = [];
 
     /**
      * [m-2] run-provenance fast path: RefactorStage announces this on
@@ -295,6 +332,7 @@ final class BlockAstLoader
         $this->claims[$group][] = [
             'hint'     => $hint,
             'assigned' => [$found->getStartLine(), $found->getEndLine()],
+            'node'     => $found,
             'owner'    => spl_object_id($block),
         ];
         return $found;
@@ -312,10 +350,10 @@ final class BlockAstLoader
     }
 
     /**
-     * Ranges already owned by OTHER blocks of the same group, plus the
-     * hint each claim arrived with (order bookkeeping).
+     * Nodes and ranges already owned by OTHER blocks of the same group,
+     * plus the hint each claim arrived with (order bookkeeping).
      *
-     * @return list<array{hint: array{int,int}, assigned: array{int,int}}>
+     * @return list<array{hint: array{int,int}, assigned: array{int,int}, node: Node}>
      */
     private function foreignClaims(string $group, Block $block): array
     {
@@ -324,16 +362,23 @@ final class BlockAstLoader
             if ($claim['owner'] === spl_object_id($block)) {
                 continue;
             }
-            $out[] = ['hint' => $claim['hint'], 'assigned' => $claim['assigned']];
+            $out[] = ['hint' => $claim['hint'], 'assigned' => $claim['assigned'], 'node' => $claim['node']];
         }
         return $out;
     }
 
     /**
-     * Exact kind + line-range + name match, minus any span a foreign
+     * Exact kind + line-range + name match, minus any NODE a foreign
      * member of the same group already claimed (a claimed node is
      * somebody else's anchor — serving it twice is the silent
-     * double-anchor Vector-2 door).
+     * double-anchor Vector-2 door). engine-040 (half A): exclusion runs
+     * on node identity, not span equality — a physically distinct node
+     * sharing a claimed span is the nested same-line shape (compact
+     * `if … } else if …`), and shadowing it turns honest relocation
+     * into a run-fatal starve. Same-span lookups that were unique
+     * before stay unique: only nesting produces several servable nodes
+     * on one exact range, and pre-order answers with the outer first,
+     * exactly like the old whole-file visitor did.
      *
      * Answered from the per-file batched index in NodeTraverser order,
      * so the FIRST hit of the ordered scan is exactly the node the old
@@ -342,17 +387,16 @@ final class BlockAstLoader
      * The strict triple carries no scope law (identity is the span
      * itself), so scope is not filtered here — unchanged semantics.
      *
-     * @param list<array{hint: array{int,int}, assigned: array{int,int}}> $exclude
-     * @param array{int,int}|null                                         $forceRange
+     * @param list<array{hint: array{int,int}, assigned: array{int,int}, node: Node}> $exclude
+     * @param array{int,int}|null                                                     $forceRange
      */
     private function findStrict(Block $block, array $exclude, ?array $forceRange = null): ?Node
     {
         $wantStart = $forceRange[0] ?? $block->range->start;
         $wantEnd   = $forceRange[1] ?? $block->range->end;
+        $claimed   = [];
         foreach ($exclude as $taken) {
-            if ($taken['assigned'] === [$wantStart, $wantEnd]) {
-                return null; // foreign-claimed span is never free
-            }
+            $claimed[spl_object_id($taken['node'])] = true;
         }
         foreach ($this->indexFor($block->file) as $entry) {
             if ($entry['start'] !== $wantStart || $entry['end'] !== $wantEnd) {
@@ -363,6 +407,9 @@ final class BlockAstLoader
             }
             if ($block->name !== null && $entry['name'] !== $block->name) {
                 continue;
+            }
+            if (isset($claimed[spl_object_id($entry['node'])])) {
+                continue; // a foreign-claimed node is never served twice
             }
             return $entry['node'];
         }
@@ -417,7 +464,7 @@ final class BlockAstLoader
      * old dedicated whole-file visitor collected — zero extra walks.
      *
      * @param array{int,int}   $hint  [start,end] as originally served
-     * @param list<array{hint: array{int,int}, assigned: array{int,int}}> $foreign
+     * @param list<array{hint: array{int,int}, assigned: array{int,int}, node: Node}> $foreign
      */
     private function findReanchored(Block $block, array $hint, array $foreign): ?Node
     {
@@ -451,11 +498,15 @@ final class BlockAstLoader
         $pool = [];
         foreach ($candidates as $candidate) {
             $start = $candidate['node']->getStartLine();
-            $span  = [$start, $candidate['node']->getEndLine()];
             $ok    = true;
             foreach ($foreign as $claim) {
-                if ($claim['assigned'] === $span) {
-                    $ok = false; // physically taken
+                if ($claim['node'] === $candidate['node']) {
+                    // physically taken — engine-040 (half A): node
+                    // identity, not span equality, because a compact
+                    // single-line if/elseif nests TWO servable nodes on
+                    // one exact range and the outer's claim must never
+                    // shadow the inner node.
+                    $ok = false;
                     break;
                 }
                 if ($hint[0] > $claim['hint'][0] && $start <= $claim['assigned'][0]) {
@@ -603,6 +654,27 @@ final class BlockAstLoader
     }
 
     /**
+     * Drop one starved member from its owning cluster by object identity
+     * (engine-040 degrade). rebaseClusters receives the cluster LIST by
+     * value, so the removal goes through the shared Cluster object's
+     * public members list — visible to every holder, the caller's
+     * $state->clusters included. (The list is deliberately not spliced
+     * by reference: callers pass array expressions, and a below-two
+     * residual cluster is inert downstream by existing guards, while an
+     * empty one is proven safe in AntiUnifier::unify's $count===0 arm.)
+     */
+    private function dropMember(Cluster $cluster, Block $member): void
+    {
+        $kept = [];
+        foreach ($cluster->members as $candidate) {
+            if ($candidate !== $member) {
+                $kept[] = $candidate;
+            }
+        }
+        $cluster->members = $kept;
+    }
+
+    /**
      * Public evidence counters for the [m-2] fast path (per-process,
      * observation only — NEVER a correctness input): keys = positional
      * groups swept, freshKeys = groups proven class-exact without a single
@@ -614,9 +686,12 @@ final class BlockAstLoader
      * served from the spl_object_id candidate hash memo,
      * walks = whole-file index walks (engine-031/output-015 leg A law:
      * at most one per distinct file touched by resolution, whatever the
-     * block count — the pre-leg-A shape cost up to two walks per block).
+     * block count — the pre-leg-A shape cost up to two walks per block),
+     * degrades = members the escalation sweep skipped with a
+     * relocated-degrade note instead of killing the run (engine-040
+     * half A — always-skip + note, see relocationDegrades()).
      *
-     * @return array{keys:int, freshKeys:int, hashes:int, memo:int, walks:int}
+     * @return array{keys:int, freshKeys:int, hashes:int, memo:int, walks:int, degrades:int}
      */
     public function rebaseStats(): array
     {
@@ -626,7 +701,23 @@ final class BlockAstLoader
             'hashes'    => $this->hashCalls,
             'memo'      => $this->memoHits,
             'walks'     => $this->walkCount,
+            'degrades'  => count($this->degradeNotes),
         ];
+    }
+
+    /**
+     * The relocated-degrade notes recorded so far (engine-040 half A):
+     * one line per starved member the escalation sweep skipped — kind,
+     * hinted range and the twin arithmetic that starved it included, in
+     * the skipNotes posture: collected here, surfaced by the run layer
+     * (the RefactorStage → DebugLogger/stderr wiring is a separate lane's
+     * row). Plain strings; they never ride a worker wire.
+     *
+     * @return list<string>
+     */
+    public function relocationDegrades(): array
+    {
+        return $this->degradeNotes;
     }
 
     /**
@@ -666,8 +757,10 @@ final class BlockAstLoader
      * members by hint, gathers the content-equal live candidate nodes by
      * position, and takes the unique cost-minimal ORDER-PRESERVING
      * assignment (sequence DP); classes whose member count exceeds the live
-     * twin count lost a body and hit the loud spine instead of a silent
-     * guess. Parsing and hashing now happen ONLY inside escalation arms.
+     * twin count lost bodies, and those surplus members are DEGRADED —
+     * always-skip + relocated-degrade note (engine-040 half A), never the
+     * run-killing throw the first shape of this loop was. Parsing and
+     * hashing now happen ONLY inside escalation arms.
      * Members the serial path already resolved carry live ASTs and are
      * skipped; ranges-only mutation keeps the lazy-memory profile intact.
      *
@@ -684,6 +777,8 @@ final class BlockAstLoader
         }
         /** @var array<string, array<string, list<Block>>> $byKey positional key → hash class → members */
         $byKey = [];
+        /** @var array<int, Cluster> $memberOwners object id → owning cluster (degrade drops) */
+        $memberOwners = [];
         foreach ($clusters as $cluster) {
             foreach ($cluster->members as $member) {
                 if (!$member->isAstUnloaded()) {
@@ -700,6 +795,7 @@ final class BlockAstLoader
                 }
                 $poolKey = self::groupKey($member);
                 $byKey[$poolKey][$poolKey . "\x1e" . $member->structuralHash][] = $member;
+                $memberOwners[spl_object_id($member)] = $cluster;
             }
         }
         if ($byKey === []) {
@@ -761,11 +857,37 @@ final class BlockAstLoader
                 usort($twins, static fn (Node $a, Node $b): int => $a->getStartLine() <=> $b->getStartLine());
 
                 if (count($members) > count($twins)) {
-                    $starved = $members[count($twins)];
-                    throw new \RuntimeException(sprintf(
-                        'BlockAstLoader: could not relocate block %s in %s (kind %s, hinted range %s)',
-                        $starved->qualifiedName(), $starved->file, $starved->kind, (string) $starved->range
-                    ));
+                    // engine-040 (half A): always-skip + note. Stale
+                    // members beyond the last live content twin lost
+                    // their bodies — no assignment law can resurrect
+                    // them, and a full-corpus run must not die of one
+                    // drifted cache entry. Drop the surplus tail (hint
+                    // order) from its owning cluster by object identity,
+                    // record a relocated-degrade note per drop, and let
+                    // the honest prefix pair normally. A cluster driven
+                    // below two members rides the codebase's existing
+                    // inert guards (ApplyExtractor::apply count<2,
+                    // Ranker impact 0); the sweep's mutations never
+                    // persist to the cluster cache (saved pre-refactor),
+                    // so every replay re-degrades deterministically and
+                    // re-notes.
+                    $keep = array_slice($members, 0, count($twins));
+                    foreach (array_slice($members, count($twins)) as $starved) {
+                        $this->degradeNotes[] = sprintf(
+                            'BlockAstLoader: relocated-degrade: skipped block %s in %s (kind %s, hinted range %s) — %d stale member(s), %d live content twin(s)',
+                            $starved->qualifiedName(),
+                            $starved->file,
+                            $starved->kind,
+                            (string) $starved->range,
+                            count($members),
+                            count($twins)
+                        );
+                        $this->dropMember($memberOwners[spl_object_id($starved)], $starved);
+                    }
+                    $members = $keep;
+                    if ($members === []) {
+                        continue; // twins === 0 — nothing left to pair
+                    }
                 }
 
                 $pairs = self::monotoneAssign($members, $twins);
@@ -776,6 +898,7 @@ final class BlockAstLoader
                     $this->claims[$poolKey][] = [
                         'hint'     => [$hintObj->start, $hintObj->end],
                         'assigned' => [$node->getStartLine(), $node->getEndLine()],
+                        'node'     => $node,
                         'owner'    => spl_object_id($member),
                     ];
                 }
