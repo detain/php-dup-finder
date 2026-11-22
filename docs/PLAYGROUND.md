@@ -44,7 +44,7 @@ promising one.
 - **Back-end** (shipped, but path-only): any deployment of
   `phpdup serve` reachable from the front-end's origin can analyse
   files inside its serve-root today (`POST /analyze` synchronously;
-  the async `POST /jobs` family needs the background worker and
+  the async `POST /jobs` family needs the background worker, and `POST /jobs`
   answers the honest 503 without one, above); the missing piece is
   purely the input route.
 - **Sharable links** (not built): base64-url-encoding the pasted input
