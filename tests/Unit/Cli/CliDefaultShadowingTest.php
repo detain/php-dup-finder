@@ -363,6 +363,59 @@ final class CliDefaultShadowingTest extends TestCase
         }
     }
 
+    public function testRelativeRootThroughTheRealLauncherReportsCwdAnchoredAbsolutePaths(): void
+    {
+        // shell-S28 r1 MEDIUM-1: the DISCOVERY half of the phar cure cannot
+        // be belted from the checkout (bin-form resolves a relative root
+        // with OR without the boundary call — identical file counts), but
+        // the SHAPE that call hands downstream is exclusive to it. execute()
+        // feeds the absolutized list into Config, JsonReporter::build()
+        // re-emits it verbatim as config.paths, and member files grow from
+        // the same roots. Drop `$paths = $this->absoluteArgvScanRoots(...)`
+        // from the call site (method body intact) and this run reports the
+        // typed relative spelling instead — RED without a single count
+        // moving. This is the shell-039 defect-shape (wiring registered,
+        // never observable) pinned against silent removal.
+        $cwd = $this->makeS19ScratchDir();
+        $anchor = realpath($cwd);
+        $this->assertIsString($anchor, 'the scratch cwd must resolve for the CWD-anchor contract');
+        mkdir($cwd . '/dup/src', 0o777, true);
+        foreach (['AlphaDup', 'BetaDup'] as $class) {
+            file_put_contents($cwd . '/dup/src/' . $class . '.php', str_replace('%CLASS%', $class, self::DUP_CLASS));
+        }
+        $json = $cwd . '/rel-root.json';
+
+        [$code, , $err] = $this->runPhpDup(['dup', '--json', $json], $cwd);
+
+        $this->assertSame(0, $code, 'a relative root must run through the launcher; stderr was: ' . $err);
+        $this->assertTrue(is_file($json));
+        $report = json_decode((string) file_get_contents($json), true);
+        $this->assertIsArray($report);
+
+        // Discovery sanity — NOT the discriminator (counts are identical on
+        // both sides of the mutant; r1 §(b)).
+        $this->assertGreaterThanOrEqual(1, (int) $report['summary']['clusters']);
+
+        $paths = $report['config']['paths'] ?? null;
+        $this->assertIsArray($paths);
+        $this->assertSame(
+            [$anchor . '/dup'],
+            $paths,
+            'the argv root must reach the report absolutized on the invocation CWD — a relative spelling here means the execute() boundary call was dropped'
+        );
+
+        $this->assertArrayHasKey('clusters', $report);
+        foreach ($report['clusters'] as $cluster) {
+            foreach ($cluster['members'] as $member) {
+                $this->assertStringStartsWith(
+                    $anchor . '/dup/',
+                    (string) ($member['file'] ?? ''),
+                    'member paths must grow from the absolutized root, never from the typed relative one'
+                );
+            }
+        }
+    }
+
     public function testBareDryRunFlagBeforeAPathStillScansItThroughTheRealLauncher(): void
     {
         // The VALUE_OPTIONAL registration has the token-swallow hazard
