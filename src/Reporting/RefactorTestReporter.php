@@ -6,6 +6,7 @@ namespace Phpdup\Reporting;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Refactor\CodeParam;
 use Phpdup\Refactor\Hole;
+use Phpdup\Util\ControlText;
 
 /**
  * Generates PHPUnit test skeletons for the suggested abstraction.
@@ -56,7 +57,11 @@ final class RefactorTestReporter
         $rows = $this->providerRows($cluster);
         $providerBody = '';
         foreach ($rows as $label => $args) {
-            $providerBody .= "        '" . addslashes($label) . "' => [" . implode(', ', $args) . "],\n";
+            // output-S35 belt: the label embeds the member's recorded file
+            // path, so it gets the ControlText scrub arm (LF/CR/NUL/ESC
+            // cannot forge a row break in the generated file); the row
+            // values are already single-line literals from reprValue().
+            $providerBody .= "        '" . addslashes(ControlText::substitute($label)) . "' => [" . implode(', ', $args) . "],\n";
         }
 
         return <<<PHP
@@ -165,17 +170,29 @@ PHP;
             // evidence, not an observed empty string.
             return 'null /* degraded: observed value was a structural gap */';
         }
-        // Numeric → bare; bool/null keywords → bare; otherwise quoted string.
+        // Numeric → bare; bool/null keywords → bare; everything else is DATA.
         if (preg_match('/^-?\d+(\.\d+)?$/', $v) === 1) {
             return $v;
         }
         if (in_array($v, ['true', 'false', 'null'], true)) {
             return $v;
         }
-        if (preg_match('/^([\'"]).*\1$/s', $v) === 1) {
-            return $v;
-        }
-        // Anything else → quote as a PHP string for the provider row.
-        return "'" . addslashes($v) . "'";
+        // output-S35 (php-dup-finder-output-007, CRITICAL): the retired arm
+        // here emitted every value matching `/^(['"]).*\1$/s` VERBATIM as
+        // provider code. Quote-shaped text is not evidence of a literal —
+        // ANY pretty-printed expression starts and ends on matching quotes,
+        // so scanning a tree containing `$v = '' . touch('…') . '';` shipped
+        // live code into casesProvider(), where PHPUnit evaluates the array
+        // at collection time. The class docblock's own carve-out comment
+        // ("row values are PHP literals") described the sink, not a proof.
+        // Every non-whitelisted value is now one var_export'd string
+        // literal — round-trips the observed repr byte-for-byte as data —
+        // after the ControlText scrub (output-S18 venue) removes the four
+        // stream-forging bytes no quoting may smuggle into the file's
+        // line framing. The two bare arms above stay: a digit-only class
+        // and a closed five-word keyword list cannot carry expression
+        // shape; their TYPE fidelity (e.g. an int literal observed as
+        // `10` vs a string "10") is output-S28/S29's declared territory.
+        return var_export(ControlText::substitute($v), true);
     }
 }

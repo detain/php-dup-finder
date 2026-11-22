@@ -211,7 +211,15 @@ final class RefactorTestReporterTest extends TestCase
         }
         $this->assertNotNull($absentRow, 'provider must carry a row per member');
         $this->assertStringContainsString('false', (string) $absentRow, 'verified-absent member row passes false');
-        $this->assertStringContainsString("'x'", (string) $valueRow, 'the observed member keeps its value');
+        // output-S35 re-pin (php-dup-finder-output-007): this row asserted
+        // the raw quoted shape `'x'`, which ONLY existed because the retired
+        // quote-shaped passthrough re-interpreted the observed repr as code
+        // (the string `'x'` reached the provider as the 1-char value x — the
+        // sink's benign face). Under the literal doctrine the member keeps
+        // its value BYTE-HONEST as data: var_export of the observed repr.
+        $this->assertStringContainsString(<<<'PHP'
+'\'x\''
+PHP, (string) $valueRow, 'the observed member keeps its value as an inert literal');
     }
 
     public function testAmbiguousAbsenceRowOnDegradedOptionalHoleStaysAnnotatedNull(): void
@@ -333,6 +341,152 @@ final class RefactorTestReporterTest extends TestCase
         $this->assertStringContainsString('mixed $foo_bar, mixed $foo_bar_2', $skeleton);
         $this->assertLintClean($skeleton);
     }
+
+    // ── output-S35 (php-dup-finder-output-007, CRITICAL): quote-shaped text
+    //    is not code — every provider row value is a literal ───────────────
+
+    public function testExpressionShapedObservedValueEmitsAsVarExportDataNotRawCode(): void
+    {
+        // The SEC repro verbatim in shape: prettyPrintExpr of ANY concat
+        // starts and ends on matching quotes, so the retired
+        // `^(['"]).*\1$/s` passthrough emitted this observed value as RAW
+        // provider code — and PHPUnit evaluates static provider arrays at
+        // COLLECTION time, i.e. `--refactor-tests` on a hostile tree was
+        // code execution, not report writing.
+        $v = "'' . touch('/tmp/phpdup-s35-unit-canary') . ''";
+        @unlink('/tmp/phpdup-s35-unit-canary');
+        $cluster = $this->clusterWithNoHoles();
+        $cluster->holes = [new Hole('__P0', 'subtree', [$v, "'y'"])];
+        $skeleton = (new RefactorTestReporter())->buildTest($cluster);
+
+        // 1. The acceptance pin: the value emits as a var_export'd string.
+        $this->assertStringContainsString(<<<'PHP'
+'\'\' . touch(\'/tmp/phpdup-s35-unit-canary\') . \'\''
+PHP, $skeleton);
+
+        // 2. The injection shape is GONE: no row may open its array and
+        //    immediately hand the payload back as code.
+        $this->assertStringNotContainsString("=> ['' . touch", $skeleton);
+
+        // 3. Round-trip honesty: decoding the emitted literal yields the
+        //    observed value byte-for-byte — data, no side effect.
+        $literal = $this->firstProviderRowValue($skeleton);
+        $decoded = eval('return ' . $literal . ';');
+        $this->assertSame($v, $decoded, 'var_export round-trips the observed repr');
+        $this->assertFileDoesNotExist('/tmp/phpdup-s35-unit-canary', 'collection must not execute the payload');
+        @unlink('/tmp/phpdup-s35-unit-canary'); // mutant runs create it; keep /tmp tidy
+
+        $this->assertLintClean($skeleton);
+    }
+
+    public function testQuoteShapedPlainLiteralStaysDataAndIsNotReinterpreted(): void
+    {
+        // The sink's benign face: an observed string-literal repr `'x'`
+        // used to pass through raw, silently re-typing the 3-char observed
+        // repr into the 1-char value x at provider collection. Honesty now
+        // precedes prettiness: the row carries the observed bytes as data.
+        $cluster = $this->clusterWithNoHoles();
+        $cluster->holes = [new Hole('__P0', 'literal', ["'x'", "'y'"])];
+        $skeleton = (new RefactorTestReporter())->buildTest($cluster);
+
+        $decoded = eval('return ' . $this->firstProviderRowValue($skeleton) . ';');
+        $this->assertSame("'x'", $decoded, 'the observed repr survives intact as a string');
+        $this->assertLintClean($skeleton);
+    }
+
+    public function testBareArmsStayAndOnlyTheQuoteHeuristicDied(): void
+    {
+        // Arm-boundary pin (behavior-unchanged codification): the two bare
+        // arms take CLOSED token classes that cannot carry expression
+        // syntax; the quote-shaped arm is the one that was removed.
+        // (Pairs, not keys: PHP casts numeric-string array keys to int.)
+        $cases = [
+            ['42', '42'],                                    // int repr → bare
+            ['-1.5', '-1.5'],                                // float repr → bare
+            ['true', 'true'],                                // closed keyword list
+            ['false', 'false'],
+            ['null', 'null'],
+            ['1e3', "'1e3'"],                                // outside the digit class → literal
+            ['0x1F', "'0x1F'"],                              //   (S28 owns type fidelity)
+            ['$var', "'\$var'"],                             // identifier repr → literal
+        ];
+        foreach ($cases as [$observed, $expectedEmit]) {
+            $cluster = $this->clusterWithNoHoles();
+            $cluster->holes = [new Hole('__P0', 'literal', [$observed, $observed])];
+            $skeleton = (new RefactorTestReporter())->buildTest($cluster);
+            // One hole → one value per member row.
+            $this->assertStringContainsString(
+                "[$expectedEmit],",
+                $skeleton,
+                "arm boundary for observed value {$observed}",
+            );
+        }
+    }
+
+    public function testControlBytesAreScrubbedFromRowValuesAndLabels(): void
+    {
+        // Util\ControlText doctrine (output-S18 venue, named consumer
+        // -S35): the four stream-forging bytes may not ride into a
+        // generated file — not in a row value, not smuggled through the
+        // member path embedded in the provider label.
+        $cluster = new Cluster('CTL_S35', [$this->blk("evil\nname.php"), $this->blk('t2.php')], 1.0, false);
+        $cluster->holes = [new Hole('__P0', 'literal', ["a\nb\0c\rd\x1be", "'clean'"])];
+        $skeleton = (new RefactorTestReporter())->buildTest($cluster);
+
+        $this->assertStringNotContainsString("\x1b", $skeleton, 'ESC must not survive into the artifact');
+        $this->assertStringNotContainsString("\0", $skeleton, 'NUL must not survive into the artifact');
+
+        // The gapped member's VALUE row is one physical line: LF/CR inside
+        // the quoted literal are substituted, not shipped as raw breaks.
+        $valueLine = $this->providerRowLine($skeleton, 'member_0_');
+        $this->assertMatchesRegularExpression('/member_0_evil' . preg_quote("\u{FFFD}", '/') . 'name/', $valueLine, 'label carries the scrub marker');
+        $this->assertStringContainsString("\u{FFFD}", $valueLine, 'row value carries the scrub marker');
+
+        $decoded = $this->evalRowValues($skeleton, 'member_0_');
+        $this->assertSame("a\u{FFFD}b\u{FFFD}c\u{FFFD}d\u{FFFD}e", $decoded[0], 'value round-trips scrubbed');
+        $this->assertStringNotContainsString("\x1b", $decoded[0]);
+
+        $this->assertLintClean($skeleton);
+    }
+
+    /** First `=> [v, ...]` row value token of the provider. */
+    private function firstProviderRowValue(string $skeleton): string
+    {
+        $this->assertSame(
+            1,
+            preg_match("/=> \\[('(?:\\\\.|[^'\\\\])*')/", $skeleton, $m),
+            'a string-literal row value must be extractable',
+        );
+        return $m[1];
+    }
+
+    /** @return string the full physical line of the provider row. */
+    private function providerRowLine(string $skeleton, string $labelPrefix): string
+    {
+        foreach (preg_split('/\r?\n/', $skeleton) as $line) {
+            if (str_contains($line, $labelPrefix)) {
+                return $line;
+            }
+        }
+        $this->fail("row {$labelPrefix} missing from the provider");
+    }
+
+    /** @return list<string> every string row value on that row, eval'd. */
+    private function evalRowValues(string $skeleton, string $labelPrefix): array
+    {
+        $line = $this->providerRowLine($skeleton, $labelPrefix);
+        $this->assertSame(1, preg_match('/=> \[(.*)\],?$/', $line, $m), 'row array extractable');
+        $out = [];
+        foreach (explode(',', $m[1]) as $token) {
+            $token = trim($token);
+            if ($token !== '' && $token[0] === "'") {
+                $out[] = (string) eval('return ' . $token . ';');
+            }
+        }
+        return $out;
+    }
+
+    // ── helpers ─────────────────────────────────────────────────────────────
 
     private function assertLintClean(string $skeleton): void
     {
