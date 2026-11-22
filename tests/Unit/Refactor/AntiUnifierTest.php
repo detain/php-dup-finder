@@ -83,7 +83,7 @@ final class AntiUnifierTest extends TestCase
         (new ParameterSynthesizer())->synthesize($cluster);
 
         $rows = $this->floatRows($cluster);
-        sort($rows);
+        sort($rows, SORT_STRING);
         $this->assertSame(['1.0', '2.0'], $rows);
 
         $hole = $this->holeCarrying($cluster, '1.0');
@@ -103,7 +103,7 @@ final class AntiUnifierTest extends TestCase
         (new ParameterSynthesizer())->synthesize($cluster);
 
         $rows = $this->floatRows($cluster);
-        sort($rows);
+        sort($rows, SORT_STRING);
         $this->assertSame(['1', '1.0'], $rows);
 
         $hole = $this->holeCarrying($cluster, '1.0');
@@ -122,7 +122,7 @@ final class AntiUnifierTest extends TestCase
         (new ParameterSynthesizer())->synthesize($cluster);
 
         $rows = $this->floatRows($cluster);
-        sort($rows);
+        sort($rows, SORT_STRING);
         $this->assertSame(['1.0E+25', '2.0E+25'], $rows);
 
         $hole = $this->holeCarrying($cluster, '1.0E+25');
@@ -148,7 +148,7 @@ final class AntiUnifierTest extends TestCase
                 $cluster = $this->clusterFor($codes);
                 (new AntiUnifier())->unify($cluster);
                 $rows = $this->floatRows($cluster);
-                sort($rows);
+                sort($rows, SORT_STRING);
                 $rowsByPrecision[$p] = $rows;
             }
         } finally {
