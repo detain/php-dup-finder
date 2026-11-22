@@ -80,7 +80,12 @@ use Symfony\Component\Console\Output\NullOutput;
  *   with a 400 response before any job is minted. Payloads that set a
  *   {@see self::REFUSED_PAYLOAD_KEYS} field are refused with the same
  *   400-before-mint posture, mirroring the worker's RUN-frame gate.
- *   In async mode the worker independently re-runs both checks
+ *   The optional `exact_only` payload field is shape-gated identically
+ *   ({@see self::exactOnlyViolation()}) and, once admitted, selects the
+ *   clustering posture on BOTH transports ({@see self::exactOnlyPosture()})
+ *   — a sync run and an async job over one payload are the same report,
+ *   never a route-dependent coercion (once-065).
+ *   In async mode the worker independently re-runs all three gates
  *   ({@see AnalysisWorker}) using the serve root handed to it as a
  *   spawn argument — defence in depth.
  */
@@ -95,7 +100,7 @@ final class Application
      * The list is the single source of truth shared by both admission
      * layers: HTTP `POST /jobs` refuses such payloads with a 400 before
      * minting a job ({@see self::enqueueJob()}) and the worker applies the
-     * identical gate to every RUN frame ({@see AnalysisWorker::processJob()}).
+     * identical gate to every RUN frame ({@see AnalysisWorker::admitFrame()}).
      * ML-URL admission itself stays on the CLI/config path behind
      * MlClient::isAllowedUrl()'s fail-closed validation gate.
      */
@@ -335,6 +340,12 @@ final class Application
         if (($violation = $this->pathViolation($payload['paths'] ?? null)) !== null) {
             return $violation;
         }
+        // once-065: the clustering posture comes from the payload, never a
+        // hardcoded force — the same gate+read the worker runs on the frame,
+        // so sync and async answers to one payload are the same report.
+        if (($violation = self::exactOnlyViolation($payload)) !== null) {
+            return $this->json($violation['status'], ['error' => $violation['error']]);
+        }
         /** @var list<string> $paths */
         $paths = $payload['paths'];
         try {
@@ -343,7 +354,7 @@ final class Application
             $out   = new NullOutput();
             (new ScanningStage())->run($state, $out);
             (new PreprocessStage(useCache: $this->useCache))->run($state, $out);
-            (new ClusterStage(exactOnly: true, useClusterCache: $this->useCache))->run($state, $out);
+            (new ClusterStage(exactOnly: self::exactOnlyPosture($payload), useClusterCache: $this->useCache))->run($state, $out);
             (new RefactorStage(useCache: $this->useCache))->run($state, $out);
             $report = new \Phpdup\Reporting\Report(
                 files: count($state->files),
@@ -359,7 +370,23 @@ final class Application
     }
 
     /**
-     * Extract summary fields from a decoded JsonReporter payload.
+     * Extract the job-row summary from a decoded JsonReporter payload.
+     *
+     * The counters live in the payload's nested `summary` block
+     * ({@see JsonReporter::build()}) — at the root, `files` and `blocks`
+     * do not exist at all and `clusters` is the full list of cluster
+     * payloads. Reading the root level was the historic
+     * php-dup-finder-once-003 bug: every stored summary came back
+     * `{0,0,0}` no matter what the analysis found. Both settlement paths
+     * — the worker-less `/jobs` ack and the async result-file reconcile —
+     * pass through this one helper, so a queue row shows exactly the
+     * counters `--json` reports. A mistyped or missing per-key value
+     * degrades to an honest zero, never a guess. As a boundary leniency the
+     * reader also accepts the legacy FLAT shape (counters at the root, no
+     * `summary` block at all) — the shape hand-written settle fakes carry —
+     * so a payload parses under either layout; real JsonReporter bytes
+     * always nest, and the root-level `clusters` LIST can never leak into
+     * the counter read because every leg is `is_int`-gated.
      *
      * Only `files`, `blocks`, `clusters`, and `config` are stored in the
      * job result so the queue stays bounded even for large codebases.
@@ -372,10 +399,11 @@ final class Application
         if (!is_array($decoded)) {
             return ['files' => 0, 'blocks' => 0, 'clusters' => 0];
         }
+        $summary = is_array($decoded['summary'] ?? null) ? $decoded['summary'] : $decoded;
         return [
-            'files'    => is_int($decoded['files'] ?? null) ? $decoded['files'] : 0,
-            'blocks'   => is_int($decoded['blocks'] ?? null) ? $decoded['blocks'] : 0,
-            'clusters' => is_int($decoded['clusters'] ?? null) ? $decoded['clusters'] : 0,
+            'files'    => is_int($summary['files'] ?? null) ? $summary['files'] : 0,
+            'blocks'   => is_int($summary['blocks'] ?? null) ? $summary['blocks'] : 0,
+            'clusters' => is_int($summary['clusters'] ?? null) ? $summary['clusters'] : 0,
             'config'   => $decoded['config'] ?? null,
         ];
     }
@@ -408,6 +436,14 @@ final class Application
         // is minted — never a post-dispatch 500 that discards the reason.
         if (($refused = self::refusedPayloadKeys($payload)) !== []) {
             return $this->json(400, ['error' => 'job payload must not set: ' . implode(', ', $refused)]);
+        }
+
+        // once-065: the optional posture key is shape-gated with the same
+        // 400-before-mint discipline, at both layers (the worker re-checks
+        // the RUN frame identically), so a mistyped `exact_only` never
+        // becomes a queued row and never silently clusters the wrong way.
+        if (($violation = self::exactOnlyViolation($payload)) !== null) {
+            return $this->json($violation['status'], ['error' => $violation['error']]);
         }
 
         if ($this->workerSocket !== null && $this->resultDir !== null) {
@@ -1044,5 +1080,46 @@ final class Application
             }
         }
         return $refused;
+    }
+
+    /**
+     * Shape gate for the optional `exact_only` job-payload field (once-065).
+     *
+     * The key is admitted only as a real boolean — absent means the
+     * default full analysis. Presence decides, value-typed: an explicit
+     * `null` is a shape violation too (the same value-independent
+     * discipline {@see self::refusedPayloadKeys()} applies to refused
+     * keys), so a typo'd posture option can never silently mean the
+     * opposite of what the client wrote. Shared by the HTTP admission
+     * (400 before any job is minted, for `/analyze` and `/jobs` alike)
+     * and the worker's RUN-frame gate, so both layers refuse identically.
+     *
+     * @param array<string,mixed> $payload
+     * @return array{status:int, error:string}|null Null when admissible.
+     */
+    public static function exactOnlyViolation(array $payload): ?array
+    {
+        if (!array_key_exists('exact_only', $payload)) {
+            return null;
+        }
+        if (is_bool($payload['exact_only'])) {
+            return null;
+        }
+        return ['status' => 400, 'error' => 'exact_only must be a boolean'];
+    }
+
+    /**
+     * Trusted clustering posture parsed from an admitted payload
+     * (once-065): false (absent or explicit) = the full near-duplicate
+     * analysis every reporter surface promises; true = the CLI's
+     * `--exact-only` short-circuit. After {@see self::exactOnlyViolation()}
+     * has passed, the only values the key can hold are bool or absent —
+     * the read below is a parse of trusted data, not a re-check.
+     *
+     * @param array<string,mixed> $payload
+     */
+    public static function exactOnlyPosture(array $payload): bool
+    {
+        return ($payload['exact_only'] ?? false) === true;
     }
 }

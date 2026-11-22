@@ -1620,4 +1620,260 @@ final class ApplicationTest extends TestCase
         $this->assertSame(202, $response['status']);
         $this->assertSame(['job_id'], array_keys(json_decode($response['body'], true)));
     }
+
+    // ------------------------------------------------------------------
+    // once-S03 (php-dup-finder-once-003 + once-065): the job-row summary is
+    // read from the report's nested `summary` block — not the root level,
+    // where the counters never lived — so a settled row shows the same
+    // numbers `--json` reports; and `/analyze` + the worker take their
+    // clustering posture from the payload's optional `exact_only` key
+    // instead of hard-forcing exact-only, so the full-report promise holds
+    // on every transport.
+    // ------------------------------------------------------------------
+
+    /** Absolute repo root (tests/Unit/Server → three levels up). */
+    private function repoRoot(): string
+    {
+        $root = realpath(dirname(__DIR__, 3));
+        $this->assertIsString($root);
+        return $root;
+    }
+
+    public function testSyncJobSummaryReportsRealCountersAtTheReportSummaryLevel(): void
+    {
+        // once-003 CRITICAL: a worker-less job over the real notify fixture
+        // must land a completed row whose summary shows what the analysis
+        // found — the historic buildSummary read the payload ROOT level,
+        // where files/blocks do not exist and `clusters` is a list, so every
+        // row was {0,0,0} no matter the result.
+        $root = $this->repoRoot();
+        $cwd  = getcwd();
+        chdir($root);
+        try {
+            $payload = json_encode(['paths' => ['tests/Fixtures/notify']]);
+            $app = new Application(new JobQueue(), $root, null);
+
+            $response = $app->handle('POST', '/jobs', $payload, []);
+            $this->assertSame(202, $response['status']);
+            $id = json_decode($response['body'], true)['job_id'];
+
+            $row = json_decode($app->handle('GET', '/jobs/' . $id, '', [])['body'], true);
+            $this->assertSame(JobQueue::STATUS_COMPLETED, $row['status']);
+            $summary = $row['result'];
+            $this->assertIsArray($summary);
+            $this->assertGreaterThan(0, $summary['files'], 'the row names the files scanned, not zero');
+            $this->assertGreaterThan(0, $summary['blocks'], 'the row names the blocks extracted, not zero');
+            $this->assertGreaterThan(0, $summary['clusters'], 'the row names the clusters found, not zero');
+
+            // Same counters the report itself carries: the queue row and the
+            // `--json` surface can never disagree about what the run did.
+            $report = json_decode($app->handle('POST', '/analyze', $payload, [])['body'], true);
+            $this->assertSame($report['summary']['files'], $summary['files']);
+            $this->assertSame($report['summary']['blocks'], $summary['blocks']);
+            $this->assertSame($report['summary']['clusters'], $summary['clusters']);
+        } finally {
+            chdir($cwd);
+        }
+    }
+
+    public function testSyncAnalyzeCarriesNearDupHolesAndSignatureFields(): void
+    {
+        // once-065 MEDIUM, sync leg: `/analyze` used to force exact-only, so
+        // the optional fixture (a parameterizable near-dup pair) came back
+        // with NO clusters at all while SERVER.md promised the full report.
+        // Default posture is now the full analysis: the near-dup survives,
+        // and the payload carries the extraction-evidence keys.
+        $root = $this->repoRoot();
+        $cwd  = getcwd();
+        chdir($root);
+        try {
+            $response = (new Application(new JobQueue(), $root, null))
+                ->handle('POST', '/analyze', json_encode(['paths' => ['tests/Fixtures/optional']]), []);
+            $this->assertSame(200, $response['status']);
+            $decoded = json_decode($response['body'], true);
+            $this->assertIsArray($decoded);
+            $this->assertSame(1, $decoded['summary']['clusters'], 'the near-duplicate cluster is no longer dropped');
+            $this->assertCount(1, $decoded['clusters']);
+
+            $cluster = $decoded['clusters'][0];
+            $this->assertFalse($cluster['exact'], 'the surviving cluster is the near-dup, not an exact twin');
+            $this->assertArrayHasKey('holes', $cluster);
+            $this->assertIsArray($cluster['holes']);
+            $this->assertNotEmpty($cluster['holes'], 'parameterizable holes ride in the payload');
+            $this->assertArrayHasKey('signature', $cluster);
+            $this->assertIsString($cluster['signature']);
+            $this->assertNotSame('', $cluster['signature']);
+        } finally {
+            chdir($cwd);
+        }
+    }
+
+    public function testExactOnlyTruePayloadIsHonouredNotIgnored(): void
+    {
+        // The posture key is CONSUMED, not just tolerated: asking for
+        // exact-only on the near-dup-only fixture really does short-circuit
+        // (and the same payload without the key really did run the full
+        // analysis — the pair pins both directions of the lever).
+        $root = $this->repoRoot();
+        $cwd  = getcwd();
+        chdir($root);
+        try {
+            $response = (new Application(new JobQueue(), $root, null))->handle(
+                'POST',
+                '/analyze',
+                json_encode(['paths' => ['tests/Fixtures/optional'], 'exact_only' => true]),
+                []
+            );
+            $this->assertSame(200, $response['status']);
+            $decoded = json_decode($response['body'], true);
+            $this->assertSame(0, $decoded['summary']['clusters']);
+            $this->assertSame([], $decoded['clusters']);
+        } finally {
+            chdir($cwd);
+        }
+    }
+
+    public function testMistypedExactOnlyRefusedAtHttpWithNoJobMinted(): void
+    {
+        // Presence decides, value-typed — the refused-keys discipline riding
+        // onto the optional posture key: a string, an int or an explicit
+        // null is a shape violation answered 400 BEFORE any row exists, so
+        // it can never surface later as a dispatched-but-wrong job.
+        // Serve root stays null on purpose: the paths leg must not be the
+        // one answering these requests — the refusal names the posture key,
+        // and no fixture/cwd dependence leaks into a pure admission pin.
+        $queue = new JobQueue();
+        $app   = new Application($queue, null, null);
+
+        $analyze = $app->handle('POST', '/analyze', '{"paths":["src"],"exact_only":"yes"}', []);
+        $this->assertSame(400, $analyze['status']);
+        $this->assertStringContainsString('exact_only must be a boolean', $analyze['body']);
+
+        $jobs = $app->handle('POST', '/jobs', '{"paths":["src"],"exact_only":1}', []);
+        $this->assertSame(400, $jobs['status']);
+        $this->assertStringContainsString('exact_only must be a boolean', $jobs['body']);
+
+        $nulls = $app->handle('POST', '/jobs', '{"paths":["src"],"exact_only":null}', []);
+        $this->assertSame(400, $nulls['status']);
+
+        // A mistyped posture, unlike an untyped path violation, must have
+        // minted nothing: the queue stays byte-empty.
+        $this->assertSame([], json_decode($app->handle('GET', '/api/jobs', '', [])['body'], true));
+    }
+
+    public function testExactOnlyRidesTheAsyncDispatchFrameVerbatim(): void
+    {
+        // Transport parity, wire side: the admitted posture travels to the
+        // worker inside the RUN frame's JSON (scalars-only wire law holds —
+        // the payload crosses as one JSON string), so the async leg runs the
+        // very posture the HTTP layer parsed.
+        $now = 11_000_000.0;
+        $app = $this->makeAsyncApp($now);
+        $seen = null;
+        $app->workerAckProbe = static function (string $socketPath, string $message) use (&$seen): ?string {
+            $seen = $message;
+            $id = explode(' ', $message)[1] ?? '';
+            return "OK {$id}";
+        };
+
+        $response = $app->handle(
+            'POST',
+            '/jobs',
+            json_encode(['paths' => ['src'], 'exact_only' => true]),
+            []
+        );
+        $this->assertSame(202, $response['status']);
+        $this->assertIsString($seen);
+        $this->assertStringStartsWith('RUN ', $seen);
+        $this->assertStringContainsString('"exact_only":true', $seen);
+    }
+
+    public function testWorkerAdmissionGatesMistypedExactOnlyAndAcceptsBools(): void
+    {
+        // Decision leg, isolated like the ml-pair gate pins: the worker's
+        // RUN-frame admission refuses a mistyped posture with the shared
+        // verdict (prefixed so the wire names its own layer) and admits
+        // true, false, and absent.
+        $root = sys_get_temp_dir() . '/phpdup-s03-admit-' . uniqid();
+        mkdir($root);
+        file_put_contents($root . '/a.php', '<?php echo 1;');
+        $cwd = getcwd();
+        chdir($root);
+        try {
+            $worker = new AnalysisWorker(
+                '/tmp/phpdup-worker-defence-unused.sock',
+                sys_get_temp_dir(),
+                $root
+            );
+            $admit = new \ReflectionMethod(AnalysisWorker::class, 'admitFrame');
+
+            $refused = $admit->invoke($worker, ['paths' => ['a.php'], 'exact_only' => 'yes']);
+            $this->assertSame(400, $refused['status']);
+            $this->assertStringContainsString('RUN frame exact_only must be a boolean', $refused['error']);
+
+            $this->assertNull($admit->invoke($worker, ['paths' => ['a.php'], 'exact_only' => true]));
+            $this->assertNull($admit->invoke($worker, ['paths' => ['a.php'], 'exact_only' => false]));
+            $this->assertNull($admit->invoke($worker, ['paths' => ['a.php']]));
+        } finally {
+            chdir($cwd);
+            @unlink($root . '/a.php');
+            @rmdir($root);
+        }
+    }
+
+    public function testWorkerHonoursExactOnlyPostureOverTheWire(): void
+    {
+        // once-065, worker leg end-to-end: the same confined frame bytes the
+        // HTTP layer forwards run under the posture the frame names — full
+        // analysis by default (near-dup cluster with holes + signature in
+        // the published file), short-circuited under exact_only true, and a
+        // mistyped posture never reaches the pipeline at all.
+        $root = $this->repoRoot();
+        $cwd  = getcwd();
+        chdir($root);
+        try {
+            $handleClient = new \ReflectionMethod(AnalysisWorker::class, 'handleClient');
+
+            // Frame 1: no posture key → full report lands.
+            [$client, $controller] = $this->makeWorkerPair();
+            fwrite($controller, "RUN 0000000000000001 {\"paths\":[\"tests/Fixtures/optional\"]}\n");
+            $handleClient->invoke(new AnalysisWorker(
+                '/tmp/phpdup-worker-defence-unused.sock',
+                $this->workerResultDir,
+                $root
+            ), $client);
+            $this->assertSame('OK 0000000000000001', rtrim((string)fgets($controller), "\r\n"));
+            $full = json_decode((string)file_get_contents($this->workerResultDir . '/0000000000000001.json'), true);
+            $this->assertIsArray($full);
+            $this->assertSame(1, $full['summary']['clusters'], 'the worker no longer forces exact-only away from the full report');
+            $this->assertNotEmpty($full['clusters'][0]['holes']);
+            $this->assertIsString($full['clusters'][0]['signature']);
+
+            // Frame 2: exact_only true → honoured short-circuit.
+            [$client2, $controller2] = $this->makeWorkerPair();
+            fwrite($controller2, "RUN 0000000000000002 {\"paths\":[\"tests/Fixtures/optional\"],\"exact_only\":true}\n");
+            $handleClient->invoke(new AnalysisWorker(
+                '/tmp/phpdup-worker-defence-unused.sock',
+                $this->workerResultDir,
+                $root
+            ), $client2);
+            $this->assertSame('OK 0000000000000002', rtrim((string)fgets($controller2), "\r\n"));
+            $forced = json_decode((string)file_get_contents($this->workerResultDir . '/0000000000000002.json'), true);
+            $this->assertSame(0, $forced['summary']['clusters']);
+
+            // Frame 3: mistyped posture → FAIL, no OK, no file.
+            [$client3, $controller3] = $this->makeWorkerPair();
+            fwrite($controller3, "RUN 0000000000000003 {\"paths\":[\"tests/Fixtures/optional\"],\"exact_only\":\"yes\"}\n");
+            $handleClient->invoke(new AnalysisWorker(
+                '/tmp/phpdup-worker-defence-unused.sock',
+                $this->workerResultDir,
+                $root
+            ), $client3);
+            $ack = rtrim((string)fgets($controller3), "\r\n");
+            $this->assertStringStartsWith('FAIL 0000000000000003 RUN frame exact_only must be a boolean', $ack);
+            $this->assertFileDoesNotExist($this->workerResultDir . '/0000000000000003.json');
+        } finally {
+            chdir($cwd);
+        }
+    }
 }

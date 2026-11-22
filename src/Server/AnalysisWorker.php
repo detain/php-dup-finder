@@ -24,7 +24,8 @@ use Symfony\Component\Console\Output\NullOutput;
  *     OK <jobId>\n — the ACCEPT-ack (shell-032). It reports admission,
  *     not completion; the job is still about to run.
  *   - Sent when the frame cannot be admitted at all (bad id, oversize,
- *     malformed/invalid JSON, refused keys, path escape):
+ *     malformed/invalid JSON, refused keys, path escape, mistyped
+ *     `exact_only`):
  *     FAIL <jobId|0> <error>\n — no accept-ack, nothing written or run.
  *   - Sent when a job is admitted and accepted but then fails during the
  *     pipeline or while publishing its result:
@@ -74,8 +75,18 @@ use Symfony\Component\Console\Output\NullOutput;
  *     An ML pair-scoring endpoint must never be pointed at a remote by a job
  *     payload; ML-URL admission stays on the CLI/config path behind
  *     MlClient::isAllowedUrl()'s fail-closed validation gate.
- *   - All other keys are ignored: the worker builds its Config solely from
- *     `paths` and never consumes the raw frame array.
+ *   - `exact_only` (optional bool, once-065): the clustering posture key
+ *     `POST /analyze`/`POST /jobs` admit at the HTTP layer — shape-gated by
+ *     the shared {@see Application::exactOnlyViolation()} (a present
+ *     non-boolean refuses the frame with FAIL, never a silent coercion) and
+ *     consumed via {@see Application::exactOnlyPosture()}: absent or false
+ *     runs the full near-duplicate analysis (the report every transport
+ *     promises), true short-circuits to exact hash matches like the CLI's
+ *     `--exact-only`. Both transports read it from the same payload bytes,
+ *     so sync and async results never differ by route.
+ *   - All other keys are ignored: the worker builds its run solely from
+ *     `paths` plus the optional `exact_only` posture and never consumes the
+ *     raw frame array any further.
  *
  * Before any of that, the read itself is bounded (shell-049): the raw
  * socket line may not exceed {@see AnalysisWorker::MAX_REQUEST_BYTES}
@@ -623,6 +634,15 @@ final class AnalysisWorker
             return ['status' => 400, 'error' => 'RUN frame must not set: ' . implode(', ', $refused)];
         }
 
+        // once-065: the optional `exact_only` posture key is shape-gated by
+        // the same helper the HTTP admission runs before minting a job —
+        // both layers refuse a mistyped posture identically, and a frame
+        // carrying it never reaches the pipeline under either reading.
+        $posture = Application::exactOnlyViolation($configData);
+        if ($posture !== null) {
+            return ['status' => $posture['status'], 'error' => 'RUN frame ' . $posture['error']];
+        }
+
         return null;
     }
 
@@ -643,7 +663,11 @@ final class AnalysisWorker
 
             (new ScanningStage())->run($state, $out);
             (new PreprocessStage(useCache: false))->run($state, $out);
-            (new ClusterStage(exactOnly: true, useClusterCache: false))->run($state, $out);
+            // once-065: no hardcoded force — the frame's (already-gated)
+            // `exact_only` posture decides, exactly as in the sync path,
+            // so the result file carries the same full-report bytes the
+            // HTTP transport would have produced for the same payload.
+            (new ClusterStage(exactOnly: Application::exactOnlyPosture($configData), useClusterCache: false))->run($state, $out);
             (new RefactorStage(useCache: false))->run($state, $out);
 
             $report = new Report(
