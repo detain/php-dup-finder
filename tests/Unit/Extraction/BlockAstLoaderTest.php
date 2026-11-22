@@ -656,6 +656,140 @@ final class BlockAstLoaderTest extends TestCase
         }
     }
 
+    /**
+     * ROOT-CAUSE pin (engine-040 half B): the shared-member overlap a
+     * warm cluster-cache replay hands the sweep. The medoid-ball split may
+     * park the SAME Block instance in two clusters and the cache round-trip
+     * preserves that identity. Before the dedupe law the object was listed
+     * once per holding cluster: the class counted 4 members against 2 live
+     * twins, the "starve" arm double-claimed both twins for the first
+     * object's two listings, and dropped the second object from ONE owner
+     * only — its other owner still carried the stale member, and the strict
+     * resolve() backstop then killed the whole run with an uncaught
+     * RuntimeException (the ProgressIndicator.php crash the vendor probe
+     * reproduced). One anchor obligation per distinct object: both members
+     * pair honestly, zero degrades, both clusters keep both members, and
+     * resolve() from either owner serves its node.
+     */
+    public function testSharedMemberAcrossTwoClustersRelocatesOnceWithoutStarving(): void
+    {
+        $file  = $this->write('s17b-overlap.php', self::decoyGeometry());
+        $pair  = $this->decoyMembers($file, [[13, 16], [21, 24]]); // stale hints, live bytes at 16-19 / 24-27
+        $this->mintHashes($file, $pair[0], $pair[1]);
+        [$mA, $mB] = $pair;
+        $mA->unloadAst();
+        $mB->unloadAst();
+
+        $clusterX = new Cluster('Foverlap0000000001', [$mA, $mB], 1.0, true);
+        $clusterY = new Cluster('Foverlap0000000002', [$mA, $mB], 1.0, true); // SAME objects
+
+        $loader = $this->loaderWithConfig($file);
+        $loader->rebaseClusters([$clusterX, $clusterY]);
+
+        self::assertSame([16, 19], [$mA->range->start, $mA->range->end], 'first shared member anchors honestly');
+        self::assertSame([24, 27], [$mB->range->start, $mB->range->end], 'second shared member anchors honestly');
+        self::assertSame([$mA, $mB], $clusterX->members, 'owner X keeps both — no phantom starve');
+        self::assertSame([$mA, $mB], $clusterY->members, 'owner Y keeps both — no phantom starve');
+        self::assertSame(0, $loader->rebaseStats()['degrades'], 'the overlap is not a loss');
+        self::assertSame([], $loader->relocationDegrades());
+        self::assertSame(1, $loader->rebaseStats()['keys'], 'one positional key, swept once');
+
+        // Both owners resolve() the same objects: the second listing must
+        // re-enter its own claim, never re-guess (this is where the vendor
+        // run died pre-fix).
+        $mA->unloadAst();
+        $servedA = $loader->resolve($mA);
+        self::assertNotNull($servedA, 'resolve() from the shared owner serves its node');
+        self::assertSame([16, 19], [$mA->range->start, $mA->range->end], 'resolve keeps the assigned truth');
+        self::assertSame($servedA, $mA->ast);
+
+        $mB->unloadAst();
+        $servedB = $loader->resolve($mB);
+        self::assertNotNull($servedB, 'the second shared member resolves too — no stale survivor');
+        self::assertSame([24, 27], [$mB->range->start, $mB->range->end]);
+        self::assertSame(0, $loader->rebaseStats()['degrades'], 'relocation via claims is never a degrade');
+    }
+
+    /**
+     * The other half of the overlap law: when members GENUINELY lose their
+     * bodies (zero live twins), a shared object must degrade out of every
+     * owning cluster — a degraded member dropped from one owner only leaves
+     * the second owner carrying an un-resolvable stale member (the exact
+     * run-death the always-skip posture exists to prevent). One note per
+     * starved member regardless of owner count (half-A law).
+     */
+    public function testStarvedSharedMemberDegradesOutOfEveryOwningCluster(): void
+    {
+        $file = $this->write('s17b-dualdrop.php', self::decoyGeometry());
+        $pair = $this->decoyMembers($file);
+        $this->mintHashes($file, $pair[0], $pair[1]);
+        [$mA, $mB] = $pair;
+        $mA->unloadAst();
+        $mB->unloadAst();
+
+        // Both twin bodies vanish; the same-scope echo decoys survive.
+        file_put_contents($file, "<?php\n\nnamespace F1Land;\n\nfunction twin_gate(int \$x): int {\n"
+            . "    if (\$x > 5) {\n        echo 'd1';\n        \$junk = 1;\n    }\n"
+            . "    if (\$x > 6) {\n        echo 'd2';\n        \$junk = 2;\n    }\n"
+            . "    return \$x;\n}\n");
+
+        $clusterX = new Cluster('Fdualdrop000000001', [$mA, $mB], 1.0, true);
+        $clusterY = new Cluster('Fdualdrop000000002', [$mA, $mB], 1.0, true); // SAME objects
+
+        $loader = $this->loaderWithConfig($file);
+        $loader->rebaseClusters([$clusterX, $clusterY]);
+
+        self::assertSame([], $clusterX->members, 'total loss drains owner X');
+        self::assertSame([], $clusterY->members, 'total loss drains owner Y too — no stale survivor anywhere');
+        $notes = $loader->relocationDegrades();
+        self::assertCount(2, $notes, 'one note per starved member, not per owner edge');
+        self::assertSame(2, $loader->rebaseStats()['degrades']);
+        self::assertTrue($mA->isAstUnloaded() && $mB->isAstUnloaded(), 'drops never fake-resolve');
+    }
+
+    /**
+     * The freshness consequence of the dedupe law: a shared member whose
+     * corpus has NOT drifted must book through the [C-1] fast path like any
+     * clean replay — the class multiset the proof compares against the live
+     * corpus counts each physical block once on BOTH sides. Pre-dedupe the
+     * same key double-counted the member side (4 listings vs 2 live spans),
+     * forced a content escalation, and (with the old single-owner drop) fed
+     * the stale survivor to the strict backstop. Zero paid chains here is
+     * the evidence the two multisets finally agree.
+     */
+    public function testSharedMemberOnUndriftedCorpusBooksFreshWithoutPayingContent(): void
+    {
+        $file = $this->write('s17b-fresh.php', self::decoyGeometry());
+        $pair = $this->decoyMembers($file);          // hints == live truth
+        $this->mintHashes($file, $pair[0], $pair[1]);
+        [$mA, $mB] = $pair;
+        $mA->unloadAst();
+        $mB->unloadAst();
+        // The run's live extraction: a second parse of the same bytes,
+        // distinct objects carrying the current spans + hashes (the
+        // booking evidence the [C-1] proof compares the member side with).
+        $live = $this->decoyMembers($file);
+        $this->mintHashes($file, $live[0], $live[1]);
+
+        $clusterX = new Cluster('Fovfresh000000001', [$mA, $mB], 1.0, true);
+        $clusterY = new Cluster('Fovfresh000000002', [$mA, $mB], 1.0, true);
+
+        $loader = $this->loaderWithConfig($file);
+        $loader->rebaseClusters([$clusterX, $clusterY], $live);
+
+        $stats = $loader->rebaseStats();
+        self::assertSame(1, $stats['keys']);
+        self::assertSame(1, $stats['freshKeys'], 'the overlapped key books fresh once deduped');
+        self::assertSame(0, $stats['hashes'], 'zero content chains paid — the multiset proof is exact');
+        self::assertSame(0, $stats['degrades'], 'nothing starves on an undrifted corpus');
+        self::assertSame([$mA, $mB], $clusterX->members);
+        self::assertSame([$mA, $mB], $clusterY->members);
+
+        $mA->unloadAst();
+        self::assertNotNull($loader->resolve($mA), 'fresh booking serves resolve() without guessing');
+        self::assertSame([16, 19], [$mA->range->start, $mA->range->end]);
+    }
+
     // ------------------------------------------------- [m-2] freshness law
 
     public function testFreshGroupsAreProvenWithoutAnyHashing(): void

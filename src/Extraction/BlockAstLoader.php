@@ -777,8 +777,10 @@ final class BlockAstLoader
         }
         /** @var array<string, array<string, list<Block>>> $byKey positional key → hash class → members */
         $byKey = [];
-        /** @var array<int, Cluster> $memberOwners object id → owning cluster (degrade drops) */
+        /** @var array<int, list<Cluster>> $memberOwners object id → every cluster holding the member (degrade drops) */
         $memberOwners = [];
+        /** @var array<int, true> $seenMember distinct block objects already booked (overlap dedupe) */
+        $seenMember = [];
         foreach ($clusters as $cluster) {
             foreach ($cluster->members as $member) {
                 if (!$member->isAstUnloaded()) {
@@ -794,8 +796,26 @@ final class BlockAstLoader
                     continue; // nothing content-bound to rebase against
                 }
                 $poolKey = self::groupKey($member);
+                $mid     = spl_object_id($member);
+                // engine-040 half B: one anchor obligation per distinct
+                // block OBJECT. A warm-replayed corpus may share the very
+                // same Block instance between clusters (the medoid-ball
+                // split overlaps members, and the cluster cache
+                // round-trips that sharing faithfully). Listing it once per
+                // holding cluster inflated the member count, faked a
+                // starve, double-claimed one live node onto two hints and
+                // left the second copy stale — the strict resolve()
+                // backstop then killed the run. The live-corpus side of
+                // the proof always counted each block once
+                // ($liveByGroup below), so dedupe here is what keeps the
+                // two multisets comparable — the same physical truth from
+                // both ends.
+                $memberOwners[$mid][] = $cluster;
+                if (isset($seenMember[$mid])) {
+                    continue; // same object, second cluster — nothing new to sweep
+                }
+                $seenMember[$mid] = true;
                 $byKey[$poolKey][$poolKey . "\x1e" . $member->structuralHash][] = $member;
-                $memberOwners[spl_object_id($member)] = $cluster;
             }
         }
         if ($byKey === []) {
@@ -882,7 +902,17 @@ final class BlockAstLoader
                             count($members),
                             count($twins)
                         );
-                        $this->dropMember($memberOwners[spl_object_id($starved)], $starved);
+                        // engine-040 half B: the starved block's bytes are
+                        // gone from the live corpus, so it cannot be
+                        // unified in ANY cluster that holds it — drop it
+                        // from every owner (a shared instance kept alive
+                        // in a second cluster is exactly the stale member
+                        // the strict resolve() backstop would then kill
+                        // the run over). One note per starved member
+                        // regardless of owner count (half-A law).
+                        foreach ($memberOwners[spl_object_id($starved)] as $owningCluster) {
+                            $this->dropMember($owningCluster, $starved);
+                        }
                     }
                     $members = $keep;
                     if ($members === []) {
