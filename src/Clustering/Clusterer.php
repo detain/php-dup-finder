@@ -909,6 +909,13 @@ final class Clusterer
         /** @var array<int, list<array{int, array{sim: float, tier: string, a: string, b: string}}>> $byHigh */
         $byHigh = [];
         foreach ($componentEdges as $edge) {
+            // Fail-loud belt (engine-049 posture): the bucket is fed only
+            // ids unioned into this component, so a miss is an invariant
+            // break — refuse instead of silently dropping the pair via a
+            // null-vs-null position comparison below.
+            if (!isset($position[$edge['a']], $position[$edge['b']])) {
+                throw new \LogicException(sprintf('edge bucket leaked a foreign id %s|%s into component emission', $edge['a'], $edge['b']));
+            }
             $ia = $position[$edge['a']];
             $ib = $position[$edge['b']];
             if ($ia === $ib) {
