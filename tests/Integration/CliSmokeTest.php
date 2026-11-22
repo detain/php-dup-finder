@@ -287,6 +287,95 @@ final class CliSmokeTest extends TestCase
         $this->assertSame(3, $run['exit'], $run['combined']);
     }
 
+    /**
+     * once-S15 fix1 (r1 MEDIUM-1, P1): boundary discriminator for the
+     * canonical gate. TWO byte-identical files keep the detector on a
+     * single cluster (measured: the four-file twin splits into two under
+     * the medoid-ball splitter), so TOTAL impact == MAX impact == K and
+     * the corpus itself cannot rescue either formula from the other.
+     * The old CLI formula (`total > N`) exited 0 at N = K while the
+     * canonical per-cluster MAX formula (`max >= N`) must trip at
+     * exactly N = K — the boundary itself is the proof. The trip line
+     * must name the gate too: the old gate returned 3 silently, so exit
+     * 3 alone never identified WHICH gate fired. The pre-existing trips
+     * use --fail-on-impact=1 on obviously-dup corpora and trip
+     * identically under BOTH formulas (r1 ruled them non-discriminating;
+     * they stay byte-untouched).
+     */
+    public function testFailOnImpactTripsAtExactClusterMaxWithNamedGateLine(): void
+    {
+        $corpus = $this->makeSingleClusterCorpus();
+
+        $probe = $this->cli(['analyze', $corpus, '--json', $this->tmp . '/p1.json']);
+        $this->assertSame(0, $probe['exit'], $probe['combined']);
+        $impacts = $this->clusterImpacts($this->tmp . '/p1.json');
+        $this->assertCount(1, $impacts, 'single-twin corpus must cluster exactly once (a split would collapse the total==max trap): ' . json_encode($impacts));
+        $k = $impacts[0];
+        $this->assertGreaterThan(0, $k, 'the planted twin must carry positive impact');
+
+        $trip = $this->cli(['analyze', $corpus, '--fail-on-impact=' . $k]);
+        $this->assertSame(3, $trip['exit'], 'boundary AT the cluster max must trip (max >= N): ' . $trip['combined']);
+        $this->assertStringContainsString('--fail-on-impact gate tripped', $trip['combined']);
+
+        $above = $this->cli(['analyze', $corpus, '--fail-on-impact=' . ($k + 1)]);
+        $this->assertSame(0, $above['exit'], 'one above the max must pass: ' . $above['combined']);
+    }
+
+    /**
+     * once-S15 fix1 (r1 MEDIUM-1, P2): the TOTAL trap. The two-family
+     * corpus's clusters carry max M and total T with M < T (measured on
+     * the committed fixture: four clusters, two per planted family — the
+     * trap needs only that some impact sits below the total). The old
+     * CLI formula tripped whenever T > N, so a threshold just above the
+     * max (N = M+1, far below the total) used to exit 3; under the
+     * canonical per-cluster max formula that same run must exit 0 — no
+     * single cluster reaches it. N = M still trips (>= at the max),
+     * pinning the boundary from the inside with the named gate line.
+     */
+    public function testFailOnImpactMeasuresPerClusterMaxNotTotal(): void
+    {
+        $corpus = $this->makeTwoClusterCorpus();
+
+        $probe = $this->cli(['analyze', $corpus, '--json', $this->tmp . '/p2.json']);
+        $this->assertSame(0, $probe['exit'], $probe['combined']);
+        $impacts = $this->clusterImpacts($this->tmp . '/p2.json');
+        $this->assertGreaterThanOrEqual(2, $impacts, 'two-family corpus must keep at least two clusters: ' . json_encode($impacts));
+        $max = max($impacts);
+        $total = array_sum($impacts);
+        $this->assertGreaterThan($max + 1, $total, 'the trap needs total strictly above max+1 (some impact below the max, none zero)');
+
+        $trap = $this->cli(['analyze', $corpus, '--fail-on-impact=' . ($max + 1)]);
+        $this->assertSame(0, $trap['exit'], 'TOTAL-trap: the max formula ignores the sum the old total>N formula tripped on: ' . $trap['combined']);
+
+        $at = $this->cli(['analyze', $corpus, '--fail-on-impact=' . $max]);
+        $this->assertSame(3, $at['exit'], 'boundary AT the max must trip (max >= N): ' . $at['combined']);
+        $this->assertStringContainsString('--fail-on-impact gate tripped', $at['combined']);
+    }
+
+    /**
+     * once-S15 fix1 (r1 MEDIUM-1, P3): the --max-clusters trip must NAME
+     * itself. The count > N exit 3 is pre-existing (pinned by
+     * testMaxClustersGateTripsExit3 above); what once-S15 changed is the
+     * silence — exit 3 was ambiguous between the two gates until each
+     * trip line named its own gate. That naming gets its own pin, and
+     * the count literal in the line is kept honest by the same-fixture
+     * probe run (measured: four clusters over a budget of one).
+     */
+    public function testMaxClustersGateNamesItselfInOutput(): void
+    {
+        $corpus = $this->makeTwoClusterCorpus();
+
+        $probe = $this->cli(['analyze', $corpus, '--json', $this->tmp . '/p3.json']);
+        $this->assertSame(0, $probe['exit'], $probe['combined']);
+        $count = count($this->clusterImpacts($this->tmp . '/p3.json'));
+        $this->assertGreaterThanOrEqual(2, $count, 'corpus must stay over a budget of one');
+
+        $trip = $this->cli(['analyze', $corpus, '--max-clusters=1']);
+        $this->assertSame(3, $trip['exit'], $trip['combined']);
+        $this->assertStringContainsString('--max-clusters gate tripped', $trip['combined']);
+        $this->assertStringContainsString($count . ' clusters > 1', $trip['combined']);
+    }
+
     public function testCandidateBudgetHaltRendersCleanErrorExit1(): void
     {
         // ft-n2: the generation-guard halt must surface as the clean
@@ -1376,6 +1465,35 @@ final class CliSmokeTest extends TestCase
         return $dir;
     }
 
+    /**
+     * once-S15 fix1: ONE clone family of exactly two byte-identical
+     * members — the shape that keeps the detector on a single cluster
+     * (three or more copies of this body split under the medoid-ball
+     * splitter; measured), i.e. TOTAL impact == MAX impact. That
+     * degeneracy is what lets a `--fail-on-impact=K` run discriminate
+     * `max >= K` (canonical, trips) from `total > K` (old formula,
+     * passes) on the same corpus with the same threshold.
+     */
+    private function makeSingleClusterCorpus(): string
+    {
+        $dir = $this->tmp . '/onetwin';
+        mkdir($dir, 0o775, true);
+        foreach ([1, 2] as $i) {
+            file_put_contents($dir . '/twin_' . $i . '.php', <<<'PHP'
+                <?php
+                function report_totals(array $rows): float
+                {
+                    $sum = 0.0;
+                    foreach ($rows as $row) {
+                        $sum += $row['amount'] * $row['rate'];
+                    }
+                    return round($sum, 2);
+                }
+                PHP);
+        }
+        return $dir;
+    }
+
     /** Three files that parse cleanly but yield no extractable blocks. */
     private function makeZeroBlockCorpus(): string
     {
@@ -1385,6 +1503,25 @@ final class CliSmokeTest extends TestCase
         file_put_contents($dir . '/consts.php', "<?php\nfinal class Consts\n{\n    public const A = 1;\n    public const B = 2;\n}\n");
         file_put_contents($dir . '/notes.php', "<?php\n// a file of pure commentary\n");
         return $dir;
+    }
+
+    /**
+     * once-S15 fix1: the per-cluster impacts of a written `--json` report
+     * (clusters[].impact) in report order. The gate-formula
+     * discriminators calibrate their thresholds against the REAL impacts
+     * of the corpora with this instead of hard-coded numbers — the same
+     * ranked, scope-filtered set the gate itself reads (ReportStage
+     * writes the filtered list back to state before the gate runs).
+     *
+     * @return array<int, int>
+     */
+    private function clusterImpacts(string $jsonPath): array
+    {
+        $decoded = json_decode((string) file_get_contents($jsonPath), true);
+        $this->assertIsArray($decoded, 'report must decode as JSON: ' . $jsonPath);
+        $this->assertIsArray($decoded['clusters'] ?? null, 'report must carry a clusters array: ' . $jsonPath);
+
+        return array_map(static fn (array $c): int => (int) $c['impact'], $decoded['clusters']);
     }
 
     private function removeDir(string $dir): void
