@@ -48,6 +48,16 @@ use Phpdup\Extraction\Block;
  * IR lifter: when the ML service is unavailable, phpdup keeps
  * working with reduced precision rather than failing the run.
  *
+ * "Malformed" is enforced strictly since engine-S20 (php-dup-finder-
+ * engine-013/014): every verdict number — similarity/confidence in
+ * either endpoint, positional or named — must clear the shared
+ * closed-[0,1] domain fence {@see MlClient::coerceUnitFloat()} (INF,
+ * NaN, booleans, arrays and out-of-domain numbers refuse instead of
+ * laundering through a cast), and a batch response is consumed only
+ * when its results list is positionally aligned with the request —
+ * exact count under sequential keys, because the consumers index it
+ * by pair position and cannot see a mid-list shortening.
+ *
  * **Security**
  *
  * Every endpoint URL passes {@see MlClient::gateUrl()}, the shared gate
@@ -100,6 +110,24 @@ final class MlPairClient implements PairScorer
         if ($resp === null) {
             return null;
         }
+        return $this->parseVerdict($resp);
+    }
+
+    /**
+     * Decode one /score-pair verdict body into a trusted pair verdict.
+     *
+     * engine-S20 (php-dup-finder-engine-013): `similarity` and
+     * `confidence` pass the shared closed-[0,1] domain fence {@see
+     * MlClient::coerceUnitFloat()}. The old bare `(float)` casts
+     * laundered `1e999` → INF past the `>= mlPairThreshold` gate and
+     * arrays/garbage → 1.0/0.0 as plausible verdicts; now any of those
+     * shapes voids the verdict (null) and the pair falls back to the
+     * AST tiers — no edge minted on an attacker-made number.
+     *
+     * @return array{similarity: float, confidence: float}|null
+     */
+    private function parseVerdict(string $resp): ?array
+    {
         try {
             $decoded = json_decode($resp, true, 8, JSON_THROW_ON_ERROR);
         } catch (JsonException) {
@@ -108,8 +136,8 @@ final class MlPairClient implements PairScorer
         if (!is_array($decoded)) {
             return null;
         }
-        $similarity = isset($decoded['similarity']) ? (float)$decoded['similarity'] : null;
-        $confidence = isset($decoded['confidence']) ? (float)$decoded['confidence'] : null;
+        $similarity = MlClient::coerceUnitFloat($decoded['similarity'] ?? null);
+        $confidence = MlClient::coerceUnitFloat($decoded['confidence'] ?? null);
         if ($similarity === null || $confidence === null) {
             return null;
         }
@@ -125,6 +153,13 @@ final class MlPairClient implements PairScorer
      *
      * Server responds:
      *   { "results": [[similarity, confidence], ...] }
+     *
+     * The results list is CONTRACTUALLY ORDERED: entry i answers pair
+     * i (engine-S20, php-dup-finder-engine-014). A response whose
+     * results are not a sequential list of exactly count($pairs)
+     * entries is voided whole (null) — consumers index it positionally
+     * and a mid-list shortening would silently pair one block's
+     * features with another pair's verdict.
      *
      * Falls back to null on any error so callers can retry individually.
      *
@@ -159,31 +194,58 @@ final class MlPairClient implements PairScorer
             return null;
         }
 
+        return $this->parseBatchVerdicts($resp, count($pairs));
+    }
+
+    /**
+     * Decode a /score-batch response into a positionally aligned list
+     * of per-pair verdicts — or null to void the whole response.
+     *
+     * engine-S20 (php-dup-finder-engine-014, alignment): PairScoreWorker
+     * consumes the list as `$batchResults[$idx] ?? null`, which pads a
+     * missing TAIL but cannot see a shortened or reordered mid-list —
+     * every wrong-position entry then weights an ML-tier edge for the
+     * wrong pair. The response is therefore accepted only when
+     * `results` is a sequential list (array_is_list) of EXACTLY
+     * $expectedCount entries; any other shape returns null so the
+     * consumer's honest per-pair retry path re-scores every candidate.
+     *
+     * engine-S20 (php-dup-finder-engine-013, domain): inside an aligned
+     * response each entry's numbers — named or positional — clear the
+     * shared closed-[0,1] fence {@see MlClient::coerceUnitFloat()}. A
+     * malformed entry degrades to a null slot (that pair falls back
+     * individually) without voiding its correctly-scored neighbours.
+     *
+     * @return list<array{similarity: float, confidence: float}|null>|null
+     */
+    private function parseBatchVerdicts(string $resp, int $expectedCount): ?array
+    {
         try {
             $decoded = json_decode($resp, true, 8, JSON_THROW_ON_ERROR);
         } catch (JsonException) {
             return null;
         }
-
         if (!is_array($decoded) || !isset($decoded['results']) || !is_array($decoded['results'])) {
             return null;
         }
+        $results = $decoded['results'];
+        if (!array_is_list($results) || count($results) !== $expectedCount) {
+            return null;
+        }
 
-        $results = [];
-        foreach ($decoded['results'] as $r) {
+        $verdicts = [];
+        foreach ($results as $r) {
             if (!is_array($r) || count($r) < 2) {
-                $results[] = null;
+                $verdicts[] = null;
                 continue;
             }
-            $similarity = isset($r['similarity']) ? (float)$r['similarity'] : (is_numeric($r[0] ?? null) ? (float)$r[0] : null);
-            $confidence = isset($r['confidence']) ? (float)$r['confidence'] : (is_numeric($r[1] ?? null) ? (float)$r[1] : null);
-            if ($similarity !== null && $confidence !== null) {
-                $results[] = ['similarity' => $similarity, 'confidence' => $confidence];
-            } else {
-                $results[] = null;
-            }
+            $similarity = MlClient::coerceUnitFloat($r['similarity'] ?? $r[0] ?? null);
+            $confidence = MlClient::coerceUnitFloat($r['confidence'] ?? $r[1] ?? null);
+            $verdicts[] = $similarity !== null && $confidence !== null
+                ? ['similarity' => $similarity, 'confidence' => $confidence]
+                : null;
         }
-        return $results;
+        return $verdicts;
     }
 
     /**

@@ -801,4 +801,107 @@ final class MlClientTest extends TestCase
             'transport attempted a connection it must refuse'
         );
     }
+
+    // =====================================================================
+    // engine-S20 — shared remote-number domain fence + /score wiring
+    // (php-dup-finder-engine-013). The fence lives on MlClient so both
+    // clients parse through ONE function (MlPairClient's own verdict
+    // units live in MlPairClientTest); these are its direct matrix plus
+    // the safety/anomaly wiring in this class's parse seam.
+    // =====================================================================
+
+    /** @return array<string,array{0:mixed,1:float|null}> */
+    public static function coerceUnitFloatProvider(): array
+    {
+        return [
+            // In domain — parse to trusted floats.
+            'exact 0.0'            => [0.0, 0.0],
+            'exact 1.0'            => [1.0, 1.0],
+            'int 0'                => [0, 0.0],
+            'int 1'                => [1, 1.0],
+            'mid float'            => [0.42, 0.42],
+            'numeric string'       => ['0.9', 0.9],
+            'exponent string'      => ['1e-1', 0.1],
+            'int-ish string'       => ['1', 1.0],
+            // Non-finite — the FUZZ-03 class. json_decode('1e999')
+            // yields exactly this float, and is_numeric() accepts
+            // INF/NAN floats, so only the finite check refuses them.
+            'INF from 1e999'       => [(float)'1e999', null],
+            'negative INF'         => [-INF, null],
+            'NAN'                  => [NAN, null],
+            // Out of domain.
+            'above 1.0'            => [1.5, null],
+            'below 0.0'            => [-0.0001, null],
+            'negative INF value'   => [-1e999, null],
+            // Non-numeric types the old cast laundered.
+            'bool true'            => [true, null],
+            'bool false'           => [false, null],
+            'null'                 => [null, null],
+            'garbage string'       => ['garbage', null],
+            'NaN string'           => ['NaN', null],
+            'hex string'           => ['0x0F', null],
+            'list verdict'         => [[0.9], null],
+            'assoc verdict'        => [['similarity' => 0.9], null],
+            'empty array'          => [[], null],
+        ];
+    }
+
+    /** @dataProvider coerceUnitFloatProvider */
+    public function testCoerceUnitFloatParsesDomainRefusesRest(mixed $value, ?float $expected): void
+    {
+        self::assertSame($expected, MlClient::coerceUnitFloat($value));
+    }
+
+    /**
+     * /score bodies whose safety/anomaly verdict must refuse instead of
+     * laundering through the old bare (float) casts.
+     *
+     * @return array<string,array{0:string}>
+     */
+    public static function refusedSafetyBodyProvider(): array
+    {
+        return [
+            'safety INF via 1e999'  => ['{"safety":1e999,"anomaly":0.1}'],
+            'safety array'          => ['{"safety":[0.71],"anomaly":0.1}'],
+            'safety bool'           => ['{"safety":true,"anomaly":0.1}'],
+            'safety garbage string' => ['{"safety":"garbage","anomaly":0.1}'],
+            'safety above 1'        => ['{"safety":1.2,"anomaly":0.1}'],
+            'anomaly INF'           => ['{"safety":0.71,"anomaly":1e999}'],
+            'anomaly NaN string'    => ['{"safety":0.71,"anomaly":"NaN"}'],
+            'anomaly negative'      => ['{"safety":0.71,"anomaly":-0.5}'],
+            'anomaly list'          => ['{"safety":0.71,"anomaly":[0.12]}'],
+            'safety missing'        => ['{"anomaly":0.1}'],
+            'anomaly missing'       => ['{"safety":0.71}'],
+            'scalar body'           => ['0.71'],
+            'not json'              => ['nope'],
+        ];
+    }
+
+    /** @dataProvider refusedSafetyBodyProvider */
+    public function testMalformedSafetyVerdictRefusedNotLaundered(string $body): void
+    {
+        $client = new MlClient('http://ml.invalid');
+        $parse  = new \ReflectionMethod($client, 'parseSafetyVerdict');
+        self::assertNull($parse->invoke($client, $body), "safety verdict must refuse: $body");
+    }
+
+    public function testInDomainSafetyVerdictsParseIntoTrustedFloats(): void
+    {
+        $client = new MlClient('http://ml.invalid');
+        $parse  = new \ReflectionMethod($client, 'parseSafetyVerdict');
+        self::assertSame(
+            ['safety' => 0.71, 'anomaly' => 0.12],
+            $parse->invoke($client, '{"safety":0.71,"anomaly":0.12}'),
+        );
+        self::assertSame(
+            ['safety' => 0.0, 'anomaly' => 1.0],
+            $parse->invoke($client, '{"safety":0,"anomaly":1}'),
+            'closed interval: exact 0 and 1 are legal verdicts',
+        );
+        self::assertSame(
+            ['safety' => 0.71, 'anomaly' => 0.5],
+            $parse->invoke($client, '{"safety":"0.71","anomaly":"0.5"}'),
+            'numeric strings parse per the is_numeric domain test',
+        );
+    }
 }

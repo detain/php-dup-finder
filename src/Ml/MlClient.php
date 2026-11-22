@@ -24,6 +24,12 @@ use Phpdup\Clustering\Cluster;
  *
  *   →  { "safety": 0.71, "anomaly": 0.12 }
  *
+ * Both numbers are parsed into the closed unit interval before they
+ * can influence anything (engine-S20, php-dup-finder-engine-013): a
+ * sidecar answering with INF, NaN, booleans, arrays or out-of-domain
+ * values is treated exactly like a malformed response — a null
+ * verdict and a local fallback — never a laundered score.
+ *
  * Falls back gracefully when the server is unreachable: returns null
  * so callers fall back to {@see \Phpdup\Reporting\SafetyScorer}.
  *
@@ -75,6 +81,43 @@ final class MlClient
     }
 
     /**
+     * Parse one remote verdict number into a trusted score in [0, 1].
+     *
+     * engine-S20 (php-dup-finder-engine-013): the ML transports used to
+     * launder every response field through a bare `(float)` cast — no
+     * domain check of any kind. `{"similarity":1e999}` decodes to INF
+     * and sails past every `>= threshold` gate (FUZZ-03 watched an
+     * INF-scored pair emit as a cluster; the report layer's
+     * `min(1.0, …)` masked it in JSON while the DECISION stayed
+     * attacker-made). `(float)` on an array yields 1.0/0.0, on
+     * "garbage" 0.0 — wrong types arriving as plausible scores.
+     *
+     * The wire contract is a probability-like float in the CLOSED unit
+     * interval. Anything else is malformed and yields null so callers
+     * fall back exactly as they do for an absent field: non-numeric
+     * values (bool, array, null, "NaN", "garbage"), non-finite floats
+     * (INF/NAN — `is_numeric` accepts those as floats, so the finite
+     * check is load-bearing), and numbers outside [0, 1]. Numeric
+     * JSON strings ("0.9") parse: `is_numeric` proves the shape before
+     * the cast, matching the finding's prescribed domain test exactly.
+     *
+     * @internal Shared verdict-domain policy for both Ml clients
+     *           (engine-S20) so score()/scoreBatch()/cluster scoring
+     *           parse remote numbers through ONE fence and cannot drift.
+     */
+    public static function coerceUnitFloat(mixed $value): ?float
+    {
+        if (!is_numeric($value)) {
+            return null;
+        }
+        $float = (float)$value;
+        if (!is_finite($float) || $float < 0.0 || $float > 1.0) {
+            return null;
+        }
+        return $float;
+    }
+
+    /**
      * Score a cluster against the remote ML service.
      *
      * @return array{safety: float, anomaly: float}|null Null when the
@@ -109,6 +152,23 @@ final class MlClient
         if ($resp === null) {
             return null;
         }
+        return $this->parseSafetyVerdict($resp);
+    }
+
+    /**
+     * Decode a /score verdict body into a trusted safety pair.
+     *
+     * engine-S20 (php-dup-finder-engine-013): `safety` and `anomaly`
+     * arrive through the shared closed-[0,1] domain fence {@see
+     * MlClient::coerceUnitFloat()}. Absent, non-numeric, non-finite or
+     * out-of-domain fields void the whole verdict (null) so the caller
+     * falls back to the local SafetyScorer instead of consuming a
+     * laundered number.
+     *
+     * @return array{safety: float, anomaly: float}|null
+     */
+    private function parseSafetyVerdict(string $resp): ?array
+    {
         try {
             $decoded = json_decode($resp, true, 8, JSON_THROW_ON_ERROR);
         } catch (JsonException) {
@@ -117,8 +177,8 @@ final class MlClient
         if (!is_array($decoded)) {
             return null;
         }
-        $safety  = isset($decoded['safety'])  ? (float)$decoded['safety']  : null;
-        $anomaly = isset($decoded['anomaly']) ? (float)$decoded['anomaly'] : null;
+        $safety  = self::coerceUnitFloat($decoded['safety'] ?? null);
+        $anomaly = self::coerceUnitFloat($decoded['anomaly'] ?? null);
         if ($safety === null || $anomaly === null) {
             return null;
         }

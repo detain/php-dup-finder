@@ -327,6 +327,143 @@ final class MlPairClientTest extends TestCase
         }
     }
 
+    // =====================================================================
+    // engine-S20 — remote numeric laundering + scoreBatch alignment
+    // (php-dup-finder-engine-013 / php-dup-finder-engine-014).
+    //
+    // The decode seams (private parseVerdict / parseBatchVerdicts, the
+    // exact functions score()/scoreBatch() consume responses through)
+    // are driven directly with bodies a hostile or buggy sidecar can
+    // send. Seam-level rather than end-to-end for the same structural
+    // reason as the S19b transport seams above: the gate refuses every
+    // hermetic dial target, so only the seam sees a response body.
+    // FUZZ-03's live observation — an INF-scored pair emitted as a
+    // cluster while the report layer's min(1.0, …) masked the number —
+    // is pinned here as a permanent refusal unit.
+    // =====================================================================
+
+    /**
+     * /score-pair bodies whose verdict must REFUSE (null) instead of
+     * laundering through the old bare (float) casts.
+     *
+     * @return array<string,array{0:string}>
+     */
+    public static function refusedPairVerdictProvider(): array
+    {
+        return [
+            'similarity INF via 1e999'  => ['{"similarity":1e999,"confidence":0.5}'],
+            'similarity -INF'           => ['{"similarity":-1e999,"confidence":0.5}'],
+            'similarity NaN string'     => ['{"similarity":"NaN","confidence":0.5}'],
+            'similarity garbage string' => ['{"similarity":"garbage","confidence":0.5}'],
+            'similarity array'          => ['{"similarity":[0.9],"confidence":0.5}'],
+            'similarity bool true'      => ['{"similarity":true,"confidence":0.5}'],
+            'similarity above 1'        => ['{"similarity":1.5,"confidence":0.5}'],
+            'similarity below 0'        => ['{"similarity":-0.0001,"confidence":0.5}'],
+            'confidence INF'            => ['{"similarity":0.9,"confidence":1e999}'],
+            'confidence array'          => ['{"similarity":0.9,"confidence":["x"]}'],
+            'confidence NaN string'     => ['{"similarity":0.9,"confidence":"NaN"}'],
+            'confidence missing'        => ['{"similarity":0.9}'],
+            'similarity missing'        => ['{"confidence":0.5}'],
+            'similarity null'           => ['{"similarity":null,"confidence":0.5}'],
+            'scalar body'               => ['0.9'],
+            'list body'                 => ['[0.9,0.5]'],
+            'not json'                  => ['<html>500</html>'],
+        ];
+    }
+
+    /** @dataProvider refusedPairVerdictProvider */
+    public function testMalformedPairVerdictRefusedNotLaundered(string $body): void
+    {
+        $client = new MlPairClient('http://ml.invalid');
+        $parse  = new \ReflectionMethod($client, 'parseVerdict');
+        self::assertNull($parse->invoke($client, $body), "verdict must refuse: $body");
+    }
+
+    public function testInDomainPairVerdictsParseIntoTrustedFloats(): void
+    {
+        $client = new MlPairClient('http://ml.invalid');
+        $parse  = new \ReflectionMethod($client, 'parseVerdict');
+        self::assertSame(
+            ['similarity' => 1.0, 'confidence' => 0.0],
+            $parse->invoke($client, '{"similarity":1,"confidence":0}'),
+            'closed interval: exact 0 and 1 are legal verdicts',
+        );
+        self::assertSame(
+            ['similarity' => 0.9, 'confidence' => 0.78],
+            $parse->invoke($client, '{"similarity":"0.9","confidence":0.78}'),
+            'numeric strings parse per the is_numeric domain test (engine-013 fix shape)',
+        );
+    }
+
+    /**
+     * engine-014: every misaligned batch shape voids the WHOLE response
+     * (null → the consumer's per-pair retry path), never a shorter,
+     * padded or reordered list the positional consumer could misread.
+     */
+    public function testBatchMisalignmentVoidsResponseForPerPairRetry(): void
+    {
+        $client = new MlPairClient('http://ml.invalid');
+        $parse  = new \ReflectionMethod($client, 'parseBatchVerdicts');
+        // Shortened: 2 well-formed entries for 3 requested pairs.
+        self::assertNull(
+            $parse->invoke($client, '{"results":[[0.9,0.5],[0.8,0.4]]}', 3),
+            'short results must void the batch, not silently pad the tail',
+        );
+        // Extra: 3 entries for 2 requested pairs.
+        self::assertNull(
+            $parse->invoke($client, '{"results":[[0.9,0.5],[0.8,0.4],[0.7,0.3]]}', 2),
+            'extra results must void the batch',
+        );
+        // Gapped/reordered keys that decode to an associative array:
+        // count matches but the list shape is contractual.
+        self::assertNull(
+            $parse->invoke($client, '{"results":{"0":[0.9,0.5],"2":[0.7,0.3]}}', 2),
+            'non-sequential result keys must void the batch',
+        );
+        // Results absent / wrong type.
+        self::assertNull($parse->invoke($client, '{}', 2));
+        self::assertNull($parse->invoke($client, '{"results":3}', 2));
+        self::assertNull($parse->invoke($client, 'nope', 2));
+    }
+
+    public function testAlignedBatchDecodesEveryShapeWithDomainChecks(): void
+    {
+        $client = new MlPairClient('http://ml.invalid');
+        $parse  = new \ReflectionMethod($client, 'parseBatchVerdicts');
+        $body   = '{"results":['
+            . '[0.9,0.5],'                               // positional pair — kept
+            . '{"similarity":0.8,"confidence":0.4},'     // named pair — kept
+            . '[1e999,0.5],'                             // INF laundering — slot nulls
+            . '[0.8,"garbage"],'                         // garbage confidence — slot nulls
+            . '[0.7],'                                   // fewer than 2 fields — slot nulls
+            . 'null'                                     // non-array entry — slot nulls
+            . ']}';
+        $verdicts = $parse->invoke($client, $body, 6);
+        self::assertIsArray($verdicts, 'aligned response must decode, not void');
+        self::assertCount(6, $verdicts, 'list stays positionally aligned');
+        self::assertSame(['similarity' => 0.9, 'confidence' => 0.5], $verdicts[0]);
+        self::assertSame(['similarity' => 0.8, 'confidence' => 0.4], $verdicts[1]);
+        self::assertNull($verdicts[2], 'INF must refuse, never launder to an edge-minting score');
+        self::assertNull($verdicts[3], 'non-numeric confidence must refuse');
+        self::assertNull($verdicts[4]);
+        self::assertNull($verdicts[5]);
+    }
+
+    public function testBatchNullSlotFallsBackPerPairNotWholeResponse(): void
+    {
+        // The count fence protects ALIGNMENT only — one malformed
+        // entry must not discard the valid verdicts around it (that
+        // would re-introduce a different honesty bug: the consumer
+        // retries only what arrives as null, and valid entries do not
+        // need retrying).
+        $client = new MlPairClient('http://ml.invalid');
+        $parse  = new \ReflectionMethod($client, 'parseBatchVerdicts');
+        $verdicts = $parse->invoke($client, '{"results":[[true,0.5],[0.6,0.2]]}', 2);
+        self::assertIsArray($verdicts);
+        self::assertNull($verdicts[0], 'bool similarity refuses');
+        self::assertSame(['similarity' => 0.6, 'confidence' => 0.2], $verdicts[1]);
+    }
+
     /**
      * Response that reflects the first request line and the Host header:
      * bytes visible only to a client that actually talked to the listener.
