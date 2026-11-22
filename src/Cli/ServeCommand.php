@@ -303,8 +303,13 @@ final class ServeCommand extends SymfonyCommand
      * This is the testable portion of execute() — the socket/accept loop
      * lives in execute() itself so tests that only need to verify the
      * validation logic can call this method directly.
+     *
+     * `$serveWorkers` is the RAW `--serve-workers` string (defaulting to the
+     * option's own default so 3-arg callers keep working): it is admitted
+     * before any `(int)` cast, so a word or a negative can never silently
+     * mean "auto" at startup.
      */
-    public function validateConfig(bool $bindPublic, ?string $token, string $host): ?string
+    public function validateConfig(bool $bindPublic, ?string $token, string $host, string $serveWorkers = '1'): ?string
     {
         if ($bindPublic && ($token === null || $token === '')) {
             return '--bind-public requires --token to be set (no authentication is enforced by default).';
@@ -312,6 +317,16 @@ final class ServeCommand extends SymfonyCommand
 
         if (!$bindPublic && !$this->isLoopback($host)) {
             return "refusing to bind to non-loopback host '{$host}' without --bind-public.";
+        }
+
+        // shell-032 r1 LOW-2: --serve-workers is validated as the RAW string
+        // the operator typed. A blind `(int)` cast turned `--serve-workers
+        // banana` (and any negative) into 0 — the documented "auto" posture,
+        // i.e. the per-request fork storm this flag's default exists to
+        // prevent, chosen by a typo. Digits only (0 = auto is legitimate);
+        // everything else refuses startup with the value echoed back.
+        if (!ctype_digit($serveWorkers)) {
+            return "--serve-workers must be a non-negative integer (got '{$serveWorkers}'; 0 restores automatic CPU-count workers).";
         }
 
         return null;
@@ -336,13 +351,16 @@ final class ServeCommand extends SymfonyCommand
         // synchronous /analyze (and worker-less /jobs) pipeline; the async
         // background worker keeps its own per-job parallelism.
         $useCache = (bool)$input->getOption('serve-cache');
-        $serveWorkers = (int)$input->getOption('serve-workers');
+        $serveWorkersRaw = (string)$input->getOption('serve-workers');
 
-        $error = $this->validateConfig($bindPublic, $token, $host);
+        $error = $this->validateConfig($bindPublic, $token, $host, $serveWorkersRaw);
         if ($error !== null) {
             $output->writeln("<error>phpdup serve: {$error}</error>");
             return 1;
         }
+        // Only validated digits reach the cast: '0' means auto, '1'+ explicit;
+        // a word or negative refused startup above (r1 LOW-2).
+        $serveWorkers = (int)$serveWorkersRaw;
 
         // Prepare the private results directory before the worker can spawn
         // or any bind happens: a foreign-owned path of the same name is a

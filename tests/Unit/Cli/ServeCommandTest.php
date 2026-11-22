@@ -7,6 +7,9 @@ use Phpdup\Cli\ServeCommand;
 use Phpdup\Server\Application;
 use Phpdup\Server\JobQueue;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\Console\Application as ConsoleApplication;
+use Symfony\Component\Console\Input\ArrayInput;
+use Symfony\Component\Console\Output\BufferedOutput;
 
 final class ServeCommandTest extends TestCase
 {
@@ -321,5 +324,78 @@ final class ServeCommandTest extends TestCase
         $workers = $definition->getOption('serve-workers');
         $this->assertTrue($workers->isValueRequired());
         $this->assertSame('1', (string) $workers->getDefault(), 'serial by default');
+    }
+
+    /**
+     * shell-032 (Fix-round-1, LOW-2): a non-numeric --serve-workers must be
+     * refused by the startup gate, not cast to 0 = auto. `(int)'banana'` and
+     * `(int)'-1'` both meant "auto" — the per-request fork storm the serial
+     * default exists to prevent, chosen by a typo. validateConfig() is the
+     * pre-bind gate, so the refusal lands before any socket or worker spawn.
+     */
+    public function testValidateConfigRejectsNonNumericServeWorkers(): void
+    {
+        $command = new ServeCommand();
+
+        foreach (['banana', '-1', '2.5', '+3', '', '0x4'] as $raw) {
+            $error = $command->validateConfig(
+                bindPublic: false,
+                token: null,
+                host: '127.0.0.1',
+                serveWorkers: $raw,
+            );
+            $this->assertNotNull($error, "--serve-workers '{$raw}' must not silently mean auto");
+            $this->assertStringContainsString('--serve-workers', $error, "refusal must name the flag for '{$raw}'");
+        }
+
+        // A legitimate value still passes the gate unchanged (and 0 = explicit
+        // auto opt-up stays admitted — this is validation, not policy).
+        $this->assertNull($command->validateConfig(
+            bindPublic: false,
+            token: null,
+            host: '127.0.0.1',
+            serveWorkers: '4',
+        ));
+        $this->assertNull($command->validateConfig(
+            bindPublic: false,
+            token: null,
+            host: '127.0.0.1',
+            serveWorkers: '0',
+        ));
+    }
+
+    /**
+     * The refusal is an exit-1 startup posture with a readable message — the
+     * serve never begins, so nothing binds and no worker spawns. (The
+     * validation-before-bind ordering is the same one the bind-public
+     * rejection pins above hold: run() returns 1 before the socket.)
+     */
+    public function testServeExitsOneBeforeBindOnNonNumericServeWorkers(): void
+    {
+        $command = new ServeCommand();
+        $command->setApplication(new ConsoleApplication('phpdup', '1.0.0'));
+
+        $input = new ArrayInput([
+            '--host' => '127.0.0.1',
+            '--port' => '18998',
+            '--serve-workers' => 'banana',
+        ]);
+        $output = new BufferedOutput();
+
+        $this->assertSame(1, $command->run($input, $output), 'a typo must refuse startup, not mean auto');
+        $this->assertStringContainsString('--serve-workers', $output->fetch());
+
+        // Socket-proven "before serve starts": if the gate ever regresses to
+        // bind-then-complain (or accept-loop forever), this connect flips the
+        // test red instead of hanging the suite — no listener was ever
+        // opened on the port we passed to the refused command.
+        $errno = 0;
+        $errstr = '';
+        $probe = @stream_socket_client('tcp://127.0.0.1:18998', $errno, $errstr, 2.0);
+        if ($probe !== false) {
+            fclose($probe);
+            $this->fail('a refused serve must never open the listener');
+        }
+        $this->assertStringContainsStringIgnoringCase('refused', $errstr);
     }
 }

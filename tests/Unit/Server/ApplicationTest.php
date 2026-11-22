@@ -876,6 +876,78 @@ final class ApplicationTest extends TestCase
         }
     }
 
+    public function testAdmissionRefusedFrameNeverReceivesTheAcceptAck(): void
+    {
+        // shell-032 r1 MEDIUM-1: the composition pin. The pre-admission FAIL
+        // legs (bad id, oversized, invalid JSON) have socketpair coverage, and
+        // the admission DECISION has the reflection pins — but no test drove a
+        // frame that passes every pre-admission leg yet is REFUSED BY
+        // ADMISSION (valid 16-hex id + well-formed JSON + confined paths,
+        // carrying a refused key) through handleClient. That composition —
+        // admitFrame → FAIL before the OK ever writes — lived only in the
+        // source order. A reorder that moves the accept-ack above admission
+        // would 202 a job the worker never accepted, stranding a phantom
+        // RUNNING row until the absence-deadline. This pin drives the refused
+        // frame over a real socketpair and holds the wire to one FAIL line.
+        $root = sys_get_temp_dir() . '/phpdup-s08-admit-' . uniqid();
+        mkdir($root);
+        file_put_contents($root . '/a.php', '<?php echo 1;');
+        $cwd = getcwd();
+        chdir($root);
+
+        try {
+            [$client, $controller] = $this->makeWorkerPair();
+            $handleClient = new \ReflectionMethod(AnalysisWorker::class, 'handleClient');
+            fwrite($controller, "RUN 0123456789abcdef {\"paths\":[\"a.php\"],\"ml_pair_url\":\"http://evil.invalid/\"}\n");
+            $handleClient->invoke(new AnalysisWorker(
+                '/tmp/phpdup-worker-defence-unused.sock',
+                $this->workerResultDir,
+                $root
+            ), $client);
+            // The refusal path wrote its one line and returned; close the
+            // worker end NOW — and drop it from the teardown ledger first,
+            // because fclose() of an already-closed resource raises a
+            // TypeError that @ does not suppress — so the drain below ends at
+            // a real EOF instead of the 5 s socket timeout.
+            $this->workerStreams = array_values(array_filter(
+                $this->workerStreams,
+                static fn ($s): bool => $s !== $client
+            ));
+            fclose($client);
+            $lines = [];
+            while (($line = fgets($controller)) !== false) {
+                $lines[] = rtrim($line, "\r\n");
+            }
+
+            $this->assertNotEmpty($lines, 'a refused frame must be answered, not ignored');
+            $this->assertStringStartsWith(
+                'FAIL 0123456789abcdef RUN frame must not set',
+                $lines[0],
+                'the FIRST wire line must be the admission FAIL, never an accept-ack'
+            );
+            $this->assertStringContainsString('ml_pair_url', $lines[0]);
+            foreach ($lines as $wired) {
+                // No accept-ack, and no ERR either — ERR is the POST-accept
+                // failure frame; a refused frame never reached acceptance.
+                $this->assertFalse(str_starts_with($wired, 'OK '), "no accept-ack on a refused frame: {$wired}");
+                $this->assertFalse(str_starts_with($wired, 'ERR '), "no post-accept ERR on a refused frame: {$wired}");
+            }
+            $this->assertCount(1, $lines, 'refusal is answered with exactly one FAIL frame');
+
+            // Nothing ran and nothing was written: no result under the id, no
+            // tmp litter, the results dir stays empty.
+            $this->assertFileDoesNotExist($this->workerResultDir . '/0123456789abcdef.json');
+            $this->assertSame([], array_values(array_filter(
+                scandir($this->workerResultDir),
+                static fn (string $e): bool => $e !== '.' && $e !== '..'
+            )));
+        } finally {
+            chdir($cwd);
+            @unlink($root . '/a.php');
+            @rmdir($root);
+        }
+    }
+
     // ------------------------------------------------------------------
     // shell-032: ack-at-accept protocol — the server no longer blocks on the
     // analysis. These legs drive the async dispatcher through the
@@ -983,21 +1055,47 @@ final class ApplicationTest extends TestCase
     {
         // A worker whose socket answers FAIL (a real dispatch/admission
         // failure) or never answers (unreachable/wedged) is NOT accepted: the
-        // request reports the failure (500), never a bogus 202.
+        // request reports the failure (500), never a bogus 202. The name's
+        // other promise — "MarksFailed" — is pinned at the queue itself: the
+        // row minted before dispatch must land FAILED, not linger PENDING. A
+        // neutered markFailed arm strands a pending row (the reconcile
+        // early-exits for pending rows), which is exactly the queue-lies class
+        // this step exists to kill.
         foreach (['FAIL', 'none'] as $reply) {
-            $now = 3_000_000.0;
-            $app = $this->makeAsyncApp($now);
-            $app->workerAckProbe = $this->ackProbe($reply);
+            $resultDir = sys_get_temp_dir() . '/phpdup-s08-reject-' . uniqid();
+            mkdir($resultDir, 0700);
+            try {
+                $queue = new JobQueue();
+                $app = new Application($queue, null, null, '/tmp/phpdup-s08-unused.sock', $resultDir);
+                $app->workerAckProbe = $this->ackProbe($reply);
 
-            $response = $app->handle('POST', '/jobs', '{"paths":["src"]}', []);
-            $this->assertSame(500, $response['status'], "reply '{$reply}' must reject dispatch");
-            $id = 'unminted';
-            // The job (already minted before dispatch) is honestly failed,
-            // never left running:
-            $decoded = json_decode($response['body'], true);
-            $this->assertIsArray($decoded);
-            $this->assertArrayHasKey('error', $decoded);
-            unset($id);
+                $response = $app->handle('POST', '/jobs', '{"paths":["src"]}', []);
+                $this->assertSame(500, $response['status'], "reply '{$reply}' must reject dispatch");
+                $decoded = json_decode($response['body'], true);
+                $this->assertIsArray($decoded);
+                $this->assertArrayHasKey('error', $decoded);
+                $this->assertArrayNotHasKey('job_id', $decoded, 'a rejected dispatch must not advertise a success id');
+
+                // The queue row itself (the only row this app minted): FAILED,
+                // with the honest dispatch reason — captured through the same
+                // JobQueue the app mutated.
+                $rows = $queue->list();
+                $this->assertCount(1, $rows, "reply '{$reply}' leaves exactly the one minted row");
+                $id = (string)array_key_first($rows);
+                $this->assertSame(JobQueue::STATUS_FAILED, $rows[$id]['status'], "reply '{$reply}' must fail the minted row");
+                $row = $queue->get($id);
+                $this->assertIsArray($row);
+                $this->assertSame(JobQueue::STATUS_FAILED, $row['status']);
+                $this->assertStringContainsString('failed to dispatch to worker', (string)$row['error']);
+
+                // And the list route reports it — the reconcile never touches
+                // a terminal row, so the honest FAILED survives the read path.
+                $list = json_decode($app->handle('GET', '/api/jobs', '', [])['body'], true);
+                $this->assertIsArray($list);
+                $this->assertSame(JobQueue::STATUS_FAILED, $list[$id]['status']);
+            } finally {
+                @rmdir($resultDir);
+            }
         }
     }
 
