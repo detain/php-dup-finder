@@ -6,6 +6,11 @@
 normalization policy absorbed from the deleted marker classes)
 **Amended**: 2026-11-21 (once-S32 advertised-surface parity: flag token
 retired from the prose, dated erratum appended)
+**Amended**: 2026-11-22 (once-S68 doc-truth wave: the tier-fallthrough
+story is rewritten to the cascade both engines run today, the
+size-delta pre-filter gets its unit-cost proviso (DA-14), and a
+cost-ceilings section documents the aggregate APTED budget
+(engine-S10) and the first-wins tier vocabulary (engine-S15).)
 
 ## Context
 
@@ -26,10 +31,34 @@ Tier 3: Containment                   (type-3 fallback; the only wired tier-3 sc
 Planned: Behavioural                  (type-4 — NOT wired, see Tier-3 fallbacks)
 ```
 
-Each tier's threshold is configurable. Pairs that cross tier 1's
-threshold proceed to tier 2; pairs that cross tier 2's threshold
-contribute an edge. Pairs that fail tier 2 fall through to
-`ContainmentSimilarity` when `optional_blocks.enabled` is set.
+Each tier's threshold is configurable. The cascade, as shipped in
+BOTH scoring engines (verified 2026-11-22 against
+`Clusterer::scorePairsSerially` and `PairScoreWorker::score`):
+
+- Identical structural hashes mint the `exact-hash` tier without
+  scoring.
+- Pairs that cross tier 1's threshold proceed to tier 2 — behind the
+  per-pair `max_ted_size` gate: over-cap pairs mint a
+  `jaccard-unverified` edge instead of paying APTED.
+- Pairs that cross tier 2's threshold contribute an edge weighted
+  `min(jaccard, ted)` and tiered `jaccard` — the tier records the
+  lens that FOUND the match (first-wins policy, engine-S15). No
+  engine mints a `ted` tier: the `MatchTier::Ted` enum case is
+  deleted and the vocabulary is exactly `exact-hash | jaccard |
+  jaccard-unverified | containment | ir | ml` (pinned by
+  `TedSizeGateTest::testTierVocabularyMintsNoPhantomTier`).
+- Pairs tier 2 REFUTES do NOT fall through to `ContainmentSimilarity`
+  — that was the old prose, and it was wrong twice over (it named the
+  containment lane's customer incorrectly). The containment lens
+  weighs pairs tier 1's Jaccard gate REJECTED, when
+  `optional_blocks.enabled`. The refuted lane stays closed to it by
+  design: containment ≥ jaccard for every pair, so bag evidence
+  re-acclaiming what the tree refuted would mute the tree tier on
+  every nested-shape pair. A TED refutation still drops the pair to
+  the IR and ML arms — engine-S15 made the refuted lane rescuable by
+  genuinely different lenses — but only on the SERIAL engine: the
+  fork `PairScoreWorker` still `continue`s past every arm on a TED
+  refutation (twin gap, report-only row).
 (The former prose named a CLI long-option flag for the behavioural
 leg — no such flag exists and never shipped; the engine-S31c catalog
 close-out corrected the claim, and the once-S32 erratum below records
@@ -41,9 +70,19 @@ cascade rather than the three tiers of this decision.)
 
 Before invoking APTED, two more cheap pre-filters trip:
 
-1. **Size-delta**: if the trees differ in size by more than the
-   threshold permits, no number of matches could close the gap →
-   skip linearisation.
+1. **Size-delta**: if the trees differ in node count by more than
+   `|size(a) − size(b)| > ceil((1 − threshold) × max(size(a),
+   size(b)))`, no number of matches could close the gap → skip
+   linearisation. The absolute value is load-bearing (the old prose
+   stated the bound without it, which reads as never tripping when
+   b is the larger tree). The "no number of matches" law is a
+   UNIT-cost identity: under `default` weights every unmatched node
+   costs exactly 1, so the count gap lower-bounds the edit cost
+   directly. Under `semantic` weights node costs span 0.5–2.0
+   (scaled to integers ≥ 1 by the ×2 quantiser), so the count gate
+   is a cheap conservative screen, not the exactness law for the
+   weighted lane — that role belongs to the banded DP normalising
+   against the weighted worst-case cost of the trees themselves.
 2. **Shapelet sketch**: 64-bit (node-type, depth) histogram. Pairs
    with overlap < threshold/2 can't possibly be that similar →
    reject in ~10 ALU ops.
@@ -61,7 +100,36 @@ These are gated to `threshold > 0` so exact-match callers
   similarity.
 
 Costs are quantised to small integers (×2 scaler) so the DP stays
-int-only.
+int-only. The admitted model reaches BOTH engines: shell-S14 threaded
+the cost table into `PairScoreWorker`'s constructor, closing the
+window where the serial Clusterer honoured `--ted-weights` while the
+fork zone scored gate survivors on hardcoded defaults (the stale
+"mirrored byte-for-byte" promise in the serial loop's comment was
+corrected with it — once-028).
+
+## Cost ceilings
+
+Two budget gates bound the expensive leg (engine-S10 era, verified
+2026-11-22):
+
+- **Per pair** — `max_ted_size` (config key, root-only, default 800
+  = the extraction ceiling, so inert unless lowered): over-cap pairs
+  mint `jaccard-unverified` instead of paying APTED. Applied
+  identically by both engines.
+- **Aggregate** — `Clusterer::DEFAULT_MAX_TED_COST = 100,000,000`
+  node-pair units. An INTERNAL constant: no CLI flag, no config key
+  (plan direction). The serial `Clusterer::scorePairsSerially`
+  charges `size(a) × size(b)` for every verdict it is about to pay,
+  and when a pair would carry the accumulator past the cap it throws
+  a loud `RuntimeException` naming the budget, the running total and
+  the ways forward — halt BEFORE paying, never truncating
+  mid-corpus. The clock never enters the accumulator, so below the
+  cap the edge list is pair-for-pair identical to the unguarded
+  loop. Scope: the serial surface only (library direct API and the
+  in-process fallback). The fork `PairScoreWorker` loop has no
+  aggregate counterpart yet — a report-only row carried since
+  engine-S10; the transport legs (once-S33 budget story, once-S74
+  framing caps) decide when and how the fork side inherits it.
 
 ## Tier-3 fallbacks
 
