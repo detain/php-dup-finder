@@ -28,6 +28,7 @@ use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Logger\ConsoleLogger;
+use Symfony\Component\Console\Output\NullOutput;
 use Symfony\Component\Console\Output\OutputInterface;
 
 /**
@@ -549,6 +550,21 @@ HELP;
             'stopAfter'  => $runtimeOptions['stopAfter'],
             'reportArgs' => $runtimeOptions['reportArgs'],
         ];
+        // once-S06 (php-dup-finder-once-006): a TUI run NEVER pages. The
+        // pager branch in ReportStage proc_opens $PAGER with its stdout on
+        // the PROCESS's own STDOUT — the very terminal sugar-core takes
+        // over with the alt screen — so `--tui --pager=auto|always` used to
+        // drop `less` inside the running dashboard (once-006's pager half,
+        // raised with the report-body half by TUI-01/U-02). Admission still
+        // validates the raw --pager value (shell-S24's refusal door and the
+        // render-only pin in CliDefaultShadowingTest stay true to the
+        // flag); the suppression lands here, on the factory's copy, so the
+        // CLI/watch paths keep the user's mode. This Command seam is the
+        // pager-suppression entry once-S76's Pager-side no-TTY posture
+        // builds on.
+        if ($runtimeOptions['tuiMode']) {
+            $pipelineOpts['reportArgs']['pagerMode'] = Pager::MODE_NEVER;
+        }
         $buildPipeline = $this->buildPipelineFactory($pipelineOpts);
 
         // engine-006 read-path trust gate. The default cache_dir is the
@@ -1291,15 +1307,29 @@ HELP;
         $tuiRunner = new TuiRunner();
 
         if ($opts['tuiMode']) {
+            // once-S06 (php-dup-finder-once-006): the pipeline's console
+            // sink must not be $output here. sugar-core enters the alt
+            // screen and drives raw mode through THIS terminal, while the
+            // stages write progress, --stats lines and the full CLI report
+            // body straight into the OutputInterface handed to iter() —
+            // those bytes used to land inside the running dashboard
+            // (garbage printout + staircasing never repaired; TUI-01/U-02
+            // reproduced live in an 80x24 tmux). The dashboard observes the
+            // run through the ProgressListener/model state, never through
+            // the console, so the stages get a discard sink; the file
+            // reporters still write their artifacts (they never touch
+            // $output) and the pager is pinned to MODE_NEVER for this mode
+            // at the factory (see the once-S06 block in execute()).
             $modelRef = null;
-            $iteratorFactory = static function () use (&$modelRef, $buildPipeline, $config, $output, $diffCohort): array {
+            $pipelineOutput = new NullOutput();
+            $iteratorFactory = static function () use (&$modelRef, $buildPipeline, $config, $pipelineOutput, $diffCohort): array {
                 $state = new PipelineState($config);
                 if ($diffCohort !== null) {
                     $state->diffBaseFiles = $diffCohort;
                 }
                 /** @var ProgressListener|null $listener */
                 $listener = $modelRef;
-                $gen = $buildPipeline($listener)->iter($state, $output);
+                $gen = $buildPipeline($listener)->iter($state, $pipelineOutput);
                 return [$gen, $state];
             };
             $modelRef = $tuiRunner->buildLiveModel($opts['themeName'], $iteratorFactory);

@@ -240,7 +240,21 @@ final class ReportStage implements StageInterface
         // — and never reused across runs (Watch/Server re-enter run()).
         $sourceText = new \Phpdup\Reporting\SourceTextStore($config->paths);
 
-        if ($this->pagerMode !== Pager::MODE_NEVER) {
+        // once-S06 (php-dup-finder-once-006): the pager is a CONSOLE-only
+        // affordance. Pager::send proc_opens $PAGER with its stdout on the
+        // process's own STDOUT (fd 1) — the payload bypasses whatever
+        // OutputInterface was handed to this stage. Any non-console sink
+        // (the TUI's discard sink from Command::dispatch, a buffer in a
+        // library caller) that still spawned a pager would have the report
+        // body written AROUND the abstraction — inside sugar-core's alt
+        // screen that is precisely the terminal-corruption class this step
+        // closes. Gate the branch on the sink that actually shares the
+        // console stream; every other sink renders inline below, and the
+        // file reporters still write their artifacts either way. The TUI
+        // dispatch additionally pins pagerMode to MODE_NEVER at the
+        // factory — the Command-side half of the same seam once-S76's
+        // Pager no-TTY posture builds on.
+        if ($this->pagerMode !== Pager::MODE_NEVER && $output instanceof ConsoleOutputInterface) {
             $buf = new \Symfony\Component\Console\Output\BufferedOutput(
                 $output->getVerbosity(),
                 $output->isDecorated(),
