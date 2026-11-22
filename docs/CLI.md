@@ -4,6 +4,8 @@ Standalone reference for every flag and sub-command in `bin/phpdup`.
 The high-level walkthroughs live in the project [README](../README.md);
 this file is the look-up table.
 
+The flag rows in this file are kept in mechanical parity with the live argv roster by `tests/Unit/Cli/DocFlagParityTest.php`: a registered flag with no row here, or a token here that never registers, fails the test.
+
 ```
 Usage:
   phpdup analyze <paths...> [options]
@@ -57,6 +59,7 @@ for the full JSON-Schema-compatible spec.
 | `--max-clusters N`                         | `0` (off)      | CI gate: exit code 3 when cluster count exceeds N. 0 = disabled. |
 | `--exact-only`                             | off            | Skip the near-duplicate phase. Emits only canonical-hash-equal clusters (~6× faster on large corpora). |
 | `--kinds K1,K2,...`                        | all            | Comma-separated block kinds to extract. Allowed: `function`, `method`, `closure`, `arrow`, `if`, `for`, `foreach`, `while`, `do`, `try`, `switch`, `match`, plus `script` (item 1.3: top-level statement folds — OPT-IN ONLY, never part of the implicit "all"; script clusters cannot be `--apply`-ed yet). |
+| `--auto-tune`                            | off            | Probe the corpus before analysis and pick `min-block-size`/`max-df`/`min-impact` based on its size; `--exact-only` is forced on for very large trees. The probe counts the tree the run will actually scan (profile and `--config` excludes applied, `exclude_reset` honored). Suggestions fill gaps only: a knob explicitly set on the command line, by `--profile`, or in the `--config` file is never overwritten, and the printed rationale claims only what was applied. |
 | `--max-memory MB`                          | `0` (off)      | Soft RSS ceiling. When peak RSS exceeds this mid-pipeline, phpdup logs a warning and suggests `--exact-only`. Non-integer values are fatal (exit 2) — garbage no longer silences the ceiling. |
 | `--optional-blocks on\|off`                | `on`           | Type-3 / "optional segment" detection master switch. See [Type-3 detection](../README.md#type-3--optional-segment-detection). |
 | `--optional-blocks-containment N`          | `0.85`         | Containment-fallback threshold for the type-3 path (`0..1`). A non-numeric or out-of-domain value is fatal (exit 2) — the old blind cast turned `hot` into a silent `0.0`. |
@@ -64,6 +67,7 @@ for the full JSON-Schema-compatible spec.
 | `--trinity-collapse`                       | off            | Detect the canonical CRUD trinity (read → mutate → save) and rewrite the three-statement sequence as a single `__DB_UPSERT__("entity")` synthetic call so ORM upserts cluster with raw `UPDATE` queries. Composes with `--db-aware`. Off by default. See option 2 of [`docs/plans/orm-db-semantic-dedup.md`](plans/orm-db-semantic-dedup.md). |
 | `--scorer MODE`                            | —              | Scoring tier set: `default` (stock AST tiers) or `ir` (option-5 IR-tier fallback). When the flag is absent the config-file `scorer` (or the built-in `default`) applies — it used to be shadowed by an always-injected CLI default (NN1). When `ir`, after AST Jaccard / TED / containment all reject a pair, both blocks are lifted to canonical IR (`Phpdup\Ir\IrLifter`) and their token bags scored by multiset Jaccard; pairs at or above `--ir-threshold` form edges weighted by the IR similarity. Lift failure on either side silently skips the IR tier for that pair. |
 | `--ir-threshold N`                         | `0.85`         | Multiset-Jaccard threshold for the option-5 IR tier (`0..1`). Only consulted when `--scorer=ir`. |
+| `--ted-weights MODE`                     | `default`      | Tree-edit-distance cost model for the APTED tier: `default` \| `semantic`. `semantic` weights method calls and control flow heavier than literals. Root config key `ted_weights`. |
 | `--ml-pair-url URL`                        | —              | External pair-similarity ML sidecar URL (option 6 of the ORM dedup plan). Empty (the default) disables the tier. When set, the very last clustering tier — runs after structural-hash, AST Jaccard + TED, containment, and IR all reject. POSTs a `PairFeatures` vector to `<URL>/score-pair`; pairs at or above `--ml-pair-threshold` form edges. http(s) only; SSRF-hardened **at admission by shape, never by DNS** (once-S54: no resolver call while validating config — names are resolved once, fail-closed, at dial time): canonical IP literals are bit-checked against the refused space (0.0.0.0/8, loopback, RFC 1918, CGNAT, link-local, 192.0.0.0/24, 198.18.0.0/15, multicast/reserved, IPv6 `::1`/ULA/fe80::/10/ff00::/8 and the IPv4 embedded in `::ffff:0:0/96`, `::/96` and NAT64 `64:ff9b::/96`), numeric shorthands (`2130706433`, `0x7f000001`, `127.1`) and `file://`/`gopher://` refuse, `localhost` refuses by name. Returns null on transport failure so unavailability never breaks the run. |
 | `--ml-pair-allow-private`                  | off            | Admit a `--ml-pair-url` sidecar living in the **private** address families — loopback, RFC 1918, CGNAT 100.64.0.0/10, link-local, ULA, and their IPv6/embedded (incl. NAT64) spellings — the documented local-sidecar topology (once-S54). Off by default; root config key `ml_pair_allow_private` (subtree `.phpdup.json` files are refused this key) takes effect today; the argv spelling registers with the next `Command.php` option-roster leg (once-S20's live lane). Reserved non-private spaces (0.0.0.0/8, 192.0.0.0/24, 198.18.0.0/15, multicast) stay refused even with this on. |
 | `--ml-pair-threshold N`                    | `0.80`         | Similarity threshold (`0..1`) for the option-6 ML pair tier. |
@@ -81,10 +85,20 @@ for the full JSON-Schema-compatible spec.
 | `--gitlab-sast FILE`                       | —       | Write a GitLab SAST v15.x report to FILE.                                              |
 | `--diff DIR`                               | —       | Write one `.diff` per cluster (pairwise from member[0]) into DIR.                      |
 | `--patch FILE`                             | —       | Write a single cumulative patch file containing every cluster diff.                    |
+| `--apply`                                  | off     | F1b apply posture: extract each cluster's generalized function and rewrite member call sites — generated names follow the naming posture below. Posture only; what lands on disk is decided by `--dry-run` (below): by default a preview `refactored/apply.diff` is written and member files stay untouched; `--dry-run=false` rewrites the sources in place and lands `refactored/apply-summary.md` instead. Config-file equivalent: root `"apply": true`. Clusters containing `script` blocks cannot be applied (see `--kinds`) — refused with a typed error. |
 | `--checkstyle FILE`                        | —       | Write Checkstyle XML to FILE (Jenkins / Sonar / Bitbucket consumers).                  |
+| `--csv FILE`                               | —       | Write flat CSV (one row per cluster member) to FILE.                                   |
+| `--prometheus FILE`                        | —       | Write Prometheus text-format metrics to FILE (for pushgateway / CI dashboards).       |
+| `--timeseries FILE`                        | —       | Append a JSONL summary record (commit-tagged) to FILE for tracking duplicate debt over time. |
+| `--graphviz FILE`                          | —       | Write a Graphviz DOT graph (file→cluster bipartite) to FILE — render with `dot -Tpng FILE -o out.png`. |
+| `--plantuml FILE`                          | —       | Write a PlantUML class diagram to FILE — render with `plantuml FILE`.                  |
+| `--refactor-patch DIR`                     | —       | Emit one `.patch` file per cluster into DIR — heuristic, manual-review-required; generated names follow the naming posture below. |
+| `--refactor-tests DIR`                     | —       | Emit a PHPUnit test skeleton per cluster into DIR (data-provider rows mirror the hole observations). |
 | `--baseline FILE`                          | —       | CI baseline file. If FILE exists: compare and exit 4 if new clusters found. If FILE does not exist: write baseline and exit 0 (first-run auto-baseline). |
 | `--baseline-out FILE`                      | —       | Write current clusters as a baseline snapshot to FILE (overwrites existing).           |
 | `--limit N`                                | `50`    | Maximum number of cluster detail cards printed to the terminal. `N` is an integer ≥ 0; a negative or non-numeric value is fatal (exit 2). Doesn't affect file outputs — `--json`/`--html`/etc. always carry every cluster. `0` prints NO detail cards: unlike the `--candidate-budget` / `max_clusters` family (where `0` = unlimited), `--limit 0` is not a show-all sentinel — the totals banner and summary line still describe the full set while the card list stays empty. To see every cluster, pass a large `N`. |
+| `--summary-only`                           | off     | Render only the top banner and the final summary line — the per-cluster detail cards are skipped (banner totals still describe the full set). |
+| `--clusters`                               | off     | Render a one-line-per-cluster table instead of the full per-cluster breakdown.         |
 | `--scope VALUE`                            | `all`   | Repo scope filter (item 5.1): `all` \| `single` \| `multi` \| `<repo-label>`. Every cluster member carries a `repo` label (the basename of the longest-matching scan root) and clusters gain a `scope` of `single` (one repo) or `multi` (members span ≥2 distinct repos). `single`/`multi` keep the matching clusters; any other value is treated as an exact repo label and keeps clusters with at least one member from that repo. Applied after ranking, so `--limit`, `--sort` and the CI gates all measure the filtered slice. A typo'd label matches nothing: the run still exits 0 but prints one stderr hint listing the repo labels present. Cross-repo analysis means one scan path per repository. Root config only — per-directory `.phpdup.json` files carrying this key fail the load. |
 | `--sort KEY[:asc\|desc]`                   | `impact:desc` | Cluster sort. Keys: `impact`, `members`, `block-size`, `lines`, `similarity`, `confidence`, `name`, `file`, `id`. Aliases: `size`/`count` → `members`. Direction may also be given as a leading `-` (desc) or `+` (asc), e.g. `-members`, `+lines`. |
 | `--pager MODE`                             | `never`   | Page the CLI report through `$PAGER` (default `less -R`). Modes: `auto` \| `never` \| `always`. `auto` pages when stdout is a TTY and the rendered output exceeds ~60 lines. An unknown mode is fatal (exit 2). |
@@ -235,9 +249,48 @@ in a normal commit — never with `cp`.
 | `-h, --help`          | Show help for the current command. `bin/phpdup help analyze` works too.           |
 | `-V, --version`       | Display application version.                                                      |
 | `-q, --quiet`         | Suppress all output except errors.                                                |
+| `--silent`            | Do not output any message (stricter than `--quiet` — errors stay in too).          |
 | `-v` / `-vv` / `-vvv` | Increase verbosity.                                                               |
 | `-n, --no-interaction`| Don't prompt for input.                                                           |
 | `--ansi` / `--no-ansi`| Force or disable ANSI output.                                                     |
+
+## `serve` — options
+
+The endpoint map, security model and operation notes live in
+[docs/SERVER.md](SERVER.md).
+
+| Option                | Default       | Description                                                                                     |
+|-----------------------|---------------|-------------------------------------------------------------------------------------------------|
+| `--host HOST`         | `127.0.0.1`   | Host to bind. Loopback by default; a non-loopback host is refused without `--bind-public`.      |
+| `--port PORT`         | `8080`        | TCP port to bind.                                                                               |
+| `--bind-public`       | off           | Allow binding to a non-loopback address. Refused unless `--token` is set too — both opt-ins are required to expose the server. |
+| `--serve-root DIR`    | CWD           | Root directory to which scanning is confined (realpath-canonicalised). An empty value disables confinement entirely — any path this uid can read becomes scannable; see the SECURITY note in docs/SERVER.md. |
+| `--token TOKEN`       | —             | Bearer token required for all requests. Mandatory with `--bind-public`; without it, no authentication is enforced. |
+| `--serve-cache`       | off           | Let the synchronous `/analyze` pipeline reuse the AST/cluster caches. Off by default: the historic serve posture re-parses fresh on every request. |
+| `--serve-workers N`   | `1`           | Worker count for the synchronous `/analyze` pipeline. Default `1` (serial) prevents a per-request fork storm on many-core boxes; raise to opt into parallel analysis (still capped by the WorkerPool ceiling). `0` restores automatic CPU-count workers. Must be a non-negative integer — anything else refuses the bind during configuration validation, before the socket opens. |
+
+## `init` — options
+
+| Option                | Default | Description                                                            |
+|-----------------------|---------|------------------------------------------------------------------------|
+| `-p, --profile NAME`  | —       | Manually specify a profile (laravel\|symfony\|drupal\|wordpress\|generic\|db-aware-*) instead of detecting one. |
+| `-f, --force`         | off     | Overwrite `phpdup.json` if it already exists (no interactive prompt).   |
+
+## `self:update` — options
+
+| Option                     | Default | Description                                                              |
+|----------------------------|---------|--------------------------------------------------------------------------|
+| `--dry-run`                | off     | Fetch release info and print what would be downloaded, but do not replace anything. |
+| `-o, --output FILE`        | —       | Write the downloaded phar to FILE instead of replacing the running one.   |
+| `--dev-allow-unsigned`     | off     | DEV ONLY — install without integrity verification (loud stderr banner; never for production). |
+| `--verify-artifact FILE`   | —       | Offline verify: path to the artifact (phar) to check.                     |
+| `--verify-manifest FILE`   | —       | Offline verify: path to the release manifest JSON.                        |
+| `--verify-signature FILE`  | —       | Offline verify: path to the manifest signature file.                      |
+
+The three `--verify-*` options combine into one offline audit invocation: given
+all three paths, the manifest signature and the artifact hash are checked
+locally, exiting `0`/`1` with no network access and without running as a phar —
+the user-facing audit tools of [docs/RELEASE.md](RELEASE.md).
 
 ## `completion` — arguments
 
