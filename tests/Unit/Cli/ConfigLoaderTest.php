@@ -5,8 +5,11 @@ namespace Phpdup\Tests\Unit\Cli;
 
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Console\Application;
+use Symfony\Component\Console\Tester\CommandTester;
 use Phpdup\Cli\Command;
 use Phpdup\Cli\ConfigLoader;
+use Phpdup\Parsing\AstCache;
+use PhpParser\ParserFactory;
 
 final class ConfigLoaderTest extends TestCase
 {
@@ -639,6 +642,17 @@ final class ConfigLoaderTest extends TestCase
             $this->assertTrue($in($project . '/sub/../.phpdup-cache', [$project]),
                 'the lexical walk resolves .. for a not-yet-created cache dir');
 
+            // r1 LOW-1 (kills the foldless mutant M3, which survived the
+            // row above): a `..`-hop IN from a FOREIGN absolute prefix.
+            // realpath fails (/nonexistent), so the lexical walk must pop
+            // the foreign segment and land INSIDE $root → TRUE. A deleted
+            // `..` fold leaves the literal '/nonexistent/../…' — which
+            // never carries the root prefix → FALSE. The shipped-row above
+            // cannot tell the two apart (its string keeps the prefix even
+            // unfold); this row is the discriminator.
+            $this->assertTrue($in('/nonexistent/../' . ltrim($root, '/') . '/.phpdup-cache', [$root]),
+                'a cold ..-hop from a foreign prefix normalises lexically to inside the root');
+
             // A cache OUTSIDE every scan root is trusted (normal CI posture:
             // point cache_dir at a shared temp dir → no refusal, no notice).
             $this->assertFalse($in($root . '/elsewhere-cache', [$project]),
@@ -649,5 +663,215 @@ final class ConfigLoaderTest extends TestCase
             @rmdir($project);
             @rmdir($root);
         }
+    }
+
+    // ---- engine-S25 r1: Command-level trust-gate pins (MEDIUM-1, LOW-2) ----
+
+    /**
+     * MEDIUM-1: the whole Command leg — arming, the notice, honest output
+     * — pinned end to end. Before this test, deleting the notice block
+     * (mutant M2) or arming after dispatch() was invisible to all 6,404
+     * tests: users would suffer exactly the silent cold miss this step's
+     * doctrine forbids. Plant the reviewer's PoC verbatim (twin.php's
+     * parsed stmts under real.php's content key, re-minted fresh before
+     * every run) inside a REAL in-root `.phpdup-cache`, then run
+     * `analyze` through the same Command::execute() path the CLI takes
+     * and pin all three legs: the refusal is armed (zero fabricated
+     * clusters in the JSON), the warning prints (exactly one notice), and
+     * the honest duplicate is still reported. The `--trust-in-root-cache`
+     * twin proves the mint is real and the gate is the ONLY barrier — the
+     * honest run's notContains assertions are therefore non-vacuous
+     * in-test, not a lucky empty corpus.
+     */
+    public function testCommandWarnsAndRefusesAPlantedInRootCacheEndToEnd(): void
+    {
+        $dir = $this->scratchDir();
+        $corpus = $dir . '/corpus';
+        mkdir($corpus, 0o777, true);
+        // Victim: unique tiny body — honestly it joins no cluster at all.
+        file_put_contents($corpus . '/real.php', "<?php\nfunction real_helper(): int { return 4242; }\n");
+        // Decoy source AND its honest (unclustered) twin file.
+        file_put_contents($corpus . '/twin.php',
+            "<?php\nfunction decoy_fn(int \$m): int {\n    \$acc = 0;\n    for (\$j = 0; \$j < \$m; \$j++) {\n        \$acc += \$j;\n    }\n    return \$acc;\n}\n");
+        // Ground truth: a genuine EXACT pair so "the report ran" and
+        // "only the real cluster is reported" are both assertable.
+        foreach (['alpha', 'beta'] as $f) {
+            file_put_contents($corpus . '/' . $f . '.php',
+                "<?php\nfunction shared_util(int \$n): int {\n    \$total = 0;\n    for (\$i = 0; \$i < \$n; \$i++) {\n        \$total += \$i;\n    }\n    return \$total;\n}\n");
+        }
+        $configPath = $dir . '/phpdup-s25.json';
+        file_put_contents($configPath, json_encode(['cache_dir' => $corpus . '/.phpdup-cache']) ?: '{}');
+
+        // ── default posture: armed refusal + notice + honest-only report ──
+        $this->mintDecoy($corpus);
+        [$exit, $display, $json] = $this->analyzeCorpus($corpus, $configPath, $dir . '/out-default.json');
+        self::assertSame(0, $exit, 'refuse-with-notice is a cold run, exit 0 by doctrine: ' . $display);
+        self::assertSame(1, substr_count($display, 'ignoring the AST cache'),
+            'exactly one plain notice — the M2 (notice-block-deleted) mutant flips RED here: ' . $display);
+        self::assertStringContainsString('--trust-in-root-cache', $display, 'the notice names the way out');
+        self::assertStringContainsString('shared_util', $json, 'the honest cluster is still found and reported');
+        self::assertStringContainsString('alpha.php', $json);
+        self::assertStringContainsString('beta.php', $json);
+        // The fabrication marker is structural: the blob stores twin.php's
+        // tree under real.php's content key, so "served" ⇔ a cluster member
+        // named decoy_fn reported AT real.php. (The string 'decoy_fn' alone
+        // is legitimate — twin.php genuinely declares it.)
+        self::assertSame([], $this->fabricatedMembers($json),
+            'the planted blob must not surface — arming-after-dispatch flips RED here');
+        self::assertStringNotContainsString('real.php', $json,
+            'the victim stays out of every reported member when reads are refused');
+
+        // ── opt-in legacy posture: decoy served (in-test non-vacuity) ──
+        $this->mintDecoy($corpus); // the cold pass repopulated honest blobs — re-plant
+        [$exit, $display, $json] = $this->analyzeCorpus($corpus, $configPath, $dir . '/out-trust.json',
+            ['--trust-in-root-cache' => true]);
+        self::assertSame(0, $exit, $display);
+        self::assertStringNotContainsString('ignoring the AST cache', $display, 'an opted-in run must not nag');
+        self::assertNotEmpty($this->fabricatedMembers($json),
+            'the mint is real: trusted reads serve the forged tree — the PoC (decoy_fn @ real.php) reproduces');
+
+        // ── --workers 2 twin (H3): forked workers inherit the armed gate ──
+        if (function_exists('pcntl_fork')) {
+            $this->mintDecoy($corpus);
+            [$exit, $display, $json] = $this->analyzeCorpus($corpus, $configPath, $dir . '/out-workers.json',
+                ['--workers' => 2]);
+            self::assertSame(0, $exit, $display);
+            self::assertSame(1, substr_count($display, 'ignoring the AST cache'),
+                'the notice arms pre-fork; workers must inherit it — RED if arming moves after dispatch');
+            self::assertStringContainsString('shared_util', $json);
+            self::assertSame([], $this->fabricatedMembers($json), 'forked reads honour the gate');
+            self::assertStringNotContainsString('real.php', $json);
+        }
+    }
+
+    public function testTrustAndCacheKeysAreNotAdmittedPerDirectory(): void
+    {
+        // LOW-2: the posture depends on both keys being root/CLI-only —
+        // a committed `.phpdup.json` must never opt a poisoned tree into
+        // trusting its own decoy cache (trust_in_root_cache), nor steer
+        // the blob store per-directory (cache_dir). Planted one at a
+        // time, shapeOverrides must shape to NOTHING.
+        //
+        // Direct admission-table pin rather than extending
+        // PerDirOverrideBeltTest's loop: the belt's emitted-set
+        // derivation is payload-driven, so a newly admitted key stays
+        // invisible until the payload grows (the belt docblock's own
+        // "blind, not clean" disclosure — mutant M4 survived the suite
+        // for exactly that reason). Feeding the sentinel and demanding
+        // [] reproduces the same non-admission loudly. Belt-payload
+        // extension stays shell-S22's owner surface — banked report row.
+        $loader = new ConfigLoader();
+        $shape = new \ReflectionMethod($loader, 'shapeOverrides');
+
+        foreach (['trust_in_root_cache' => true, 'cache_dir' => '/belt/planted-cache'] as $key => $sentinel) {
+            /** @var array<string, mixed> $emitted */
+            $emitted = $shape->invoke($loader, [$key => $sentinel]);
+            self::assertSame([], $emitted,
+                "shapeOverrides must not admit '$key' per-directory (engine-S25 posture)");
+        }
+    }
+
+    // ---- engine-S25 r1 helpers ----
+
+    private ?string $s25Scratch = null;
+
+    protected function tearDown(): void
+    {
+        // The trust gate is process-wide static state — never let a run
+        // leak arming into a later test class (AstCacheTest's convention).
+        AstCache::refuseInRootCacheReads(false);
+        if ($this->s25Scratch !== null) {
+            self::deleteTree($this->s25Scratch);
+            $this->s25Scratch = null;
+        }
+    }
+
+    private function scratchDir(): string
+    {
+        if ($this->s25Scratch === null) {
+            $dir = sys_get_temp_dir() . '/phpdup-s25r1-' . getmypid() . '-' . spl_object_id($this);
+            mkdir($dir, 0o777, true);
+            $this->s25Scratch = $dir;
+        }
+
+        return $this->s25Scratch;
+    }
+
+    /**
+     * Wipe the cache dir so each run sees ONLY the planted blob, then
+     * forge: twin.php's parsed stmts stored under real.php's content key
+     * (same mint idiom as AstCacheTest — the repo's own AstCache::put).
+     */
+    private function mintDecoy(string $corpus): void
+    {
+        $cacheDir = $corpus . '/.phpdup-cache';
+        self::deleteTree($cacheDir);
+        $parser = (new ParserFactory())->createForHostVersion();
+        $stmts = $parser->parse((string)file_get_contents($corpus . '/twin.php'));
+        self::assertIsArray($stmts);
+        (new AstCache($cacheDir))->put($corpus . '/real.php', $stmts);
+    }
+
+    /**
+     * Structural fabrication marker: every reported cluster member that
+     * names the decoy function at the VICTIM's path — the exact shape the
+     * poisoned blob produces ('decoy_fn' served under real.php's content
+     * key). Path-independent string checks would false-positive on the
+     * legitimate decoy_fn that twin.php really declares.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function fabricatedMembers(string $json): array
+    {
+        $report = json_decode($json, true);
+        self::assertIsArray($report, 'the --json output must be valid JSON');
+        $fabricated = [];
+        foreach ($report['clusters'] ?? [] as $cluster) {
+            foreach ($cluster['members'] ?? [] as $member) {
+                if (($member['name'] ?? null) === 'decoy_fn'
+                    && str_ends_with((string)($member['file'] ?? ''), '/real.php')) {
+                    $fabricated[] = $member;
+                }
+            }
+        }
+
+        return $fabricated;
+    }
+
+    /**
+     * Run `analyze` exactly as a CLI user would through the shared
+     * Command::execute() path.
+     *
+     * @param array<string, mixed> $extra
+     * @return array{0: int, 1: string, 2: string} [exit, display, json]
+     */
+    private function analyzeCorpus(string $corpus, string $configPath, string $jsonPath, array $extra = []): array
+    {
+        @unlink($jsonPath);
+        $app = new Application('phpdup', '0.1.0');
+        $app->add(new Command());
+        $tester = new CommandTester($app->find('analyze'));
+        $exit = $tester->execute(array_merge([
+            'paths'                => [$corpus],
+            '--config'             => $configPath,
+            '--json'               => $jsonPath,
+        ], $extra));
+
+        return [$exit, $tester->getDisplay(), (string)@file_get_contents($jsonPath)];
+    }
+
+    private static function deleteTree(string $dir): void
+    {
+        if (!is_dir($dir)) {
+            return;
+        }
+        $items = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST,
+        );
+        foreach ($items as $item) {
+            $item->isDir() ? @rmdir($item->getPathname()) : @unlink($item->getPathname());
+        }
+        @rmdir($dir);
     }
 }
