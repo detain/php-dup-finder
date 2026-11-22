@@ -312,7 +312,14 @@ final class ReportStage implements StageInterface
         }
         if ($this->applyDir !== null) {
             (new RefactorPatchReporter($sourceText))->writeTo($report, $this->applyDir, apply: true, dryRun: $this->applyDryRun);
-            $output->writeln("<info>phpdup</info> apply diff → {$this->applyDir}/apply.diff");
+            // output-022 (Phase-4 outside merge): announce the artifact the
+            // chosen branch actually wrote — F1a dry-run emits the scaffold
+            // diff, F1b emits the human summary (markdown, never a `.diff`).
+            $applyArtifact = $this->applyDryRun
+                ? RefactorPatchReporter::APPLY_DIFF_FILE
+                : RefactorPatchReporter::APPLY_SUMMARY_FILE;
+            $applyLabel = $this->applyDryRun ? 'diff' : 'summary';
+            $output->writeln("<info>phpdup</info> apply {$applyLabel} → {$this->applyDir}/{$applyArtifact}");
         }
         if ($this->refactorTestsDir !== null) {
             (new RefactorTestReporter())->writeTo($report, $this->refactorTestsDir);

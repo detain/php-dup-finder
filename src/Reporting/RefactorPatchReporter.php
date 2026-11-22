@@ -33,9 +33,25 @@ use Phpdup\Util\ControlText;
  * detectUnsafe twice for every flagged cluster (once at the gate, once
  * again inside the fallback `buildPatch`), each run re-reading every
  * member's file uncached.
+ *
+ * output-022: the synthetic hunk header is COMPUTED from the emitted
+ * added lines (the old literal `+1,12` lied for every shape — 13 real
+ * lines for a single-line signature, more for multi-line ones — making
+ * the whole diff malformed). The F1b human summary lands as its own
+ * `apply-summary.md` artifact instead of masquerading under the dry
+ * branch's `apply.diff` name, and every write goes through the
+ * sanctioned WritesReportFile trait (mkdir + write in one place).
  */
 final class RefactorPatchReporter
 {
+    use WritesReportFile;
+
+    /** F1a dry-run artifact (php-dup-finder-output-022): a scaffold unified diff. */
+    public const APPLY_DIFF_FILE = 'apply.diff';
+
+    /** F1b apply artifact (php-dup-finder-output-022): a human summary, markdown. */
+    public const APPLY_SUMMARY_FILE = 'apply-summary.md';
+
     /** output-038 memo: one detectUnsafe verdict per Cluster object. */
     /** @var array<int,string|null> spl_object_id => verdict */
     private array $unsafeVerdicts = [];
@@ -49,11 +65,13 @@ final class RefactorPatchReporter
      *
      * @param Report $report
      * @param string $dir Output directory
-     * @param bool $apply When true, write a single cumulative `apply.diff` containing
-     *                    all cluster patches concatenated (F1a scaffold; F1b adds actual rewrite)
+     * @param bool $apply When true, write one cumulative artifact under $dir:
+     *                    {@see self::APPLY_DIFF_FILE} in dry-run (F1a scaffold
+     *                    patches) or {@see self::APPLY_SUMMARY_FILE} on real
+     *                    apply (F1b human summary — distinct name AND content
+     *                    kind per output-022).
      * @param bool $dryRun When true with apply=true: write apply.diff only (F1a behavior).
      *                    When false with apply=true: perform actual file extraction (F1b).
-     *                    In F1a, this parameter has no effect since F1b isn't implemented.
      */
     public function writeTo(Report $report, string $dir, bool $apply = false, bool $dryRun = true): void
     {
@@ -81,10 +99,6 @@ final class RefactorPatchReporter
             }
         }
 
-        if ($dir !== '' && !is_dir($dir)) {
-            @mkdir($dir, 0o775, true);
-        }
-
         $store = $this->sourceText ?? new SourceTextStore($report->config->paths);
 
         if ($apply) {
@@ -98,7 +112,7 @@ final class RefactorPatchReporter
                     $safeId = Slug::safe($cluster->id);
                     $parts[] = $this->buildPatch($cluster, $safeId, $store);
                 }
-                file_put_contents($dir . DIRECTORY_SEPARATOR . 'apply.diff', implode("\n", $parts));
+                $this->writeFile($dir . DIRECTORY_SEPARATOR . self::APPLY_DIFF_FILE, implode("\n", $parts));
             } else {
                 // F1b / actual apply mode: extract and write real files
                 $extractor = new ApplyExtractor();
@@ -130,7 +144,9 @@ final class RefactorPatchReporter
                         $skipped[] = "# cluster " . CsvReporter::defuseFormula($cluster->id) . ": error - " . $e->getMessage();
                     }
                 }
-                // Write summary diff.
+                // Write the F1b human summary (output-022: distinct name
+                // AND content kind — this is not a diff, so it no longer
+                // lands under the dry branch's apply.diff name).
                 $summary = "# phpdup apply summary\n"
                     . "# Applied: " . count($applied) . " clusters\n";
                 if ($applied !== []) {
@@ -139,7 +155,7 @@ final class RefactorPatchReporter
                 if ($skipped !== []) {
                     $summary .= "# Skipped:\n" . implode("\n", $skipped) . "\n";
                 }
-                file_put_contents($dir . DIRECTORY_SEPARATOR . 'apply.diff', $summary);
+                $this->writeFile($dir . DIRECTORY_SEPARATOR . self::APPLY_SUMMARY_FILE, $summary);
             }
             return;
         }
@@ -150,7 +166,7 @@ final class RefactorPatchReporter
             }
             $safeId = Slug::safe($cluster->id);
             $file = $dir . DIRECTORY_SEPARATOR . $safeId . '.patch';
-            file_put_contents($file, $this->buildPatch($cluster, $safeId, $store));
+            $this->writeFile($file, $this->buildPatch($cluster, $safeId, $store));
         }
     }
 
@@ -179,7 +195,7 @@ final class RefactorPatchReporter
         $unsafe   = $this->detectUnsafe($cluster, $store);
         // output-035 (S6): the `#`-comment rows are metadata and their text
         // values go through CsvReporter::defuseFormula; the `+`/`-` hunk
-        // payload below (including prefixLines of the signature) is raw
+        // payload below (including the prefixed signature lines) is raw
         // patch structure and stays byte-faithful by the carve-out law.
         $header = "# phpdup refactor patch — cluster " . CsvReporter::defuseFormula($cluster->id) . "\n"
                 . "# members: " . count($cluster->members)
@@ -196,26 +212,35 @@ final class RefactorPatchReporter
         }
 
         $abstractionFile = "Refactored/{$safeId}.php";
+        // output-022: the hunk's added-line count is COMPUTED from the
+        // emitted payload (header + prefixed signature lines + body), so
+        // multi-line signatures can no longer desync the header from the
+        // bytes below it. The `+` rows are raw patch structure (see the
+        // output-035 carve-out above) and stay byte-faithful.
+        $added = [
+            '+<?php',
+            '+declare(strict_types=1);',
+            '+',
+            '+namespace Refactored;',
+            '+',
+            '+/**',
+            "+ * Auto-generated abstraction for phpdup cluster {$cluster->id}.",
+            '+ * Signature inferred via anti-unification — REVIEW BEFORE MERGE.',
+            '+ */',
+        ];
+        foreach (explode("\n", $cluster->signature) as $sigLine) {
+            $added[] = '+' . $sigLine;
+        }
+        $added[] = '+' . '{';
+        $added[] = '+    // TODO: implement using the bodies of members listed above';
+        $added[] = '+' . '}';
         $patch = $header
                . "diff --git a/{$abstractionFile} b/{$abstractionFile}\n"
                . "new file mode 100644\n"
                . "--- /dev/null\n"
                . "+++ b/{$abstractionFile}\n"
-               . "@@ -0,0 +1,12 @@\n"
-               . "+<?php\n"
-               . "+declare(strict_types=1);\n"
-               . "+\n"
-               . "+namespace Refactored;\n"
-               . "+\n"
-               . "+/**\n"
-               . "+ * Auto-generated abstraction for phpdup cluster {$cluster->id}.\n"
-               . "+ * Signature inferred via anti-unification — REVIEW BEFORE MERGE.\n"
-               . "+ */\n"
-               . $this->prefixLines($cluster->signature, '+')
-               . "\n"
-               . "+{\n"
-               . "+    // TODO: implement using the bodies of members listed above\n"
-               . "+}\n";
+               . '@@ -0,0 +1,' . count($added) . " @@\n"
+               . implode("\n", $added) . "\n";
 
         // Per-member edit hints — replace body with a single call comment.
         // M4 fix: hint names the function the patch ACTUALLY declares (the
@@ -312,18 +337,5 @@ final class RefactorPatchReporter
         $start = max(0, $member->range->start - 1);
         $end   = min(count($lines), $member->range->end);
         return implode("\n", array_slice($lines, $start, $end - $start));
-    }
-
-    /**
-     * Prefix every line of `$text` with `$prefix` (used to render `+`
-     * lines for the synthetic diff).
-     */
-    private function prefixLines(string $text, string $prefix): string
-    {
-        $out = '';
-        foreach (explode("\n", $text) as $line) {
-            $out .= $prefix . $line . "\n";
-        }
-        return rtrim($out, "\n");
     }
 }

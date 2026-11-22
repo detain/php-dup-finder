@@ -13,6 +13,7 @@ use Phpdup\Reporting\RefactorPatchReporter;
 use Phpdup\Reporting\RefactorTestReporter;
 use Phpdup\Reporting\Report;
 use Phpdup\Reporting\SourceTextStore;
+use Phpdup\Reporting\WritesReportFile;
 use Phpdup\Util\LineRange;
 
 final class RefactorPatchReporterTest extends TestCase
@@ -67,6 +68,8 @@ final class RefactorPatchReporterTest extends TestCase
     public function testApplySummaryMetadataRowsAreDefused(): void
     {
         // F1b arm: the "# cluster {id}: ..." skip rows are metadata.
+        // output-022: the summary lands as apply-summary.md — its own name,
+        // never masquerading under the dry branch's apply.diff.
         $dir = sys_get_temp_dir() . '/phpdup-patch-apply-defuse-' . uniqid('', true);
         $cluster = new Cluster('=SUM(A1)', [$this->blk('=evil.php'), $this->blk('clean.php')], 1.0, false);
         $report = new Report(
@@ -74,11 +77,17 @@ final class RefactorPatchReporterTest extends TestCase
         );
         try {
             (new RefactorPatchReporter())->writeTo($report, $dir, apply: true, dryRun: false);
-            $summary = (string)file_get_contents($dir . DIRECTORY_SEPARATOR . 'apply.diff');
+            $summaryPath = $dir . DIRECTORY_SEPARATOR . RefactorPatchReporter::APPLY_SUMMARY_FILE;
+            $this->assertFileExists($summaryPath);
+            $this->assertFileDoesNotExist(
+                $dir . DIRECTORY_SEPARATOR . RefactorPatchReporter::APPLY_DIFF_FILE,
+                'apply mode must not write anything under the diff name',
+            );
+            $summary = (string)file_get_contents($summaryPath);
+            $this->assertStringStartsWith('# phpdup apply summary', $summary);
             $this->assertStringContainsString("# cluster '=SUM(A1): no signature", $summary);
         } finally {
-            @unlink($dir . DIRECTORY_SEPARATOR . 'apply.diff');
-            @rmdir($dir);
+            $this->rrmdir($dir);
         }
     }
 
@@ -214,7 +223,7 @@ final class RefactorPatchReporterTest extends TestCase
             // output-043: the F1b gate computed the verdict; the unsafe
             // fallback's buildPatch reused it. Two calls, one computation.
             $this->assertSame(1, $r->detectUnsafeComputations());
-            $summary = (string)file_get_contents($out . '/apply.diff');
+            $summary = (string)file_get_contents($out . '/' . RefactorPatchReporter::APPLY_SUMMARY_FILE);
             $this->assertStringContainsString('member uses $this', $summary);
         } finally {
             $this->rrmdir($dir);
@@ -250,6 +259,116 @@ final class RefactorPatchReporterTest extends TestCase
             $this->rrmdir($dir);
             $this->rrmdir($outside);
         }
+    }
+
+    // ── output-022: computed hunk header, distinct summary artifact, trait writes ──
+
+    public function testHunkHeaderCountMatchesEmittedPayloadSingleLineSignature(): void
+    {
+        $cluster = $this->cluster();
+        $cluster->signature = 'function f(int $x): mixed';
+        $patch = (new RefactorPatchReporter())->buildPatch($cluster);
+        // 13 was always the truth even for a single-liner (the old literal
+        // said 12); multi-line signatures now grow the count too.
+        $this->assertHunkCountMatchesPayload($patch, 13);
+    }
+
+    public function testHunkHeaderCountMatchesEmittedPayloadMultiLineSignature(): void
+    {
+        $cluster = $this->cluster();
+        $cluster->signature = "function f(\n    int \$x,\n    string \$y\n): mixed";
+        $patch = (new RefactorPatchReporter())->buildPatch($cluster);
+        $this->assertHunkCountMatchesPayload($patch, 16);
+        // Byte-faithful: every signature line rides the hunk prefixed, in order.
+        foreach (['+function f(', '+    int $x,', '+    string $y', '+): mixed'] as $line) {
+            $this->assertStringContainsString($line . "\n", $patch, "hunk must carry '{$line}' verbatim");
+        }
+    }
+
+    public function testPerClusterPatchFileIsAcceptedByGnuPatchDryRun(): void
+    {
+        $probe = [];
+        $probeRc = 1;
+        exec('command -v patch 2>/dev/null', $probe, $probeRc);
+        if ($probeRc !== 0 || $probe === []) {
+            $this->markTestSkipped('GNU patch unavailable on this box');
+        }
+
+        $cluster = $this->cluster();
+        $cluster->signature = "function f(\n    int \$x\n): mixed";
+        $report = new Report(
+            files: 2, blocks: 2, parseErrors: 0, clusters: [$cluster], config: Config::defaults([]),
+        );
+        $dir = sys_get_temp_dir() . '/phpdup-patch-accept-' . uniqid('', true);
+        try {
+            (new RefactorPatchReporter())->writeTo($report, $dir);
+            $patches = glob($dir . '/*.patch') ?: [];
+            $this->assertCount(1, $patches, 'single-cluster report yields a single-member patch');
+            $out = [];
+            $rc = 0;
+            exec(
+                'patch -p1 --dry-run -d ' . escapeshellarg($dir) . ' -i ' . escapeshellarg($patches[0]) . ' 2>&1 </dev/null',
+                $out,
+                $rc,
+            );
+            $this->assertSame(0, $rc, 'GNU patch must accept the emitted diff: ' . implode("\n", $out));
+            $this->assertDirectoryDoesNotExist($dir . '/Refactored', '--dry-run writes nothing');
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
+    public function testApplyDryRunSurfaceKeepsTheDiffNameAndWritesNoSummary(): void
+    {
+        $dir = sys_get_temp_dir() . '/phpdup-patch-dryname-' . uniqid('', true);
+        $cluster = $this->cluster();
+        $cluster->signature = 'function f(int $x): mixed';
+        $report = new Report(
+            files: 2, blocks: 2, parseErrors: 0, clusters: [$cluster], config: Config::defaults([]),
+        );
+        try {
+            (new RefactorPatchReporter())->writeTo($report, $dir, apply: true, dryRun: true);
+            $this->assertFileExists($dir . '/' . RefactorPatchReporter::APPLY_DIFF_FILE);
+            $this->assertStringContainsString(
+                '@@ -0,0 +1,13 @@',
+                (string) file_get_contents($dir . '/' . RefactorPatchReporter::APPLY_DIFF_FILE),
+                'the dry-run artifact is the scaffold diff, hunk header computed',
+            );
+            $this->assertFileDoesNotExist($dir . '/' . RefactorPatchReporter::APPLY_SUMMARY_FILE);
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
+    public function testWritesRouteThroughSharedTraitWithoutRawWritePrimitives(): void
+    {
+        // Acceptance grep pinned as a test: the class composes the
+        // sanctioned WritesReportFile trait and contains neither raw
+        // write primitive (mkdir nor file_put_contents) itself.
+        $this->assertContains(WritesReportFile::class, class_uses(RefactorPatchReporter::class));
+        $source = file_get_contents(dirname(__DIR__, 3) . '/src/Reporting/RefactorPatchReporter.php');
+        $this->assertIsString($source);
+        $this->assertStringNotContainsString('file_put_contents', $source);
+        $this->assertStringNotContainsString('@mkdir', $source);
+    }
+
+    /**
+     * Parse the emitted `@@ -0,0 +1,N @@` header and count the actual
+     * hunk `+` rows beneath it; the two must agree (output-022).
+     */
+    private function assertHunkCountMatchesPayload(string $patch, int $expected): void
+    {
+        $this->assertSame(1, preg_match('/^@@ -0,0 \+1,(\d+) @@$/m', $patch, $m));
+        $claimed = (int) $m[1];
+        $lines = explode("\n", $patch);
+        $headerIdx = array_search($m[0], $lines, true);
+        $this->assertIsInt($headerIdx, 'the matched header must be a real line');
+        $actual = 0;
+        for ($i = $headerIdx + 1; $i < count($lines) && str_starts_with($lines[$i], '+'); $i++) {
+            $actual++;
+        }
+        $this->assertSame($expected, $claimed);
+        $this->assertSame($claimed, $actual, 'header count must equal the emitted added lines');
     }
 
     /** @param list<Block> $members */
