@@ -43,13 +43,14 @@ for the full JSON-Schema-compatible spec.
 | `--max-df N`                               | `0.01`         | Maximum document-frequency for n-grams to be candidate-pair seeds (`0..1`). Bump to ~0.5 for tiny corpora; lower for very large codebases. |
 | `--candidate-budget N`                     | `60000000`     | Safety cap on candidate pairs emitted during clustering. A pathological clone family halts loudly (`CandidateBudgetException`) instead of exhausting memory. `0` = unlimited (opts out of the guard). The guard can only fire where candidate pairs are actually seeded: on a tiny all-identical corpus the default `--max-df 0.01` rejects the shared n-gram postings as too common, so nothing is seeded and the halt never arms — raise `--max-df` (e.g. `--max-df 1.0`) to exercise it. |
 | `--min-impact N`                           | `20`           | Minimum cluster impact (≈ duplicated-line count) to include in output. Quiets reports without changing clustering. |
+| `--min-safety N`                           | `0` (off)      | Drop clusters whose refactor-safety score (`0..1`) is below N. `0` reports all. A non-numeric or out-of-domain value (e.g. `2.0`, which would silently drop every cluster) is fatal: exit 2 before the pipeline runs. |
 | `--fail-on-impact N`                       | `0` (off)      | CI gate: exit code 3 when total cluster impact exceeds N. 0 = disabled. |
 | `--max-clusters N`                         | `0` (off)      | CI gate: exit code 3 when cluster count exceeds N. 0 = disabled. |
 | `--exact-only`                             | off            | Skip the near-duplicate phase. Emits only canonical-hash-equal clusters (~6× faster on large corpora). |
 | `--kinds K1,K2,...`                        | all            | Comma-separated block kinds to extract. Allowed: `function`, `method`, `closure`, `arrow`, `if`, `for`, `foreach`, `while`, `do`, `try`, `switch`, `match`, plus `script` (item 1.3: top-level statement folds — OPT-IN ONLY, never part of the implicit "all"; script clusters cannot be `--apply`-ed yet). |
-| `--max-memory MB`                          | `0` (off)      | Soft RSS ceiling. When peak RSS exceeds this mid-pipeline, phpdup logs a warning and suggests `--exact-only`. |
+| `--max-memory MB`                          | `0` (off)      | Soft RSS ceiling. When peak RSS exceeds this mid-pipeline, phpdup logs a warning and suggests `--exact-only`. Non-integer values are fatal (exit 2) — garbage no longer silences the ceiling. |
 | `--optional-blocks on\|off`                | `on`           | Type-3 / "optional segment" detection master switch. See [Type-3 detection](../README.md#type-3--optional-segment-detection). |
-| `--optional-blocks-containment N`          | `0.85`         | Containment-fallback threshold for the type-3 path (`0..1`).                                      |
+| `--optional-blocks-containment N`          | `0.85`         | Containment-fallback threshold for the type-3 path (`0..1`). A non-numeric or out-of-domain value is fatal (exit 2) — the old blind cast turned `hot` into a silent `0.0`. |
 | `--db-aware`                               | off            | ORM-/DB-aware semantic deduplication: rewrite recognised database calls (Eloquent, Doctrine, query builders, PDO, mysqli, pg_*, raw SQL strings) to canonical `__DB_<OP>__("table")` tokens during normalisation so equivalent ORM/raw-SQL variants of the same operation cluster together. Off by default — opt-in for ORM-heavy codebases. See [`docs/plans/orm-db-semantic-dedup.md`](plans/orm-db-semantic-dedup.md). |
 | `--trinity-collapse`                       | off            | Detect the canonical CRUD trinity (read → mutate → save) and rewrite the three-statement sequence as a single `__DB_UPSERT__("entity")` synthetic call so ORM upserts cluster with raw `UPDATE` queries. Composes with `--db-aware`. Off by default. See option 2 of [`docs/plans/orm-db-semantic-dedup.md`](plans/orm-db-semantic-dedup.md). |
 | `--scorer MODE`                            | —              | Scoring tier set: `default` (stock AST tiers) or `ir` (option-5 IR-tier fallback). When the flag is absent the config-file `scorer` (or the built-in `default`) applies — it used to be shadowed by an always-injected CLI default (NN1). When `ir`, after AST Jaccard / TED / containment all reject a pair, both blocks are lifted to canonical IR (`Phpdup\Ir\IrLifter`) and their token bags scored by multiset Jaccard; pairs at or above `--ir-threshold` form edges weighted by the IR similarity. Lift failure on either side silently skips the IR tier for that pair. |
@@ -73,9 +74,10 @@ for the full JSON-Schema-compatible spec.
 | `--checkstyle FILE`                        | —       | Write Checkstyle XML to FILE (Jenkins / Sonar / Bitbucket consumers).                  |
 | `--baseline FILE`                          | —       | CI baseline file. If FILE exists: compare and exit 4 if new clusters found. If FILE does not exist: write baseline and exit 0 (first-run auto-baseline). |
 | `--baseline-out FILE`                      | —       | Write current clusters as a baseline snapshot to FILE (overwrites existing).           |
-| `--limit N`                                | `50`    | Maximum number of clusters to print to the terminal. Doesn't affect file outputs.       |
+| `--limit N`                                | `50`    | Maximum number of clusters to print to the terminal. Doesn't affect file outputs. Non-integer values are fatal (exit 2).       |
 | `--scope VALUE`                            | `all`   | Repo scope filter (item 5.1): `all` \| `single` \| `multi` \| `<repo-label>`. Every cluster member carries a `repo` label (the basename of the longest-matching scan root) and clusters gain a `scope` of `single` (one repo) or `multi` (members span ≥2 distinct repos). `single`/`multi` keep the matching clusters; any other value is treated as an exact repo label and keeps clusters with at least one member from that repo. Applied after ranking, so `--limit`, `--sort` and the CI gates all measure the filtered slice. A typo'd label matches nothing: the run still exits 0 but prints one stderr hint listing the repo labels present. Cross-repo analysis means one scan path per repository. Root config only — per-directory `.phpdup.json` files carrying this key fail the load. |
 | `--sort KEY[:asc\|desc]`                   | `impact:desc` | Cluster sort. Keys: `impact`, `members`, `block-size`, `lines`, `similarity`, `confidence`, `name`, `file`, `id`. Aliases: `size`/`count` → `members`. Direction may also be given as a leading `-` (desc) or `+` (asc), e.g. `-members`, `+lines`. |
+| `--pager MODE`                             | `never`   | Page the CLI report through `$PAGER` (default `less -R`). Modes: `auto` \| `never` \| `always`. `auto` pages when stdout is a TTY and the rendered output exceeds ~60 lines. An unknown mode is fatal (exit 2). |
 | `--stats`                                  | off     | Print pipeline stage timings, block-kind histogram, and worker info after the report.  |
 
 Naming posture for the generated-code surfaces (`--apply`, `--refactor-patch`, `--refactor-tests`): the first cluster to claim a function name keeps it verbatim — including ungainly-but-legal names such as `__construct` — and later collisions gain a suffix derived from their content cluster id.
@@ -116,7 +118,7 @@ silent success.
 | `--no-incremental`                         | off         | Disable per-file index-snapshot reuse. Forces re-fingerprinting every file.                            |
 | `--no-lazy-ast`                            | off         | Keep all original ASTs in memory throughout the run. Higher RSS, slightly faster anti-unification.     |
 | `--low-memory`                             | off         | Use CompactNgramBag (32-bit fingerprint) + CanonicalNodePool interning for lower RSS on large corpora. |
-| `--stage NAME`                             | —           | Halt the pipeline after STAGE: `scanning` \| `preprocessing` \| `clustering` \| `refactoring` \| `reporting`. |
+| `--stage NAME`                             | —           | Halt the pipeline after STAGE: `scanning` \| `preprocessing` \| `clustering` \| `refactoring` \| `reporting`. An unknown name is fatal: the run is refused with exit 2 before the pipeline starts. |
 | `--debug-log FILE`                        | —           | Append every debug (vvv) pipeline message to FILE. Messages are also emitted to stderr when `-vvv` is set; this flag ensures they are preserved to disk for post-run inspection. |
 | `--diff-base REF`                          | —           | Git ref for diff-scoped analysis. When set, scans only files changed in `git diff --name-only <REF>..HEAD` plus their "clone cohort" — all files sharing n-gram fingerprints with the changed files. Useful for per-PR analysis in CI to limit scope to only affected files and their clones. |
 | `--trust-in-root-cache`                    | off         | Read the on-disk AST cache even when `cache_dir` resolves **inside** a scan root. Because the default `cache_dir` is the relative `.phpdup-cache`, a normal run stores blobs inside the tree it scans — so cloning an untrusted repository and running `phpdup analyze .` would otherwise serve the repo author's committed cache entries as freshly parsed code (a cache-poisoning / fabricated-duplicate vector, engine-006). Off by default: an untrusted run **refuses those reads**, reports real code (one cold parse pass) and prints a notice. Pass this flag only for trees you control and whose cache you deliberately committed for reuse. CLI-only (no config-file key); cache writes are unaffected, and the gate holds on the `--workers` fork path too. The default cache posture is otherwise unchanged — `cache_dir` still defaults to `.phpdup-cache`. |
@@ -126,7 +128,7 @@ silent success.
 | Option                                     | Default | Description                                                                                          |
 |--------------------------------------------|---------|------------------------------------------------------------------------------------------------------|
 | `--tui`                                    | off     | Show the live SugarCraft dashboard while analysis runs. Requires a real TTY.                         |
-| `--theme NAME`                             | `ansi`  | TUI theme: `ansi` \| `plain` \| `charm` \| `dracula` \| `nord` \| `catppuccin`.                      |
+| `--theme NAME`                             | `ansi`  | TUI theme: `ansi` \| `plain` \| `charm` \| `dracula` \| `nord` \| `catppuccin`. An invalid name is fatal (exit 2) even without `--tui`. |
 | `--plain`                                  | off     | Force plain CLI output (no TUI, no ANSI colours). Useful when CI shells report `isatty()=true`.      |
 | `--watch`                                  | off     | Stay running and re-analyze on file changes via a poll-based `React\EventLoop` timer (1.5 s default poll). Combines with `--tui`. |
 
@@ -245,7 +247,7 @@ first line of the zsh dump.
 |------|------------------------------------------------------------------------------------|
 | `0`  | Successful run. **Note:** `analyze` does NOT exit non-zero when clusters are found (unless CI-gate thresholds are set). Gate CI on the JSON report — an empty `clusters` array means clean. |
 | `1`  | Internal error (uncaught exception, reporter failure, etc.).                       |
-| `2`  | Invalid input: missing required argument, unknown shell for `completion`, schema-validation failure for `--validate-config`, a non-numeric or out-of-domain value for a numeric option (e.g. `--min-block-size abc`, `--similarity 1.5`), invalid `--theme`, etc. |
+| `2`  | Invalid input: missing required argument, unknown shell for `completion`, schema-validation failure for `--validate-config`, a non-numeric or out-of-domain value for a numeric option (e.g. `--min-block-size abc`, `--similarity 1.5`, `--limit abc`, `--min-safety 2.0`, `--max-memory banana`, `--optional-blocks-containment hot`), an invalid choice for `--stage`, `--pager` or `--theme`, etc. |
 | `3`  | CI gate triggered: `--fail-on-impact N` exceeded (total cluster impact > N) or `--max-clusters N` exceeded (cluster count > N). |
 | `4`  | CI gate triggered: `--baseline FILE` was provided, FILE exists, and new duplicate clusters were found that were not present in the baseline. |
 
@@ -253,6 +255,13 @@ Numeric option values are trimmed before coercion: surrounding whitespace
 is accepted (`--workers ' 4 '` is the same as `--workers 4`). A value that
 is still non-numeric — or outside the option's domain — after trimming
 exits `2` as above.
+
+Option admission is EAGER and uniform: a rejected value — non-numeric,
+out-of-domain, or an unknown choice for the enum options `--stage`,
+`--pager` and `--theme` — prints one `phpdup:` error line and exits `2`
+BEFORE the pipeline runs. An option error is always the run's last word;
+it never scrolls past under a full report, and a rejected invocation never
+writes a report file.
 
 ## Worker auto-detection
 

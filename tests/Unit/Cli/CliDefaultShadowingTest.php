@@ -49,6 +49,26 @@ final class CliDefaultShadowingTest extends TestCase
         $this->assertNull($this->parseCliOverrides(['--scorer' => 'nonsense']));
     }
 
+    public function testInvalidRuntimeChoiceIsRejectedNotIgnored(): void
+    {
+        // shell-S24 (php-dup-finder-shell-013): parseRuntimeOptions carries
+        // the SAME null-means-refused idiom now — a bad --stage used to
+        // print and run the full pipeline anyway. Pinned so the idiom the
+        // shell-S25/S27/S28 chains reuse stays an exit-2 door, and so the
+        // render-only validated options never drift into the override dict
+        // (their shadowing contract above is untouched by the validation).
+        $command = new Command();
+        $input = new ArrayInput(['--stage' => 'blah'], $command->getDefinition());
+
+        $method = new \ReflectionMethod(Command::class, 'parseRuntimeOptions');
+        $this->assertNull($method->invoke($command, $input, new NullOutput(), false));
+
+        $validInput = new ArrayInput(['--stage' => 'scanning'], $command->getDefinition());
+        $parsed = $method->invoke($command, $validInput, new NullOutput(), false);
+        $this->assertIsArray($parsed, 'a valid stage still parses');
+        $this->assertNotNull($parsed['stopAfter'], '--stage=scanning must set the stop point');
+    }
+
     public function testExplicitScorerStillFlowsThrough(): void
     {
         $overrides = $this->parseCliOverrides(['--scorer' => 'ir']);

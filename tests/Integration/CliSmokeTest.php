@@ -87,6 +87,11 @@ final class CliSmokeTest extends TestCase
             'limit-three'        => ['--limit=3'],
             'workers-auto'       => ['--workers=0'],
             'workers-serial'     => ['--workers=1'],
+            // shell-S24: the runtime-admission family must accept its
+            // documented domains end-to-end, not just in-process.
+            'min-safety-mid'     => ['--min-safety=0.5'],
+            'max-memory-on'     => ['--max-memory=512'],
+            'obc-containment-hi' => ['--optional-blocks-containment=0.9'],
         ];
     }
 
@@ -137,6 +142,17 @@ final class CliSmokeTest extends TestCase
             'max-clusters-text'     => ['--max-clusters=abc', 'max_clusters'],
             'ir-threshold-high'     => ['--ir-threshold=2', 'ir_threshold'],
             'scorer-garbage'        => ['--scorer=nope', '--scorer'],
+            // shell-S24 (php-dup-finder-shell-013/014): choice flags and
+            // the render-side numeric family — every one refused with a
+            // friendly exit 2 now, none prints-and-runs any more.
+            'stage-garbage'         => ['--stage=blah', '--stage'],
+            'pager-garbage'         => ['--pager=banana', '--pager'],
+            'theme-garbage'         => ['--theme=nope', '--theme'],
+            'limit-text'            => ['--limit=abc', 'limit must be an integer'],
+            'min-safety-text'       => ['--min-safety=hot', 'min_safety must be a number'],
+            'min-safety-over'       => ['--min-safety=2.0', 'min_safety must be in [0, 1]'],
+            'max-memory-text'       => ['--max-memory=banana', 'max_memory must be an integer'],
+            'obc-containment-text'  => ['--optional-blocks-containment=hot', 'optional_blocks_containment'],
         ];
     }
 
@@ -164,6 +180,45 @@ final class CliSmokeTest extends TestCase
 
         $this->assertSame(1, $run['exit']);
         $this->assertStringContainsString('does not exist', $run['combined']);
+    }
+
+    // ------------------------------------------------- shell-S24 admission
+
+    public function testOutOfRangeMinSafetyExitsTwoBeforePipelineRuns(): void
+    {
+        // php-dup-finder-shell-013: `--min-safety=2.0` used to print the
+        // range error, run the FULL analysis, and exit 0. Now the run is
+        // refused at admission — proven the cheap way: the --json sink
+        // the same command line carries is never created, and the child
+        // is done in a fraction of a pipeline-time budget.
+        $corpus = $this->makeDupCorpus(3);
+        $jsonPath = $this->tmp . '/never-written.json';
+        $start = microtime(true);
+        $run = $this->cli(['analyze', $corpus, '--min-safety=2.0', '--json', $jsonPath]);
+        $elapsed = microtime(true) - $start;
+
+        $this->assertSame(2, $run['exit'], $run['combined']);
+        $this->assertStringContainsString('min_safety must be in [0, 1]', $run['combined']);
+        $this->assertStringNotContainsString('json report', $run['combined']);
+        $this->assertFileDoesNotExist($jsonPath, 'a refused invocation must never produce a report');
+        // Same-harness clean runs measure seconds; a full pipeline on this
+        // corpus plus fork/bootstrap is nowhere near 20s on CI cold paths.
+        $this->assertLessThan(20.0, $elapsed, 'exit must come from admission, not after a full run');
+    }
+
+    public function testCombinedRuntimeGarbageExitsTwoWithoutRunning(): void
+    {
+        // Acceptance probe: `--limit=abc --min-safety=hot
+        // --max-memory=banana` → exit 2 (was 0). The render-only trio
+        // never reaches the pipeline through any combination either.
+        $corpus = $this->makeDupCorpus(3);
+        $run = $this->cli(['analyze', $corpus, '--limit=abc', '--min-safety=hot', '--max-memory=banana']);
+
+        $this->assertSame(2, $run['exit'], $run['combined']);
+        $this->assertStringContainsString('phpdup:', $run['combined']);
+        $this->assertStringContainsString('limit must be an integer', $run['combined']);
+        $this->assertStringNotContainsString('json report', $run['combined']);
+        $this->assertStringNotContainsString('Fatal error', $run['combined']);
     }
 
     public function testWorkersZeroSentinelAutoRunsToForkZone(): void

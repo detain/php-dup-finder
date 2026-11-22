@@ -48,7 +48,10 @@ use Symfony\Component\Console\Output\OutputInterface;
  *                             (overrides → config file → defaults) and
  *                             returns a frozen Config object.
  *  5. parseRuntimeOptions()  — extract options that control pipeline runtime
- *                             behaviour (cache, TUI, watch, output formats).
+ *                             behaviour (cache, TUI, watch, output formats);
+ *                             returns null on error (an invalid choice or a
+ *                             non-numeric/out-of-domain runtime flag is a
+ *                             usage rejection, exit 2, shell-S24).
  *  6. buildPipelineFactory() — build the Pipeline with resolved options.
  *  7. dispatch()             — run the pipeline directly, via TUI, or via
  *                             watch-mode, and return the process exit code.
@@ -324,6 +327,14 @@ HELP;
         }
 
         $runtimeOptions = $this->parseRuntimeOptions($input, $output, $autoTuneExactOnly);
+        if ($runtimeOptions === null) {
+            // shell-S24 (php-dup-finder-shell-013/014): parseRuntimeOptions
+            // emitted the specific error and rejected the input — the run
+            // ends here, before the pipeline is ever built. The old posture
+            // printed the error line and carried on to a FULL analysis with
+            // exit 0, so option mistakes were un-runnable-to and un-CI-able.
+            return 2;
+        }
 
         // buildPipelineFactory only needs a subset of runtimeOptions
         $pipelineOpts = [
@@ -657,9 +668,11 @@ HELP;
     }
 
     /**
-     * @return array{useCache: bool, exactOnly: bool, showStats: bool, limit: int, cliVerbosity: string, maxMemoryMb: int, stopAfter: Stage|null, watchMode: bool, tuiMode: bool, themeName: string, reportArgs: array<string, mixed>}
+     * @return array{useCache: bool, exactOnly: bool, showStats: bool, limit: int, cliVerbosity: string, maxMemoryMb: int, stopAfter: Stage|null, watchMode: bool, tuiMode: bool, themeName: string, reportArgs: array<string, mixed>}|null
+     *         null = invalid option value (the specific `phpdup:` error line
+     *         has been emitted; the caller answers with exit 2, shell-S24)
      */
-    private function parseRuntimeOptions(InputInterface $input, OutputInterface $output, bool $autoTuneExactOnly): array
+    private function parseRuntimeOptions(InputInterface $input, OutputInterface $output, bool $autoTuneExactOnly): ?array
     {
         // --no-cache silences INDEX reuse (the per-file IndexStore lookup in
         // PreprocessStage and the cached AST reload in RefactorStage). It does
@@ -668,15 +681,33 @@ HELP;
         $useCache  = !$input->getOption('no-cache');
         $exactOnly = (bool)$input->getOption('exact-only') || $autoTuneExactOnly;
         $showStats = (bool)$input->getOption('stats');
-        $limit     = (int)$input->getOption('limit');
         $cliVerbosity = match (true) {
             (bool)$input->getOption('summary-only') => \Phpdup\Reporting\CliReporter::VERBOSITY_SUMMARY_ONLY,
             (bool)$input->getOption('clusters')     => \Phpdup\Reporting\CliReporter::VERBOSITY_CLUSTERS,
             default                                 => \Phpdup\Reporting\CliReporter::VERBOSITY_FULL,
         };
-        $maxMemoryMb = $input->getOption('max-memory') !== null
-            ? (int)$input->getOption('max-memory')
-            : 0;
+
+        // shell-S24 (php-dup-finder-shell-014): the three render-side numeric
+        // flags used to be BLIND-CAST — (int)'abc' is 0 and (float)'hot' is
+        // 0.0, so garbage silently became the sentinel value (limit 0, no
+        // ceiling, min-safety off) and the run exited 0. Out-of-domain
+        // --min-safety merely printed and kept going. All three now pass
+        // through ConfigLoader's coercion boundary (the same trim policy,
+        // int64-overflow guard and key-named rejection the NUMERIC_KEYS
+        // family uses); Symfony's --limit default '50' is itself a string,
+        // which the boundary parses like any other.
+        try {
+            $limit = ConfigLoader::coerceRuntimeInt('limit', $input->getOption('limit'), 0);
+            $maxMemoryMb = $input->getOption('max-memory') !== null
+                ? ConfigLoader::coerceRuntimeInt('max_memory', $input->getOption('max-memory'), 0)
+                : 0;
+            $minSafety = $input->getOption('min-safety') !== null
+                ? ConfigLoader::coerceRuntimeFloat('min_safety', $input->getOption('min-safety'), 0.0, 1.0)
+                : 0.0;
+        } catch (\InvalidArgumentException $e) {
+            $output->writeln('<error>phpdup: ' . $e->getMessage() . '</error>');
+            return null;
+        }
 
         $stopAfter = null;
         $stageOpt  = $input->getOption('stage');
@@ -685,17 +716,31 @@ HELP;
             if ($stopAfter === null) {
                 $allowed = implode('|', array_map(fn(Stage $s) => $s->value, Stage::ordered()));
                 $output->writeln("<error>phpdup: --stage must be one of {$allowed}</error>");
+                // shell-S24: was print-and-run-the-world; the pipeline never
+                // starts on a bad stage.
+                return null;
             }
         }
 
         $watchMode = (bool)$input->getOption('watch');
         $tuiMode   = $this->shouldRunTui($input, $output);
         $themeName = (string)$input->getOption('theme');
-        if ($tuiMode && !in_array(strtolower($themeName), TuiRunner::knownThemes(), true)) {
+        // shell-S24: theme admission is UNCONDITIONAL now — a typo'd theme
+        // must exit 2 whether or not this invocation also passes --tui, so
+        // the flag can never lie silently and only bite when --tui is added
+        // later (once-S22 relies on this door closing before render).
+        if (!in_array(strtolower($themeName), TuiRunner::knownThemes(), true)) {
             $output->writeln(sprintf(
                 '<error>phpdup: --theme must be one of %s</error>',
                 implode('|', TuiRunner::knownThemes()),
             ));
+            return null;
+        }
+
+        $pagerMode = (string)($input->getOption('pager') ?? Pager::MODE_NEVER);
+        if (!in_array($pagerMode, Pager::MODES, true)) {
+            $output->writeln('<error>phpdup: --pager must be one of ' . implode('|', Pager::MODES) . '</error>');
+            return null; // shell-S24: was print-and-continue
         }
 
         $reportArgs = [
@@ -716,16 +761,9 @@ HELP;
             'refactorPatchDir' => $input->getOption('refactor-patch'),
             'refactorTestsDir' => $input->getOption('refactor-tests'),
             'cliVerbosity'   => $cliVerbosity,
-            'minSafety'      => $input->getOption('min-safety') !== null ? (float)$input->getOption('min-safety') : 0.0,
-            'pagerMode'      => (string)($input->getOption('pager') ?? Pager::MODE_NEVER),
+            'minSafety'      => $minSafety,
+            'pagerMode'      => $pagerMode,
         ];
-
-        if (!in_array($reportArgs['pagerMode'], Pager::MODES, true)) {
-            $output->writeln('<error>phpdup: --pager must be one of ' . implode('|', Pager::MODES) . '</error>');
-        }
-        if ($reportArgs['minSafety'] < 0.0 || $reportArgs['minSafety'] > 1.0) {
-            $output->writeln('<error>phpdup: --min-safety must be in [0, 1]</error>');
-        }
 
         return [
             'useCache' => $useCache,

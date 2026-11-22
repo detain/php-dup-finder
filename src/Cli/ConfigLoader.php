@@ -127,10 +127,25 @@ final class ConfigLoader
             'max_hole_coverage',
             'ir_threshold', 'ml_pair_threshold', 'debug_log',
             'low_memory', 'fail_on_impact', 'max_clusters',
+            'optional_blocks_containment',
             'baseline', 'baseline_out', 'diff_base', 'apply',
         ];
         $resolver = new OverrideResolver($flatKeys);
-        $flat = $this->coerceNumerics($resolver->resolve($overrides, $data, [
+        // shell-S24 (php-dup-finder-shell-014): optional_blocks.containment
+        // joins the coerced numeric family. The config-file layer spells it
+        // nested, the CLI flag and per-dir shaping flatten it to the snake
+        // key, and validate() has long pinned the nested file leg — but the
+        // raw CLI string used to reach Config through a blind (float) cast,
+        // so 'hot' silently became 0.0 and the run exited 0. Hoisting the
+        // nested section and aliasing it into the data layer puts every
+        // source through the ONE coercion boundary, precedence unchanged
+        // (CLI override > config file > defaults).
+        $optBlock = is_array($data['optional_blocks'] ?? null) ? $data['optional_blocks'] : [];
+        $flatData = $data;
+        if (array_key_exists('containment', $optBlock)) {
+            $flatData['optional_blocks_containment'] = $optBlock['containment'];
+        }
+        $flat = $this->coerceNumerics($resolver->resolve($overrides, $flatData, [
             'min_block_size' => $base->minBlockSize,
             'max_block_size' => $base->maxBlockSize,
             'normalization_mode' => $base->normalizationMode,
@@ -159,6 +174,7 @@ final class ConfigLoader
             'low_memory' => $base->lowMemory,
             'fail_on_impact' => $base->failOnImpact,
             'max_clusters' => $base->maxClusters,
+            'optional_blocks_containment' => $base->optionalBlocksContainment,
             'baseline' => $base->baselineFile,
             'baseline_out' => $base->baselineOutFile,
             'diff_base' => $base->diffBase,
@@ -198,8 +214,6 @@ final class ConfigLoader
             $allowedKinds = $data['kinds'];
         }
 
-        $optBlock = is_array($data['optional_blocks'] ?? null) ? $data['optional_blocks'] : [];
-
         $resolvedPaths = !empty($data['paths']) ? $data['paths'] : $base->paths;
         // Item 5.2 — exclude resolution is APPEND, never wipe: profile,
         // config-file and programmatic (CLI-dict) lists stack on top of the
@@ -238,7 +252,7 @@ final class ConfigLoader
             lazyAst:                        $flat['lazy_ast'],
             allowedKinds: $allowedKinds,
             optionalBlocksEnabled:        (bool)($overrides['optional_blocks_enabled'] ?? $optBlock['enabled'] ?? $base->optionalBlocksEnabled),
-            optionalBlocksContainment:    (float)($overrides['optional_blocks_containment'] ?? $optBlock['containment'] ?? $base->optionalBlocksContainment),
+            optionalBlocksContainment:    $flat['optional_blocks_containment'],
             optionalBlocksMinOverlap:     (float)($overrides['optional_blocks_min_overlap'] ?? $optBlock['min_overlap'] ?? $base->optionalBlocksMinOverlap),
             optionalBlocksMaxPerCluster:  (int)($overrides['optional_blocks_max_per_cluster'] ?? $optBlock['max_per_cluster'] ?? $base->optionalBlocksMaxPerCluster),
             optionalBlocksMinSegmentLength: (int)($overrides['optional_blocks_min_segment_length'] ?? $optBlock['min_segment_length'] ?? $base->optionalBlocksMinSegmentLength),
@@ -296,7 +310,33 @@ final class ConfigLoader
         'max_df'               => ['float', 0.0,  1.0],
         'ir_threshold'         => ['float', 0.0,  1.0],
         'ml_pair_threshold'    => ['float', 0.0,  1.0],
+        // shell-S24 (shell-014): the type-3 containment knob rides the same
+        // [0,1] domain validate() pins for optional_blocks.containment.
+        'optional_blocks_containment' => ['float', 0.0, 1.0],
     ];
+
+    /**
+     * shell-S24 (php-dup-finder-shell-013/014): the coercion boundary for
+     * numeric CLI flags that never enter Config — `--limit`, `--min-safety`
+     * and `--max-memory` are render-only presentation settings (they stay
+     * out of the override dict; see CliDefaultShadowingTest), so they never
+     * travel through load()/OverrideResolver. Their raw Symfony strings
+     * still must pass ONE parsing discipline, and that discipline lives
+     * here: these helpers delegate to the exact private coercers the
+     * NUMERIC_KEYS loop uses — same trim policy, same strict numeric-string
+     * rule, same int64-overflow guard, same key-named
+     * {@see \InvalidArgumentException}, which the CLI layer renders as the
+     * conventional friendly exit 2.
+     */
+    public static function coerceRuntimeInt(string $key, mixed $value, int|float $min, int|float|null $max = null): int
+    {
+        return self::coerceInt($key, $value, $min, $max);
+    }
+
+    public static function coerceRuntimeFloat(string $key, mixed $value, int|float $min, int|float|null $max): float
+    {
+        return self::coerceFloat($key, $value, $min, $max);
+    }
 
     /**
      * Parse the resolved numeric flat keys into real int/float values.

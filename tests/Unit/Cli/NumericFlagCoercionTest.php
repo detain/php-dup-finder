@@ -24,6 +24,14 @@ use Symfony\Component\Console\Tester\CommandTester;
  * ConfigLoader/OverrideResolver boundary: valid numeric strings arrive
  * as real int/float, invalid ones surface the conventional friendly
  * exit 2 (same convention as invalid-config-schema input).
+ *
+ * shell-S24 (php-dup-finder-shell-013/014) adds the four-flag runtime
+ * family: `--optional-blocks-containment` joins NUMERIC_KEYS as a real
+ * config key, and `--limit`/`--min-safety`/`--max-memory` — render-only
+ * options that never enter Config — are coerced through the same private
+ * helpers via ConfigLoader::coerceRuntimeInt/Float. Blind casts are gone:
+ * `(int)'abc'`/`(float)'hot'` no longer launder garbage into sentinels
+ * behind a full exit-0 run.
  */
 final class NumericFlagCoercionTest extends TestCase
 {
@@ -71,6 +79,9 @@ final class NumericFlagCoercionTest extends TestCase
             // whitespace is TRIMMED and accepted (' .85 ' == 0.85).
             'ir-trimmed'       => ['ir_threshold',         ' .85 ', 0.85],
             'ml-integer-str'   => ['ml_pair_threshold',    '1',     1.0],
+            // shell-S24: the type-3 containment knob joins the boundary.
+            'obc-valid'        => ['optional_blocks_containment', '0.9', 0.9],
+            'obc-zero-bound'   => ['optional_blocks_containment', '0',   0.0],
         ];
     }
 
@@ -115,6 +126,10 @@ final class NumericFlagCoercionTest extends TestCase
             'ir-threshold-word'     => ['ir_threshold',         'hot',  'ir_threshold must be a number'],
             'ir-threshold-high'     => ['ir_threshold',         '1.5',  'ir_threshold must be in [0, 1]'],
             'ml-pair-threshold-word'=> ['ml_pair_threshold',    'hot',  'ml_pair_threshold must be a number'],
+            // shell-S24: containment now rides the boundary — the blind
+            // (float) cast that laundered 'hot' into 0.0 is gone.
+            'obc-word'              => ['optional_blocks_containment', 'hot',  'optional_blocks_containment must be a number'],
+            'obc-high'              => ['optional_blocks_containment', '1.5',  'optional_blocks_containment must be in [0, 1]'],
         ];
     }
 
@@ -159,6 +174,17 @@ final class NumericFlagCoercionTest extends TestCase
             // exit-2 errors like the rest of the family.
             'ir-threshold'      => ['--ir-threshold',      'hot', 'ir_threshold must be a number'],
             'ml-pair-threshold' => ['--ml-pair-threshold', 'hot', 'ml_pair_threshold must be a number'],
+            // shell-S24 (shell-013/014): the runtime family used to
+            // blind-cast or print-and-continue; every one now lands as a
+            // key-named exit 2 before the pipeline exists.
+            'limit'             => ['--limit',              'abc',     'limit must be an integer'],
+            'min-safety-word'   => ['--min-safety',         'hot',     'min_safety must be a number'],
+            'min-safety-high'   => ['--min-safety',         '2.0',     'min_safety must be in [0, 1]'],
+            'max-memory'        => ['--max-memory',         'banana',  'max_memory must be an integer'],
+            'obc-word'          => ['--optional-blocks-containment', 'hot', 'optional_blocks_containment must be a number'],
+            // explicitly pinned unchanged (shell-S24 acceptance): workers
+            // already exited 2 here before this step; the recipe holds.
+            'workers-banana'    => ['--workers',            'banana',  'workers must be an integer'],
         ];
     }
 
@@ -216,6 +242,55 @@ final class NumericFlagCoercionTest extends TestCase
         $this->assertSame(2, $exit);
         $combined = $tester->getErrorOutput() . $tester->getDisplay();
         $this->assertStringContainsString('workers', $combined);
+    }
+
+    // ── shell-S24 (php-dup-finder-shell-013/014): runtime admission ──────
+
+    public function testCombinedRuntimeGarbageExitsTwoWithoutRunningPipeline(): void
+    {
+        // Acceptance probe: `--limit=abc --min-safety=hot
+        // --max-memory=banana` → exit 2 (was: three blind casts to the
+        // 0-sentinels, full run, exit 0). Fail-fast renders the first
+        // rejection; the load-bearing fact is the refusal — the pipeline
+        // never starts, so the report sink is never written.
+        $jsonPath = $this->corpusDir() . '/never-runs.json';
+        @unlink($jsonPath);
+        $tester = $this->commandTester();
+        $exit = $tester->execute(
+            [
+                'paths'        => [$this->corpusDir()],
+                '--limit'      => 'abc',
+                '--min-safety' => 'hot',
+                '--max-memory' => 'banana',
+                '--json'       => $jsonPath,
+            ],
+            ['capture_stderr_separately' => true],
+        );
+
+        $this->assertSame(2, $exit);
+        $combined = $tester->getErrorOutput() . $tester->getDisplay();
+        $this->assertStringContainsString('phpdup:', $combined);
+        $this->assertStringContainsString('limit must be an integer', $combined);
+        $this->assertFileDoesNotExist($jsonPath, 'admission refused the run — the report file must never appear');
+    }
+
+    public function testFourRuntimeNumericFlagsValidValuesRunCleanly(): void
+    {
+        // The fence must not bite its documented domains: limit >= 0,
+        // min_safety in [0,1], max_memory >= 0, containment in [0,1].
+        $tester = $this->commandTester();
+        $exit = $tester->execute([
+            'paths'                         => [$this->corpusDir()],
+            '--limit'                       => '3',
+            '--min-safety'                  => '0.5',
+            '--max-memory'                  => '512',
+            '--optional-blocks-containment' => '0.9',
+            '--plain'                       => true,
+        ]);
+
+        $this->assertSame(0, $exit, $tester->getDisplay());
+        $this->assertStringNotContainsString('TypeError', $tester->getDisplay());
+        $this->assertStringNotContainsString('must be', $tester->getDisplay());
     }
 
     private function commandTester(): CommandTester
@@ -379,6 +454,7 @@ final class NumericFlagCoercionTest extends TestCase
             'workers'              => $config->workers,
             'ir_threshold'         => $config->irThreshold,
             'ml_pair_threshold'    => $config->mlPairThreshold,
+            'optional_blocks_containment' => $config->optionalBlocksContainment,
             default                => throw new \LogicException("unmapped key $key"),
         };
     }
