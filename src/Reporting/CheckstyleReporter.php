@@ -58,8 +58,20 @@ final class CheckstyleReporter
         return $xml;
     }
 
+    /**
+     * Cell escaper for the two spreadsheet-bound cells of the format: the
+     * `<file name=…>` attribute and the `<error message=…>` attribute (whose
+     * leading text is the scanned path).
+     *
+     * once-064 (S58): every CSV-bound surface defuses through the single
+     * shared venue — Checkstyle reports are imported into spreadsheets by
+     * CI plugins exactly like the CSV output, and both cells can LEAD with
+     * attacker-influenced filename bytes. The defuse runs BEFORE the XML
+     * escape so the `'` marker is carried inside the cell value (round-trips
+     * faithfully through ENT_QUOTES), never as injected markup.
+     */
     private function escape(string $s): string
     {
-        return htmlspecialchars($s, ENT_QUOTES | ENT_XML1, 'UTF-8');
+        return htmlspecialchars(CsvReporter::defuseFormula($s), ENT_QUOTES | ENT_XML1, 'UTF-8');
     }
 }

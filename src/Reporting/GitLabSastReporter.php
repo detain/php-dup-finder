@@ -111,7 +111,21 @@ final class GitLabSastReporter
         return $out;
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * One vulnerability entry per member.
+     *
+     * once-064 (S58): user-derived TEXT legs route through the shared
+     * CsvReporter::defuseFormula venue — GitLab renders these rows in a
+     * widget and exports them to CSV, and `location.file` leads its cell
+     * with raw scanned path bytes (message/description carry the cluster-id
+     * and signature legs, the same treatment Diff/RefactorPatch metadata
+     * rows got in output-S22). The schema-contracted key fields stay
+     * byte-faithful: the top-level `id` pair and the identifiers[] values
+     * are GitLab's dedup keys, where a spurious `'` would silently re-key
+     * findings (structural, not display text — the raw-hunk carve-out).
+     *
+     * @return array<string, mixed>
+     */
     private function vulnFor(Cluster $cluster, Block $member): array
     {
         return [
@@ -120,12 +134,12 @@ final class GitLabSastReporter
             'name'     => 'Duplicated logic',
             'message'  => sprintf(
                 'Block is part of cluster %s (%d members, similarity %.2f).',
-                $cluster->id, count($cluster->members), $cluster->similarity,
+                CsvReporter::defuseFormula($cluster->id), count($cluster->members), $cluster->similarity,
             ),
             'description' => trim(sprintf(
                 "phpdup found %d structurally-similar blocks. Consider extracting a shared abstraction:\n\n%s",
                 count($cluster->members),
-                (string)$cluster->signature,
+                CsvReporter::defuseFormula((string)$cluster->signature),
             )),
             'severity'   => Severity::forImpact($cluster->impact),
             'confidence' => $cluster->exact ? 'High' : Severity::forScore($cluster->confidence),
@@ -134,7 +148,7 @@ final class GitLabSastReporter
                 'name' => 'phpdup',
             ],
             'location' => [
-                'file'       => $member->file,
+                'file'       => CsvReporter::defuseFormula($member->file),
                 'start_line' => $member->range->start,
                 'end_line'   => $member->range->end,
             ],
