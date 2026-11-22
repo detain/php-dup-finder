@@ -39,8 +39,8 @@ final class SarifReporterTest extends TestCase
      * that fetch $schema break. The constant must carry the versioned
      * docs.oasis-open.org errata01 path — the location the schema document
      * declares as its own `id`. Shape pinned here; fetchability verified
-     * once out-of-band (HTTP 200, application/json, size 112,768 B — see
-     * reviews/exec/once-S52.impl.md). No network in this test.
+     * out-of-band at implementation time (see commit a1c58ae message).
+     * No network in this test.
      */
     public function testSchemaUrlIsTheLiveOasisErrataPath(): void
     {
