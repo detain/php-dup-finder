@@ -158,4 +158,97 @@ final class MlPairTierClustererTest extends TestCase
         $block->id = $block->structuralHash . '_' . spl_object_id($block);
         return $block;
     }
+
+    // -----------------------------------------------------------------
+    // engine-S15 / php-dup-finder-engine-056 item 2 — the ML lens is a
+    // rescue for pairs the TREE refuted, not only for pairs the bag
+    // gate rejected: a Jaccard-pass + TED-fail pair used to die at the
+    // `continue` before the model was ever consulted.
+    // -----------------------------------------------------------------
+
+    public function testMlArmRescuesATedRefutedPairPreviouslyDead(): void
+    {
+        [$a, $b] = $this->tedRefutedPair();
+
+        $index = new BlockIndex();
+        $index->add($a);
+        $index->add($b);
+
+        $clusterer = new Clusterer(
+            similarity: new JaccardSimilarity(),
+            tree: new TreeEditDistance(),
+            similarityThreshold: 0.8,   // bag gate PASSES (forced-equal bags)
+            treeThreshold: 0.85,        // APTED refutes — the TED-refuted lane
+            maxDocumentFrequency: 1.0,
+            optionalBlocksEnabled: false,
+            irScoring: false,
+            mlPairClient: $this->fakeClient(returnSimilarity: 0.95),
+            mlPairThreshold: 0.80,
+        );
+
+        $clusters = $clusterer->cluster($index);
+        $this->assertCount(1, $clusters, 'the ML arm must evaluate a TED-refuted pair (engine-056 acceptance)');
+        $this->assertSame('ml', $clusters[0]->pairs[0]['matchTier'],
+            'first-wins: Jaccard never emitted the edge (TED refuted it), so the ML arm stamps its own tier');
+    }
+
+    public function testSameTedRefutedPairStaysDeadWithoutTheMlLens(): void
+    {
+        // Control: same pair, no model — nothing survives (containment
+        // excluded by the scope ruling, IR off), as the old `continue`
+        // produced.
+        [$a, $b] = $this->tedRefutedPair();
+
+        $index = new BlockIndex();
+        $index->add($a);
+        $index->add($b);
+
+        $clusterer = new Clusterer(
+            similarity: new JaccardSimilarity(),
+            tree: new TreeEditDistance(),
+            similarityThreshold: 0.8,
+            treeThreshold: 0.85,
+            maxDocumentFrequency: 1.0,
+            optionalBlocksEnabled: false,
+            irScoring: false,
+        );
+
+        $this->assertSame([], $clusterer->cluster($index));
+    }
+
+    /**
+     * Straight-line vs nested-control-flow pair with forced-equal n-gram
+     * bags: Jaccard claims it at 1.0, real APTED refutes it. Builder
+     * sanity pinned so normaliser drift cannot move the pair out of the
+     * TED-refuted lane unnoticed.
+     *
+     * @return array{0: Block, 1: Block}
+     */
+    private function tedRefutedPair(): array
+    {
+        $codeA = '<?php function probe_A($p) { $a = strlen($p); $b = $a + 1; $c = $b + 2; $d = $c * 3; return [$a, $b, $c, $d]; }';
+        $codeB = '<?php function probe_B($p) { if ($p) { $a = strlen($p); $b = $a + 1; } else { $a = 0; $b = 0; } '
+            . 'for ($i = 0; $i < 2; $i++) { $c = $b + $i; } $d = $c * 3; return [$a, $b, $c, $d]; }';
+
+        $blocks = [];
+        foreach ([['ML-A', $codeA], ['ML-B', $codeB]] as [$id, $code]) {
+            $stmts = (new AstParser())->parseCode($code);
+            $this->assertNotNull($stmts);
+            $block = (new BlockExtractor(minSize: 1, maxSize: 100000))->extract('test.php', $stmts)[0];
+            (new Normalizer(mode: 'aggressive'))->normalize($block);
+            $block->structuralHash = (new SubtreeHasher())->hash($block->canonical);
+            $block->id       = $id;
+            $block->ngramBag = ['g_strlen' => 2, 'g_add' => 3, 'g_mul' => 1, 'g_ret' => 2];
+            $blocks[] = $block;
+        }
+
+        $jac    = (new JaccardSimilarity())->similarity($blocks[0]->ngramBag, $blocks[1]->ngramBag);
+        $tedSim = (new TreeEditDistance())->similarity($blocks[0]->canonical, $blocks[1]->canonical, 0.85);
+        $this->assertNotSame($blocks[0]->structuralHash, $blocks[1]->structuralHash,
+            'builder sanity: divergent trees must not collapse to one structural hash');
+        $this->assertGreaterThanOrEqual(0.8, $jac, 'builder sanity: pair reaches the Jaccard lane');
+        $this->assertLessThan(0.85, $tedSim, 'builder sanity: APTED must refute the pair (TED-refuted lane)');
+
+        return $blocks;
+    }
 }

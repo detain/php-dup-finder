@@ -468,4 +468,108 @@ final class TedSizeGateTest extends TestCase
             $pooledVerdict[0]->pairs[0]['matchScore'],
         );
     }
+
+    // ------------------------------------------------------------------
+    // engine-S15 / php-dup-finder-engine-056 — tier honesty.
+    //
+    // (1) The vocabulary is exactly the set the engines mint: the never-
+    //     mintable `Ted` case is deleted (product story: APTED only ever
+    //     REFINES bag-found pairs, and first-wins keeps their tier; a
+    //     tree-origin match is architecturally unreachable).
+    // (2) The Jaccard→TED CONFIRM lane still spells its edge 'jaccard'
+    //     serially — the deletion is not a re-labelled 'ted' emission.
+    // (3) The containment lens must NOT re-acclaim a pair the tree
+    //     already refuted: equal bags make containment mathematically
+    //     1.0 precisely when Jaccard was 1.0, so leaving the arm open
+    //     on the TED-refuted lane would reverse APTED's verdict with a
+    //     weaker restatement of the evidence APTED just overruled — and
+    //     would flip the serial↔fork byte-parity pins (measured).
+    // ------------------------------------------------------------------
+
+    public function testTierVocabularyMintsNoPhantomTier(): void
+    {
+        $values = array_map(static fn (MatchTier $t): string => $t->value, MatchTier::cases());
+
+        $this->assertSame(
+            ['exact-hash', 'jaccard', 'jaccard-unverified', 'containment', 'ir', 'ml'],
+            $values,
+            "the enum must be exactly the mintable tier set — 'ted' was a phantom (engine-056)",
+        );
+        $this->assertNotContains('ted', $values);
+        foreach (MatchTier::cases() as $case) {
+            $this->assertStringNotContainsString('ted', strtolower($case->name));
+        }
+    }
+
+    public function testSerialConfirmLaneKeepsTheJaccardTier(): void
+    {
+        // Serial twin of testUnderCapPairStillJudgedByTedWithJaccardTier:
+        // a Jaccard-pass, TED-pass pair is confirmed and stays 'jaccard'
+        // (first-wins), never a resurrected tree tier. Cap far above the
+        // tiny probe trees so TED genuinely runs.
+        [$a, $b] = $this->realPair(5);
+        $a->size = 40;
+        $b->size = 40;
+        $clusters = $this->serialClusterer(5000)->cluster($this->indexOf($a, $b), null);
+
+        $this->assertCount(1, $clusters);
+        $this->assertSame('jaccard', $clusters[0]->pairs[0]['matchTier']);
+        $this->assertNotSame('ted', $clusters[0]->pairs[0]['matchTier']);
+    }
+
+    /**
+     * Divergent-tree, identical-bag pair: the Jaccard gate claims it at
+     * 1.0, APTED refutes it (< treeThreshold). Builder sanity is pinned
+     * at the call site so a future normaliser change cannot silently
+     * move the pair out of the TED-refuted lane.
+     *
+     * @return array{0: Block, 1: Block}
+     */
+    private function divergentTreeSameBagPair(): array
+    {
+        $codeA = "<?php\nfunction probe_A(\$p) {\n"
+            . "    \$a = strlen(\$p);\n    \$b = \$a + 1;\n    \$c = \$b + 2;\n"
+            . "    \$d = \$c * 3;\n    return [\$a, \$b, \$c, \$d];\n}\n";
+        $codeB = "<?php\nfunction probe_B(\$p) {\n"
+            . "    if (\$p) { \$a = strlen(\$p); \$b = \$a + 1; } else { \$a = 0; \$b = 0; }\n"
+            . "    for (\$i = 0; \$i < 2; \$i++) { \$c = \$b + \$i; }\n"
+            . "    \$d = \$c * 3;\n    return [\$a, \$b, \$c, \$d];\n}\n";
+
+        $parser    = new AstParser();
+        $extractor = new BlockExtractor(minSize: 1, maxSize: 100000);
+        $bag       = ['g_strlen' => 2, 'g_add' => 3, 'g_mul' => 1, 'g_ret' => 2];
+
+        $blocks = [];
+        foreach ([['A', $codeA], ['B', $codeB]] as [$tag, $code]) {
+            $stmts = $parser->parseCode($code);
+            $this->assertNotNull($stmts);
+            $b = $extractor->extract("probe_{$tag}.php", $stmts)[0];
+            (new Normalizer('aggressive'))->normalize($b);
+            $b->structuralHash = (new \Phpdup\Fingerprint\SubtreeHasher())->hash($b->canonical);
+            $b->id             = 'D-' . $tag;
+            $b->ngramBag       = $bag; // forced equal → Jaccard exactly 1.0
+            $blocks[]          = $b;
+        }
+        $this->assertNotSame($blocks[0]->structuralHash, $blocks[1]->structuralHash,
+            'builder sanity: divergent trees must not collapse to one structural hash');
+        return $blocks;
+    }
+
+    public function testTedRefutedPairIsNotReAcclaimedByTheContainmentLens(): void
+    {
+        [$a, $b] = $this->divergentTreeSameBagPair();
+
+        $jac    = (new JaccardSimilarity())->similarity($a->ngramBag, $b->ngramBag);
+        $tedSim = (new TreeEditDistance())->similarity($a->canonical, $b->canonical, 0.85);
+        $this->assertGreaterThanOrEqual(0.8, $jac, 'builder sanity: the pair reaches the Jaccard lane');
+        $this->assertLessThan(0.85, $tedSim, 'builder sanity: APTED refutes the pair (TED-refuted lane)');
+
+        // Containment is ON by default here — the lens WOULD accept the pair
+        // (equal bags ⇒ containment 1.0) if the refuted pair were allowed to
+        // fall through to it. The $tedRefuted guard must keep the verdict
+        // dead: no IR, no ML, no edge.
+        $clusters = $this->serialClusterer(800000)->cluster($this->indexOf($a, $b), null);
+        $this->assertSame([], $clusters,
+            'a tree-refuted pair must not be re-acclaimed by the containment lens (engine-056 scope ruling)');
+    }
 }

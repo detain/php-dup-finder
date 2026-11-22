@@ -1108,4 +1108,83 @@ final class ClustererTest extends TestCase
             $this->removeWeightScratch($scratch);
         }
     }
+
+    // -----------------------------------------------------------------
+    // engine-S15 / php-dup-finder-engine-054 — the exact bucket riding
+    // in a weaker component keeps its type-1 headline.
+    //
+    // Old law: a phase-1 hash bucket was suppressed whenever ALL its
+    // members got emitted somewhere in phase 2. Byte-identical copies
+    // A,B that rode in a 90%-lookalike component {A,B,C} were therefore
+    // reported ONLY as that near-dup cluster (exact=false) — the highest
+    // priority clone type lost its label. New law: suppression requires
+    // an emitted exact=true cluster that carries the WHOLE bucket; else
+    // the bucket is emitted alongside the weaker cluster. Triadic
+    // closure tightening of ball membership remains a documented
+    // non-goal of this step (plan §150 fix note).
+    // -----------------------------------------------------------------
+
+    public function testExactBucketRidingInWeakerComponentKeepsItsExactHeadline(): void
+    {
+        $index = new BlockIndex();
+        $index->add($this->edgeBlock('A', 'hX'));
+        $index->add($this->edgeBlock('B', 'hX'));
+        $index->add($this->edgeBlock('C', 'hY'));
+
+        $clusterer = new Clusterer(
+            similarity: new JaccardSimilarity(),
+            tree:       new TreeEditDistance(),
+        );
+        $clusters = $clusterer->cluster($index, [
+            ['A', 'B', 1.0,  MatchTier::ExactHash->value],
+            ['A', 'C', 0.90, MatchTier::Jaccard->value],
+            ['B', 'C', 0.90, MatchTier::Jaccard->value],
+        ]);
+
+        // The finding's ride-in-90% scenario: BOTH the weaker component
+        // cluster and the exact sub-bucket must be reported.
+        $this->assertCount(2, $clusters, 'the swallowed exact bucket must be emitted non-suppressively');
+        $byMembers = [];
+        foreach ($clusters as $c) {
+            $ids = array_column($c->members, 'id');
+            sort($ids);
+            $byMembers[implode(',', $ids)] = $c;
+        }
+        $this->assertArrayHasKey('A,B,C', $byMembers, 'the near cluster stands as before');
+        $this->assertFalse($byMembers['A,B,C']->exact, 'the weaker component does NOT claim the exact tier');
+        $this->assertArrayHasKey('A,B', $byMembers, 'the exact pair reports its own cluster');
+        $this->assertTrue($byMembers['A,B']->exact, 'the riding bucket keeps its type-1 label (engine-054)');
+        $this->assertEqualsWithDelta(1.0, $byMembers['A,B']->similarity, 1e-9);
+        // The type-1 evidence survives inside the near cluster too.
+        $exactStampSeen = false;
+        foreach ($byMembers['A,B,C']->pairs as $pair) {
+            if ($pair['matchTier'] === MatchTier::ExactHash->value) {
+                $exactStampSeen = true;
+            }
+        }
+        $this->assertTrue($exactStampSeen, 'per-pair exact-hash tier stamp still present in the near cluster');
+    }
+
+    public function testExactBucketCoveredByItsOwnExactClusterIsNotDuplicated(): void
+    {
+        // The dedupe role of the old suppression, restated under the new
+        // coverage rule: A,B alone (identical hash) form one component
+        // emitted as exact=true — the phase-1 bucket IS that cluster and
+        // must NOT be re-added a second time.
+        $index = new BlockIndex();
+        $index->add($this->edgeBlock('A', 'hX'));
+        $index->add($this->edgeBlock('B', 'hX'));
+
+        $clusterer = new Clusterer(
+            similarity: new JaccardSimilarity(),
+            tree:       new TreeEditDistance(),
+        );
+        $clusters = $clusterer->cluster($index, [
+            ['A', 'B', 1.0, MatchTier::ExactHash->value],
+        ]);
+
+        $this->assertCount(1, $clusters, 'a fully-covered exact bucket must not duplicate the cluster');
+        $this->assertTrue($clusters[0]->exact);
+        $this->assertEqualsWithDelta(1.0, $clusters[0]->similarity, 1e-9);
+    }
 }

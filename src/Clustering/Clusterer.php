@@ -22,11 +22,19 @@ use Symfony\Component\Console\Output\OutputInterface;
  *      exact-clone cluster. No similarity computation needed; cheap.
  *
  *   2. Near-duplicate edges — for each block, pull candidates from the
- *      n-gram inverted index (rare-gram filter), score each candidate
- *      by Jaccard, keep pairs above similarityThreshold. Remaining
- *      pairs are refined by bounded tree-edit-distance and kept above
- *      treeThreshold. Survivors become similarity edges; union-find
- *      forms clusters from the edges.
+ *      n-gram inverted index (rare-gram filter) and score each by
+ *      Jaccard. A pair at or above similarityThreshold is refined by
+ *      bounded tree-edit-distance: confirming above treeThreshold it
+ *      becomes a 'jaccard'-tier edge weighted min(jac, ted); refuted,
+ *      it is no longer dead (engine-S15) — the genuinely different
+ *      IR / ML lenses still weigh it, while the bag-subset
+ *      containment arm stays reserved for Jaccard-rejected pairs
+ *      (a tree refutation must not be reversed by the same bag
+ *      evidence that gated the pair in). Survivors become
+ *      similarity edges; union-find + the medoid-ball split form
+ *      clusters. Phase-1 exact buckets are re-added unless an emitted
+ *      exact cluster already carries the whole bucket (engine-S15,
+ *      php-dup-finder-engine-054).
  *
  * If a non-null `edges` parameter is passed to `cluster()`, phase 2
  * pair scoring is skipped and the supplied edges are used directly —
@@ -480,7 +488,21 @@ final class Clusterer
         }
 
         $merged = [];
-        $emittedBlocks = [];
+        // engine-S15 (engine-054): replaces the old $emittedBlocks bookkeeping
+        // + "suppress the phase-1 bucket whenever all its members got emitted
+        // somewhere" filter, which silently dropped the type-1 headline —
+        // byte-identical copies riding in a component whose split ball also
+        // holds a 90% lookalike were reported ONLY as a near-dup (exact=false)
+        // cluster. New rule: a phase-1 exact bucket is suppressed only when
+        // some emitted cluster marked exact=true already carries the WHOLE
+        // bucket (the old dedupe role); otherwise — riding in a weaker
+        // cluster, split across groups, or unemitted — the bucket is emitted
+        // non-suppressively and the exact tier survives. Triadic-closure
+        // tightening of ball membership is a documented NON-GOAL of this
+        // step (scope guard per plan §150 fix note; the min(a,b) re-anchoring
+        // was struck as a non-issue by the consolidators).
+        /** @var array<string, list<array<string, bool>>> $emittedExactGroups structuralHash → member-id sets of emitted exact=true groups */
+        $emittedExactGroups = [];
         foreach ($byComponent as $root => $members) {
             if (count($members) < 2) continue;
             $h = $members[0]->structuralHash;
@@ -512,22 +534,40 @@ final class Clusterer
 
             foreach ($groups as $group) {
                 $merged[] = $group;
-                foreach ($group->members as $m) {
-                    $emittedBlocks[$m->id] = true;
+                if ($group->exact) {
+                    $idSet = [];
+                    foreach ($group->members as $m) {
+                        $idSet[$m->id] = true;
+                    }
+                    $emittedExactGroups[$group->members[0]->structuralHash][] = $idSet;
                 }
             }
         }
 
         $finalClusters = $merged;
         foreach ($clusters as $c) {
-            $allEmitted = true;
-            foreach ($c->members as $m) {
-                if (!isset($emittedBlocks[$m->id])) {
-                    $allEmitted = false;
+            // An exact bucket's members all share its structuralHash, and
+            // every emitted exact=true group is itself drawn from that same
+            // bucket (allIdenticalHash), so "some exact group covers the
+            // bucket" is exactly "some exact group IS the bucket" — the pure
+            // duplicate case the old suppression handled. Everything else —
+            // partial emission, ride-in-90%, cross-ball splits — keeps the
+            // bucket's own exact headline (engine-054).
+            $covered = false;
+            foreach ($emittedExactGroups[$c->members[0]->structuralHash] ?? [] as $exactGroupIds) {
+                $missing = false;
+                foreach ($c->members as $m) {
+                    if (!isset($exactGroupIds[$m->id])) {
+                        $missing = true;
+                        break;
+                    }
+                }
+                if (!$missing) {
+                    $covered = true;
                     break;
                 }
             }
-            if (!$allEmitted) {
+            if (!$covered) {
                 $finalClusters[] = $c;
             }
         }
@@ -685,8 +725,10 @@ final class Clusterer
             // to another residue would have kept both in the remaining
             // graph). If it ever fires the partition assumption broke, so
             // fail loud instead of silently dropping a block out of the
-            // coverage (emittedBlocks cannot notice it: it only gates
-            // X-bucket re-adds).
+            // coverage (the emitted-exact-group ledger cannot notice it:
+            // it only gates X-bucket re-adds, and is fed only by groups
+            // already partitioned from the component — a dropped member
+            // here lands in no group at all).
             if ($bestGroup === null) {
                 throw new \LogicException(sprintf(
                     'medoid-ball split: lone residue block %s has no accepted edge into any surviving group; partition invariant broken.',
@@ -803,6 +845,9 @@ final class Clusterer
             $bagA = $a->ngramBag ?? [];
             $bagB = $b->ngramBag ?? [];
             $jac = $this->similarity->similarity($bagA, $bagB);
+            // engine-S15 (engine-056 item 2): lane marker for "the bag gate
+            // accepted, the tree lens refuted" — see the cascade below.
+            $tedRefuted = false;
             if ($jac >= $this->similarityThreshold) {
                 // Item 1.2: TED cost gate. When the pair's LARGER member
                 // exceeds max_ted_size, the APTED matrix would dominate the
@@ -833,18 +878,47 @@ final class Clusterer
                     continue;
                 }
                 $tedSim = $this->tree->similarity($a->canonical, $b->canonical, $this->treeThreshold);
-                if ($tedSim < $this->treeThreshold) continue;
-                $edges[] = [$aId, $bId, min($jac, $tedSim), MatchTier::Jaccard->value];
-                continue;
+                if ($tedSim >= $this->treeThreshold) {
+                    // engine-S15 (engine-056 item 1, delete branch): the
+                    // confirmed pair keeps MatchTier::Jaccard — first-wins
+                    // says the tier records the lens that FOUND the match
+                    // (the bag gate), and the TED verdict lives in the
+                    // weight min(jac, tedSim). No engine mints a phantom
+                    // 'ted' tier; the enum case was deleted with this note.
+                    $edges[] = [$aId, $bId, min($jac, $tedSim), MatchTier::Jaccard->value];
+                    continue;
+                }
+                // engine-S15 (engine-056 item 2): a TED REJECT used to
+                // `continue` past every remaining arm — the structural
+                // lens alone decided the pair's fate, so a Jaccard-pass +
+                // TED-fail pair was dead even though the genuinely
+                // different lenses below never got to weigh it (the
+                // structurally-similar-but-AST-divergent class the IR
+                // tier exists for: under --scorer=ir / --ml-pair-url the
+                // pair can now mint an edge; previously unreachable).
+                // The BAG-subset arm, though, is deliberately skipped for
+                // this lane: containment >= jaccard holds for every pair,
+                // and these pairs already passed the Jaccard floor —
+                // letting the same bag evidence re-acclaim what the tree
+                // refuted would mute the tree tier on every nested-shape
+                // pair (the rung-ladder corpus of the parity tests is
+                // exactly that shape; measured). Keeping containment out
+                // preserves the S08a/engine-007 law that a structural
+                // refutation stands against bag restatement, while still
+                // opening the two lenses the finding names.
+                $tedRefuted = true;
             }
-            // Jaccard rejected: try the type-3 / "near-subset" path. If the smaller
+            // The containment lens below weighs pairs the Jaccard gate
+            // REJECTED (engine-S15: not the ones it accepted and the tree
+            // lens refuted — see $tedRefuted above). Type-3 / "near-subset"
+            // path: if the smaller
             // bag is contained in the larger above $containmentThreshold AND the
             // bags are at least $optionalBlocksMinOverlap comparable in size, mark
             // it a near-duplicate-with-optional-segments and let AntiUnifier handle
             // the LCS alignment. Edge similarity is the containment score so the
             // Ranker can still distinguish strong subsets from marginal ones.
             $cont = null;
-            if ($this->optionalBlocksEnabled) {
+            if ($this->optionalBlocksEnabled && !$tedRefuted) {
                 // engine-S14 (engine-035): one merged pass — similarity()
                 // already summed both bags, sizeRatio() re-summed them
                 // right after. Same tuples, half the walks.
