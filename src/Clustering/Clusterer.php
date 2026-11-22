@@ -809,8 +809,24 @@ final class Clusterer
                 // run (161s / 1.2GB on huge functions) — so the pair rides
                 // on the jaccard verdict alone, honestly stamped as
                 // structurally UNVERIFIED instead of silently dropped or
-                // pretending TED judged it. Mirrored byte-for-byte in
-                // PairScoreWorker::score() (dual-engine parity pin).
+                // pretending TED judged it.
+                // once-028 (docblock truth): the tail of this comment used
+                // to promise the twin is "mirrored byte-for-byte" while the
+                // fork zone still hardcoded the DEFAULT edit-cost model —
+                // the two engines gated identically but scored the gate
+                // survivors with different cost tables under --ted-weights,
+                // so the claim was false until shell-S14 threaded the model
+                // into PairScoreWorker. The real mirror, precisely: the
+                // TIER_JACCARD_UNVERIFIED branch of PairScoreWorker::score()
+                // (whose tier constant is spelled identically to
+                // MatchTier::JaccardUnverified->value — drift trap), with
+                // both engines fed one Config by ClusterStage
+                // (buildClusterer() vs scorePairs()). Parity is carried by
+                // tests, not prose: PairScoreWorkerTedParityTest pins the
+                // forked stage against this path, and ClustererTest's
+                // weights-specific serial arms pin cost-model
+                // discrimination here plus raw serial-vs-fork byte identity
+                // under non-default weights.
                 if (max($a->size, $b->size) > $this->maxTedSize) {
                     $edges[] = [$aId, $bId, $jac, MatchTier::JaccardUnverified->value];
                     continue;
