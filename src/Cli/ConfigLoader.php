@@ -267,6 +267,7 @@ final class ConfigLoader
             scorer:                         $flat['scorer'],
             irThreshold:                    $flat['ir_threshold'],
             mlPairUrl: (string)($overrides['ml_pair_url'] ?? $data['ml_pair_url'] ?? $base->mlPairUrl),
+            mlPairAllowPrivate: (bool)($overrides['ml_pair_allow_private'] ?? $data['ml_pair_allow_private'] ?? $base->mlPairAllowPrivate),
             mlPairThreshold:               $flat['ml_pair_threshold'],
             debugLog:                      $flat['debug_log'],
             lowMemory:                     $flat['low_memory'],
@@ -697,6 +698,20 @@ final class ConfigLoader
                         );
                     }
 
+                    // once-S54: the private-range SSRF opt-in is ROOT-
+                    // ONLY. Discovery lets any directory plant a file,
+                    // so a subtree flip of ml_pair_allow_private would
+                    // silently relax the posture of a URL the operator
+                    // (or the root config) chose. Refused loudly, same
+                    // stance family as the knobs above; absent from
+                    // shapeOverrides().
+                    if (array_key_exists('ml_pair_allow_private', $payload)) {
+                        throw new \RuntimeException(
+                            'ml_pair_allow_private is not a per-directory key (root phpdup.json only): '
+                            . $file->getPathname()
+                        );
+                    }
+
                     // shell-S22 (shell-026, ENGINE-SEC out-of-group 2): the
                     // PATH/REF-BEARING family is root-only. These four keys
                     // steer WRITES and EXTERNAL references — debug_log names
@@ -909,6 +924,7 @@ final class ConfigLoader
             'ir_threshold',
             'ml_pair_url',
             'ml_pair_threshold',
+            'ml_pair_allow_private',
             'debug_log',
             'low_memory',
             'fail_on_impact',
@@ -1120,18 +1136,28 @@ final class ConfigLoader
         if (array_key_exists('ir_threshold', $data)) {
             $assertFloat01($data['ir_threshold'], 'ir_threshold');
         }
+        if (array_key_exists('ml_pair_allow_private', $data) && !is_bool($data['ml_pair_allow_private'])) {
+            // once-S54: shape-asserted BEFORE the URL leg below so the
+            // key consulted for policy is already known boolean.
+            throw new \RuntimeException("ml_pair_allow_private must be a boolean$where");
+        }
         if (array_key_exists('ml_pair_url', $data)) {
             if (!is_string($data['ml_pair_url'])) {
                 throw new \RuntimeException("ml_pair_url must be a string$where");
             }
-            if ($data['ml_pair_url'] !== ''
-                && !\Phpdup\Ml\MlClient::isAllowedUrl(
+            if ($data['ml_pair_url'] !== '') {
+                // once-S54 (php-dup-finder-once-076/083/084): shape-only
+                // admission — zero resolver calls, so validating an
+                // attacker-supplied URL can never stall or exfil over
+                // DNS. Names are decided by the dial, fail-closed
+                // there. Refusals name the space and the opt-in.
+                $mlPairRefusal = \Phpdup\Ml\MlPairClient::pairUrlAdmissionError(
                     rtrim($data['ml_pair_url'], '/') . '/score-pair',
-                )
-            ) {
-                throw new \RuntimeException(
-                    "ml_pair_url must be an http(s) URL with a non-empty host (and not 0.0.0.0)$where",
+                    (bool)($data['ml_pair_allow_private'] ?? false),
                 );
+                if ($mlPairRefusal !== null) {
+                    throw new \RuntimeException("$mlPairRefusal$where");
+                }
             }
         }
         if (array_key_exists('ml_pair_threshold', $data)) {

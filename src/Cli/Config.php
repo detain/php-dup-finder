@@ -254,6 +254,17 @@ final class Config
         // evidence silently is the failure mode this whole item exists to
         // kill, so exceeding the threshold marks-and-annotates instead.
         public readonly float $maxHoleCoverage = 1.0,
+        // once-S54 (php-dup-finder-once-084): opt-in admitting ml_pair_url
+        // sidecars in the PRIVATE address families (loopback, RFC 1918,
+        // CGNAT, link-local, ULA) — the documented local-sidecar
+        // topology. Default false keeps the full refused-space posture
+        // ([OWNER] ruling: opt-in only). Root-only config key
+        // `ml_pair_allow_private` (a subtree .phpdup.json is refused);
+        // the argv flag --ml-pair-allow-private is registered by the
+        // Command.php roster leg. Reserved non-private spaces
+        // (0.0.0.0/8, 192.0.0.0/24, 198.18.0.0/15, multicast) stay
+        // refused either way; see MlPairClient::pairUrlAdmissionError().
+        public readonly bool $mlPairAllowPrivate = false,
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -316,8 +327,18 @@ final class Config
         if (!is_finite($maxHoleCoverage) || $maxHoleCoverage < 0 || $maxHoleCoverage > 1) {
             throw new \InvalidArgumentException("max_hole_coverage must be a finite number within 0..1 (got $maxHoleCoverage)");
         }
-        if ($mlPairUrl !== '' && !\Phpdup\Ml\MlClient::isAllowedUrl(rtrim($mlPairUrl, '/') . '/score-pair')) {
-            throw new \InvalidArgumentException("ml_pair_url failed validation: $mlPairUrl");
+        if ($mlPairUrl !== '') {
+            // once-S54: shape-only admission, zero resolver calls — the
+            // old shared-gate check turned construction (and every CLI
+            // validation of an attacker-supplied URL) into a blocking
+            // DNS lookup. Refusals name the refused space + the opt-in.
+            $mlPairRefusal = \Phpdup\Ml\MlPairClient::pairUrlAdmissionError(
+                rtrim($mlPairUrl, '/') . '/score-pair',
+                $mlPairAllowPrivate,
+            );
+            if ($mlPairRefusal !== null) {
+                throw new \InvalidArgumentException("$mlPairRefusal (url: $mlPairUrl)");
+            }
         }
         if ($failOnImpact < 0) {
             throw new \InvalidArgumentException("fail_on_impact must be >= 0");
@@ -532,6 +553,9 @@ final class Config
             irThreshold:                    isset($overrides['ir_threshold']) ? (float)$overrides['ir_threshold'] : $this->irThreshold,
             mlPairUrl:                      isset($overrides['ml_pair_url']) ? (string)$overrides['ml_pair_url']  : $this->mlPairUrl,
             mlPairThreshold:                isset($overrides['ml_pair_threshold']) ? (float)$overrides['ml_pair_threshold'] : $this->mlPairThreshold,
+            // once-S54: root-level opt-in; hand-built callers (pipeline /
+            // serve) thread it here, per-directory routes never admit it.
+            mlPairAllowPrivate:             isset($overrides['ml_pair_allow_private']) ? (bool)$overrides['ml_pair_allow_private'] : $this->mlPairAllowPrivate,
             // shell-S22 (shell-026): debug_log, baseline, baseline_out and
             // diff_base are ROOT-ONLY on the per-directory route — discovery
             // refuses them in any .phpdup.json and shapeOverrides() no longer

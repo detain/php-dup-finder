@@ -229,7 +229,7 @@
         "ml_pair_url": {
             "type": "string",
             "default": "",
-            "description": "External pair-similarity ML sidecar URL (option 6 of docs/plans/orm-db-semantic-dedup.md — clusterer wiring). Empty (the default) disables the tier. When set, the very last clustering tier — POSTs a PairFeatures vector to <URL>/score-pair; pairs at or above ml_pair_threshold form edges. http(s) only; SSRF-hardened (rejects file:// / gopher:// / 0.0.0.0). Returns null on transport failure so unavailability never breaks the run. CLI: --ml-pair-url."
+            "description": "External pair-similarity ML sidecar URL (option 6 of docs/plans/orm-db-semantic-dedup.md — clusterer wiring). Empty (the default) disables the tier. When set, the very last clustering tier — POSTs a PairFeatures vector to <URL>/score-pair; pairs at or above ml_pair_threshold form edges. http(s) only; SSRF-hardened at admission by SHAPE ONLY — no resolver call happens while the config is validated (once-S54): canonical IP literals are bit-checked against the refused space (0.0.0.0/8, loopback, RFC 1918, CGNAT, link-local, 192.0.0.0/24, 198.18.0.0/15, multicast/reserved, IPv6 loopback/ULA/link-local/multicast, IPv4-mapped and IPv4-compatible forms, and the NAT64 64:ff9b::/96 well-known prefix's embedded IPv4), file:// / gopher:// and inet_aton numeric shorthands refuse, localhost refuses by name; bare hostnames are grammar-checked and resolved ONCE at dial time, fail-closed there. Returns null on transport failure so unavailability never breaks the run. CLI: --ml-pair-url."
         },
         "ml_pair_threshold": {
             "type": "number",
@@ -237,6 +237,11 @@
             "maximum": 1.0,
             "default": 0.80,
             "description": "Similarity threshold for the option-6 ML pair tier. Only consulted when ml_pair_url is set. CLI: --ml-pair-threshold."
+        },
+        "ml_pair_allow_private": {
+            "type": "boolean",
+            "default": false,
+            "description": "Opt-in admitting an ml_pair_url sidecar in the PRIVATE address families — loopback, RFC 1918, CGNAT 100.64.0.0/10, link-local, ULA, and their IPv6/embedded (incl. NAT64) spellings — the documented local-sidecar topology (once-S54). Off by default; reserved non-private spaces (0.0.0.0/8, 192.0.0.0/24, 198.18.0.0/15, multicast) stay refused either way. Root-only key: subtree .phpdup.json files carrying it are refused. The argv spelling --ml-pair-allow-private registers with the next Command.php option-roster leg. CLI: --ml-pair-allow-private."
         },
         "db_symbols": {
             "type": "object",

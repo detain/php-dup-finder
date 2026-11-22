@@ -63,8 +63,11 @@ high anomaly score on a cluster with high `safety` is a strong
   analysis.
 - **`MlClient` — not wired.** `MlClient::score()` has no pipeline call
   sites. The class is still load-bearing in production:
-  `MlClient::isAllowedUrl()` validates `--ml-pair-url` at the CLI and
-  Config admission seams, and `MlClient` owns the shared transport
+  `MlClient::isAllowedUrl()` validates `--ml-pair-url` at the CLI
+  admission door (and scores the cluster tier when wired), while the
+  Config/`ConfigLoader` admission seams for the pair tier ride the
+  dedicated shape-only door `MlPairClient::pairUrlAdmissionError()`
+  (once-S54, below); `MlClient` owns the shared transport
   policy both clients ride (`gateUrl()`, `coerceUnitFloat()`,
   `MAX_RESPONSE_BYTES`, the address-pin helpers). Whether the cluster
   tier gets wired to it or the client gets deleted is the per-class
@@ -84,10 +87,33 @@ predated the pair tier and contradicted itself; it is retired here.
   A/AAAA record, fail-closed; every candidate address must clear the
   refused-space bit checks (loopback, RFC 1918, CGNAT, link-local,
   ULA, IPv4-mapped, multicast/reserved/broadcast, plus the localhost
-  deny-list). Consequence for deployment: a `127.0.0.1` or RFC 1918
-  sidecar URL is **refused at admission today**; plan step once-S54
-  introduces the opt-in `--ml-pair-allow-private` (default off) for
-  that topology — until it lands, dial a gate-allowed address.
+  deny-list). The **cluster** client `MlClient` dials behind exactly
+  this gate, unchanged.
+- **Pair-tier doors** (once-S54, php-dup-finder-once-076/083/084):
+  the pair client splits validation from resolution. **Admission**
+  (`MlPairClient::pairUrlAdmissionError()`, ridden by `Config` and
+  `ConfigLoader::validate()`) is shape-only and performs ZERO resolver
+  calls — an attacker-planted `.phpdup.json` can no longer turn
+  config validation into a blocking DNS lookup (the once-076
+  stall/exfil channel). It still refuses every canonical IP literal
+  the bit matrix condemns, `file://`-class schemes, inet_aton
+  shorthands, bracket-pairing violations, grammar-invalid names, and
+  `localhost`/`*.localhost` by name; a bare hostname is admitted on
+  shape and decided at the dial. **Dialing**
+  (`MlPairClient::pairEndpointDecision()`) resolves a name once per
+  client (engine-S21 memo and the pinned-transport posture kept) and
+  fail-closes on zero records or any refused record — re-classifying
+  every resolved address, which also adds the NAT64 `64:ff9b::/96`
+  embedded-IPv4 recursion the pre-existing shared matrix predates
+  (once-083: `64:ff9b::7f00:1` is `127.0.0.1` wearing IPv6 bytes).
+  The documented local-sidecar topology is no longer refused outright
+  (once-084): the opt-in `ml_pair_allow_private` (CLI:
+  `--ml-pair-allow-private`, default off, root config only — a
+  subtree `.phpdup.json` carrying it is refused loudly) admits the
+  private families (loopback, RFC 1918, CGNAT, link-local, ULA,
+  embedded/NAT64 forms thereof), while 0.0.0.0/8, 192.0.0.0/24,
+  198.18.0.0/15 and multicast/reserved stay refused either way. Every
+  refusal message names the space AND the opt-in's two spellings.
 - **Pinned dialing** (engine-S19b): the checked addresses are the
   dialled ones. The curl transport preloads them via
   `CURLOPT_RESOLVE` (`MlClient::curlPinEntries()`); the stream

@@ -74,17 +74,30 @@ use Phpdup\Extraction\Block;
  *
  * **Security**
  *
- * Every endpoint URL passes {@see MlClient::gateUrl()}, the shared gate
- * rebuilt per php-dup-finder-engine-012: http(s) only, host must be a
- * canonical IP literal or resolve to at least one A/AAAA record
- * (fail-closed), and every candidate address must clear the
- * refused-space bit checks (loopback, RFC 1918, CGNAT, link-local,
- * ULA, IPv4-mapped, multicast/reserved/broadcast, plus the localhost
- * deny-list) documented there. The transports pin the checked
- * addresses and cap response bodies per engine-S19b (see
- * {@see MlClient::curlPinEntries()} / {@see MlClient::pinnedStreamRequest()}
- * and MAX_RESPONSE_BYTES). Callers wanting tighter policy should
- * prefilter the URL.
+ * URL validation is split in two doors (once-S54, php-dup-finder-
+ * once-076/083/084). Config ADMISSION validates SHAPE ONLY through
+ * {@see self::pairUrlAdmissionError()}: scheme, host grammar,
+ * canonical-literal bracket pairing, numeric shorthands, and the
+ * refused-address bit matrix — all WITHOUT touching a resolver, so a
+ * planted `.phpdup.json` cannot turn config validation into a
+ * blocking DNS lookup (stall or exfil channel). Hostnames are
+ * deferred to dial time. The DIAL door {@see
+ * self::pairEndpointDecision()} then performs the one resolver walk
+ * per client (memoized, engine-S21 economics kept) and fail-closes
+ * on zero records or any refused record — including the NAT64
+ * 64:ff9b::/96 embedded-IPv4 recursion that the shared
+ * {@see MlClient::gateUrl()} matrix predates and does not classify.
+ * By default the refused space is the full engine-012 list; the
+ * opt-in `ml_pair_allow_private` (CLI: --ml-pair-allow-private,
+ * default off, root-config only) admits the PRIVATE families
+ * (loopback, RFC 1918, CGNAT, link-local, ULA, embedded copies
+ * thereof) for the documented local-sidecar topology, while the
+ * non-private reserved spaces (0.0.0.0/8, 192.0.0.0/24,
+ * 198.18.0.0/15, multicast/reserved) stay refused either way. The
+ * transports pin the checked addresses and cap response bodies per
+ * engine-S19b (see {@see MlClient::curlPinEntries()} / {@see
+ * MlClient::pinnedStreamRequest()} and MAX_RESPONSE_BYTES). Callers
+ * wanting tighter policy should prefilter the URL.
  *
  * **Per-instance economics (engine-S21, php-dup-finder-engine-032)**
  *
@@ -111,7 +124,349 @@ final class MlPairClient implements PairScorer
         private readonly string $baseUrl,
         private readonly int $timeoutSec = 5,
         private readonly PairFeatures $features = new PairFeatures(),
+        // once-S54: admit sidecar URLs in the PRIVATE address families
+        // (loopback, RFC 1918, CGNAT, link-local, ULA) — the documented
+        // local-sidecar topology. Default false keeps the full engine-012
+        // refusal posture ([OWNER] ruling); reserved/non-routable spaces
+        // stay refused even when this is true.
+        private readonly bool $allowPrivate = false,
     ) {
+    }
+
+    /**
+     * Config-admission door for the pair tier: validate SHAPE, never DNS.
+     *
+     * once-S54 (php-dup-finder-once-076/083/084). The old admission
+     * reused {@see MlClient::isAllowedUrl()}, which resolves hostnames
+     * fail-closed at check time — turning every `phpdup analyze` /
+     * `--validate-config` over an attacker-planted `.phpdup.json` into
+     * a blocking resolver query to an attacker-chosen name (a
+     * DNS-exfil / stall channel that fires long before any pair is
+     * scored), and refusing the documented `127.0.0.1` / RFC 1918
+     * sidecar topology with a message naming only `0.0.0.0`.
+     *
+     * This door performs ZERO resolver calls by construction (no
+     * dns_get_record / gethostbynamel / gateUrl reachable from this
+     * method — pinned structurally by tests/Unit/Cli/
+     * MlPairUrlValidationTest) and decides four things:
+     *
+     * - http(s) scheme only; explicit non-empty host;
+     * - canonical IP literals carry the full refused-space bit matrix
+     *   under the `allowPrivate` policy (0/8, RFC 1918, CGNAT,
+     *   loopback, link-local, 192.0.0/24, 198.18/15, multicast/
+     *   reserved, plus IPv4 embedded in ::/96, ::ffff:/96 and the
+     *   NAT64 64:ff9b::/96 well-known prefix — the last class
+     *   php-dup-finder-once-083 caught the shared matrix missing);
+     * - `localhost` / `*.localhost` are refused by name without
+     *   resolution unless opted in;
+     * - bare hostnames are grammar-checked only. Resolution — with the
+     *   same bit matrix over every record, fail-closed on zero
+     *   records — happens once at DIAL time inside the client
+     *   ({@see self::pairEndpointDecision()}), where the result is
+     *   also the pin the transport connects to. A name that refuses
+     *   late costs one bounded transport timeout, never a stalled
+     *   validation run.
+     *
+     * inet_aton numeric shorthands (`2130706433`, `0x7f000001`,
+     * `127.1`, `0177.0.0.1`) are refused in BOTH policies: they are a
+     * canonicality hazard (gate-vs-transport divergence,
+     * php-dup-finder-engine-012), not a privacy question.
+     *
+     * @return null|string Null on admission, or a reason sentence that
+     *         NAMES the refused space and the opt-in key
+     *         (`ml_pair_allow_private`, CLI: --ml-pair-allow-private)
+     *         when a policy refusal is what rejected the URL.
+     */
+    public static function pairUrlAdmissionError(string $endpointUrl, bool $allowPrivate = false): ?string
+    {
+        $parts = parse_url($endpointUrl);
+        if (!is_array($parts)) {
+            return 'ml_pair_url is not a parseable URL';
+        }
+        $scheme = strtolower((string)($parts['scheme'] ?? ''));
+        if ($scheme !== 'http' && $scheme !== 'https') {
+            $shown = $scheme === '' ? 'no scheme' : "scheme '$scheme'";
+            return "ml_pair_url must be an http(s) URL (got $shown)";
+        }
+        $host = (string)($parts['host'] ?? '');
+        if ($host === '') {
+            return 'ml_pair_url must have a non-empty host';
+        }
+        $bracketed = str_starts_with($host, '[');
+        if ($bracketed) {
+            // Strip IPv6 brackets — parse_url keeps them (e.g. '[::1]').
+            $host = trim($host, '[]');
+        }
+        if ($host === '') {
+            return 'ml_pair_url must have a non-empty host';
+        }
+        $host = strtolower($host);
+
+        // RFC 6761 special-use names: decided by name, never by resolver.
+        if ($host === 'localhost' || str_ends_with($host, '.localhost')) {
+            return $allowPrivate
+                ? null
+                : 'ml_pair_url targets the localhost special-use name, refused by default policy; '
+                    . self::optInGuidance();
+        }
+
+        $bytes = inet_pton($host);
+        if ($bytes !== false) {
+            // Canonical literal. URL syntax pairs brackets with IPv6 and
+            // bare text with IPv4; a mismatch is malformed, and the
+            // transports would classify it differently than the gate —
+            // refuse before the bit matrix can be consulted on ambiguous
+            // bytes.
+            if ((strlen($bytes) === 16) !== $bracketed) {
+                return $bracketed
+                    ? 'ml_pair_url host is bracketed but not valid IPv6 text'
+                    : 'ml_pair_url host is a bracket-less IPv6 literal; IPv6 hosts must be bracketed';
+            }
+            $refused = self::refusedAddressReason($bytes, $allowPrivate);
+            if ($refused === null) {
+                return null;
+            }
+            // Honest guidance split: the opt-in admits the PRIVATE
+            // families; reserved space is refused regardless, and the
+            // message says so instead of offering a dead lever.
+            if ($allowPrivate) {
+                return 'ml_pair_url targets ' . $refused . ' space, which ml_pair_allow_private does not admit';
+            }
+            if (self::refusedAddressReason($bytes, true) !== null) {
+                return 'ml_pair_url targets ' . $refused . ' space, refused by policy that even '
+                    . 'ml_pair_allow_private (CLI: --ml-pair-allow-private) does not admit';
+            }
+            return 'ml_pair_url targets ' . $refused . ' space, refused by default policy; ' . self::optInGuidance();
+        }
+        if ($bracketed) {
+            return 'ml_pair_url host is bracketed but not valid IPv6 text';
+        }
+        if (self::looksLikeNumericShorthand($host)) {
+            return 'ml_pair_url host is an inet_aton numeric shorthand (hex/decimal/octal/partial dotted form), '
+                . 'not a canonical IP literal; write the address in canonical dotted-quad form or use a hostname';
+        }
+        if (preg_match('/^[a-z0-9._\-]+$/', $host) !== 1) {
+            return 'ml_pair_url host is not a valid hostname or IP literal';
+        }
+        // Bare name: admitted on shape. Resolution and the same bit
+        // matrix run once at dial time (pairEndpointDecision), fail-
+        // closed — admission never calls a resolver.
+        return null;
+    }
+
+    /**
+     * Dial door: the memoized endpoint decision this client will pin
+     * and connect to. Returns the gateUrl-shaped decision (host, port,
+     * checked addresses) or null to refuse every pair.
+     *
+     * @return null|array{host: string, port: int, addresses: list<string>}
+     */
+    public static function pairEndpointDecision(string $endpointUrl, bool $allowPrivate = false): ?array
+    {
+        if (self::pairUrlAdmissionError($endpointUrl, $allowPrivate) !== null) {
+            return null;
+        }
+        $authority = self::pairAuthority($endpointUrl);
+        if ($authority === null) {
+            return null; // unreachable: admission accepted the shape
+        }
+        [$host, $port] = $authority;
+
+        if (inet_pton($host) !== false) {
+            // Canonical literal — nothing to resolve; the address the
+            // matrix classified is exactly the address the transport
+            // dials (engine-S19b pin property holds trivially).
+            return ['host' => $host, 'port' => $port, 'addresses' => [$host]];
+        }
+
+        if (!$allowPrivate) {
+            // Default policy: the shared fail-closed gate does the walk
+            // (its per-name economics were never the once-076 problem —
+            // ADMISSION was), and every record it returns is
+            // re-classified through this door's matrix so the NAT64
+            // class the shared gate predates cannot slip a name
+            // through to a private address.
+            $decision = MlClient::gateUrl($endpointUrl);
+            if ($decision === null) {
+                return null;
+            }
+            foreach ($decision['addresses'] as $address) {
+                $bytes = inet_pton($address);
+                if ($bytes === false || self::refusedAddressReason($bytes, false) !== null) {
+                    return null;
+                }
+            }
+            return $decision;
+        }
+
+        // Opt-in policy: the localhost deny-list no longer applies to
+        // names either, so this door walks the resolver itself (same
+        // two-backend discipline as gateUrl: dns_get_record for real
+        // zones, gethostbynamel for hosts-file names), fail-closed on
+        // zero records, and classifies every candidate under the
+        // opted-in matrix.
+        /** @var list<string> $candidates */
+        $candidates = [];
+        $records = @dns_get_record($host, DNS_A | DNS_AAAA);
+        if (is_array($records)) {
+            foreach ($records as $record) {
+                foreach (['ip', 'ipv6'] as $key) {
+                    $address = $record[$key] ?? null;
+                    if (is_string($address)) {
+                        $candidates[] = $address;
+                    }
+                }
+            }
+        }
+        if ($candidates === []) {
+            $hostsFile = @gethostbynamel($host);
+            if (is_array($hostsFile)) {
+                $candidates = $hostsFile;
+            }
+        }
+        if ($candidates === []) {
+            return null;
+        }
+        foreach ($candidates as $address) {
+            $bytes = inet_pton($address);
+            if ($bytes === false || self::refusedAddressReason($bytes, true) !== null) {
+                return null;
+            }
+        }
+        return ['host' => $host, 'port' => $port, 'addresses' => $candidates];
+    }
+
+    /**
+     * The refused-space bit matrix over an inet_pton wire form, as
+     * policy sentences. Null means "admitted under this policy".
+     * Distinct from {@see MlClient}'s private matrix on purpose:
+     * the pair door must split always-refused reserved space from
+     * the private families the opt-in admits, and must classify the
+     * NAT64 well-known prefix (php-dup-finder-once-083).
+     */
+    private static function refusedAddressReason(string $bytes, bool $allowPrivate): ?string
+    {
+        return strlen($bytes) === 4
+            ? self::refusedIPv4Reason($bytes, $allowPrivate)
+            : self::refusedIPv6Reason($bytes, $allowPrivate);
+    }
+
+    /** @param string $bytes 4-byte inet_pton AF_INET wire form */
+    private static function refusedIPv4Reason(string $bytes, bool $allowPrivate): ?string
+    {
+        $a0 = ord($bytes[0]);
+        $a1 = ord($bytes[1]);
+        if ($a0 === 0) {
+            return '0.0.0.0/8 (this-network/unspecified)';
+        }
+        if ($a0 === 127) {
+            return $allowPrivate ? null : 'loopback 127.0.0.0/8';
+        }
+        if ($a0 === 10 || ($a0 === 172 && $a1 >= 16 && $a1 <= 31) || ($a0 === 192 && $a1 === 168)) {
+            return $allowPrivate ? null : 'RFC 1918 private';
+        }
+        if ($a0 === 100 && $a1 >= 64 && $a1 <= 127) {
+            return $allowPrivate ? null : 'CGNAT 100.64.0.0/10';
+        }
+        if ($a0 === 169 && $a1 === 254) {
+            return $allowPrivate ? null : 'link-local 169.254.0.0/16';
+        }
+        if ($a0 === 192 && $a1 === 0 && ord($bytes[2]) === 0) {
+            return 'IETF protocol assignments 192.0.0.0/24';
+        }
+        if ($a0 === 198 && ($a1 === 18 || $a1 === 19)) {
+            return 'benchmarking 198.18.0.0/15';
+        }
+        if ($a0 >= 224) {
+            return 'multicast/reserved 224.0.0.0/4';
+        }
+        return null;
+    }
+
+    /** @param string $bytes 16-byte inet_pton AF_INET6 wire form */
+    private static function refusedIPv6Reason(string $bytes, bool $allowPrivate): ?string
+    {
+        if ($bytes === inet_pton('::1')) {
+            return $allowPrivate ? null : 'IPv6 loopback ::1';
+        }
+        $b0 = ord($bytes[0]);
+        if ($b0 === 0xFF) {
+            return 'IPv6 multicast ff00::/8';
+        }
+        if (($b0 & 0xFE) === 0xFC) {
+            return $allowPrivate ? null : 'unique-local fc00::/7';
+        }
+        if ($b0 === 0xFE && (ord($bytes[1]) & 0xC0) === 0x80) {
+            return $allowPrivate ? null : 'link-local fe80::/10';
+        }
+        if (substr($bytes, 0, 10) === str_repeat("\x00", 10)) {
+            $b10 = ord($bytes[10]);
+            $b11 = ord($bytes[11]);
+            if ($b10 === 0x00 && $b11 === 0x00) {
+                // Deprecated IPv4-compatible ::/96 (::, ::1 both land
+                // in the embedded forms handled around this branch).
+                $why = self::refusedIPv4Reason(substr($bytes, 12, 4), $allowPrivate);
+                return $why === null ? null : 'IPv4-compatible ::/96 wrapping ' . $why;
+            }
+            if ($b10 === 0xFF && $b11 === 0xFF) {
+                // IPv4-mapped ::ffff:0:0/96 — classify the embedded v4.
+                $why = self::refusedIPv4Reason(substr($bytes, 12, 4), $allowPrivate);
+                return $why === null ? null : 'IPv4-mapped ::ffff:0:0/96 wrapping ' . $why;
+            }
+        }
+        // 64:ff9b::/96 on the wire is 00 64 ff 9b followed by eight
+        // zero bytes (hextets are 16 bits — "64" means 0x0064).
+        if (substr($bytes, 0, 4) === "\x00\x64\xff\x9b" && substr($bytes, 4, 8) === str_repeat("\x00", 8)) {
+            // NAT64 well-known prefix (RFC 6052): 64:ff9b::7f00:1 is
+            // 127.0.0.1 wearing IPv6 bytes — the php-dup-finder-once-083
+            // bypass of the pre-existing gate. The embedded v4 decides.
+            $why = self::refusedIPv4Reason(substr($bytes, 12, 4), $allowPrivate);
+            return $why === null ? null : 'NAT64 64:ff9b::/96 wrapping ' . $why;
+        }
+        return null;
+    }
+
+    /**
+     * Lower-cased, bracket-stripped authority + effective port of an
+     * admission-shaped URL. Only call after pairUrlAdmissionError()
+     * accepted the URL; null is a defensive never-branch.
+     *
+     * @return null|array{0: string, 1: int}
+     */
+    private static function pairAuthority(string $endpointUrl): ?array
+    {
+        $parts = parse_url($endpointUrl);
+        if (!is_array($parts)) {
+            return null;
+        }
+        $scheme = strtolower((string)($parts['scheme'] ?? ''));
+        $host   = (string)($parts['host'] ?? '');
+        if ($host === '' || ($scheme !== 'http' && $scheme !== 'https')) {
+            return null;
+        }
+        $host = strtolower(trim($host, '[]'));
+        if ($host === '') {
+            return null;
+        }
+        return [$host, (int)($parts['port'] ?? ($scheme === 'https' ? 443 : 80))];
+    }
+
+    private static function optInGuidance(): string
+    {
+        return 'set ml_pair_allow_private (CLI: --ml-pair-allow-private) to admit private-range '
+            . 'sidecar addresses, or point ml_pair_url at a public address';
+    }
+
+    /**
+     * Does $host consist purely of decimal/hex/octal components — i.e.
+     * an inet_aton numeric form that failed canonical parsing? Same
+     * shape test the shared gate applies (php-dup-finder-engine-012);
+     * duplicated rather than widened visibility so neither class can
+     * drift the other's refuse list.
+     */
+    private static function looksLikeNumericShorthand(string $host): bool
+    {
+        return preg_match('/^(?:[0-9]+|0x[0-9a-f]+)(?:\.(?:[0-9]+|0x[0-9a-f]+))*$/', $host) === 1;
     }
 
     /**
@@ -125,9 +480,11 @@ final class MlPairClient implements PairScorer
     private ?array $gateDecision = null;
 
     /**
-     * @internal test seam (engine-S21 counting): real MlClient::gateUrl()
-     *           runs so far; must stay 1 however many pairs score() and
-     *           scoreBatch() dial.
+     * @internal test seam (engine-S21 counting): real dial decisions
+     *           computed so far (since once-S54 the counting door is
+     *           pairEndpointDecision(); a canonical literal mints the
+     *           count without a resolver walk); must stay 1 however
+     *           many pairs score() and scoreBatch() dial.
      */
     private int $urlGateCalls = 0;
 
@@ -139,10 +496,14 @@ final class MlPairClient implements PairScorer
     /**
      * The memoized gate decision for this instance's authority.
      *
-     * gateUrl() derives host/port/addresses from the URL string alone
-     * (the path never enters the decision), so gating the
-     * representative `/score-pair` URL decides identically for
-     * `/score-batch` — one resolver walk per client, verdict cached.
+     * host/port/addresses derive from the URL string alone (the path
+     * never enters the decision), so gating the representative
+     * `/score-pair` URL decides identically for `/score-batch` — one
+     * resolver walk per client, verdict cached (engine-S21 economics).
+     * once-S54: the walk goes through this class's own pair door
+     * ({@see self::pairEndpointDecision()}), which keeps the shared
+     * gate's default-policy behavior for names, adds the NAT64 class,
+     * and honors the instance's `allowPrivate` opt-in.
      *
      * @return null|array{host: string, port: int, addresses: list<string>}
      */
@@ -151,7 +512,10 @@ final class MlPairClient implements PairScorer
         if (!$this->gateResolved) {
             $this->gateResolved = true;
             $this->urlGateCalls++;
-            $this->gateDecision = MlClient::gateUrl(rtrim($this->baseUrl, '/') . '/score-pair');
+            $this->gateDecision = self::pairEndpointDecision(
+                rtrim($this->baseUrl, '/') . '/score-pair',
+                $this->allowPrivate,
+            );
         }
         return $this->gateDecision;
     }
