@@ -460,5 +460,56 @@ final class AstSerializerTest extends TestCase
             );
         }
     }
+
+    /**
+     * Replicates AntiUnifier::stmtHash (src/Refactor/AntiUnifier.php:523)
+     * exactly — same token list, same HASH_JOIN joiner — so the NUL-joiner
+     * collision is pinned at the statement-alignment channel itself while
+     * the refactor stage stays byte-untouched in this fix round (its own
+     * suite can't reach a private method; the probe keeps venue inside the
+     * locked serializer test, disclosed in the fix report).
+     */
+    private function stmtHashOf(string $code): string
+    {
+        $stmts = self::$parser->parseCode($code);
+        self::assertNotNull($stmts, 'fixture code must parse');
+        return sha1(implode(Delimiters::HASH_JOIN, AstSerializer::tokens($stmts[0])));
+    }
+
+    public function testNullJoinerCollisionPairNowHashesDifferently(): void
+    {
+        // engine-S34a fix r1 F-1: the PD-07 construction with the joiner
+        // swapped from \x1F to HASH_JOIN's "\0". At a674d90 the NUL bytes
+        // inside the forged literal were unframed (NUL was not a danger
+        // byte), so the two statements spliced to one \0-joined stream and
+        // shared stmtHash 2cd8294e075e91882556a2f878d25672af284daa. With
+        // "\x00" in FRAME_DANGER the value rides a length frame and the
+        // joiner becomes injective at this layer too.
+        $real = '<?php function z() { e("a", "b"); }';
+        $forge = '<?php function z() { e("a\x00)\x00Arg#false#false(\x00Scalar_String_|s:b"); }';
+
+        $this->assertNotSame($this->stmtHashOf($real), $this->stmtHashOf($forge));
+
+        // Post-fix published identities (re-captured on the fix tip; old
+        // value was the single collision digest quoted above on BOTH
+        // sides). The clean side keeps its pre-framing hash: a NUL-free
+        // value's framing decision does not change.
+        $this->assertSame('2cd8294e075e91882556a2f878d25672af284daa', $this->stmtHashOf($real));
+
+        // The forged literal is now visibly framed — the NUL bytes survive
+        // inside `MARK len ':' raw`, never as token structure — and the
+        // \0-joined stream decodes back to exactly its token list.
+        $value = "a\x00)\x00Arg#false#false(\x00Scalar_String_|s:b";
+        $forgeStmts = self::$parser->parseCode($forge);
+        self::assertNotNull($forgeStmts);
+        $forgeTokens = AstSerializer::tokens($forgeStmts[0]);
+        $this->assertContains(
+            'Scalar_String_|s:' . AstSerializer::FRAME_MARK . strlen($value) . ':' . $value,
+            $forgeTokens,
+            'a NUL-bearing literal must ride a length frame, not bare bytes'
+        );
+        $joined = implode(Delimiters::HASH_JOIN, $forgeTokens);
+        $this->assertSame($forgeTokens, self::decodeStream($joined, Delimiters::HASH_JOIN));
+    }
 }
 

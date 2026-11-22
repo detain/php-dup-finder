@@ -17,12 +17,14 @@ use PhpParser\Node;
  *   tokens(if($x>0){f($x);}) =
  *     ["Stmt_If_(", "Expr_BinaryOp_Greater(", "Expr_Variable|v:x", …]
  *
- * **Prefix-free framing (php-dup-finder-engine-037).** Free-text scalar
- * values (string literals, interpolated-string literal parts, variable /
- * identifier / name payloads, appended string attributes) may carry the
- * stream's own delimiter bytes: \x1F joins tokens into the structural
- * hash, \x1E joins tokens into n-grams, and '|' / '#' delimit the type
- * tag from the scalar. Un-framed, a literal's bytes spliced forged
+ * **Prefix-free framing (php-dup-finder-engine-037, r1 F-1 addendum).**
+ * Free-text scalar values (string literals, interpolated-string literal
+ * parts, variable / identifier / name payloads, appended string
+ * attributes) may carry the stream's own delimiter bytes: \x1F joins
+ * tokens into the structural hash, \x1E joins tokens into n-grams, \x00
+ * joins them in the statement-alignment channel (AntiUnifier::stmtHash,
+ * Hash::ofMany, via Delimiters::HASH_JOIN), and '|' / '#' delimit the
+ * type tag from the scalar. Un-framed, a literal's bytes spliced forged
  * tokens into the joined stream — two reviewers independently produced
  * byte-identical structural hashes for different code (PD-07 / FUZZ-04
  * collision pairs), defeating the tool's strongest claim: equal hash ⇒
@@ -51,8 +53,16 @@ final class AstSerializer
      */
     public const FRAME_MARK = "\x1D";
 
-    /** Bytes that force framing: the mark itself plus both stream joiners. */
-    private const FRAME_DANGER = "\x1D\x1E\x1F";
+    /**
+     * Bytes that force framing: the mark itself plus every joiner a token
+     * list can be spliced with — the structural stream (\x1F), the n-gram
+     * stream (\x1E), and the NUL joiner of the statement-alignment hashes
+     * (\0, AntiUnifier::stmtHash / Hash::ofMany). An unframed NUL inside a
+     * value re-opened exactly the boundary-forgery this whole leg closes
+     * (r1 F-1); honest corpus values carry none of these bytes, so the
+     * widened set moves no clean digest (pinned, not assumed).
+     */
+    private const FRAME_DANGER = "\x00\x1D\x1E\x1F";
 
     /**
      * Frame one free-text scalar value for the stream (see class docblock).
