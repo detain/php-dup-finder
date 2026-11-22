@@ -582,59 +582,186 @@ final class AptedDistanceTest extends TestCase
 
     /**
      * engine-009 (banded DP): an accepted pair reports the EXACT distance
-     * the full DP would have computed; a rejected pair must have an exact
-     * score below its threshold (every gate — size delta, sketch bound,
-     * budgeted DP — rejects only pairs whose true score cannot clear it).
-     * The threshold-0.0 run is the no-pruning oracle: budget = worstCost
-     * ≥ every positional bound, so its band covers the whole matrix.
+     * the full DP would have computed for the same configuration; a
+     * rejected pair terminates at the explicit REFUSE contract. The
+     * threshold-0.0 run is the no-pruning oracle per configuration:
+     * budget = worstCost ≥ every positional bound, so its band covers
+     * the whole matrix.
      *
      * Fix-round-1 (r1 LOW-2): the rejection arm used to be a bare
      * `exact < threshold` which stays green even if the banded path
      * short-circuited the tuple memo entirely. The rejected arm now
      * re-runs through a shared instance and asserts the refusal is the
      * explicit REFUSE constant — gate or band, each refusal is counted.
+     *
+     * Fix-round-2 (r1 MEDIUM-1, fresh verdict): the loop ran only the
+     * DEFAULT model — precisely the axis on which the band is inaudible,
+     * because uniform unit costs make every budget abort sound. The
+     * tight-band rejection is observable on the semantic axis, so the
+     * property loop now runs all four configurations (default/semantic ×
+     * numbered/unnumbered) with per-config oracles and per-config shared
+     * instances. A rejection whose config-matched oracle is ≥ threshold
+     * is the inherited LOW-1 reject-but-exact class: tolerated here ONLY
+     * as the frozen documented set (band-path provenance, cold==warm
+     * parity, explicit REFUSE — never a truncated fraction), never as a
+     * correct score. Budget policy belongs to engine-S10.
      */
     public function testBandPruneKeepsAcceptedDistancesExact(): void
     {
-        $shared = new AptedDistance();
-        foreach (self::engine009Pairs() as $name => [$codeA, $codeB]) {
-            $a = $this->canonical($codeA);
-            $b = $this->canonical($codeB);
-            $exact = (new AptedDistance())->similarity($a, $b, 0.0);
-            foreach ([0.5, 0.85, 0.99] as $threshold) {
-                $gated = (new AptedDistance())->similarity($a, $b, $threshold);
-                if ($gated > 0.0) {
-                    $this->assertSame(
-                        $exact,
-                        $gated,
-                        "banded pair '$name' at $threshold accepted a distance the exact DP disagrees with"
-                    );
-                } else {
+        $falseRejections = [];
+        foreach (self::costModelConfigs() as $config => [$model, $unnumbered]) {
+            $shared = new AptedDistance($model, $unnumbered);
+            foreach (self::engine009Pairs() as $name => [$codeA, $codeB]) {
+                $a = $this->canonical($codeA);
+                $b = $this->canonical($codeB);
+                $exact = (new AptedDistance($model, $unnumbered))->similarity($a, $b, 0.0);
+                foreach ([0.5, 0.85, 0.99, 0.999] as $threshold) {
+                    $gated = (new AptedDistance($model, $unnumbered))->similarity($a, $b, $threshold);
+                    if ($gated > 0.0) {
+                        $this->assertSame(
+                            $exact,
+                            $gated,
+                            "banded pair '$name' [$config] at $threshold accepted a distance the exact DP disagrees with"
+                        );
+                        continue;
+                    }
                     $this->assertSame(
                         AptedDistance::REFUSE,
                         $gated,
-                        "banded pair '$name' at $threshold must return the explicit refusal constant"
-                    );
-                    $this->assertLessThan(
-                        $threshold,
-                        $exact,
-                        "banded pair '$name' at $threshold rejected a pair the exact DP scores at or above it"
+                        "banded pair '$name' [$config] at $threshold must return the explicit refusal constant"
                     );
                     // And the shared (warm) instance must refuse the same
                     // way, having actually run the gate/DP (not skipped).
                     $before = $shared->diagnostics();
                     $warmGated = $shared->similarity($a, $b, $threshold);
                     $after = $shared->diagnostics();
+                    $gateDelta = $after['gate'] - $before['gate'];
+                    $bandDelta = $after['band'] - $before['band'];
+                    $hitsDelta = $after['hits'] - $before['hits'];
                     $this->assertSame(AptedDistance::REFUSE, $warmGated);
                     $this->assertTrue(
-                        ($after['gate'] - $before['gate']) === 1
-                        || ($after['band'] - $before['band']) === 1
-                        || ($after['hits'] - $before['hits']) === 2,
-                        "warm rejection of '$name' at $threshold was not explained by gate, band or memo traffic"
+                        $gateDelta === 1 || $bandDelta === 1 || $hitsDelta === 2,
+                        "warm rejection of '$name' [$config] at $threshold was not explained by gate, band or memo traffic"
                     );
+                    if ($exact >= $threshold) {
+                        // LOW-1 reject-but-exact: legitimate ONLY inside
+                        // the frozen documented set pinned at the end of
+                        // this loop and explained by
+                        // testSemanticTightBandFalseRejectionsAreExactlyTheDocumentedLowOneSet.
+                        // Anything else is band drift and must not be
+                        // laundered as healthy.
+                        $falseRejections[] = "$config/$name@$threshold";
+                        $this->assertSame(
+                            1,
+                            $bandDelta,
+                            "LOW-1 tolerance only holds for the banded-DP refusal path on '$name' [$config] at $threshold, not a size/sketch gate"
+                        );
+                    } else {
+                        $this->assertLessThan(
+                            $threshold,
+                            $exact,
+                            "banded pair '$name' [$config] at $threshold rejected a pair the exact DP scores at or above it"
+                        );
+                    }
                 }
             }
         }
+        $this->assertSame(
+            self::LOW_ONE_FALSE_REJECTIONS,
+            $falseRejections,
+            'reject-but-exact cells must be EXACTLY the documented frozen LOW-1 set — no new cell band-drifted into a false rejection, and none silently vanished (engine-S10 owns that change)'
+        );
+    }
+
+    /**
+     * The four cost-model configurations the class admits (fix-round-2,
+     * r1 MEDIUM-1: the property loops must run the axis on which the
+     * band rejection is observable). EditCostModel is immutable, so one
+     * semantic instance may be shared across constructions — the memo
+     * lives on the AptedDistance instance, never on the model.
+     *
+     * @return array<string, array{0: ?EditCostModel, 1: bool}>
+     */
+    private static function costModelConfigs(): array
+    {
+        $semantic = new EditCostModel(EditCostModel::MODEL_SEMANTIC);
+        return [
+            'default'    => [null, false],
+            'semantic'   => [$semantic, false],
+            'unnumbered' => [null, true],
+            'sem-unnum'  => [$semantic, true],
+        ];
+    }
+
+    /**
+     * The COMPLETE reject-but-exact cell set this fixture roster
+     * produces (config/pair@threshold, in loop-construction order).
+     * Every cell is identical old-vs-new: the shape pre-dates
+     * engine-S09 and the 7,644-value pre-S09↔S09 differential had zero
+     * mismatches (fresh verdict CRUX-2/LOW-1). Frozen, not endorsed —
+     * DO NOT grow it; engine-S10 retires it by ruling budget policy.
+     */
+    private const LOW_ONE_FALSE_REJECTIONS = [
+        'semantic/renamed-dupe@0.99',
+        'semantic/renamed-dupe@0.999',
+        'sem-unnum/renamed-dupe@0.99',
+        'sem-unnum/renamed-dupe@0.999',
+    ];
+
+    /**
+     * Fix-round-2 (r1 MEDIUM-1 + LOW-1, fresh verdict 2026-11-21) — the
+     * semantic-axis tight-band rejection of the renamed-dupe roster
+     * pair is the documented LOW-1 FALSE rejection: the pair's exact
+     * model is 1.0 while the banded arm answers 0.0, because ted()'s
+     * keyroot rowMin abort treats a subproblem minimum as a global
+     * lower bound — false under semantic's non-uniform costs. The fresh
+     * verdict proves the shape PRE-EXISTS engine-S09 (instrumented
+     * parent echo `GATE dp cost=2 budget=1 worst=35 n=17 m=17` at
+     * 2bdc926; engine-S09 preserves it 1:1, 0 mismatches across the
+     * differential's 7,644 arms). This pin freezes the refusal CONTRACT
+     * and the exact cell set — every exceed terminates at explicit
+     * REFUSE via the band path, cold and cache-warm alike (r1 §LOW-2
+     * refutes any "truncated fraction" framing) — it does NOT freeze
+     * the score as correct. TODO(engine-S10): when budget policy is
+     * ruled these cells move to accepted-at-exact-1.0 and this pin +
+     * LOW_ONE_FALSE_REJECTIONS update with the ruling; until then the
+     * rejection must be identical to the pre-S09 behavior pinned here.
+     */
+    public function testSemanticTightBandFalseRejectionsAreExactlyTheDocumentedLowOneSet(): void
+    {
+        $dupe = self::engine009Pairs()['renamed-dupe'];
+        $a = $this->canonical($dupe[0]);
+        $b = $this->canonical($dupe[1]);
+        $observed = [];
+        foreach (self::costModelConfigs() as $config => [$model, $unnumbered]) {
+            $exact = (new AptedDistance($model, $unnumbered))->similarity($a, $b, 0.0);
+            foreach ([0.5, 0.85, 0.99, 0.999] as $threshold) {
+                $cold = (new AptedDistance($model, $unnumbered))->similarity($a, $b, $threshold);
+                if ($cold !== AptedDistance::REFUSE || $exact < $threshold) {
+                    continue; // accepted (value exactness pinned by the band-exactness loop) or healthy refusal
+                }
+                $observed[] = "$config/renamed-dupe@$threshold";
+                $this->assertSame(1.0, $exact, "$config exact oracle for renamed-dupe is the 1.0 the band refused to report");
+                $warm = new AptedDistance($model, $unnumbered);
+                $warm->similarity($a, $b, $threshold);                    // cold pass primes the input memo
+                $before = $warm->diagnostics();
+                $warmSim = $warm->similarity($a, $b, $threshold);         // cache-warm entry
+                $after = $warm->diagnostics();
+                $this->assertSame(
+                    AptedDistance::REFUSE,
+                    $warmSim,
+                    "cache-warm LOW-1 cell '$config'@$threshold must refuse identically to cold (one gate, both paths)"
+                );
+                $this->assertSame(1, $after['band'] - $before['band'], 'the LOW-1 refusal is the banded-DP path, not a size/sketch gate');
+                $this->assertSame(0, $after['gate'] - $before['gate'], 'a LOW-1 cell must not consume a gate refusal');
+                $this->assertGreaterThanOrEqual(2, $after['hits'] - $before['hits'], 'the cache-warm refusal ran on memoised inputs, not around them');
+            }
+        }
+        $this->assertSame(
+            self::LOW_ONE_FALSE_REJECTIONS,
+            $observed,
+            'renamed-dupe reject-but-exact cells must be EXACTLY the frozen LOW-1 set (parity with pre-S09 per the verdict differential) — TODO(engine-S10)'
+        );
     }
 
     /**
@@ -662,14 +789,18 @@ final class AptedDistanceTest extends TestCase
     /**
      * engine-009: the memo must never cross cost-model or unnumbered-mode
      * boundaries — each configuration keeps its own tuples, and cold and
-     * warm agree per instance. The pair below scores 1.0 under the
-     * default/semantic cost models but saturates differently under them
-     * at tighter thresholds, so the isolation pins carry real signal.
+     * warm agree per instance.
      *
      * Fix-round-1 (r1 LOW-2): every configuration arm now asserts the
      * warm call ran on the memo (hits delta 2), so the cross-instance
      * inequality cannot be the artifact of an unexercised code path it
      * was before.
+     *
+     * Fix-round-2 (r1 MEDIUM-1, fresh verdict): the tail used to be
+     * assertNotSame($gated['default'], $gated['semantic']) — green only
+     * thanks to the LOW-1 false-rejection asymmetry (see tail). The
+     * isolation claim stands on the per-config warm pins; the tail now
+     * states each arm's contract instead of freezing the asymmetry.
      */
     public function testMemoRespectsInstanceConfiguration(): void
     {
@@ -683,8 +814,10 @@ final class AptedDistanceTest extends TestCase
             'unnumbered' => [null, true],
         ];
         $gated = [];
+        $exact = [];
         foreach ($configs as $label => [$model, $unnumbered]) {
             $cold = (new AptedDistance($model, $unnumbered))->similarity($a, $b, 0.0);
+            $exact[$label] = $cold;
             $warm = new AptedDistance($model, $unnumbered);
             $warm->similarity($a, $b, 0.0);
             $before = $warm->diagnostics();
@@ -696,11 +829,36 @@ final class AptedDistanceTest extends TestCase
             $this->assertGreaterThan(0.0, $cold, "fixture pair must score above zero for '$label'");
             $gated[$label] = (new AptedDistance($model, $unnumbered))->similarity($a, $b, 0.99);
         }
-        // Cost-model discrimination survives per-instance memoisation:
-        // at the tight threshold the semantic model saturates this
-        // literal-heavy pair where the default model still accepts it, so
-        // an entry written by one configuration must never be read back
-        // by another.
-        $this->assertNotSame($gated['default'], $gated['semantic']);
+        // Fix-round-2 (fresh r1 MEDIUM-1): the tail here used to read
+        // assertNotSame($gated['default'], $gated['semantic']) — a
+        // divergence that passed BECAUSE the semantic arm is an unsound
+        // pre-S09 LOW-1 false rejection of this exact-1.0 pair, which is
+        // exactly what "freezes the unsound value as expected behavior".
+        // Each arm is now pinned to its own contract instead, and the
+        // cost-model separation follows from the pins, not from the
+        // asymmetry:
+        //   default arm: accepted at its exact value 1.0 (uniform unit
+        //     costs make every budget abort sound — the exact-model 1.0
+        //     sibling);
+        //   semantic arm: terminates at the explicit REFUSE/0.0 — never
+        //     a truncated or laundered fraction (fresh verdict §LOW-2:
+        //     no path in this class reports a truncated non-zero score).
+        // LOW-1 provenance (reviews/exec/engine-S09-r1.md, 2026-11-21):
+        // ted()'s keyroot rowMin abort predates engine-S09 — the verdict's
+        // instrumented parent echo `GATE dp cost=2 budget=1 worst=35
+        // n=17 m=17` at 2bdc926 shows the parent refusing this exact
+        // shape, and engine-S09 preserved it 1:1 (7,644-bit-comparison
+        // differential, 0 mismatches). Budget policy belongs to
+        // engine-S10 — TODO(engine-S10): when S10 rules, the arms follow
+        // the ruling and the REFUSE line below updates with it; this pin
+        // freezes the refusal CONTRACT, not an endorsement of the score.
+        $this->assertSame(1.0, $exact['default'], 'exact oracle (threshold 0.0) for the default config is 1.0');
+        $this->assertSame(1.0, $exact['semantic'], 'exact oracle for the semantic config is the 1.0 the banded arm refuses to report');
+        $this->assertSame(1.0, $gated['default'], 'default model accepts the exact-1.0 pair even at the tight threshold (sound uniform-cost budget)');
+        $this->assertSame(
+            AptedDistance::REFUSE,
+            $gated['semantic'],
+            'semantic tight-band arm must terminate at the explicit refusal/0.0 contract (LOW-1 pre-existing false rejection — never a truncated fraction)'
+        );
     }
 }
