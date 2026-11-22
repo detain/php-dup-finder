@@ -28,7 +28,6 @@
             "fielddesk":      "db.read",
             "alias":          "db.read",
             "join":           "db.read",
-            "with":           "db.read",
             "withjoin":       "db.read",
             "group":          "db.read",
             "having":         "db.read",

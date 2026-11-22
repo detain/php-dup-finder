@@ -30,12 +30,12 @@
             "decrementeach":   "db.write",
             "table":           "db.read",
             "select":          "db.read",
-            "statement":       "db.read",
-            "affectingstatement": "db.read",
+            "statement":       "db.execute",
+            "affectingstatement": "db.execute",
             "cursor":          "db.read",
             "insert":          "db.write",
             "update":          "db.write",
-            "delete":          "db.write",
+            "delete":          "db.delete",
             "upsert":          "db.write",
             "writestatement":  "db.write"
         }

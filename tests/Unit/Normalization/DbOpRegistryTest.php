@@ -4,7 +4,12 @@ declare(strict_types=1);
 namespace Phpdup\Tests\Unit\Normalization;
 
 use PHPUnit\Framework\TestCase;
+use Phpdup\Cli\ProfileRegistry;
+use Phpdup\Extraction\BlockExtractor;
 use Phpdup\Normalization\DbOpRegistry;
+use Phpdup\Normalization\Normalizer;
+use Phpdup\Parsing\AstParser;
+use Phpdup\Util\AstSerializer;
 
 final class DbOpRegistryTest extends TestCase
 {
@@ -258,5 +263,288 @@ final class DbOpRegistryTest extends TestCase
         foreach (['get' => DbOpRegistry::OP_READ, 'all' => DbOpRegistry::OP_READ, 'save' => DbOpRegistry::OP_WRITE] as $name => $op) {
             $this->assertSame($op, $r->lookupMethod($name));
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Pack hygiene (php-dup-finder-once-125): the bundled db-aware-*
+    // symbol packs share method names — a Laravel tree and a bare
+    // Illuminate tree issue the same ->delete() call — so any key
+    // present in two packs must classify identically in both, the
+    // delete-ish family must match the stock dispatch table, no pack
+    // may repeat a JSON key (the later one silently wins), and the
+    // pack census the --db-aware path reads off disk must stay
+    // unchanged by a hygiene fix.
+    // ---------------------------------------------------------------
+
+    /** Names that anchor the delete-ish family the finding calls out. */
+    private const DELETE_FAMILY_KEYS = ['delete', 'truncate', 'statement', 'affectingstatement'];
+
+    public function testShippedPackJsonParsesWithUniqueKeys(): void
+    {
+        $files = glob(dirname(__DIR__, 3) . '/profiles/*.json');
+        $this->assertIsArray($files);
+        $this->assertNotCount(0, $files, 'profiles/ dir census — a glob failure would vacuate this guard');
+        foreach ($files as $file) {
+            $raw = (string) file_get_contents($file);
+            try {
+                json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+            } catch (\JsonException $e) {
+                $this->fail(basename($file) . ' is not valid JSON: ' . $e->getMessage());
+            }
+            $dups = self::duplicateJsonKeys($raw);
+            $this->assertSame(
+                [],
+                $dups,
+                basename($file) . ' repeats JSON key(s) ' . implode(', ', $dups)
+                    . ' — json_decode lets the last one silently win',
+            );
+        }
+    }
+
+    public function testDeleteFamilyAgreesBetweenLaravelFamilyPacks(): void
+    {
+        $packs = [
+            'db-aware-laravel'    => self::packMethods('db-aware-laravel'),
+            'db-aware-illuminate' => self::packMethods('db-aware-illuminate'),
+            'db-aware-thinkorm'   => self::packMethods('db-aware-thinkorm'),
+        ];
+
+        // Shared keys conflict-free: any method name shipped by two of
+        // the packs carries the same canonical op in both, so the token
+        // of an identical call never depends on which pack loaded.
+        $checked = 0;
+        $names = array_keys($packs);
+        for ($a = 0; $a < count($names); $a++) {
+            for ($b = $a + 1; $b < count($names); $b++) {
+                foreach (array_intersect_key($packs[$names[$a]], $packs[$names[$b]]) as $key => $opA) {
+                    $this->assertSame(
+                        $opA,
+                        $packs[$names[$b]][$key],
+                        "shared key '$key' disagrees between {$names[$a]} and {$names[$b]}",
+                    );
+                    $checked++;
+                }
+            }
+        }
+        $this->assertGreaterThan(0, $checked, 'the trio shares no keys at all — the agreement loop vacuated');
+
+        // The delete-ish family is not merely self-consistent: every
+        // family key that the stock table also classifies must match
+        // it (the finding's "heretic vs DbOpRegistry" half). Keys the
+        // stock table does not know (`affectingstatement`) are pinned
+        // by the explicit intent asserts below plus the cross-pack
+        // agreement above.
+        $stock = DbOpRegistry::default();
+        foreach ($packs as $packName => $methods) {
+            foreach (self::DELETE_FAMILY_KEYS as $key) {
+                if (
+                    !array_key_exists($key, $methods)
+                    || $stock->lookupMethod($key) === null
+                ) {
+                    continue;
+                }
+                $this->assertSame(
+                    $stock->lookupMethod($key),
+                    $methods[$key],
+                    "$packName.$key must equal the stock op (heretic packs were once-125)",
+                );
+            }
+        }
+        // Explicit intent, not just mutual agreement:
+        $this->assertSame(DbOpRegistry::OP_DELETE, $packs['db-aware-laravel']['delete']);
+        $this->assertSame(DbOpRegistry::OP_EXECUTE, $packs['db-aware-laravel']['statement']);
+        $this->assertSame(DbOpRegistry::OP_EXECUTE, $packs['db-aware-laravel']['affectingstatement']);
+        $this->assertSame(DbOpRegistry::OP_DELETE, $packs['db-aware-illuminate']['delete']);
+        $this->assertSame(DbOpRegistry::OP_DELETE, $packs['db-aware-illuminate']['truncate']);
+        $this->assertSame(DbOpRegistry::OP_EXECUTE, $packs['db-aware-illuminate']['statement']);
+        $this->assertSame(DbOpRegistry::OP_EXECUTE, $packs['db-aware-illuminate']['affectingstatement']);
+    }
+
+    public function testSameCallFoldsToSameDbOpTokenUnderBothLaravelPacks(): void
+    {
+        // The acceptance fixture: ONE code sample, normalised twice —
+        // once under a registry loaded from the Laravel pack, once from
+        // the Illuminate pack — must yield the identical canonical
+        // token stream, and that stream must carry the stock op tag.
+        $laravel    = new DbOpRegistry(customMethodOps: self::packMethods('db-aware-laravel'));
+        $illuminate = new DbOpRegistry(customMethodOps: self::packMethods('db-aware-illuminate'));
+
+        $fixtures = [
+            // No SQL-literal first arg on purpose: a literal SQL
+            // string would let SqlTableExtractor's verb promote the
+            // synthetic and mask the pack's own name→op mapping
+            // (DbOpCanonicalizer::rewriteMethodCall). With a variable
+            // arg the registry op IS the token, which is what this
+            // pack-hygiene guard must observe.
+            ['<?php function s100d($q) { return $q->delete(); }',                              '__DB_DELETE__'],
+            ['<?php function s100s($db, $sql) { return $db->statement($sql); }',              '__DB_EXECUTE__'],
+            ['<?php function s100a($db, $sql) { return $db->affectingStatement($sql); }',     '__DB_EXECUTE__'],
+        ];
+        foreach ($fixtures as [$code, $expectedSynthetic]) {
+            $tokensL = $this->canonicalTokens($code, $laravel);
+            $tokensI = $this->canonicalTokens($code, $illuminate);
+            $this->assertSame(
+                $tokensL,
+                $tokensI,
+                "pack-dependent canonicalisation — same call, different op tags: $code",
+            );
+            $this->assertContains('Name|n:' . $expectedSynthetic, $tokensL, $code);
+            $this->assertContains('Name|n:' . $expectedSynthetic, $tokensI, $code);
+        }
+    }
+
+    public function testDbAwarePackCensusAndHouseShapeUnchanged(): void
+    {
+        // --db-aware/profile loading reads the packs off disk; a
+        // hygiene fix must not add, drop, or resize any pack.
+        $files = glob(dirname(__DIR__, 3) . '/profiles/db-aware-*.json');
+        $this->assertIsArray($files);
+        $this->assertCount(29, $files, 'db-aware pack census on disk');
+
+        $ops = [
+            DbOpRegistry::OP_READ, DbOpRegistry::OP_WRITE, DbOpRegistry::OP_DELETE,
+            DbOpRegistry::OP_EXECUTE, DbOpRegistry::OP_QUERY,
+        ];
+        foreach ($files as $file) {
+            $data = json_decode((string) file_get_contents($file), true, 512, JSON_THROW_ON_ERROR);
+            $this->assertIsArray($data);
+            $methods = $data['db_symbols']['methods'] ?? [];
+            $this->assertNotSame([], $methods, basename($file) . ' ships no db_symbols.methods');
+            foreach ($methods + ($data['db_symbols']['functions'] ?? []) as $key => $op) {
+                $this->assertTrue(
+                    in_array($op, $ops, true),
+                    basename($file) . ": value for '$key' is outside the db.* op enum",
+                );
+            }
+        }
+
+        // Decoded-entry census of the three touched packs, unchanged
+        // (duplicate keys collapse before decode, so deduping thinkorm
+        // moves nothing here — proof the fix was value-preserving).
+        $this->assertCount(22, self::packMethods('db-aware-illuminate'));
+        $this->assertCount(36, self::packMethods('db-aware-laravel'));
+        $this->assertCount(59, self::packMethods('db-aware-thinkorm'));
+
+        // House shape (AGENTS.md) for the laravel-family trio: keys are
+        // lower-cased method names.
+        foreach (['db-aware-laravel', 'db-aware-illuminate', 'db-aware-thinkorm'] as $packName) {
+            foreach (self::packMethods($packName) as $key => $op) {
+                $this->assertSame(strtolower((string) $key), $key, "$packName: key '$key' is not lower-cased");
+            }
+        }
+    }
+
+    /**
+     * Load a bundled pack through the production loader
+     * ({@see ProfileRegistry}) and return its method map.
+     *
+     * @return array<string,string>
+     */
+    private static function packMethods(string $name): array
+    {
+        $data    = ProfileRegistry::bundled()->load($name);
+        $methods = $data['db_symbols']['methods'] ?? [];
+        self::assertIsArray($methods, "$name: db_symbols.methods is not an object");
+        /** @var array<string,string> $methods */
+        return $methods;
+    }
+
+    /**
+     * Minimal JSON key scanner: returns every object key that appears
+     * twice inside the SAME object scope. json_decode cannot report
+     * this (the last duplicate silently wins), so duplicate detection
+     * runs on the raw bytes — strings (and every colon inside them)
+     * are consumed whole, and only a quoted string immediately
+     * followed by ':' inside an object counts as a key.
+     *
+     * @return list<string>
+     */
+    private static function duplicateJsonKeys(string $raw): array
+    {
+        $dups   = [];
+        /** @var list<array<string,true>|null> $stack null marks array scopes */
+        $stack  = [];
+        $len    = strlen($raw);
+        $i      = 0;
+        while ($i < $len) {
+            $c = $raw[$i];
+            if ($c === '"') {
+                $j   = $i + 1;
+                $str = '';
+                $esc = false;
+                while ($j < $len) {
+                    $d = $raw[$j];
+                    if ($esc) {
+                        $str .= $d;
+                        $esc = false;
+                        $j++;
+                        continue;
+                    }
+                    if ($d === '\\') {
+                        $str .= $d;
+                        $esc = true;
+                        $j++;
+                        continue;
+                    }
+                    if ($d === '"') {
+                        break;
+                    }
+                    $str .= $d;
+                    $j++;
+                }
+                // Look past the closing quote: whitespace, then a colon
+                // means this string is an object key.
+                $k = $j + 1;
+                while ($k < $len && ctype_space($raw[$k])) {
+                    $k++;
+                }
+                $top = $stack === [] ? null : count($stack) - 1;
+                if ($top !== null && $k < $len && $raw[$k] === ':' && $stack[$top] !== null) {
+                    if (isset($stack[$top][$str])) {
+                        $dups[] = $str;
+                    } else {
+                        $stack[$top][$str] = true;
+                    }
+                }
+                $i = $j + 1;
+                continue;
+            }
+            if ($c === '{') {
+                $stack[] = [];
+                $i++;
+                continue;
+            }
+            if ($c === '[') {
+                $stack[] = null;
+                $i++;
+                continue;
+            }
+            if ($c === '}' || $c === ']') {
+                array_pop($stack);
+                $i++;
+                continue;
+            }
+            $i++;
+        }
+        return $dups;
+    }
+
+    /**
+     * @return list<string> canonical token stream of the first block
+     */
+    private function canonicalTokens(string $code, DbOpRegistry $registry): array
+    {
+        $parser    = new AstParser();
+        $stmts     = $parser->parseCode($code);
+        $extractor = new BlockExtractor(minSize: 1);
+        $blocks    = $extractor->extract('test.php', $stmts);
+        $this->assertNotEmpty($blocks);
+        $normalizer = new Normalizer(
+            mode: 'aggressive',
+            dbAware: true,
+            dbOpRegistry: $registry,
+        );
+        $normalizer->normalize($blocks[0]);
+        return AstSerializer::tokens($blocks[0]->canonical);
     }
 }

@@ -58,6 +58,22 @@ namespace Phpdup\Normalization;
  * Per-profile overrides land via {@see profiles/db-aware-*.json}
  * (option 4 — symbol-equivalence-class registry).
  *
+ * **Pack hygiene.** Bundled `db-aware-*` packs share method names — a
+ * Laravel tree and a bare Illuminate tree issue the very same
+ * `->delete()` — so any name shipped by two packs must carry the SAME
+ * canonical op in both, and the delete-ish family
+ * (`delete`/`truncate` → `db.delete`, `statement`/`affectingStatement`
+ * → `db.execute`) must agree with the stock table above. A divergent
+ * pack would make the canonical token of an identical call depend on
+ * which pack happened to load (once-125: the Laravel pack had drifted
+ * `delete` to `db.write` and `statement`/`affectingStatement` to
+ * `db.read`, and the ThinkORM pack shipped a duplicated `with` key
+ * that `json_decode` silently collapsed). The contract is
+ * machine-enforced by {@see \Phpdup\Tests\Unit\Normalization\DbOpRegistryTest}:
+ * shared-key agreement across the laravel-family packs, fixture-level
+ * token equality under both packs' registries, unique JSON keys in
+ * every shipped pack, and the on-disk pack census (29 packs).
+ *
  * @internal Used by {@see DbOpCanonicalizer}.
  */
 final class DbOpRegistry
