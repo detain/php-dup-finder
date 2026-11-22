@@ -349,6 +349,31 @@ final class PreprocessStage implements CooperativeStageInterface
             // header gate does the work; nothing crashes, nothing serves
             // stale bags). Disclosed in the lane report.
             $config->lowMemory,
+            // once-026 (HIGH) / ENGINE-CONV-04: the plugin class list is
+            // consumed at bagging time — PluginRegistry::fromClassNames
+            // feeds every visit() through the normalizer the worker runs
+            // before hashing (PreprocessWorker.php:170-171), and that
+            // worker's own tooling key already binds the list (:188). A
+            // snapshot normalized WITH a plugin replayed into a plugin-free
+            // run (or vice-versa) serves the wrong canonical ASTs with no
+            // error — the AGENTS.md normalization-plugin doctrine names
+            // BOTH cache keys as the threading sites; this completes the
+            // IndexStore leg. Key-namespace change only: no PARSER_VERSION
+            // bump (fingerprintIdMode precedent).
+            $config->normalizationPlugins,
+            // once-026: the per-directory map rewrites what effectiveFor()
+            // derives for whole subtrees (min_block_size, normalization_mode,
+            // ngram_size...), so two runs with identical top-level fields
+            // but different override maps mint different block species from
+            // byte-identical files — and file_hash cannot see that, because
+            // the file bytes ARE unchanged. The map is exactly the run
+            // context the config key exists to carry. Bound raw
+            // (dir => shapeOverrides): combined with the top-level fields
+            // already in this list it fully determines effectiveFor(), so
+            // any behavior-affecting change moves the key. Same one-time
+            // invalidation posture as every binding above (shell-S18
+            // header gate; clean miss, never a stale serve).
+            $config->perDirectoryOverrides,
         ]));
     }
 

@@ -79,6 +79,25 @@ final class ClusterStage implements CooperativeStageInterface
             $config->irThreshold,
             $config->mlPairUrl,
             $config->mlPairThreshold,
+            // once-026 (HIGH, warm-cache replay): --low-memory rewrites the
+            // bag species every stored Block carries (CompactNgramBag's
+            // int-keyed 63-bit form vs the 64-bit-hex one) and folds the
+            // canonical AST through the shared node pool — buildClusterer
+            // and scorePairs compute Jaccard/candidate tiers and
+            // containment verdicts over exactly those bags, so a snapshot
+            // warmed under one species must never replay into a run wired
+            // the other way. The IndexStore key already binds the flag
+            // (shell-027); omitting it HERE left the second half of the
+            // cache chain open — the same species-separation law as
+            // fingerprintIdMode above, one store over. Key-namespace change
+            // only: no PARSER_VERSION bump (fingerprintIdMode precedent).
+            // The consequence is a one-time invalidation of every existing
+            // .cluster snapshot: its header config_key was computed WITHOUT
+            // this field, so ClusterCache::load() misses cleanly at the
+            // gate (mirroring shell-S18's IndexStore header posture) and the
+            // run recomputes into a fresh save — nothing crashes, nothing
+            // serves mixed-species edges. Disclosed in the lane report.
+            $config->lowMemory,
             // Item 1.4 (§5b): the medoid-ball split knobs reshape cluster
             // membership, count and reported similarity. Bound to the very
             // constants buildClusterer() hands the Clusterer, so flipping a
