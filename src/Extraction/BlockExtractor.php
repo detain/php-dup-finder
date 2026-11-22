@@ -14,10 +14,12 @@ use SplObjectStorage;
 
 /**
  * Walks a file's AST and produces Block instances for the comparable
- * subtrees defined in §5.1 of ARCHITECTURE.md:
+ * subtrees — the kinds of {@see self::ALL_KINDS} (there is no separate
+ * ARCHITECTURE.md; this list is the contract, mirrored in AGENTS.md
+ * and docs/CLI.md):
  *
- *   functions, methods, closures, if/elseif chains, for/foreach/while,
- *   try/catch, switch.
+ *   functions, methods, closures, arrow functions, if/elseif chains,
+ *   for/foreach/while/do, try/catch, switch, match.
  *
  * Two filters are applied:
  *

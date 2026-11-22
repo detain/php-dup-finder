@@ -104,7 +104,7 @@
             "type": "integer",
             "minimum": 1,
             "default": 800,
-            "description": "Node-count cap for APTED tree-edit judgment. A candidate pair whose LARGER member exceeds this cap skips the TED call entirely: it is accepted on Jaccard alone with edge tier 'jaccard-unverified' (weight = the Jaccard score), or falls through to the containment/IR/ML tiers unchanged — APTED is the O(n^2)-space quadratic cost site (161s / 1.2GB on a 1000-node pair). Default 800 equals the max_block_size extraction ceiling, so no real block can exceed it and the gate is inert out of the box: every existing verdict, cache and golden stays byte-identical. Lower it (e.g. 200-400) on giant-clone corpora to trade exactness for wall time. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load — a pair spans two directories, so a per-directory cap would be ambiguous. No CLI flag in v1. The cap rides the cluster-cache config key and is applied identically by the serial Clusterer and the parallel PairScoreWorker."
+            "description": "Node-count cap for APTED tree-edit judgment. A candidate pair whose LARGER member exceeds this cap skips the TED call entirely: it is accepted on Jaccard alone with edge tier 'jaccard-unverified' (weight = the Jaccard score), or falls through to the containment/IR/ML tiers unchanged — APTED is the quadratic-cost site (the historical figure quoted in pre-2026-11 prose, 161s / 1.2GB on a 1000-node pair, predates the engine-S09 banded DP + memoisation rewrite; post-S09 cap-size near-identical pairs measure in seconds, and the DP space is banded). Default 800 equals the max_block_size extraction ceiling, so no real block can exceed it and the gate is inert out of the box: every existing verdict, cache and golden stays byte-identical. Lower it (e.g. 200-400) on giant-clone corpora to trade exactness for wall time. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load — a pair spans two directories, so a per-directory cap would be ambiguous. No CLI flag in v1. The cap rides the cluster-cache config key and is applied identically by the serial Clusterer and the parallel PairScoreWorker. A separate AGGREGATE guard (Clusterer::DEFAULT_MAX_TED_COST = 100,000,000 node-pair units, an internal constant — not this key) charges every verdict the SERIAL engine pays and halts loudly before crossing; the fork lane has no aggregate counterpart yet (docs/adr/0003, cost-ceilings section)."
         },
         "ted_weights": {
             "type": "string",
@@ -128,7 +128,7 @@
             "type": "string",
             "enum": ["auto", "off", "manual"],
             "default": "auto",
-            "description": "auto = detect CPU count and parallelize when worth it. off = run serially. manual = honor the workers field literally."
+            "description": "Declared posture for parallel stages: one of auto, off, manual. ADMITTED, ENUM-VALIDATED AND CARRIED THROUGH THE CONFIG LAYERS — BUT NOT READ BY ANY RUNTIME DECISION TODAY: the effective controls are `workers` (0 = auto-detect, 1 = serial) and pcntl availability in WorkerPool. Setting this key changes nothing observable; it rides the withOverrides layer only (php-dup-finder-once-078 doc-truth wave, 2026-11: documented inert until a wire-or-retire ruling lands, the sibling story of optional_blocks.min_segment_length)."
         },
         "workers": {
             "type": "integer",
@@ -183,7 +183,7 @@
                 "enabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Master switch. When false the clusterer reverts to Jaccard-only and AntiUnifier falls back to whole-array subtree holes for divergent stmt arrays."
+                    "description": "Master switch. When false the containment lens is removed from the pair ladder (sub-Jaccard pairs then reach only the optional IR/ML arms — the bag Jaccard/APTED spine and its size gate are untouched) and AntiUnifier falls back to a single whole-array subtree hole for every divergent stmt array."
                 },
                 "containment": {
                     "type": "number",
@@ -209,7 +209,7 @@
                     "type": "integer",
                     "minimum": 1,
                     "default": 1,
-                    "description": "Minimum stmt-array gap length (in raw stmts) to promote into an optional_block hole. Avoids noisy tiny mismatches."
+                    "description": "Minimum stmt-array gap length (in raw stmts) to promote into an optional_block hole — the documented intent. Current truth (2026-11 doc wave): ADMITTED, VALIDATED (>= 1) and BOUND INTO THE CLUSTER-CACHE KEY, but never READ — AntiUnifier stores the value and the LCS promotes unmatched template statements of any length. Until the Refactor-wave leg implements (or retires) it, the default 1 is the only value whose behaviour the docs describe honestly, and changing it invalidates warm cluster caches for identical output (php-dup-finder-once-078 DA-06)."
                 }
             }
         },
@@ -300,7 +300,7 @@
         "low_memory": {
             "type": "boolean",
             "default": false,
-            "description": "Reduce memory footprint: use CompactNgramBag (32-bit fingerprint) and CanonicalNodePool interning. CLI: --low-memory."
+            "description": "Reduce memory footprint: use CompactNgramBag — bags keyed by a masked-positive 63-bit int derived from the xxh64 hex digest as (hi&0x7FFFFFFF)<<32|lo, not a 32-bit fingerprint (the old phrasing; engine-S18b era truth) — plus CanonicalNodePool interning. Off by default; hex bags remain the default species (the flip is gated by FingerprintModeAcceptanceTest). CLI: --low-memory."
         },
         "fail_on_impact": {
             "type": "integer",

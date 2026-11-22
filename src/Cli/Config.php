@@ -105,8 +105,14 @@ final class Config
         // the suggested signature. When the count would exceed, AntiUnifier falls
         // back to the legacy whole-array hole.
         public readonly int $optionalBlocksMaxPerCluster = 3,
-        // Don't promote single-statement gaps below this length (in raw stmts) to
-        // optional_block holes — too noisy on tiny mismatches.
+        // DOCUMENTED INTENT: don't promote single-statement gaps below this
+        // length (in raw stmts) to optional_block holes — too noisy on tiny
+        // mismatches. CURRENT TRUTH (2026-11 doc wave): admitted, validated
+        // (>= 1) and cache-key-bound, but NEVER READ — the AntiUnifier LCS
+        // promotes unmatched template statements of any run length, so today
+        // the knob changes nothing observable while still invalidating warm
+        // caches. Inert until the Refactor-wave leg implements (or retires)
+        // it (php-dup-finder-once-078 DA-06; sibling story of `parallelism`).
         public readonly int $optionalBlocksMinSegmentLength = 1,
         // Cluster sort spec (e.g. "impact:desc", "members:desc", "block-size:asc").
         // Format: KEY[:DIRECTION]. See \Phpdup\Reporting\ClusterSort::ALL_KEYS.
@@ -137,7 +143,11 @@ final class Config
         // (`__DB_FIND__`, `__DB_QUERY__`, `__DB_WRITE__`, …) and cluster
         // together. Off by default — enabling it is opt-in via
         // `--db-aware` or `db_aware: true` in phpdup.json.
-        // See docs/plans/orm-db-semantic-dedup.md for the full plan.
+        // See docs/ML.md (sidecar tiers) and docs/adr/0003-similarity-stack.md
+        // (normalization beneath the stack) for the wired surface; the
+        // original plan document, docs/plans/orm-db-semantic-dedup.md, was
+        // deleted from the tree in fd74e30, 2026-05 — the option numbers in
+        // the docblocks below refer to that retired plan's list.
         public readonly bool $dbAware = false,
         // Trinity-collapse (option 2): when true, the Normalizer runs
         // TrinityCollapser as a pre-pass, detecting the canonical
@@ -160,8 +170,9 @@ final class Config
         // name variant. Lower-cased keys, values as above.
         /** @var array<string,string> */
         public readonly array $dbSymbolsFunctions = [],
-        // Scorer mode (option 5 of docs/plans/orm-db-semantic-dedup.md
-        // — clusterer wiring). 'default' = stock AST-tier scoring;
+        // Scorer mode (option 5 of the retired ORM-dedup plan — see the
+        // dbAware docblock above for the plan's retirement note; clusterer
+        // wiring). 'default' = stock AST-tier scoring;
         // 'ir' = IR-tier fallback enabled, lifting both blocks via
         // {@see \Phpdup\Ir\IrLifter} and producing a token-bag for
         // Jaccard scoring after the AST-level Jaccard has rejected.
@@ -190,12 +201,15 @@ final class Config
         public readonly float $mlPairThreshold = 0.80,
         // Path to append debug (vvv) messages to. Null = disabled.
         public readonly ?string $debugLog = null,
-        // Low-memory mode: CompactNgramBag (32-bit fingerprint) + CanonicalNodePool
+        // Low-memory mode: CompactNgramBag + CanonicalNodePool
         // interning for lower RSS at the cost of some speed. When true, the
         // normalizer walks cloned canonical ASTs and interns leaf nodes so
         // identical subtrees are deduplicated across blocks, and the n-gram
         // fingerprinter switches from xxh64 (16-char hex strings) to a compact
-        // int-keyed bag via CompactNgramBag::compact().
+        // int-keyed bag via CompactNgramBag::compact() — the key is a
+        // masked-positive 63-bit int, (hi & 0x7FFFFFFF) << 32 | lo, over the
+        // digest halves (engine-S18b era truth; the old "32-bit fingerprint"
+        // wording here was wrong twice: width and construction).
         public readonly bool $lowMemory = false,
         // CI gate: exit code 3 when total cluster impact exceeds this value.
         // 0 = disabled. CLI: --fail-on-impact.
@@ -218,8 +232,13 @@ final class Config
         // fingerprints with the changed files. Null = full corpus scan.
         public readonly ?string $diffBase = null,
         // When true, write a cumulative apply.diff to the refactored/ directory
-        // containing all cluster refactor patches concatenated. F1a produces
-        // the same output as --patch; F1b will add actual file rewrite.
+        // containing all cluster refactor patches concatenated. The shipped
+        // mode is F1b's: real rewrites of existing member call sites (each
+        // rewritten to call the extracted abstraction, whose code also lands
+        // under refactored/), inside a write-window transaction with read-back
+        // verification — actual writes honour the dry-run gate (nothing
+        // touches disk unless --dry-run=false; the preview apply.diff carries
+        // the same text --patch emits).
         // shell-S27 (php-dup-finder-shell-015/053): the key is now fully
         // admitted end to end — ConfigLoader::validate() shape-checks it
         // (bool or the friendly exit 2), and the report door consumes it as
@@ -280,8 +299,11 @@ final class Config
         // topology. Default false keeps the full refused-space posture
         // ([OWNER] ruling: opt-in only). Root-only config key
         // `ml_pair_allow_private` (a subtree .phpdup.json is refused);
-        // the argv flag --ml-pair-allow-private is registered by the
-        // Command.php roster leg. Reserved non-private spaces
+        // the argv flag --ml-pair-allow-private is NOT yet registered in
+        // the Command.php option roster — no argv spelling exists at this
+        // tip (Symfony refuses it as an unknown option) and lands with a
+        // later option-roster leg, matching the schema description.
+        // Reserved non-private spaces
         // (0.0.0.0/8, 192.0.0.0/24, 198.18.0.0/15, multicast) stay
         // refused either way; see MlPairClient::pairUrlAdmissionError().
         public readonly bool $mlPairAllowPrivate = false,

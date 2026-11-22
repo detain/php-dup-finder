@@ -1,7 +1,11 @@
 # ML pair-similarity corpus format
 
-The ML pair-similarity model (option 6 of [`docs/plans/orm-db-semantic-dedup.md`](plans/orm-db-semantic-dedup.md))
-expects a labelled corpus of `(blockA, blockB, label)` triples. This
+The ML pair-similarity model (option 6 of the ORM/DB semantic-dedup
+plan — the plan document `docs/plans/orm-db-semantic-dedup.md` was
+deleted in fd74e30, 2026-05, and is no longer in the tree; the wired
+surface is documented in
+[`docs/ML.md`](ML.md)) expects a labelled corpus of
+`(blockA, blockB, label)` triples. This
 document specifies the expected on-disk format so the Python sidecar
 training pipeline and the PHP `MlPairClient` evolve from the same
 contract.
@@ -48,9 +52,14 @@ labelled pair:
 ## Example pairs we want covered
 
 The plan calls for "30 hand-written ORM/raw-SQL pairs for unit
-tests" plus a real-world sweep of `vendor/laravel/framework/src`
-and `vendor/doctrine/orm/lib`. Concretely the corpus should
-include at minimum:
+tests" plus a real-world sweep of
+`vendor/laravel/framework/src/Illuminate/Database` (the Eloquent
+subtree — sweeping the whole laravel framework tree would train on
+container/foundation internals, not CRUD) and `vendor/doctrine/orm/src`
+(the Doctrine ORM 2.x layout; the `vendor/doctrine/orm/lib` spelling
+this document carried is the 1.x tree that died with the 2.0-era
+autoload switch — a sweep pointed at it matches nothing). Concretely
+the corpus should include at minimum:
 
 - Eloquent `Model::find` ↔ Doctrine `$em->find` ↔ PDO
   `prepare/execute/fetch`.
