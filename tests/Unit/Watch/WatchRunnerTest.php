@@ -26,6 +26,13 @@ use Symfony\Component\Console\Output\OutputInterface;
  * installs (run() passes [$this, 'handleChange'] to FileWatcher::watch()),
  * so surviving-crash, streak and pause behavior is testable without ever
  * entering the blocking event loop.
+ *
+ * once-S08 (php-dup-finder-once-008 closure) extends the pins to the legs
+ * OUTSIDE the pipeline call: handleChange and the boot dispatch share one
+ * private seam (dispatchGuarded: rebuildState closure -> runGuarded ->
+ * resync), so a construction or rebase throw — which pre-closure escaped
+ * Loop::run() and died the daemon — is pinned through the same
+ * handleChange() drive-by, loop still unexercised.
  */
 final class WatchRunnerTest extends TestCase
 {
@@ -298,6 +305,128 @@ final class WatchRunnerTest extends TestCase
 
         $this->assertSame(1, $stage->runs);
         $this->assertStringContainsString('change detected (deleted: only.php) — reload #1', $output->fetch());
+    }
+
+    // ─── once-S08: the catch-all covers the WHOLE dispatch (php-dup-finder-once-008) ──
+
+    /**
+     * The closure acceptance for once-008: shell-S33 armed runGuarded()
+     * against pipeline Throwables, but the per-event rebuildState closure
+     * (this pass's fresh state/pool construction — the finding's
+     * "misplaced config" vector) sat OUTSIDE any catch: a RuntimeException
+     * from it escaped handleChange, rode out of Loop::run() and killed the
+     * daemon — the bug survived its own fix. Now the whole dispatch is
+     * under the catch-all: the throw logs one clean failure line, no pass
+     * is started, the loop is alive, and the NEXT event re-analyzes.
+     */
+    public function testRebuildStateThrowKeepsWatcherAliveAndNextEventRepasses(): void
+    {
+        $stage = new WatchScriptedStage();
+        $output = new BufferedOutput();
+        $attempts = 0;
+        $rebuild = function () use (&$attempts): PipelineState {
+            $attempts++;
+            if ($attempts === 1) {
+                throw new \RuntimeException('misplaced config in tree');
+            }
+            return new PipelineState(Config::defaults([$this->scanRoot]));
+        };
+        $runner = new WatchRunner(
+            new Pipeline([$stage]), $rebuild, $output, new NullLogger(), $this->scanRoot,
+        );
+
+        $runner->handleChange('a.php', FileChangeType::Modified); // must NOT throw
+
+        $first = $output->fetch();
+        $this->assertSame(0, $stage->runs, 'a failed state construction must not start a pass');
+        $this->assertStringContainsString(
+            'phpdup: watch pass failed (RuntimeException): misplaced config in tree', $first,
+        );
+        $this->assertStringNotContainsString('Usage:', $first);
+        $this->assertStringNotContainsString('Stack trace:', $first);
+
+        $runner->handleChange('b.php', FileChangeType::Created);
+
+        $second = $output->fetch();
+        $this->assertSame(1, $stage->runs, 'next event after a construction throw must re-analyze');
+        $this->assertStringContainsString('change detected (created: b.php) — reload #2', $second);
+        $this->assertStringNotContainsString('watch pass failed', $second);
+    }
+
+    /**
+     * Same catch-narrowing guard shell-S33 r1 (M-2) established for the
+     * pipeline arm, applied to the new dispatch arm: a bare \Error from
+     * the construction closure must survive too. Under a catch (\Exception)
+     * dispatch arm this throwable escapes and kills the loop, so this pin
+     * flips red on Throwable→Exception narrowing of the once-S08 catch.
+     */
+    public function testRebuildStateErrorKeepsWatcherAlive(): void
+    {
+        $stage = new WatchScriptedStage();
+        $output = new BufferedOutput();
+        $attempts = 0;
+        $rebuild = function () use (&$attempts): PipelineState {
+            $attempts++;
+            if ($attempts === 1) {
+                throw new \Error('typed property poisoned at construction');
+            }
+            return new PipelineState(Config::defaults([$this->scanRoot]));
+        };
+        $runner = new WatchRunner(
+            new Pipeline([$stage]), $rebuild, $output, new NullLogger(), $this->scanRoot,
+        );
+
+        $runner->handleChange('a.php', FileChangeType::Modified); // must NOT throw
+
+        $this->assertSame(0, $stage->runs);
+        $this->assertStringContainsString(
+            'phpdup: watch pass failed (Error): typed property poisoned at construction',
+            $output->fetch(),
+        );
+
+        $runner->handleChange('b.php', FileChangeType::Modified);
+        $this->assertSame(1, $stage->runs, 'an Error at construction must not end the loop');
+    }
+
+    /**
+     * Construction throws share the skip-note streak (they are exactly a
+     * broken tree that will fail every reload): MAX throws in a row arm
+     * the pause posture, and the process stays alive taking further
+     * events — the forced-failure "process alive" assertion of the
+     * acceptance, end to end.
+     */
+    public function testConstructionThrowsCountTowardPauseStreakAndProcessStaysAlive(): void
+    {
+        $stage = new WatchScriptedStage();
+        $output = new BufferedOutput();
+        $rebuild = static fn(): PipelineState => throw new \RuntimeException('poisoned config');
+        $runner = new WatchRunner(
+            new Pipeline([$stage]), $rebuild, $output, new NullLogger(), $this->scanRoot,
+        );
+
+        $max = WatchRunner::MAX_CONSECUTIVE_PASS_FAILURES;
+        for ($i = 0; $i < $max; $i++) {
+            $runner->handleChange('x.php', FileChangeType::Modified); // must NOT throw
+        }
+        $this->assertSame(0, $stage->runs, 'no pass ever started: every dispatch died at construction');
+
+        $rendered = $output->fetch();
+        $this->assertSame($max, substr_count($rendered, 'watch pass failed'));
+        $this->assertStringNotContainsString('watch mode paused', $rendered);
+
+        // Cap reached: the next two events are acknowledged with the pause
+        // notice — once in total, not per event — and still must not throw
+        // (the loop would have died here pre-closure: the throw escaped
+        // Loop::run()).
+        $runner->handleChange('x.php', FileChangeType::Modified);
+        $runner->handleChange('x.php', FileChangeType::Modified);
+        $paused = $output->fetch();
+        $this->assertSame(
+            1, substr_count($paused, 'watch mode paused after ' . $max),
+            'pause notice renders exactly once however many events keep arriving',
+        );
+        $this->assertStringNotContainsString('watch pass failed', $paused);
+        $this->assertStringContainsString('restart the command to resume watching', $paused);
     }
 
     private function runner(BufferedOutput $output): WatchRunner

@@ -21,7 +21,7 @@ use Symfony\Component\Console\Output\OutputInterface;
  * FileWatcher), which this runner turns into exactly one pipeline pass.
  *
  * Resilience (php-dup-finder-shell-023): a single poisoned pipeline pass
- * must never kill the long-lived loop. Every pass runs through
+ * must never kill the long-lived loop. The pipeline call runs through
  * {@see runGuarded()}, which renders typed halts as the clean `phpdup:`
  * line and any other Throwable as a `watch pass failed` line, then keeps
  * going. A run of {@see MAX_CONSECUTIVE_PASS_FAILURES} crashing passes in
@@ -29,6 +29,16 @@ use Symfony\Component\Console\Output\OutputInterface;
  * skip-note posture — further change events are acknowledged once with a
  * pause notice and no longer re-run the pipeline until the command is
  * restarted.
+ *
+ * Resilience closure (php-dup-finder-once-008): the catch-all covers the
+ * ENTIRE dispatch, not just the pipeline call. State/pool construction
+ * (the rebuildState closure — the finding's "misplaced config" vector),
+ * the guarded pass and the watcher rebase form one seam
+ * ({@see dispatchGuarded()}) used by BOTH the boot dispatch in run() and
+ * every debounced event. A throw from any leg logs one clean
+ * `watch pass failed` line and the daemon stays alive for the next
+ * event; before this, construction and rebase throws escaped to
+ * {@see \React\EventLoop\Loop::run()} and terminated `phpdup watch`.
  *
  * Ctrl+C / SIGINT triggers a graceful exit: the loop tears down and the
  * parent Command returns 0.
@@ -72,16 +82,14 @@ final class WatchRunner
     {
         $this->output->writeln('<info>phpdup</info> watch mode (Ctrl+C to exit)');
 
-        $state = ($this->rebuildState)();
-        $this->runGuarded($state);
-
-        // Seed the watcher snapshot from its OWN enumeration so the first
-        // flush diffs against exactly what it would re-scan (an external
-        // list shaped by the pipeline's exclude rules would manufacture
-        // phantom Created events for every excluded-path PHP file).
-        $this->fileWatcher->resync();
-
-        $this->announceWatching(count($state->files));
+        // once-S08 (php-dup-finder-once-008 closure): the boot dispatch is
+        // the SAME guarded seam every event uses. Was: a throw from the
+        // initial rebuildState (the finding's misplaced-config vector) or
+        // the seeding resync propagated out of run() and Symfony's
+        // throwable renderer killed `phpdup watch` before it ever entered
+        // the loop. Now it logs one failure line and the loop starts
+        // anyway — the next save gets a real pass.
+        $this->announceWatching($this->dispatchGuarded());
 
         $loop = Loop::get();
         $running = true;
@@ -103,6 +111,40 @@ final class WatchRunner
 
         $loop->run();
         return 0;
+    }
+
+    /**
+     * One complete guarded dispatch (once-S08): fresh state/pool
+     * construction, the pipeline pass through runGuarded(), and the
+     * watcher rebase — every leg a poisoned tree can throw from — under a
+     * single catch-all that logs via {@see notePassFailure()} and keeps
+     * the caller's loop (or boot sequence) alive. Typed halts never reach
+     * this catch: runGuarded swallows them as neutral. One seam, used by
+     * boot AND every event, so the survival pins cover both paths.
+     *
+     * @return int file count for the announce surface (0 when the dispatch
+     *             died before a state was built to count)
+     */
+    private function dispatchGuarded(): int
+    {
+        try {
+            $state = ($this->rebuildState)();
+            $this->runGuarded($state);
+
+            // Rebase the watcher on its OWN enumeration so the next flush
+            // diffs against exactly what it would re-scan (an external
+            // list shaped by the pipeline's exclude rules would
+            // manufacture phantom Created events for every excluded-path
+            // PHP file). A completed, gracefully halted OR crashed pass
+            // all rebase the same way: the enumeration is the watcher's,
+            // not the pass's.
+            $this->fileWatcher->resync();
+
+            return count($state->files);
+        } catch (\Throwable $e) {
+            $this->notePassFailure($e);
+            return 0;
+        }
     }
 
     /**
@@ -135,16 +177,17 @@ final class WatchRunner
             $type->value, $path, $coalesced, $this->reloadCount,
         ));
 
-        $newState = ($this->rebuildState)();
-        $this->runGuarded($newState);
-
-        // Rebase the watcher on its own enumeration: a completed (or
-        // gracefully halted) pass may have discovered or dropped files,
-        // and identical enumeration on both sides keeps the next flush
-        // honest.
-        $this->fileWatcher->resync();
-
-        $this->announceWatching(count($newState->files));
+        // once-S08 (php-dup-finder-once-008 closure): the WHOLE dispatch —
+        // state construction, pipeline pass, watcher rebase, announce —
+        // runs under the catch-all via dispatchGuarded(). shell-S33 armed
+        // runGuarded() against pipeline Throwables, but the rebuildState
+        // closure (this pass's fresh state/pool construction) and the
+        // resync still escaped handleChange, rode out of Loop::run() and
+        // terminated the daemon: the finding's "misplaced config" vector
+        // survived its own fix. Anything that throws now logs, counts
+        // toward the skip-note streak, and leaves the loop alive for the
+        // next event to re-analyze.
+        $this->announceWatching($this->dispatchGuarded());
     }
 
     /**
@@ -161,6 +204,12 @@ final class WatchRunner
      *    process — and counted.
      *  - clean completion: resets the consecutive-failure streak.
      *
+     * once-S08: this seam guards ONLY the pipeline call (public tests
+     * drive it directly). The state-construction and watcher-rebase legs
+     * of a dispatch are guarded by the catch-all in handleChange()/run(),
+     * which funnels through the same {@see notePassFailure()} arm, so
+     * every way a pass can die shares one render and one streak counter.
+     *
      * @return bool true when the pass did NOT crash (a graceful typed halt
      *              counts as not-crashed but see the streak rules above)
      */
@@ -174,14 +223,28 @@ final class WatchRunner
             $this->output->writeln('<error>phpdup: ' . $e->getMessage() . '</error>');
             return true;
         } catch (\Throwable $e) {
-            $this->consecutivePassFailures++;
-            $this->output->writeln(sprintf(
-                '<error>phpdup: watch pass failed (%s): %s</error>',
-                $e::class,
-                $e->getMessage(),
-            ));
+            $this->notePassFailure($e);
             return false;
         }
+    }
+
+    /**
+     * The one crash posture (once-S08): counts the pass toward the
+     * consecutive-failure cap and renders a single clean `phpdup:` line
+     * naming the Throwable class and message. Routed to from the
+     * pipeline arm of runGuarded() AND the whole-dispatch catch-alls in
+     * handleChange()/run(), so a construction throw, a rebase throw and
+     * a mid-stage crash are all logged, counted and survived the same
+     * way — never a Symfony usage dump, never process death.
+     */
+    private function notePassFailure(\Throwable $e): void
+    {
+        $this->consecutivePassFailures++;
+        $this->output->writeln(sprintf(
+            '<error>phpdup: watch pass failed (%s): %s</error>',
+            $e::class,
+            $e->getMessage(),
+        ));
     }
 
     /**
