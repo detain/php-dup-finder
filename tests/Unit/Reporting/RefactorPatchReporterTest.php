@@ -627,6 +627,33 @@ final class RefactorPatchReporterTest extends TestCase
         $this->assertStringContainsString('member uses $this', $patch);
     }
 
+    public function testSelfStaticParentMemberIsRefusedAsClassBound(): void
+    {
+        // r1 MEDIUM-1 pin for the 'class' arm (S50 fix1): self::/static::/
+        // parent:: re-binds to the class the hoisted function no longer
+        // lives in. Without this fixture the whole 84-gate stays GREEN with
+        // the arm's assignment commented out (r1 M-E mutation-proof).
+        $patch = $this->s50PatchFor(
+            "<?php\nclass R1c { public function own() { return self::make(); } }",
+            ['method' => 2],
+        );
+        $this->assertStringContainsString('*** MANUAL REVIEW REQUIRED ***', $patch);
+        $this->assertStringContainsString('member uses self::/static::/parent:: — class-bound', $patch);
+    }
+
+    public function testGeneratorMemberIsRefusedAsYield(): void
+    {
+        // r1 MEDIUM-1 pin for the 'yield' arm (S50 fix1): hoisting a
+        // generator body silently turns the extracted function into a
+        // generator — call semantics change at the first consumer.
+        $patch = $this->s50PatchFor(
+            "<?php\nfunction r1g() { yield 1; }",
+            ['function' => 2],
+        );
+        $this->assertStringContainsString('*** MANUAL REVIEW REQUIRED ***', $patch);
+        $this->assertStringContainsString('member is a generator (yield)', $patch);
+    }
+
     public function testNestedArrowWithoutThisStillRefusedAsCaptureRisk(): void
     {
         // The finding's `fn() =>` hole independent of $this: a nested arrow
