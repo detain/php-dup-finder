@@ -68,13 +68,21 @@ final class NgramFingerprintTest extends TestCase
      * This is the byte-identity oracle the interning leg ships against;
      * the /tmp/opencode/engine-S18b-lane parity probe ran the same
      * comparison against the real pre-commit class over 8,614 blocks.
+     * With $unnumbered the oracle mirrors the live mode knob's strip
+     * step (src/Fingerprint/NgramFingerprint.php:140-146 — foldStamps
+     * first, then IdentifierIds::strip), so the unnumbered species of
+     * the interning pin is fenced here, not only in the /tmp probe
+     * (engine-S18b review r1, LOW-1).
      *
      * @return array<string,int>
      */
-    private function legacyBag(\PhpParser\Node $node, int $n = 5): array
+    private function legacyBag(\PhpParser\Node $node, int $n = 5, bool $unnumbered = false): array
     {
         $tokens = \Phpdup\Util\AstSerializer::tokens($node);
         $tokens = array_map([\Phpdup\Util\IdentifierIds::class, 'foldStamps'], $tokens);
+        if ($unnumbered) {
+            $tokens = array_map([\Phpdup\Util\IdentifierIds::class, 'strip'], $tokens);
+        }
         $count = count($tokens);
         if ($count < $n) {
             $tokens = array_pad($tokens, $n, '<EOS>');
@@ -100,16 +108,27 @@ final class NgramFingerprintTest extends TestCase
     {
         // The interning leg must not move a single byte of any bag:
         // same key contents, same insertion order, same counts, same
-        // numeric-string key species — in all three bagging modes.
-        $fp    = new NgramFingerprint(5);
-        $fpLow = new NgramFingerprint(5, true);
+        // numeric-string key species — in all four constructor shapes
+        // (normal, lowMemory, unnumbered, unnumbered+lowMemory). The
+        // unnumbered pair rides here since engine-S18b r1 LOW-1: the
+        // live-by-default interning must stay byte-identical through
+        // the mode knob's strip step too, not just on the /tmp probe.
+        $fp      = new NgramFingerprint(5);
+        $fpLow   = new NgramFingerprint(5, true);
+        $fpUn    = new NgramFingerprint(5, false, true);
+        $fpLowUn = new NgramFingerprint(5, true, true);
         foreach ([self::DICT_CODE_A, self::DICT_CODE_B] as $code) {
-            $node   = $this->canonicalOf($code);
-            $legacy = $this->legacyBag($node);
+            $node     = $this->canonicalOf($code);
+            $legacy   = $this->legacyBag($node);
+            $legacyUn = $this->legacyBag($node, 5, true);
             $this->assertSame($legacy, $fp->fingerprint($node),
                 'normal-mode bag moved under the master gram dictionary');
             $this->assertSame(\Phpdup\Fingerprint\CompactNgramBag::compact($legacy), $fpLow->fingerprint($node),
                 'low-memory compact bag moved under the master gram dictionary (engine-042 keyspace is sacred)');
+            $this->assertSame($legacyUn, $fpUn->fingerprint($node),
+                'unnumbered bag moved under the master gram dictionary');
+            $this->assertSame(\Phpdup\Fingerprint\CompactNgramBag::compact($legacyUn), $fpLowUn->fingerprint($node),
+                'unnumbered low-memory compact bag moved under the master gram dictionary (engine-042 keyspace is sacred)');
         }
     }
 
