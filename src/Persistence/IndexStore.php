@@ -53,6 +53,17 @@ use Phpdup\Parsing\CacheBlob;
  * CLI, never a downstream exit-255 TypeError). A graph too large to
  * walk inside the bounded budget is the unprovable case: ordinary miss
  * semantics, nothing served unchecked.
+ *
+ * **The directory itself is part of the trust surface (shell-S39,
+ * php-dup-finder-shell-052(b)):** a group- or world-writable cache dir
+ * lets any co-writer plant `.idx` files this store would otherwise
+ * believe (the header gates prove format, not authorship). The
+ * constructor therefore makes a FRESH dir absolute 0700 (mkdir's mode
+ * is a umask-masked request; the chmod is not), and for a PRE-EXISTING
+ * dir it strips foreign write (0775 → 0755 — exactly the mode this
+ * ctor's pre-S18 ancestors created) or, when that is impossible,
+ * switches the store off. A private dir is a condition of caching,
+ * never of running: every disabled case degrades to plain cache misses.
  */
 final class IndexStore
 {
@@ -120,18 +131,85 @@ final class IndexStore
      */
     private array $hashMemo = [];
 
+    /**
+     * Verdict of the shell-S39 privacy enforcement run by the
+     * constructor: false when the cache dir exists (or was created)
+     * but cannot be made non-forgeable — a symlinked path, an
+     * unfixable mode. {@see self::isEnabled()} carries it, so a
+     * poisoned-by-construction tree is never read from or written to.
+     */
+    private bool $privateDirOk = true;
+
     public function __construct(
         private readonly string $cacheDir,
         private readonly string $configKey,
     ) {
-        if ($this->cacheDir !== '' && !is_dir($this->cacheDir)) {
-            @mkdir($this->cacheDir, 0o700, true);
+        if ($this->cacheDir !== '') {
+            $this->enforcePrivateCacheDir();
         }
     }
 
     public function isEnabled(): bool
     {
-        return $this->cacheDir !== '' && is_dir($this->cacheDir);
+        return $this->cacheDir !== '' && is_dir($this->cacheDir) && $this->privateDirOk;
+    }
+
+    /**
+     * shell-S39 posture, spelled once (mirrors ServeCommand's results-
+     * dir doctrine at the persistence surface):
+     *
+     *  - symlink         → refuse (never chmod or cache through a link
+     *                      we did not create — ServeCommand:is_link
+     *                      precedent);
+     *  - missing         → mkdir(0700) + chmod(0700) so the mode is
+     *                      absolute even under a hostile umask, then
+     *                      verify the fresh dir really is 0700;
+     *  - pre-existing    → adopt as-is when already private to us;
+     *                      otherwise strip group/other WRITE (reads
+     *                      are not the forgery vector — write is),
+     *                      re-verify, and switch the store off on any
+     *                      residual doubt.
+     *
+     * "Switch off" is never an error: the pipeline runs exactly as it
+     * does with `--no-cache`, it simply never replays bytes a stranger
+     * could have written.
+     */
+    private function enforcePrivateCacheDir(): void
+    {
+        $dir = $this->cacheDir;
+
+        if (is_link($dir)) {
+            $this->privateDirOk = false;
+            return;
+        }
+
+        if (!is_dir($dir)) {
+            $created = @mkdir($dir, 0o700, true);
+            if (!$created || !is_dir($dir)) {
+                return; // no dir at all — isEnabled()'s is_dir() gate owns that miss
+            }
+            // mkdir's mode argument is a REQUEST the process umask
+            // masks; chmod makes the 0700 intent absolute — then
+            // verify, and treat any doubt as "not ours to trust".
+            @chmod($dir, 0o700);
+            clearstatcache(true, $dir);
+            $mode = @fileperms($dir);
+            $this->privateDirOk = is_int($mode) && ($mode & 0o777) === 0o700;
+            return;
+        }
+
+        clearstatcache(true, $dir);
+        $mode = @fileperms($dir);
+        if (!is_int($mode) || ($mode & 0o022) === 0) {
+            // Already not forgeable; unobservable stats keep the
+            // pre-existing adopt semantics (isEnabled()'s is_dir gate
+            // owns the vanished-path case).
+            return;
+        }
+        @chmod($dir, $mode & ~0o022 & 0o7777);
+        clearstatcache(true, $dir);
+        $after = @fileperms($dir);
+        $this->privateDirOk = is_int($after) && ($after & 0o022) === 0;
     }
 
     /**

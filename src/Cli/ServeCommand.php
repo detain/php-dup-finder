@@ -931,13 +931,32 @@ final class ServeCommand extends SymfonyCommand
         // environment is carried in verbatim and only the serve-pid token
         // is added. That token is what lets the worker prove the DAEMON
         // died even though the `sh -c` wrapper is its direct parent.
-        $this->workerProcess = proc_open(
-            $command,
-            $descriptors,
-            $pipes,
-            null,
-            self::workerEnvironment()
-        );
+        //
+        // shell-S39 (php-dup-finder-shell-052(c)): spawn under a
+        // temporary restrictive umask. The worker creates its Unix
+        // socket with stream_socket_server(), whose inode mode is
+        // 0777 &~ umask AT THE INSTANT OF BIND — the child's own
+        // chmod(0600) runs only after (the race window the finding
+        // names). A child inherits the parent's umask across
+        // fork+exec, so tightening it around THIS proc_open makes the
+        // socket private from its first moment (0600 under 0177) and
+        // every file the child creates in its opening breath
+        // owner-only; the worker's chmod(0600) stays as the belt it
+        // always was. The window covers only the spawn itself — the
+        // parent creates nothing else inside it — and the old mask is
+        // restored on both the success and the failure path.
+        $spawnUmask = umask(0o177);
+        try {
+            $this->workerProcess = proc_open(
+                $command,
+                $descriptors,
+                $pipes,
+                null,
+                self::workerEnvironment()
+            );
+        } finally {
+            umask($spawnUmask);
+        }
         if (!is_resource($this->workerProcess)) {
             $output->writeln('<comment>failed to spawn worker, running in sync mode</comment>');
             $this->workerSocket = '';

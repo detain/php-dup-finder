@@ -71,6 +71,18 @@ final class Config
         // add a third value. Config-file key `fingerprint_id_mode`;
         // no CLI flag in v1.
         public readonly string $fingerprintIdMode = 'numbered',
+        // Trust-posture decision row (shell-S39, php-dup-finder-shell-052(b)):
+        // the DEFAULT stays the in-tree `.phpdup-cache`. Moving it (e.g. under
+        // a per-user XDG dir) would silently orphan every existing warm cache
+        // and change what `--no-cache`/cleanup scripts see — a breaking change
+        // no low-severity finding funds, so the posture is instead: keep the
+        // location, make the PRIVACY absolute. The dir is created 0700 with a
+        // post-mkdir chmod that defeats the umask and a verify that switches
+        // the store off rather than replay from a forgeable tree
+        // ({@see \Phpdup\Persistence\IndexStore::enforcePrivateCacheDir()}),
+        // and every cache blob is written 0600. On a host where in-tree means
+        // group-writable, point `cache_dir` at a private path — the config key
+        // exists precisely for that decision.
         public readonly string $cacheDir = '.phpdup-cache',
         public readonly string $parallelism = 'auto',
         public readonly ?string $htmlReportDir = null,

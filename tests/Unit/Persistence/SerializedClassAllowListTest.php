@@ -5,6 +5,7 @@ namespace Phpdup\Tests\Unit\Persistence;
 
 use PhpParser\Node;
 use PHPUnit\Framework\TestCase;
+use Phpdup\Persistence\IndexStore;
 use Phpdup\Persistence\SerializedClassAllowList;
 
 final class SerializedClassAllowListTest extends TestCase
@@ -687,5 +688,275 @@ final class SerializedClassAllowListTest extends TestCase
             SerializedClassAllowList::firstUnallowlistedClassHeader($bait, $allow),
             'bait routes to the authoritative walk (which will clear it)'
         );
+    }
+
+    // ------------------------------------------------------------------
+    // shell-S39 — trust-posture roll-up (php-dup-finder-shell-052)
+    // ------------------------------------------------------------------
+
+    /**
+     * Leg (a), the downstream half: engine-S39 curated the list; this
+     * pins that the WHOLE production decode surface actually routes
+     * through it. Three assertions, one per way the guard could rot:
+     *
+     *  1. COMPLETENESS — the exact census of real `unserialize(` call
+     *     sites in src/ (tokenized, so docblocks and quoted text like
+     *     WorkerPool's error string never count). A fifth surface — a
+     *     new store, a debug dump, a vendored shortcut — must appear
+     *     here before it ships.
+     *  2. LINEAGE — every listed site's allowed-classes expression is
+     *     sourced from THIS class: the two framed stores and the wire
+     *     pool name `SerializedClassAllowList::` at the statement;
+     *     CacheBlob is the parameterized choke point, and every caller
+     *     of `CacheBlob::decode()` in src/ passes a curated list.
+     *  3. NO WIDENING — nothing in src/ ever spells
+     *     `allowed_classes => true`.
+     */
+    public function testEveryProductionDecodeSiteRoutesThroughThisAllowList(): void
+    {
+        $root = dirname(__DIR__, 3) . '/src';
+        self::assertDirectoryExists($root);
+        $files = self::s39PhpFiles($root);
+
+        // Comment-stripped sources: docblock prose must never satisfy a
+        // lineage string, and must never trip the no-widening census —
+        // SerializedClassAllowList's own header quotes the `true` shape
+        // it exists to forbid.
+        $clean = [];
+        foreach ($files as $rel => $path) {
+            $clean[$rel] = self::s39StripComments((string) file_get_contents($path));
+        }
+
+        $sites = [];
+        foreach ($clean as $rel => $source) {
+            $count = self::s39CountUnserializeCalls($source);
+            if ($count > 0) {
+                $sites[$rel] = $count;
+            }
+        }
+        ksort($sites);
+        self::assertSame([
+            'Parallel/WorkerPool.php'      => 1,
+            'Parsing/CacheBlob.php'        => 1,
+            'Persistence/ClusterCache.php' => 1,
+            'Persistence/IndexStore.php'   => 1,
+        ], $sites, 'the unserialize surface is exactly these four sites — a new one is a trust decision, not a refactor detail');
+
+        // Lineage: the sites that pass the list inline spell it from here.
+        foreach (['Persistence/IndexStore.php', 'Persistence/ClusterCache.php'] as $rel) {
+            self::assertStringContainsString(
+                "'allowed_classes' => SerializedClassAllowList::blockCacheClasses()",
+                $clean[$rel],
+                "{$rel} must decode with the curated union"
+            );
+        }
+        self::assertStringContainsString('$allowList = SerializedClassAllowList::blockCacheClasses();', $clean['Parallel/WorkerPool.php']);
+        self::assertStringContainsString("'allowed_classes' => \$allowList", $clean['Parallel/WorkerPool.php']);
+
+        // Lineage through the choke point: CacheBlob::decode takes the
+        // list as a parameter — so every CALLER in src/ must name a
+        // curated expression there (both caches pass parserClasses()).
+        $decodeCallers = [];
+        foreach ($clean as $rel => $source) {
+            $hits = (int) preg_match_all(
+                '/CacheBlob::decode\(\s*[^,]+,\s*SerializedClassAllowList::\w+\(\)/',
+                $source
+            );
+            if ($hits > 0) {
+                $decodeCallers[$rel] = $hits;
+            }
+        }
+        ksort($decodeCallers);
+        self::assertSame([
+            'Parsing/AstCache.php'   => 1,
+            'Parsing/TokenCache.php' => 1,
+        ], $decodeCallers, 'CacheBlob::decode has exactly two curated callers in src/');
+
+        // No widening anywhere.
+        $widened = 0;
+        foreach ($clean as $source) {
+            $widened += (int) preg_match_all("/allowed_classes'\\s*=>\\s*true/", $source);
+        }
+        self::assertSame(0, $widened, "no src/ site may hand unserialize() the whole autoloader");
+    }
+
+    /**
+     * Leg (b): a FRESH IndexStore dir is private absolutely. The mode
+     * under test is the one the creation request cannot promise on its
+     * own — mkdir's mode argument is masked by the process umask, so a
+     * hostile 0777 environment would yield a 0000 (or under the old
+     * 0775-request, a group-writable) dir without the shell-S39
+     * post-mkdir chmod. Acceptance spelling: stat %a == 700.
+     */
+    public function testFreshIndexStoreDirIsAbsolutePrivateEvenUnderHostileUmask(): void
+    {
+        $base = $this->s39ScratchBase();
+        $dir  = $base . '/fresh';
+
+        $previous = umask(0o777); // would mask a 0700 mkdir() request down to 0000
+        try {
+            $store = new IndexStore($dir, 'cfg-key-s39');
+            clearstatcache(true, $dir);
+            self::assertDirectoryExists($dir);
+            self::assertSame('0700', substr(sprintf('%o', (int) fileperms($dir)), -4),
+                'shell-S39: the fresh cache dir mode is absolute, not umask-relative');
+            self::assertTrue($store->isEnabled());
+        } finally {
+            umask($previous);
+        }
+    }
+
+    /**
+     * Leg (b), the adoption arms. The finding's concrete harm is a
+     * FORGEABLE dir (writable by non-owners) feeding report rows, so
+     * write is the bit that must die — reads are posture the operator
+     * chose. Symlinks are refused outright (no chmod, no cache through
+     * a link we did not create; ServeCommand's results-dir doctrine in
+     * disabled-store form).
+     */
+    public function testAdoptedCacheDirsLoseForeignWriteAndSymlinksAreRefused(): void
+    {
+        $base = $this->s39ScratchBase();
+
+        // 0775 — precisely what the pre-S39 creation request produced:
+        // adopted, but tightened.
+        $legacy = $base . '/legacy-0775';
+        self::s39MkdirMode($legacy, 0o775);
+        $legacyStore = new IndexStore($legacy, 'k');
+        clearstatcache(true, $legacy);
+        self::assertSame('0755', substr(sprintf('%o', (int) fileperms($legacy)), -4),
+            'a group-writable cache dir must come out of the trust path write-clean (shell-052(b))');
+        self::assertTrue($legacyStore->isEnabled(), 'tightening is an upgrade, not a cache death');
+
+        // 0755 — not forgeable: the operator's mode stays untouched.
+        $readShared = $base . '/read-shared-0755';
+        self::s39MkdirMode($readShared, 0o755);
+        self::assertTrue((new IndexStore($readShared, 'k'))->isEnabled());
+        clearstatcache(true, $readShared);
+        self::assertSame('0755', substr(sprintf('%o', (int) fileperms($readShared)), -4));
+
+        // symlink — refuse; the target is never touched through the link.
+        $target = $base . '/symlink-target';
+        self::s39MkdirMode($target, 0o775);
+        $link = $base . '/symlinked';
+        self::assertTrue(symlink($target, $link));
+        self::assertFalse((new IndexStore($link, 'k'))->isEnabled(),
+            'a symlinked cache dir is not a trust anchor');
+        clearstatcache(true, $target);
+        self::assertSame('0775', substr(sprintf('%o', (int) fileperms($target)), -4),
+            'the constructor must not chmod through a symlink');
+    }
+
+    /** @return array<string,string> rel-path-under-src => absolute path */
+    private static function s39PhpFiles(string $root): array
+    {
+        $out = [];
+        $it = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS)
+        );
+        foreach ($it as $file) {
+            if ($file instanceof \SplFileInfo && $file->getExtension() === 'php') {
+                $out[str_replace($root . '/', '', $file->getPathname())] = $file->getPathname();
+            }
+        }
+        ksort($out);
+        self::assertNotEmpty($out, 'src/ must exist for the decode-surface census');
+        return $out;
+    }
+
+    /**
+     * Rebuild the source without comments (each replaced by one
+     * newline), so the string heuristics below only ever see code.
+     */
+    private static function s39StripComments(string $source): string
+    {
+        $out = '';
+        foreach (token_get_all($source) as $t) {
+            if (is_array($t) && ($t[0] === T_COMMENT || $t[0] === T_DOC_COMMENT)) {
+                $out .= "\n";
+                continue;
+            }
+            $out .= is_array($t) ? $t[1] : $t;
+        }
+        return $out;
+    }
+
+    /**
+     * Tokenized count of REAL unserialize() invocations — comment,
+     * docblock and string-quoted mentions (WorkerPool's error text)
+     * never count.
+     */
+    private static function s39CountUnserializeCalls(string $source): int
+    {
+        $count = 0;
+        $tokens = token_get_all($source);
+        for ($i = 0, $n = count($tokens); $i < $n; $i++) {
+            $t = $tokens[$i];
+            if (!is_array($t) || $t[0] !== T_STRING || strcasecmp($t[1], 'unserialize') !== 0) {
+                continue;
+            }
+            for ($j = $i + 1; $j < $n; $j++) {
+                if (is_array($tokens[$j]) && $tokens[$j][0] === T_WHITESPACE) {
+                    continue;
+                }
+                if ($tokens[$j] === '(') {
+                    $count++;
+                }
+                break;
+            }
+        }
+        return $count;
+    }
+
+    private ?string $s39Scratch = null;
+
+    private function s39ScratchBase(): string
+    {
+        if ($this->s39Scratch === null) {
+            $dir = sys_get_temp_dir() . '/phpdup-s39-' . getmypid() . '-' . spl_object_id($this);
+            @mkdir($dir, 0o700, true);
+            $this->s39Scratch = $dir;
+        }
+        return $this->s39Scratch;
+    }
+
+    private static function s39MkdirMode(string $dir, int $mode): void
+    {
+        $previous = umask(0); // the requested mode is the created mode, verbatim
+        try {
+            self::assertTrue(@mkdir($dir, $mode, true), "scratch dir {$dir} must exist for the adoption arms");
+        } finally {
+            umask($previous);
+        }
+    }
+
+    protected function tearDown(): void
+    {
+        if ($this->s39Scratch !== null) {
+            self::s39DeleteTree($this->s39Scratch);
+            $this->s39Scratch = null;
+        }
+        parent::tearDown();
+    }
+
+    private static function s39DeleteTree(string $path): void
+    {
+        if (is_link($path)) {
+            @unlink($path);
+            return;
+        }
+        if (is_dir($path)) {
+            @chmod($path, 0o700); // recover traversal/unlink rights on modes we set back
+            foreach (scandir($path) ?: [] as $entry) {
+                if ($entry !== '.' && $entry !== '..') {
+                    self::s39DeleteTree($path . '/' . $entry);
+                }
+            }
+            @rmdir($path);
+            return;
+        }
+        if (is_file($path)) {
+            @unlink($path);
+        }
     }
 }
