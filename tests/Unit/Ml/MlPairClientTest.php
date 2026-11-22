@@ -468,6 +468,173 @@ final class MlPairClientTest extends TestCase
     }
 
     // =====================================================================
+    // once-S90 — verdict parsing strict everywhere (php-dup-finder-once-113).
+    //
+    // once-113's complaint is the SIBLING DRIFT: the old scoreBatch()
+    // carried an is_numeric guard while score() blind-cast, so the same
+    // hostile value (`[0.9]` → 1.0, true → 1.0, "0.9abc" → 0.9, "NaN" →
+    // 0.0, negatives and 42.0 through the unenforced [0,1] contract)
+    // could be laundered by one endpoint and refused by the other.
+    // engine-S20 unified the fence; this lane makes drift structurally
+    // impossible: one fuzz list of refused values is asserted refused
+    // through BOTH decode paths in BOTH spellings (refusal symmetry),
+    // the same in-domain value is asserted accepted through both
+    // (the literal "share ONE coerce fn" leg), and a token census over
+    // MlPairClient.php proves the shared fence is the file's only
+    // verdict-domain logic. The engine-S20 alignment fence and every
+    // S54/S89-era pin above stay byte-untouched and re-run green.
+    // =====================================================================
+
+    /**
+     * Raw JSON literals that must be refused in ANY verdict-number
+     * position — the finding's laundering set plus the boundary
+     * shapes engine-S20 introduced on the pair side. Accepted
+     * numeric strings ("0.9", " 1 ") are deliberately absent; the
+     * fence's domain acceptance is pinned in-domain, below.
+     *
+     * @return array<string,array{0:string}>
+     */
+    public static function refusedVerdictValueProvider(): array
+    {
+        return [
+            'array [0.9]'         => ['[0.9]'],
+            'array [0.5,0.5]'     => ['[0.5,0.5]'],
+            'empty object'         => ['{}'],
+            'bool true'            => ['true'],
+            'bool false'           => ['false'],
+            'null'                 => ['null'],
+            'string 0.9abc'        => ['"0.9abc"'],
+            'string NaN'           => ['"NaN"'],
+            'string garbage'       => ['"garbage"'],
+            'INF via 1e999'        => ['1e999'],
+            '-INF via -1e999'      => ['-1e999'],
+            'above domain 42.0'    => ['42.0'],
+            'above domain 1.0000001' => ['1.0000001'],
+            'below domain -0.5'    => ['-0.5'],
+            'numeric string "1.5"' => ['"1.5"'],
+        ];
+    }
+
+    /**
+     * Refusal symmetry: every refused value is refused identically on
+     * /score-pair (named fields) and /score-batch (positional AND
+     * named entries), in BOTH the similarity and the confidence role.
+     * A one-sided relaxation of either sibling's fence REDS here —
+     * the asymmetry once-113 caught cannot reappear unnoticed.
+     *
+     * @dataProvider refusedVerdictValueProvider
+     */
+    public function testBothEndpointsRefuseTheSameVerdictValues(string $junk): void
+    {
+        $client = new MlPairClient('http://ml.invalid');
+        $pair   = new \ReflectionMethod($client, 'parseVerdict');
+        $batch  = new \ReflectionMethod($client, 'parseBatchVerdicts');
+
+        self::assertNull(
+            $pair->invoke($client, "{\"similarity\":$junk,\"confidence\":0.5}"),
+            "/score-pair must refuse junk similarity: $junk",
+        );
+        self::assertNull(
+            $pair->invoke($client, "{\"similarity\":0.5,\"confidence\":$junk}"),
+            "/score-pair must refuse junk confidence: $junk",
+        );
+
+        self::assertSame(
+            [null],
+            $batch->invoke($client, "{\"results\":[[$junk,0.5]]}", 1),
+            "/score-batch positional similarity must refuse the same junk: $junk",
+        );
+        self::assertSame(
+            [null],
+            $batch->invoke($client, "{\"results\":[[0.5,$junk]]}", 1),
+            "/score-batch positional confidence must refuse the same junk: $junk",
+        );
+        self::assertSame(
+            [null],
+            $batch->invoke($client, "{\"results\":[{\"similarity\":$junk,\"confidence\":0.5}]}", 1),
+            "/score-batch named similarity must refuse the same junk: $junk",
+        );
+        self::assertSame(
+            [null],
+            $batch->invoke($client, "{\"results\":[{\"similarity\":0.5,\"confidence\":$junk}]}", 1),
+            "/score-batch named confidence must refuse the same junk: $junk",
+        );
+    }
+
+    /**
+     * The positive side of "share ONE coerce fn": a value inside the
+     * fence's contract (numeric-string similarity — is-numeric true,
+     * finite, in [0,1]) parses to the SAME verdict object through
+     * both endpoints and both batch spellings. Symmetric acceptance
+     * is the twin of symmetric refusal; a diverging cast/rounding on
+     * either leg REDS here.
+     */
+    public function testBothEndpointsAcceptTheSameInDomainVerdictThroughOneFence(): void
+    {
+        $client = new MlPairClient('http://ml.invalid');
+        $pair   = new \ReflectionMethod($client, 'parseVerdict');
+        $batch  = new \ReflectionMethod($client, 'parseBatchVerdicts');
+
+        $expected = ['similarity' => 0.9, 'confidence' => 0.5];
+        self::assertSame(
+            $expected,
+            $pair->invoke($client, '{"similarity":"0.9","confidence":0.5}'),
+            '/score-pair parses the in-domain numeric string through the shared fence',
+        );
+        self::assertSame(
+            [$expected],
+            $batch->invoke($client, '{"results":[["0.9",0.5]]}', 1),
+            '/score-batch positional parses the same value identically',
+        );
+        self::assertSame(
+            [$expected],
+            $batch->invoke($client, '{"results":[{"similarity":"0.9","confidence":0.5}]}', 1),
+            '/score-batch named parses the same value identically',
+        );
+    }
+
+    /**
+     * Structural pin (house precedent: HttpTest's magic-variable
+     * census): the shared fence is this class's ONLY verdict-domain
+     * logic. Read as DATA, MlPairClient.php must carry zero float
+     * casts (once-113's blind-cast shape) and exactly the four
+     * MlClient::coerceUnitFloat() call sites — similarity+confidence
+     * in parseVerdict AND in parseBatchVerdicts. A fifth un-fenced
+     * verdict number, or a re-introduced cast, REDS here even before
+     * any behavioral test runs.
+     */
+    public function testSharedFenceIsTheOnlyVerdictDomainLogicInThePairClient(): void
+    {
+        $src = file_get_contents((string) (new \ReflectionClass(MlPairClient::class))->getFileName());
+        self::assertIsString($src, 'the class under test must be readable as data');
+
+        $floatCasts   = 0;
+        $fenceCalls   = 0;
+        $launderers   = 0;
+        foreach (token_get_all($src) as $token) {
+            if (!is_array($token)) {
+                continue;
+            }
+            if ($token[0] === T_DOUBLE_CAST) {
+                $floatCasts++; // matches (float) and (double)
+            }
+            if ($token[0] === T_STRING) {
+                $lower = strtolower($token[1]);
+                if ($lower === 'floatval' || $lower === 'settype') {
+                    $launderers++;
+                }
+                if ($token[1] === 'coerceUnitFloat') {
+                    $fenceCalls++;
+                }
+            }
+        }
+
+        self::assertSame(0, $floatCasts, 'MlPairClient must never blind-cast a remote number (php-dup-finder-once-113)');
+        self::assertSame(0, $launderers, 'floatval()/settype() would bypass the shared fence');
+        self::assertSame(4, $fenceCalls, 'exactly the four verdict fields (similarity/confidence × pair/batch) ride the shared fence — a new un-fenced number or a removed guard shifts this count');
+    }
+
+    // =====================================================================
     // once-S48 — wire-shape docblock truth (php-dup-finder-once-052).
     //
     // PairFeatures::WIRE_KEYS is now the single source of truth for the

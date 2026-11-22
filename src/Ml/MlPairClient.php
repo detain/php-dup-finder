@@ -596,6 +596,16 @@ final class MlPairClient implements PairScorer
      * shapes voids the verdict (null) and the pair falls back to the
      * AST tiers — no edge minted on an attacker-made number.
      *
+     * once-S90 (php-dup-finder-once-113) closes the finding's
+     * asymmetry leg: this sibling of parseBatchVerdicts() must refuse
+     * exactly the values that one refuses — a junk number can never
+     * be laundered by one endpoint and fenced by the other. The
+     * symmetry is permanently pinned: MlPairClientTest drives a fuzz
+     * list of refused verdict values through BOTH endpoints in BOTH
+     * the named and the positional spelling, and a token census
+     * proves the shared fence is this class's ONLY verdict-domain
+     * logic (zero float casts, zero floatval/settype anywhere).
+     *
      * @return array{similarity: float, confidence: float}|null
      */
     private function parseVerdict(string $resp): ?array
@@ -719,7 +729,9 @@ final class MlPairClient implements PairScorer
      *
      * engine-S20 (php-dup-finder-engine-013, domain): inside an aligned
      * response each entry's numbers — named or positional — clear the
-     * shared closed-[0,1] fence {@see MlClient::coerceUnitFloat()}. A
+     * shared closed-[0,1] fence {@see MlClient::coerceUnitFloat()} —
+     * the same fence score()'s parseVerdict() consults, one coerce
+     * fn for both siblings (php-dup-finder-once-113, once-S90). A
      * malformed entry degrades to a null slot without voiding its
      * correctly-scored neighbours — the consumer reads
      * $batchResults[$idx] ?? null inside the aligned list, so a null
