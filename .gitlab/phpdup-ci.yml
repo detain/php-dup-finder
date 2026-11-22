@@ -7,22 +7,41 @@
 #
 # Customise via top-level variables:
 #
-#   PHPDUP_PATHS       - paths to scan (default: src)
-#   PHPDUP_MIN_IMPACT  - minimum cluster impact (default: 20)
-#   PHPDUP_WORKERS     - worker count (default: auto)
-#   PHPDUP_PHP_IMAGE   - container image (default: php:8.3-cli)
+#   PHPDUP_PATHS            - paths to scan (default: src)
+#   PHPDUP_MIN_IMPACT       - minimum cluster impact (default: 20)
+#   PHPDUP_WORKERS          - worker count (default: auto)
+#   PHPDUP_PHP_IMAGE        - container image (default: php:8.3-cli)
+#   PHPDUP_VERSION          - php-dup-finder git ref to materialize: release
+#                             tag, branch, or SHA (default: master — see
+#                             docs/RELEASE.md "Current publication status"
+#                             before pinning old tags)
+#   PHPDUP_FAIL_ON_IMPACT   - native CLI total-impact gate: exit 3 when TOTAL
+#                             cluster impact exceeds N (0 = disabled)
 #
-# Outputs the SAST report to GitLab's Vulnerability Report (visible on the
-# MR Security tab) plus an HTML report exposed as a public-pages artifact
-# for browseable per-cluster diffs. No MR comment threading — see
-# UPDATE_PLAN.md "Deferred — GitLab/GitHub native integration" for the
-# rationale.
+# Once-S14 (php-dup-finder-once-017): the tool is MATERIALIZED into a scratch
+# dir from its pinned source zip (composer install runs inside that tree, so
+# phpdup's own dependency pins resolve as root requirements); your repository
+# is only scanned, never mutated, and a tool that fails to materialize aborts
+# the job — no silent skip. The phar asset route is the action/GitLab sibling
+# (see docs/CI.md); it starts working with the first v* tag through the
+# release workflow. Runners behind GitHub's anonymous API ceilings should set
+# GITHUB_AUTH_TOKEN (masked CI variable; Composer honors it), pin
+# PHPDUP_VERSION, and/or add a composer GitLab `cache:` — the deps are
+# dev-master#<sha>-frozen, so cached resolutions never drift. Once release
+# assets land, the phar route drops the API dependency to zero.
+#
+# Output: the SAST report feeds GitLab's Vulnerability Report (visible on the
+# MR Security tab) and the HTML report is exposed as a browsable artifact.
+# No MR comment threading — the SAST surface covers the same use case without
+# the auth-token / rate-limit baggage.
 
 variables:
   PHPDUP_PATHS: "src"
   PHPDUP_MIN_IMPACT: "20"
   PHPDUP_WORKERS: "0"
   PHPDUP_PHP_IMAGE: "php:8.3-cli"
+  PHPDUP_VERSION: "master"
+  PHPDUP_FAIL_ON_IMPACT: "0"
 
 phpdup:
   stage: test
@@ -30,27 +49,84 @@ phpdup:
   variables:
     GIT_DEPTH: "1"
   before_script:
-    - apt-get update -qq && apt-get install -qq -y unzip git jq
+    # libgmp-dev is REQUIRED for the gmp extension build (the trixie-based
+    # official php images compile gmp out and ship no libgmp headers);
+    # libonig-dev covers images that need mbstring compiled in from source.
+    - apt-get update -qq && apt-get install -qq -y unzip git curl ca-certificates libgmp-dev libonig-dev
+    # Extension truth (once-S10): ext-hash is core, ext-mbstring is a hard
+    # requirement, ext-gmp only accelerates (byte-table fallback). The
+    # official php:8.3-cli image already ships mbstring; add whatever is
+    # missing via docker-php-ext-install when available.
+    - |
+      MISSING=""
+      for e in mbstring gmp; do
+        php -m | grep -qix "$e" || MISSING="$MISSING $e"
+      done
+      if [ -n "$MISSING" ]; then
+        if command -v docker-php-ext-install >/dev/null 2>&1; then
+          # shellcheck disable=SC2086  # intentional word-split of $MISSING
+          docker-php-ext-install -j"$(nproc)" $MISSING
+        elif ! php -r 'exit(extension_loaded("mbstring") ? 0 : 1);'; then
+          echo "phpdup: ext-mbstring missing and docker-php-ext-install unavailable — use the official php image or preinstall ext-mbstring (required), ext-gmp is optional." >&2
+          exit 1
+        fi
+      fi
     - curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
-    - composer install --no-interaction --no-progress --prefer-dist
+    # Materialize the tool (once-S14): download the pinned ref's source zip,
+    # composer install INSIDE that tree (its sugarcraft/* dev-master#<sha>
+    # pins are root requirements there and resolve), smoke-test it, and fail
+    # the job loudly if any leg breaks.
+    - |
+      set -e
+      PHPDUP_TOOL_HOME="${PHPDUP_TOOL_HOME:-/tmp/phpdup-tool}"
+      rm -rf "$PHPDUP_TOOL_HOME"
+      mkdir -p "$PHPDUP_TOOL_HOME"
+      ok=0
+      for ref in "refs/tags/${PHPDUP_VERSION}" "refs/heads/${PHPDUP_VERSION}" "${PHPDUP_VERSION}"; do
+        if curl -fsSL --retry 3 -o "$PHPDUP_TOOL_HOME/tool.zip" "https://codeload.github.com/detain/php-dup-finder/legacy.zip/${ref}"; then
+          ok=1
+          break
+        fi
+      done
+      test "$ok" = 1 || { echo "phpdup: source zip not downloadable for ref '${PHPDUP_VERSION}' — pin a tag/branch/SHA that exists." >&2; exit 1; }
+      unzip -q "$PHPDUP_TOOL_HOME/tool.zip" -d "$PHPDUP_TOOL_HOME/src"
+      PHPDUP_SRC=$(find "$PHPDUP_TOOL_HOME/src" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+      test -n "$PHPDUP_SRC" && test -f "$PHPDUP_SRC/composer.json" || { echo "phpdup: extracted zip has no composer.json at its root." >&2; exit 1; }
+      composer install --no-dev --no-scripts --no-interaction --no-progress --prefer-dist --working-dir "$PHPDUP_SRC"
+      PHPDUP_BIN="$PHPDUP_SRC/bin/phpdup"
+      test -f "$PHPDUP_BIN" || { echo "phpdup: materialization produced no bin/phpdup — failing instead of skipping the scan." >&2; exit 1; }
+      php "$PHPDUP_BIN" --version
+      echo "$PHPDUP_BIN" > "$PHPDUP_TOOL_HOME/bin.path"
   script:
-    - php bin/phpdup analyze ${PHPDUP_PATHS}
-        --min-impact ${PHPDUP_MIN_IMPACT}
-        --workers ${PHPDUP_WORKERS}
-        --json gl-phpdup-report.json
-        --gitlab-sast gl-sast-report.json
-        --html public/phpdup
-        --checkstyle gl-phpdup-checkstyle.xml
-        --csv gl-phpdup.csv
-        --prometheus gl-phpdup-metrics.prom
-        --timeseries gl-phpdup-history.jsonl
-        --plain
+    - |
+      set -e
+      PHPDUP_BIN="$(cat "${PHPDUP_TOOL_HOME:-/tmp/phpdup-tool}/bin.path")"
+      GATE=""
+      if [ "${PHPDUP_FAIL_ON_IMPACT}" != "0" ] && [ -n "${PHPDUP_FAIL_ON_IMPACT}" ]; then
+        GATE="--fail-on-impact ${PHPDUP_FAIL_ON_IMPACT}"
+      fi
+      # phpdup's exit codes fail the job as documented in docs/CLI.md:
+      # 0 ok (findings included), 1 runtime/unknown option, 2 invalid config,
+      # 3 CI gate tripped, 4 baseline drift.
+      # shellcheck disable=SC2086  # PHPDUP_PATHS/GATE: intentional word-split
+      php "$PHPDUP_BIN" analyze ${PHPDUP_PATHS} \
+        --min-impact "${PHPDUP_MIN_IMPACT}" \
+        --workers "${PHPDUP_WORKERS}" \
+        --json gl-phpdup-report.json \
+        --gitlab-sast gl-sast-report.json \
+        --html public/phpdup \
+        --checkstyle gl-phpdup-checkstyle.xml \
+        --csv gl-phpdup.csv \
+        --prometheus gl-phpdup-metrics.prom \
+        --timeseries gl-phpdup-history.jsonl \
+        --plain ${GATE}
   artifacts:
     name: "phpdup-${CI_COMMIT_SHORT_SHA}"
     expire_in: 30 days
     when: always
     paths:
       - gl-phpdup-report.json
+      - gl-sast-report.json
       - gl-phpdup-checkstyle.xml
       - gl-phpdup.csv
       - gl-phpdup-metrics.prom

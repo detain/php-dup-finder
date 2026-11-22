@@ -1,5 +1,5 @@
 name: 'phpdup'
-description: 'Run php-dup-finder against a PHP codebase and surface duplicate-logic findings via CI artifacts (SARIF, JSON, HTML, Checkstyle).'
+description: 'Run php-dup-finder against a PHP codebase and surface duplicate-logic findings via CI artifacts (SARIF, JSON, HTML, Checkstyle). The tool is materialized into the runner temp dir before it executes; your repository is only scanned, never mutated.'
 author: 'Joe Huss <detain@interserver.net>'
 
 branding:
@@ -11,6 +11,24 @@ inputs:
     description: 'Space-separated paths to scan'
     required: false
     default: 'src'
+  version:
+    description: >-
+      php-dup-finder git ref to materialize: a release tag (v1.2.3), a branch
+      (master), or a full commit SHA. Default 'master'. Note: the only tag on
+      Packagist/GitHub so far, v1.0.0, references renamed upstream packages and
+      fails at runtime (see docs/RELEASE.md "Current publication status") — pin
+      a SHA at or after the once-S11 dev-master pin migration, or 'master'.
+    required: false
+    default: 'master'
+  tool:
+    description: >-
+      Materialization mode: 'zip' downloads the pinned ref's source archive and
+      runs composer install inside it (works today); 'phar' downloads the
+      release's phpdup.phar asset and runs it via `php` (works once a v* tag
+      has passed through the release workflow — assets start there, see
+      docs/RELEASE.md).
+    required: false
+    default: 'zip'
   min-impact:
     description: 'Minimum cluster impact to report (passed to --min-impact)'
     required: false
@@ -32,11 +50,11 @@ inputs:
     required: false
     default: 'true'
   fail-on-impact:
-    description: 'When set to a positive integer N, the action exits non-zero if any cluster has impact >= N. 0 disables.'
+    description: 'When set to a positive integer N, the action exits 3 (the phpdup gate-trip exit code) if any cluster has impact >= N. 0 disables. Distinct from the CLI gate --fail-on-impact, which measures TOTAL impact > N; this input gates on the per-cluster maximum.'
     required: false
     default: '0'
   php-version:
-    description: 'PHP version to install via shivammathur/setup-php'
+    description: 'PHP version to install via shivammathur/setup-php (8.3 or newer: phpdup requires php ^8.3)'
     required: false
     default: '8.3'
   cache-dir:
@@ -65,7 +83,11 @@ runs:
       uses: shivammathur/setup-php@v2
       with:
         php-version: ${{ inputs.php-version }}
-        extensions: hash, mbstring
+        # hash + mbstring are hard requirements (composer "require"); gmp only
+        # accelerates the n-gram popcount fast path (composer "suggest",
+        # byte-table fallback otherwise) — mirrored onto the repo's own
+        # green ci.yml pins.
+        extensions: hash, mbstring, gmp
         coverage: none
         tools: composer:v2
 
@@ -78,9 +100,11 @@ runs:
       uses: actions/cache@v6
       with:
         path: ${{ steps.composer-cache.outputs.dir }}
-        key: phpdup-composer-${{ inputs.php-version }}-${{ hashFiles('**/composer.json') }}
+        # Key the TOOL's dependency set (php-version + mode + pinned ref) —
+        # the consumer's composer.json has no bearing on what the tool needs.
+        key: phpdup-composer-${{ inputs.php-version }}-${{ inputs.tool }}-${{ inputs.version }}
         restore-keys: |
-          phpdup-composer-${{ inputs.php-version }}-
+          phpdup-composer-${{ inputs.php-version }}-${{ inputs.tool }}-
 
     - name: Cache phpdup AST/index
       uses: actions/cache@v6
@@ -90,19 +114,97 @@ runs:
         restore-keys: |
           phpdup-cache-${{ runner.os }}-
 
-    - name: Install dependencies
+    - name: Materialize phpdup (once-S14 / once-017)
+      # The consumer's checkout does NOT contain phpdup; the old flow ran
+      # `composer install` there and then executed the non-existent
+      # `bin/phpdup`. Instead the tool is fetched, installed and smoke-tested
+      # here, into the runner temp dir. Missing/broken tool = hard error.
+      id: tool
       shell: bash
-      run: composer install --no-interaction --no-progress --prefer-dist
+      env:
+        PHPDUP_MODE: ${{ inputs.tool }}
+        PHPDUP_VERSION: ${{ inputs.version }}
+        # Composer honors GITHUB_AUTH_TOKEN; the per-run workflow token lifts
+        # the anonymous GitHub API ceilings that otherwise flap dependency
+        # downloads on shared runner IPs (public repos, read-only).
+        GITHUB_AUTH_TOKEN: ${{ github.token }}
+      run: |
+        set -u
+        TOOL_HOME="${RUNNER_TEMP}/phpdup-tool"
+        rm -rf "$TOOL_HOME"
+        mkdir -p "$TOOL_HOME"
+        case "$PHPDUP_MODE" in
+          zip)
+            ok=0
+            for ref in "refs/tags/${PHPDUP_VERSION}" "refs/heads/${PHPDUP_VERSION}" "${PHPDUP_VERSION}"; do
+              if curl -fsSL --retry 3 -o "$TOOL_HOME/tool.zip" "https://codeload.github.com/detain/php-dup-finder/legacy.zip/${ref}"; then
+                ok=1
+                break
+              fi
+            done
+            if [ "$ok" != "1" ]; then
+              echo "::error::phpdup source zip not downloadable for ref '${PHPDUP_VERSION}' (tried refs/tags, refs/heads and the raw ref on codeload). Pin a tag/branch/SHA that exists."
+              exit 1
+            fi
+            unzip -q "$TOOL_HOME/tool.zip" -d "$TOOL_HOME/src"
+            SRC_DIR=$(find "$TOOL_HOME/src" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+            if [ -z "$SRC_DIR" ] || [ ! -f "$SRC_DIR/composer.json" ]; then
+              echo "::error::phpdup source zip extracted without a composer.json at its root — refusing to continue."
+              exit 1
+            fi
+            composer install --no-dev --no-scripts --no-interaction --no-progress --prefer-dist --working-dir "$SRC_DIR"
+            TOOL_BIN="$SRC_DIR/bin/phpdup"
+            ;;
+          phar)
+            PHAR_URL_BASE="https://github.com/detain/php-dup-finder/releases/download/${PHPDUP_VERSION}"
+            if ! curl -fsSL --retry 3 -o "$TOOL_HOME/phpdup.phar" "${PHAR_URL_BASE}/phpdup.phar"; then
+              echo "::error::phpdup.phar asset for '${PHPDUP_VERSION}' is not downloadable (${PHAR_URL_BASE}/phpdup.phar). Release assets only exist once a v* tag has run through the release workflow — see docs/RELEASE.md 'Current publication status'; until then use tool: zip."
+              exit 1
+            fi
+            # GNU coreutils-format sidecar "<hash>  phpdup.phar" (two spaces)
+            # per once-S12; if it ships, verify it before running.
+            if curl -fsSL --retry 3 -o "$TOOL_HOME/phpdup.phar.sha256" "${PHAR_URL_BASE}/phpdup.phar.sha256"; then
+              (cd "$TOOL_HOME" && sha256sum --check phpdup.phar.sha256)
+            else
+              echo "No phpdup.phar.sha256 sidecar for '${PHPDUP_VERSION}'; proceeding without integrity check."
+            fi
+            TOOL_BIN="$TOOL_HOME/phpdup.phar"
+            ;;
+          *)
+            echo "::error::Unknown tool mode '${PHPDUP_MODE}' (expected 'zip' or 'phar')."
+            exit 1
+            ;;
+        esac
+
+        if [ ! -f "$TOOL_BIN" ]; then
+          echo "::error::phpdup was not materialized at '$TOOL_BIN' — failing instead of silently skipping the scan."
+          exit 1
+        fi
+        # Smoke: `php <tool>` works for both the source bin and the phar
+        # without depending on shebang/exec bits.
+        php "$TOOL_BIN" --version
+        echo "bin=$TOOL_BIN" >> "$GITHUB_OUTPUT"
 
     - name: Run phpdup
       id: run
       shell: bash
+      env:
+        PHPDUP_BIN: ${{ steps.tool.outputs.bin }}
+        PHPDUP_PATHS: ${{ inputs.paths }}
+        PHPDUP_MIN_IMPACT: ${{ inputs.min-impact }}
+        PHPDUP_WORKERS: ${{ inputs.workers }}
+        PHPDUP_CONFIG: ${{ inputs.config }}
+        PHPDUP_EXACT_ONLY: ${{ inputs.exact-only }}
       run: |
-        set -e
+        set -u -o pipefail
+        if [ -z "$PHPDUP_BIN" ] || [ ! -f "$PHPDUP_BIN" ]; then
+          echo "::error::Materialization produced no tool at '$PHPDUP_BIN' — refusing to skip the scan silently."
+          exit 1
+        fi
         ARGS=()
-        for p in ${{ inputs.paths }}; do ARGS+=("$p"); done
-        ARGS+=(--min-impact "${{ inputs.min-impact }}")
-        ARGS+=(--workers "${{ inputs.workers }}")
+        for p in $PHPDUP_PATHS; do ARGS+=("$p"); done
+        ARGS+=(--min-impact "$PHPDUP_MIN_IMPACT")
+        ARGS+=(--workers "$PHPDUP_WORKERS")
         ARGS+=(--json phpdup-report.json)
         ARGS+=(--sarif phpdup-report.sarif)
         ARGS+=(--html phpdup-report)
@@ -110,16 +212,34 @@ runs:
         ARGS+=(--csv phpdup-report.csv)
         ARGS+=(--prometheus phpdup-metrics.prom)
         ARGS+=(--timeseries phpdup-history.jsonl)
-        if [ -n "${{ inputs.config }}" ]; then ARGS+=(--config "${{ inputs.config }}"); fi
-        if [ "${{ inputs.exact-only }}" = "true" ]; then ARGS+=(--exact-only); fi
+        if [ -n "$PHPDUP_CONFIG" ]; then ARGS+=(--config "$PHPDUP_CONFIG"); fi
+        if [ "$PHPDUP_EXACT_ONLY" = "true" ]; then ARGS+=(--exact-only); fi
 
-        php bin/phpdup analyze "${ARGS[@]}" --plain | tee phpdup-stdout.txt
+        php "$PHPDUP_BIN" analyze "${ARGS[@]}" --plain | tee phpdup-stdout.txt
+        RC=${PIPESTATUS[0]}
+        # Map phpdup's documented exit codes (docs/CLI.md) into the job log,
+        # then propagate the ORIGINAL code — the job fails with phpdup's
+        # verdict (1 runtime/unknown option, 2 invalid config, 3 gate tripped,
+        # 4 baseline drift), not a laundered 1.
+        if [ "$RC" -ne 0 ]; then
+          case "$RC" in
+            1) MEANING="runtime error or unknown option" ;;
+            2) MEANING="invalid configuration" ;;
+            3) MEANING="phpdup CI gate tripped (--fail-on-impact/--max-clusters)" ;;
+            4) MEANING="baseline comparison found new clusters" ;;
+            *) MEANING="unexpected exit status" ;;
+          esac
+          echo "::error::phpdup analyze exited $RC ($MEANING)."
+          exit "$RC"
+        fi
         echo "json=phpdup-report.json"   >> "$GITHUB_OUTPUT"
         echo "sarif=phpdup-report.sarif" >> "$GITHUB_OUTPUT"
         echo "html=phpdup-report"        >> "$GITHUB_OUTPUT"
-        if command -v jq >/dev/null; then
-          echo "clusters=$(jq '.summary.clusters' phpdup-report.json)" >> "$GITHUB_OUTPUT"
-        fi
+        # Cluster count via the PHP that was just installed — no external jq
+        # dependency (the old step set the output only 'if command -v jq',
+        # silently leaving it empty elsewhere).
+        CLUSTERS=$(php -r '$j = json_decode((string) @file_get_contents("phpdup-report.json"), true); echo is_array($j) && isset($j["summary"]["clusters"]) ? $j["summary"]["clusters"] : "";')
+        echo "clusters=${CLUSTERS}" >> "$GITHUB_OUTPUT"
 
     - name: Upload reports as workflow artifacts
       if: always()
@@ -146,14 +266,27 @@ runs:
     - name: Enforce impact threshold
       if: ${{ inputs.fail-on-impact != '0' }}
       shell: bash
+      env:
+        PHPDUP_FAIL_ON_IMPACT: ${{ inputs.fail-on-impact }}
       run: |
-        if ! command -v jq >/dev/null; then
-          echo "jq required for fail-on-impact gating; install via apt-get install jq."
-          exit 0
-        fi
-        MAX=$(jq '[.clusters[].impact] | (max // 0)' phpdup-report.json)
-        echo "phpdup max cluster impact: $MAX (threshold ${{ inputs.fail-on-impact }})"
-        if [ "$MAX" -ge "${{ inputs.fail-on-impact }}" ]; then
-          echo "::error::phpdup found a cluster with impact $MAX >= ${{ inputs.fail-on-impact }}"
+        # Gate trip exits 3 — the phpdup gate-trip exit code per the
+        # docs/CLI.md contract. A missing report while gating is ON is an
+        # error, never a silent pass (the old 'no jq -> exit 0' skip).
+        if [ ! -f phpdup-report.json ]; then
+          echo "::error::fail-on-impact is enabled but phpdup-report.json is missing — cannot gate; failing instead of skipping."
           exit 1
         fi
+        php -r '
+          $threshold = (int) getenv("PHPDUP_FAIL_ON_IMPACT");
+          $report = json_decode((string) file_get_contents("phpdup-report.json"), true);
+          $max = 0;
+          foreach ((array) ($report["clusters"] ?? []) as $cluster) {
+              $impact = (int) ($cluster["impact"] ?? 0);
+              if ($impact > $max) { $max = $impact; }
+          }
+          echo "phpdup max cluster impact: {$max} (threshold {$threshold})\n";
+          if ($threshold > 0 && $max >= $threshold) {
+              fwrite(STDERR, "::error::phpdup found a cluster with impact {$max} >= {$threshold}\n");
+              exit(3);
+          }
+        '
