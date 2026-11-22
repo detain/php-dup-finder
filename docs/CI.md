@@ -130,9 +130,11 @@ The action:
   (`phpdup-cache-${OS}-…`) so successive runs reuse parsed ASTs.
 - Generates **all** report formats: JSON, SARIF, HTML, Checkstyle, CSV,
   Prometheus, timeseries-JSONL — each is uploaded as a workflow artifact.
-- Runs the tool under `set -o pipefail` and **propagates phpdup's original
+- Runs the tool under `set -euo pipefail` and **propagates phpdup's original
   exit code** into the job (see the table below), with a `::error::` line
-  naming what the code means.
+  naming what the code means. The analyze pipeline sits in an if-condition
+  head so the mapping still executes under the runner's implicit errexit
+  (`bash --noprofile --norc -eo pipefail`).
 - Optionally uploads SARIF to GitHub Code Scanning so findings appear under
   *Security → Code scanning alerts*.
 - Optionally gates on impact: `fail-on-impact: N` fails the step with
@@ -339,8 +341,11 @@ one machine (it is what once-S14 executed before landing; adapt paths).
    analyze run green, `gl-sast-report.json` (and the other artifact paths)
    present afterwards.
 4. **YAML parse gate** — `python3 -c 'import yaml; yaml.safe_load(open(".github/actions/phpdup/action.yml"))'`
-   and the same for `.gitlab/phpdup-ci.yml` must exit 0; both files are also
-   schema-checked by CI consumers that `include:` them.
+   and the same for `.gitlab/phpdup-ci.yml` must exit 0; both files are
+   additionally parse-checked by any consumer that `include:`s or `uses:`
+   them (this repo ships no such consumer — there is no root `.gitlab-ci.yml`
+   and no workflow runs the composite — so the manual gate above is the only
+   one that executes here).
 
 ## Time-series dashboards
 

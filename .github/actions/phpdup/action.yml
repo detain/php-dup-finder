@@ -129,7 +129,10 @@ runs:
         # downloads on shared runner IPs (public repos, read-only).
         GITHUB_AUTH_TOKEN: ${{ github.token }}
       run: |
-        set -u
+        # Explicit errexit: a failing composer/unzip/download must abort this
+        # step as a hard error on ANY shell, not only because the GitHub
+        # runner happens to invoke `bash -e` (once-S14 fix1, r1 report-row R2).
+        set -euo pipefail
         TOOL_HOME="${RUNNER_TEMP}/phpdup-tool"
         rm -rf "$TOOL_HOME"
         mkdir -p "$TOOL_HOME"
@@ -196,7 +199,10 @@ runs:
         PHPDUP_CONFIG: ${{ inputs.config }}
         PHPDUP_EXACT_ONLY: ${{ inputs.exact-only }}
       run: |
-        set -u -o pipefail
+        # Explicit flags — this step must behave identically on a GitHub
+        # runner (`bash --noprofile --norc -eo pipefail`) and anywhere else
+        # (once-S14 fix1, r1 report-row R2).
+        set -euo pipefail
         if [ -z "$PHPDUP_BIN" ] || [ ! -f "$PHPDUP_BIN" ]; then
           echo "::error::Materialization produced no tool at '$PHPDUP_BIN' — refusing to skip the scan silently."
           exit 1
@@ -215,13 +221,21 @@ runs:
         if [ -n "$PHPDUP_CONFIG" ]; then ARGS+=(--config "$PHPDUP_CONFIG"); fi
         if [ "$PHPDUP_EXACT_ONLY" = "true" ]; then ARGS+=(--exact-only); fi
 
-        php "$PHPDUP_BIN" analyze "${ARGS[@]}" --plain | tee phpdup-stdout.txt
-        RC=${PIPESTATUS[0]}
-        # Map phpdup's documented exit codes (docs/CLI.md) into the job log,
-        # then propagate the ORIGINAL code — the job fails with phpdup's
-        # verdict (1 runtime/unknown option, 2 invalid config, 3 gate tripped,
-        # 4 baseline drift), not a laundered 1.
-        if [ "$RC" -ne 0 ]; then
+        # The analyze pipeline sits in an if-condition head ON PURPOSE: the
+        # GitHub runner executes `shell: bash` as `bash --noprofile --norc -eo
+        # pipefail {0}`, and under -e a bare failing pipeline would abort the
+        # step AT the pipe — leaving the PIPESTATUS capture + mapping below
+        # dead code (once-S14 r1 MEDIUM-1). errexit is suspended for an
+        # if-condition pipeline, pipefail still reports phpdup's status, and
+        # PIPESTATUS[0] survives into the else branch.
+        if php "$PHPDUP_BIN" analyze "${ARGS[@]}" --plain | tee phpdup-stdout.txt; then
+          RC=0
+        else
+          RC=${PIPESTATUS[0]}
+          # Map phpdup's documented exit codes (docs/CLI.md) into the job log,
+          # then propagate the ORIGINAL code — the job fails with phpdup's
+          # verdict (1 runtime/unknown option, 2 invalid config, 3 gate tripped,
+          # 4 baseline drift), not a laundered 1.
           case "$RC" in
             1) MEANING="runtime error or unknown option" ;;
             2) MEANING="invalid configuration" ;;
