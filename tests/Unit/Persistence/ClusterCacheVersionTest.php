@@ -226,4 +226,57 @@ final class ClusterCacheVersionTest extends TestCase
         $this->assertSame('a', $loaded[0]->medoidId,
             'the §5b medoid hub survives serialize()/unserialize() for downstream tightness consumers');
     }
+
+    // ------------------------------------------------------------------
+    // shell-S30 (finding shell-019): the five scoring-knob flips each
+    // re-shape edge scores (buildClusterer + PairScoreWorker consume all
+    // of them), so cacheConfigKey must bind them and the payload must
+    // refuse across the flip — the fingerprintIdMode gate pattern, one
+    // knob at a time.
+    // ------------------------------------------------------------------
+
+    /**
+     * @return array<string, array{0: \Phpdup\Cli\Config, 1: \Phpdup\Cli\Config}>
+     */
+    public static function scoringKnobFlipCases(): array
+    {
+        $base = new \Phpdup\Cli\Config(paths: ['/x'], exclude: []);
+        return [
+            'ted_weights' => [$base, new \Phpdup\Cli\Config(paths: ['/x'], exclude: [], tedWeights: 'semantic')],
+            'scorer' => [$base, new \Phpdup\Cli\Config(paths: ['/x'], exclude: [], scorer: 'ir')],
+            'ir_threshold' => [$base, new \Phpdup\Cli\Config(paths: ['/x'], exclude: [], irThreshold: 0.70)],
+            'ml_pair_url' => [$base, new \Phpdup\Cli\Config(paths: ['/x'], exclude: [], mlPairUrl: 'https://ml.example.com/api')],
+            'ml_pair_threshold' => [$base, new \Phpdup\Cli\Config(paths: ['/x'], exclude: [], mlPairThreshold: 0.90)],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('scoringKnobFlipCases')]
+    public function testScoringKnobFlipSeparatesConfigKeysAndRefusesCrossServe(
+        \Phpdup\Cli\Config $default,
+        \Phpdup\Cli\Config $flipped,
+    ): void {
+        $stage = new \Phpdup\Pipeline\Stages\ClusterStage(exactOnly: false);
+        $keyOf = new \ReflectionMethod(\Phpdup\Pipeline\Stages\ClusterStage::class, 'cacheConfigKey');
+
+        $keyDefault = $keyOf->invoke($stage, $default);
+        $keyFlipped = $keyOf->invoke($stage, $flipped);
+
+        $this->assertNotSame($keyDefault, $keyFlipped,
+            'this knob moves edge scores — the cluster-cache key must bind it');
+        $this->assertSame($keyDefault, $keyOf->invoke($stage, $default),
+            'non-vacuity: the key must be a pure function of the config');
+
+        // Payload level: a snapshot saved under the default key with a
+        // matching corpus must MISS under the flipped key — and still hit
+        // under its own key (so the refusal is about the knob alone).
+        $blocks = [$this->block('a', 'h1')];
+        $cluster = new Cluster('Cbeef123', $blocks, 1.0, true);
+        (new ClusterCache($this->tmp, $keyDefault))->save($blocks, [$cluster]);
+
+        $this->assertNull((new ClusterCache($this->tmp, $keyFlipped))->load($blocks),
+            'a snapshot from the other side of the knob flip must never be served');
+        $served = (new ClusterCache($this->tmp, $keyDefault))->load($blocks);
+        $this->assertNotNull($served, 'same-knob serve still works (non-vacuity)');
+        $this->assertSame('Cbeef123', $served[0]->id);
+    }
 }

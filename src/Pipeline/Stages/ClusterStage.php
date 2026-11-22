@@ -63,6 +63,22 @@ final class ClusterStage implements CooperativeStageInterface
             // notch earlier in the chain. Key-namespace change only: no
             // PARSER_VERSION bump (fingerprintIdMode precedent).
             $config->tedWeights,
+            // shell-019: the IR tier and the ML-pair oracle swap the very
+            // verdict engine that produced every edge score — buildClusterer
+            // (:245-250) and the pair worker (scorePairs) consume all four
+            // knobs. A snapshot warmed under --scorer=ir (or a different
+            // ir/ml threshold, or a different ml endpoint whose answers
+            // shaped the edge set) must never replay into a run wired
+            // otherwise: same law as ngram_size above, and the pair-score
+            // worker's own batch key already binds all of them — the
+            // cluster cache had no business omitting them. Completes the
+            // five-knob binding (tedWeights rode in via shell-004).
+            // Key-namespace change only: no PARSER_VERSION bump
+            // (fingerprintIdMode precedent).
+            $config->scorer,
+            $config->irThreshold,
+            $config->mlPairUrl,
+            $config->mlPairThreshold,
             // Item 1.4 (§5b): the medoid-ball split knobs reshape cluster
             // membership, count and reported similarity. Bound to the very
             // constants buildClusterer() hands the Clusterer, so flipping a
@@ -124,7 +140,20 @@ final class ClusterStage implements CooperativeStageInterface
         // changes hit the cache and skip clustering entirely. Any
         // change invalidates wholesale (the safer choice — partial
         // edge invalidation comes later if it earns its complexity).
-        $clusterCache = ($this->useClusterCache && $config->incremental && !$this->exactOnly)
+        //
+        // shell-018 (posture pinned by shell-S30): the snapshot is keyed
+        // on the block set as it exists BEFORE expandToCloneCohort()
+        // filters it. A --diff-base run carries the full scanned set at
+        // this point, so the old load-first path HITTED the warm
+        // full-corpus snapshot and replayed clusters from files outside
+        // the changed-file cohort — and its miss path SAVED the
+        // post-expansion token set, clobbering the shared snapshot under
+        // a key no full run reproduces. The cluster cache is therefore
+        // not consulted at all under --diff-base; the per-file
+        // IndexStore caching upstream is unaffected (it is scope-free by
+        // construction).
+        $clusterCache = ($this->useClusterCache && $config->incremental && !$this->exactOnly
+            && $state->diffBaseFiles === null)
             ? new ClusterCache($config->cacheDir, $this->cacheConfigKey($config))
             : null;
         if ($clusterCache !== null) {
