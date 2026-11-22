@@ -693,7 +693,7 @@ final class BlockAstLoaderTest extends TestCase
         $trusted = $this->loaderWithConfig($file);
         $trusted->trustFreshScan();
         $trusted->rebaseClusters([new Cluster('F13579bdfcafebab', [$trustedPair[0]], 1.0, true)]);
-        self::assertSame(['keys' => 0, 'freshKeys' => 0, 'hashes' => 0, 'walks' => 0], $trusted->rebaseStats(),
+        self::assertSame(['keys' => 0, 'freshKeys' => 0, 'hashes' => 0, 'memo' => 0, 'walks' => 0], $trusted->rebaseStats(),
             'a trusted run has nothing replayed — the sweep must be a no-op');
 
         $node = $trusted->resolve($trustedPair[0]);
@@ -848,6 +848,123 @@ final class BlockAstLoaderTest extends TestCase
         self::assertSame([9, 11], [$member->range->start, $member->range->end],
             'the nearer-but-cross-class stranger must never be served');
         self::assertSame(1, $loader->rebaseStats()['walks'], 'one walk serves the whole re-anchor');
+    }
+
+    // ------------------------------------------------- candidate memo (leg B)
+
+    /**
+     * engine-031 / output-015 / output-040 leg B on the multi-class
+     * rebase census (r6b geometry, three hash classes over one live pool):
+     * the escalation asks every class the same question about every pool
+     * candidate, so pre-memo the sweep paid clone + normalize + hash once
+     * PER (class × candidate) — nine chains for three nodes. The
+     * spl_object_id memo collapses it to one chain per distinct candidate
+     * node; the later classes ride the stored hashes, and the pairing
+     * outcomes stay bit-identical to the r6b pins.
+     */
+    public function testEscalationNormalizesEachLiveCandidateOnceAcrossClasses(): void
+    {
+        $file = $this->write('b5.php', self::crossScopeOrig());
+        $orig = $this->allIfBlocks($file);
+        [$i1, $i2, $i3] = $orig;
+        $this->mintHashes($file, $i1, $i2, $i3);
+        self::assertCount(3, array_unique([$i1->structuralHash, $i2->structuralHash, $i3->structuralHash]),
+            'three distinct hash classes share the one positional key');
+        $spans = array_map(static fn (Block $b): array => [$b->range->start, $b->range->end], $orig);
+        foreach ($orig as $b) {
+            $b->unloadAst();
+        }
+
+        file_put_contents($file, self::crossScopeSwapped());
+        $live = $this->allIfBlocks($file);
+        $this->mintHashes($file, ...$live);
+
+        $loader = $this->loaderWithConfig($file);
+        $loader->rebaseClusters([new Cluster('Fb5memo000000001', [$i1, $i2, $i3], 1.0, true)], $live);
+
+        $stats = $loader->rebaseStats();
+        self::assertSame(0, $stats['freshKeys'], 'the crossing must still escalate');
+        self::assertSame(3, $stats['hashes'], 'O(L): three live candidates pay three chains, never classes × candidates');
+        self::assertSame(6, $stats['memo'], 'the two later classes ride the memo on every candidate');
+        self::assertSame($spans[0], [$i1->range->start, $i1->range->end], 'same rebase outcome: keep1 member stays home');
+        self::assertSame($spans[2], [$i2->range->start, $i2->range->end], 'same rebase outcome: move2 follows its body');
+        self::assertSame($spans[1], [$i3->range->start, $i3->range->end], 'same rebase outcome: move3 follows its body');
+
+        $printer = new Standard();
+        foreach ([[$i1, 'keep1'], [$i2, 'move2'], [$i3, 'move3']] as [$member, $marker]) {
+            $node = $loader->resolve($member);
+            self::assertNotNull($node);
+            self::assertStringContainsString($marker, $printer->prettyPrint([$node]),
+                "attached bytes must belong to the member itself ({$marker})");
+        }
+        self::assertSame(3, $loader->rebaseStats()['hashes'], 'the claim-ledger re-entry costs zero re-normalisation');
+        self::assertSame(6, $loader->rebaseStats()['memo'], 'and it never touches the candidate memo either');
+    }
+
+    /**
+     * The duplicate-hash-collision fixture answers the memo's keying law
+     * from the resolve side: two live candidates share ONE structural hash
+     * (the list-assign twins) and each is its own memo entry, while every
+     * repeated decision — the second member's whole pool filter over the
+     * four already-paid nodes — rides the memo. Match outcomes are the
+     * honest forward pairing the pre-memo chain produced.
+     */
+    public function testMatchDecisionsOverTheDuplicateHashPoolAreMemoizedPerNode(): void
+    {
+        $file = $this->write('b6.php', self::decoyGeometry());
+        $this->deleteFileLines($file, 6, 10);       // live truths [6,9] + [14,17]
+
+        [$n2, $n1] = $this->decoyMembers($file, [[24, 27], [16, 19]]);
+        $this->mintHashes($file, $n1, $n2);
+        $n1->unloadAst();
+        $n2->unloadAst();
+
+        $loader = $this->loaderWithConfig($file);
+        $loader->resolve($n2);
+        $loader->resolve($n1);
+
+        self::assertSame([14, 17], [$n2->range->start, $n2->range->end], 'same outcome as the pre-memo chain');
+        self::assertSame([6, 9], [$n1->range->start, $n1->range->end]);
+
+        $stats = $loader->rebaseStats();
+        self::assertSame(4, $stats['hashes'], 'one chain per distinct live candidate — the twins keep two entries');
+        self::assertSame(4, $stats['memo'], "the second member's four decisions all rode the memo");
+    }
+
+    /**
+     * Memo scope law: like the batched index, the candidate memo is per
+     * loader instance — a fresh process re-pays the same distinct-node
+     * bill and reaches the same outcomes (the per-instance law leg A
+     * pinned for walks, now pinned for re-normalisations).
+     */
+    public function testCandidateMemoIsScopedToTheLoaderInstance(): void
+    {
+        $file = $this->write('b7.php', self::decoyGeometry());
+        $this->deleteFileLines($file, 6, 10);
+
+        [$n2, $n1] = $this->decoyMembers($file, [[24, 27], [16, 19]]);
+        $this->mintHashes($file, $n1, $n2);
+        $n1->unloadAst();
+        $n2->unloadAst();
+
+        $first = $this->loaderWithConfig($file);
+        $first->resolve($n2);
+        $first->resolve($n1);
+
+        [$m2, $m1] = $this->decoyMembers($file, [[24, 27], [16, 19]]);
+        $this->mintHashes($file, $m1, $m2);
+        $m1->unloadAst();
+        $m2->unloadAst();
+
+        $second = $this->loaderWithConfig($file);
+        $second->resolve($m2);
+        $second->resolve($m1);
+
+        self::assertSame([14, 17], [$m2->range->start, $m2->range->end], 'identical outcomes');
+        self::assertSame([6, 9], [$m1->range->start, $m1->range->end]);
+        self::assertSame($first->rebaseStats()['hashes'], $second->rebaseStats()['hashes'],
+            'a fresh loader carries a fresh candidate memo — no cross-process reuse');
+        self::assertSame(4, $second->rebaseStats()['memo'], 'the per-instance bill repeats in full');
     }
 
     public function testCrossClassTranspositionEscalatesByClassBuckets(): void
@@ -1276,6 +1393,57 @@ final class BlockAstLoaderTest extends TestCase
                 if ($x > 1) { $out .= 'move2'; }
                 return $y;
             }
+            PHP;
+    }
+
+    /**
+     * Leg-B multi-class collision geometry: TWO byte-identical guards
+     * (one hash class — the duplicate-hash case the candidate memo must
+     * key per NODE, never per hash) plus a different-class stranger, all
+     * in one positional group. Ghost members hint far away so the sweep
+     * always escalates onto the content law.
+     */
+    private static function memoMultiClassFile(): string
+    {
+        return <<<'PHP'
+            <?php
+
+            namespace MM1;
+
+            $k = 1;
+            $s = 0;
+            if ($k > 1) { $s += 1; }
+
+            if ($k > 1) { $s += 1; }
+
+            if ($k > 2) { $s -= 1; }
+            echo $s;
+            PHP;
+    }
+
+    /**
+     * Leg-B resolve-side geometry: two distinct-class guards, one
+     * positional group, no twins — the stale-hint members force every
+     * content decision (strict gate and pool filter alike) through the
+     * same two live candidate nodes.
+     */
+    private static function memoBeltFile(): string
+    {
+        return <<<'PHP'
+            <?php
+
+            namespace MB1;
+
+            $k = 1;
+            $s = 0;
+            if ($k > 1) {
+                $s += strlen('ALPHA1');
+            }
+            if ($k < 1) {
+                $s += strlen('ONER1');
+                $s += strlen('ONER2');
+            }
+            echo $s;
             PHP;
     }
 

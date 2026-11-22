@@ -117,8 +117,39 @@ final class BlockAstLoader
      */
     private array $index = [];
 
+    /**
+     * spl_object_id candidate hash memo (engine-031 / output-015 /
+     * output-040 leg B): every content decision used to re-pay the FINAL
+     * clone machinery — Normalizer's deepClone + canonicalising passes
+     * (and the low-memory pool splice) plus SubtreeHasher — for the SAME
+     * node, once per (hash class × live candidate) in the escalation
+     * sweep and again per member at the strict gate and pool filter.
+     * That chain is a pure function of the node within one loader
+     * process: Normalizer reads nothing but the block's ast, every
+     * candidate is served under its own file's one effective config
+     * (all pools here come from indexFor($block->file)), and pool
+     * interning only swaps structurally equal leaves, which the
+     * token-stream hash cannot observe. The memo collapses every repeat
+     * to ONE computation per distinct node: the value carries the node
+     * reference itself, so a stored spl_object_id can never be recycled
+     * under a dead object — a hit is provably this node's hash. The
+     * match DECISIONS (hash against the member's structuralHash) stay
+     * bit-identical to the per-call chain.
+     *
+     * Only a hash string crosses into the memo — no clone, no pooled
+     * leaf, no AST object — so engine-S04's pooled-leaf discipline and
+     * the S18a/S18b interning posture are untouched, and nothing here
+     * reaches any persisted blob format.
+     *
+     * @var array<int, array{node: Node, hash: string}>
+     */
+    private array $candidateHashes = [];
+
     /** Evidence: whole-file index walks performed (see rebaseStats()). */
     private int $walkCount = 0;
+
+    /** Evidence: content decisions served from the candidate hash memo. */
+    private int $memoHits = 0;
 
     private ?PluginRegistry $pluginRegistry = null;
 
@@ -471,9 +502,23 @@ final class BlockAstLoader
      * the member's structuralHash and compare. The probe block reuses the
      * member's kind/name/namespace/class — the scope filter already forced
      * those to agree — and the live node's own span.
+     *
+     * The heavy half (clone + canonicalise + hash) runs at most once per
+     * distinct candidate node, served after that from the spl_object_id
+     * memo ($candidateHashes, engine-031 leg B); only the string
+     * comparison against the member's hash repeats. The probe's identity
+     * fields never reach Normalizer (it reads the ast only), so the memo
+     * is decision-identical to the pre-memo per-call chain by
+     * construction.
      */
     private function candidateMatches(Block $block, Node $node): bool
     {
+        $candidateId = spl_object_id($node);
+        $memo        = $this->candidateHashes[$candidateId] ?? null;
+        if ($memo !== null && $memo['node'] === $node) {
+            $this->memoHits++;
+            return $memo['hash'] === $block->structuralHash;
+        }
         $this->hashCalls++;
         $probe = new Block(
             $block->file,
@@ -489,7 +534,9 @@ final class BlockAstLoader
         // normalization pipeline always attaches ->canonical before the
         // hash step runs — the scan path itself assumes exactly that.
         $this->hasher ??= new SubtreeHasher();
-        return $this->hasher->hash($probe->canonical) === $block->structuralHash;
+        $hash = $this->hasher->hash($probe->canonical);
+        $this->candidateHashes[$candidateId] = ['node' => $node, 'hash' => $hash];
+        return $hash === $block->structuralHash;
     }
 
     /**
@@ -560,12 +607,16 @@ final class BlockAstLoader
      * observation only — NEVER a correctness input): keys = positional
      * groups swept, freshKeys = groups proven class-exact without a single
      * content recomputation, hashes = candidate re-normalisations
-     * performed (escalated sweeps plus per-block resolve() gates),
+     * PAID (engine-031 leg B memo: memo hits are decisions served from a
+     * stored node hash and never count here — an escalation over C hash
+     * classes and L live candidates pays at most L, not C·L; before the
+     * memo this counter grew with the calls), memo = content decisions
+     * served from the spl_object_id candidate hash memo,
      * walks = whole-file index walks (engine-031/output-015 leg A law:
      * at most one per distinct file touched by resolution, whatever the
      * block count — the pre-leg-A shape cost up to two walks per block).
      *
-     * @return array{keys:int, freshKeys:int, hashes:int, walks:int}
+     * @return array{keys:int, freshKeys:int, hashes:int, memo:int, walks:int}
      */
     public function rebaseStats(): array
     {
@@ -573,6 +624,7 @@ final class BlockAstLoader
             'keys'      => $this->sweptKeys,
             'freshKeys' => $this->freshKeyCount,
             'hashes'    => $this->hashCalls,
+            'memo'      => $this->memoHits,
             'walks'     => $this->walkCount,
         ];
     }
@@ -696,7 +748,10 @@ final class BlockAstLoader
 
                 // Content gate: keep only true twins of this class (the
                 // pool spans one hash value, so one comparison chain per
-                // candidate).
+                // candidate — and after leg B the chain's heavy half is
+                // memoized per node, making the sweep O(L) clones +
+                // normalisations + hashes across ALL classes of a key,
+                // never O(C·L)).
                 $twins = [];
                 foreach ($live as $node) {
                     if ($this->candidateMatches($members[0], $node)) {
