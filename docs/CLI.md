@@ -249,7 +249,7 @@ in a normal commit — never with `cp`.
 | `-h, --help`          | Show help for the current command. `bin/phpdup help analyze` works too.           |
 | `-V, --version`       | Display application version.                                                      |
 | `-q, --quiet`         | Suppress all output except errors.                                                |
-| `--silent`            | Do not output any message (stricter than `--quiet` — errors stay in too).          |
+| `--silent`            | Do not output any message (stricter than `--quiet`: even error output is suppressed here — what survives is only the exit code).          |
 | `-v` / `-vv` / `-vvv` | Increase verbosity.                                                               |
 | `-n, --no-interaction`| Don't prompt for input.                                                           |
 | `--ansi` / `--no-ansi`| Force or disable ANSI output.                                                     |
