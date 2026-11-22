@@ -556,8 +556,7 @@ final class ServeCommand extends SymfonyCommand
      */
     private static function readTimedOut($client): bool
     {
-        $meta = @stream_get_meta_data($client);
-        return is_array($meta) && ($meta['timed_out'] ?? false) === true;
+        return stream_get_meta_data($client)['timed_out'] === true;
     }
 
     /**
