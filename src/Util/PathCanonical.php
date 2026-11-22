@@ -14,39 +14,87 @@ namespace Phpdup\Util;
  * and CI baselines need to survive being produced on a runner and
  * consumed on a laptop (GoldenTest's "portable across machines" law).
  *
- * A path matching no root (a file given as its own root, a synthetic
- * test block) keeps its bytes verbatim: identity is still deterministic
- * for the run, just not portable across machines — the honest fallback.
+ * Windows portability (once-044): paths join with the platform native
+ * separator, so a backslash-joined tree (C:\proj\src\A.php) previously
+ * never matched a slash-built root prefix, never stripped, and silently
+ * escaped both the anchored default excludes and the id/baseline
+ * canonicalization. The cure lives HERE, at the single boundary this
+ * class already owns: root matching folds separators (and ASCII case,
+ * the macOS/Windows norm) before comparison, and every emitted form
+ * goes through {@see separators()}. Both boundary call sites —
+ * FileScanner::relpath() and the id/baseline recipes in
+ * Reporting\FindingId / Reporting\BaselineStore — route through
+ * underRoots(), so no second implementation can drift.
+ *
+ * Backslash-as-separator law: on these boundary surfaces a "\" folds
+ * to "/". A Linux filename containing a literal backslash therefore
+ * matches excludes (and hashes into ids) in its folded shape — such a
+ * name never matched a root-relative anchored exclude before either,
+ * and the golden fixtures carry no backslash filenames. Exclusion
+ * MATCHING itself stays case-sensitive: case folding governs only the
+ * root-strip comparison, so tests/** and Tests/ stay distinct here.
+ *
+ * A path matching no root keeps its form (a synthetic test block, an
+ * unrelated absolute path) with separators folded: identity is still
+ * deterministic for the run and the drive prefix can no longer leak
+ * machine bytes into portable ids — the honest fallback.
  */
 final class PathCanonical
 {
+    /**
+     * Emission normalizer: native separators to the canonical
+     * forward-slash form. Length-preserving, which is what lets
+     * {@see underRoots()} compare in the folded space yet still strip
+     * the raw path at the same byte offset.
+     */
+    public static function separators(string $path): string
+    {
+        return str_replace('\\', '/', $path);
+    }
+
+    /**
+     * Comparison key: {@see separators()} plus ASCII-case folding.
+     * Length-preserving and locale-independent (strtr, never
+     * strtolower — mb/locale behaviour must not steer path identity at
+     * the PHP 8.1 floor). Case folding serves root matching only; it
+     * never reaches an emitted form.
+     */
+    public static function fold(string $path): string
+    {
+        return strtr(self::separators($path), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz');
+    }
+
     /**
      * @param list<string> $roots the configured scan roots, raw form
      */
     public static function underRoots(string $path, array $roots): string
     {
+        $folded = self::fold($path);
         $bestLen = 0;
         foreach ($roots as $root) {
-            $prefix = rtrim($root, '/') . '/';
+            $prefix = self::fold(rtrim($root, '/\\')) . '/';
             $len = strlen($prefix);
-            if ($len > $bestLen && str_starts_with($path, $prefix)) {
+            if ($len > $bestLen && str_starts_with($folded, $prefix)) {
                 $bestLen = $len;
             }
         }
         if ($bestLen > 0) {
+            // fold() preserves length, so the folded-prefix length is
+            // exactly the raw-path byte offset; the raw bytes (case and
+            // all) carry the stripped remainder.
             $rel = substr($path, $bestLen);
-            return $rel === '' ? basename($path) : $rel;
+            return $rel === '' ? basename(self::separators($path)) : self::separators($rel);
         }
 
         // A root naming a single file (FileScanner yields it verbatim):
         // the path IS the root — reduce to its basename so the machine
         // prefix carries no more weight than in the directory case.
         foreach ($roots as $root) {
-            if ($path === $root || $path === rtrim($root, '/')) {
-                return basename($path);
+            if ($folded === self::fold($root) || $folded === self::fold(rtrim($root, '/\\'))) {
+                return basename(self::separators($path));
             }
         }
 
-        return $path;
+        return self::separators($path);
     }
 }

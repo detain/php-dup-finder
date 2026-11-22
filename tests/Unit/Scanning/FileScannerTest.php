@@ -5,6 +5,7 @@ namespace Phpdup\Tests\Unit\Scanning;
 
 use PHPUnit\Framework\TestCase;
 use Phpdup\Scanning\FileScanner;
+use Phpdup\Util\PathCanonical;
 use Phpdup\Cli\Command;
 use Symfony\Component\Console\Application;
 use Symfony\Component\Console\Tester\CommandTester;
@@ -758,6 +759,13 @@ final class FileScannerTest extends TestCase
             }
         }
         $this->s34Dirs = [];
+        // once-S40: separator-probe scratch trees.
+        foreach ($this->s40Dirs as $dir) {
+            if (is_dir($dir)) {
+                self::purgeTree($dir);
+            }
+        }
+        $this->s40Dirs = [];
     }
 
     /** scratch dirs built by the once-S34 cohort tests */
@@ -1200,5 +1208,124 @@ final class FileScannerTest extends TestCase
         $app->add(new Command());
 
         return new CommandTester($app->find('analyze'));
+    }
+
+    // ── once-S40 — php-dup-finder-once-044: Windows path portability ──────
+    //
+    // No Windows runner exists in this fleet, so the behaviour is proven
+    // by injecting the exact byte-shapes a Windows walk hands the
+    // boundary (native "\" joins, drive-prefixed roots) — not by
+    // claims. The MANUAL Windows confirmation row lives in the step
+    // report for the owner's box.
+
+    /** scratch dirs built by the once-S40 separator probes */
+    private array $s40Dirs = [];
+
+    private int $s40Seq = 0;
+
+    /**
+     * Drive one string pair through the private relpath() boundary —
+     * the join shape RecursiveDirectoryIterator produces on the host
+     * platform, fabricated here in the other platform's dialect.
+     */
+    private function s40Relpath(string $abs, string $root): string
+    {
+        $scanner = new FileScanner([], warnOnSkip: false);
+        $relpath = new \ReflectionMethod(FileScanner::class, 'relpath');
+
+        return $relpath->invoke($scanner, $abs, $root);
+    }
+
+    public function testS40RelpathMapsBackslashAndDriveForms(): void
+    {
+        $this->assertSame('vendor/x.php', $this->s40Relpath('src\\vendor\\x.php', 'src'));
+        $this->assertSame('src/Foo.php', $this->s40Relpath('C:\\Users\\proj\\src\\Foo.php', 'C:\\Users\\proj'));
+        // A root quoted with its trailing native separator still strips.
+        $this->assertSame('a.php', $this->s40Relpath('C:\\Users\\proj\\a.php', 'C:\\Users\\proj\\'));
+        // Case-folded root spelling strips; the remainder keeps its own bytes.
+        $this->assertSame('Src/Foo.php', $this->s40Relpath('C:\\Users\\PROJ\\Src\\Foo.php', 'c:\\users\\proj'));
+        // The entry IS the root: the walk's own '' gate survives folding.
+        $this->assertSame('', $this->s40Relpath('C:\\Users\\Proj', 'c:\\users\\proj'));
+        // Slash-form walks are fixed points (the once-S34 leg included).
+        $this->assertSame('vendor/x.php', $this->s40Relpath('/proj/src/vendor/x.php', '/proj/src'));
+    }
+
+    public function testS40IsExcludedDecidesInjectedSeparators(): void
+    {
+        $scanner = new FileScanner(['**/vendor/**'], warnOnSkip: false);
+        // Pre-fix this was FALSE forever: the "\" never built a "/"
+        // segment, so an anchored vendor exclude could not see a
+        // Windows vendor path and the tree was silently SCANNED.
+        $this->assertTrue($scanner->isExcluded('C:\\Users\\proj\\vendor\\y.php'));
+        $this->assertTrue($scanner->isExcluded('src\\vendor\\x.php'));
+        $this->assertTrue($scanner->isExcluded('vendor\\'), 'directory-prune form in native spelling');
+        $this->assertFalse($scanner->isExcluded('a\\myvendor\\x.php'), 'the segment-safe guard survives folding');
+    }
+
+    public function testS40BackslashSpelledGlobsCompileCanonical(): void
+    {
+        $scanner = new FileScanner(['**\\vendor\\**'], warnOnSkip: false);
+        $this->assertTrue($scanner->isExcluded('vendor/x.php'), 'a Windows-authored exclude guards a slash-form walk');
+        $this->assertTrue($scanner->isExcluded('C:\\repo\\vendor\\x.php'));
+        $this->assertFalse($scanner->isExcluded('myvendor/x.php'), 'coalescing/segment safety survives normalization');
+    }
+
+    public function testS40UnderRootsNormalizesSeparatorsAndCase(): void
+    {
+        $this->assertSame(
+            'src/Foo.php',
+            PathCanonical::underRoots('C:\\Users\\proj\\src\\Foo.php', ['C:\\Users\\proj'])
+        );
+        $this->assertSame(
+            'Util/a.php',
+            PathCanonical::underRoots('/Proj/Src/Util/a.php', ['/proj/src']),
+            'case-folded root spelling strips'
+        );
+        // Trailing-separator spellings of one root all agree.
+        foreach (['/proj', '/proj/', '/proj//'] as $root) {
+            $this->assertSame('a.php', PathCanonical::underRoots('/proj/a.php', [$root]));
+        }
+        // Longest folded match still wins.
+        $this->assertSame('a.php', PathCanonical::underRoots('C:\\p\\q\\a.php', ['C:\\p', 'C:\\p\\q']));
+        // A single-file root in drive form reduces to its basename.
+        $this->assertSame('k.php', PathCanonical::underRoots('D:\\proj\\k.php', ['D:\\proj\\k.php']));
+        // The no-match fallback emits the separator-folded form: raw
+        // bytes can no longer leak "\" into ids and baselines.
+        $this->assertSame('C:/x/y.php', PathCanonical::underRoots('C:\\x\\y.php', ['/proj']));
+        // Slash-form behaviour is untouched (the NumPathTest contract).
+        $this->assertSame('Util/a.php', PathCanonical::underRoots('/proj/src/Util/a.php', ['/proj', '/proj/src']));
+        $this->assertSame('bare.php', PathCanonical::underRoots('bare.php', []));
+        $this->assertSame('/elsewhere/x/Foo.php', PathCanonical::underRoots('/elsewhere/x/Foo.php', ['/proj']));
+    }
+
+    public function testS40FabricatedSeparatorTreeKeepsVendorExcluded(): void
+    {
+        $base = sys_get_temp_dir() . '/phpdup-s40-sep-' . (++$this->s40Seq) . '-' . getmypid();
+        $this->s40Dirs[] = $base;
+        $this->assertNotFalse(mkdir($base, 0777, true));
+        $this->assertNotFalse(mkdir($base . '/vendor', 0777, true));
+        $this->assertNotFalse(file_put_contents($base . '/vendor/a.php', "<?php\nreturn 1;\n"));
+        $this->assertNotFalse(file_put_contents($base . '/top.php', "<?php\nreturn 2;\n"));
+        // A Linux-legal filename containing a literal backslash: under
+        // the fold law it is DECIDED in folded shape, but the walk must
+        // still yield it with native bytes.
+        $this->assertNotFalse(file_put_contents($base . '/weird\\name.php', "<?php\nreturn 3;\n"));
+
+        $excludes = ['**/vendor/**'];
+        $scanner = new FileScanner($excludes, warnOnSkip: false);
+        $files = iterator_to_array($scanner->scan($base), false);
+        $basenames = array_map('basename', $files);
+        sort($basenames);
+
+        $this->assertSame(
+            ['top.php', 'weird\\name.php'],
+            $basenames,
+            'the vendor branch never re-enters; the backslash-named file stays native'
+        );
+        $this->assertSame([], $scanner->skipNotes());
+
+        // A root quoted with a trailing separator scans identically.
+        $again = iterator_to_array((new FileScanner($excludes, warnOnSkip: false))->scan($base . '/'), false);
+        $this->assertSame($files, $again);
     }
 }

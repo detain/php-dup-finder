@@ -27,11 +27,19 @@ use Phpdup\Util\PathCanonical;
  * }
  *
  * member_hashes are sorted SHA-256 fingerprints of each block's
- * content identity: sha256($block->file . '|' . $block->structuralHash).
+ * content identity: sha256(canonicalFile . '|' . $block->structuralHash)
+ * with canonicalFile the PathCanonical root-stripped form (see below).
  * Item 4.4 (ruling §5e) replaced v1's positional formula
  * (file . start . end), which churned every baseline entry whenever an
  * unrelated edit shifted lines above a block. They are NOT dependent on
  * cluster IDs nor on where a block sits in its file.
+ *
+ * Cross-run portability (once-044, note to S50): computeBlockHash
+ * shares the FindingId PathCanonical recipe exactly, so the Windows
+ * separator-fold reaches baselines too — a baseline recorded on one
+ * machine compares on another even when the scan root is spelled in a
+ * natively different join form (C:\proj\… vs. /proj/…). Slash-form
+ * scans hash byte-identically, so no existing v3 baseline re-hashes.
  */
 final class BaselineStore
 {

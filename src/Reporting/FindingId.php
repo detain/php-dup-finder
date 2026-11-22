@@ -30,7 +30,16 @@ use Phpdup\Util\PathCanonical;
  * structuralHash beneath it now renders float literals as IEEE-754
  * bytes rather than the version-varying decimal cast. Ids are stable
  * across machines for a given scan; an unrooted path (single-file run,
- * synthetic test block) falls back to its verbatim bytes.
+ * synthetic test block) falls back to its separator-folded form — raw
+ * bytes never carry a drive prefix (C:\…) into a portable id.
+ *
+ * Cross-run portability (once-044, note to S50): root matching folds
+ * separators and ASCII case inside PathCanonical before stripping, so
+ * the same tree scanned with natively different join spellings
+ * (Windows C:\proj\… vs. a runner /proj/…, single-file roots, roots
+ * quoted in another case) yields the same canonical member paths — and
+ * therefore the same ids — making ids minted on one OS consumable on
+ * another. Slash-form scans are byte-for-byte unchanged.
  *
  * Growth or shrink of the member set deliberately changes the id: a
  * previously accepted divergence whose cluster changes shape resurfaces

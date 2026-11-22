@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace Phpdup\Scanning;
 
+use Phpdup\Util\PathCanonical;
+
 /**
  * Recursive PHP file scanner with glob include/exclude semantics.
  *
@@ -97,6 +99,12 @@ final class FileScanner
      */
     private function compilePattern(string $glob): array
     {
+        // once-044: a config written on Windows may spell its excludes
+        // with backslashes; canonicalize once at compile time so regex,
+        // tokens and the quoted 'source' all describe the same
+        // canonical language. Slash-form globs (every existing pin) are
+        // fixed points — the shell-S21 seam stays byte-exact.
+        $glob = PathCanonical::separators($glob);
         $tokens = self::tokenizeGlob($glob);
         // The regex goes through the canonical compiler entry — the same
         // function the shell-S21 compile pins reflect into — so the seam
@@ -270,21 +278,29 @@ final class FileScanner
         return in_array($ext, ['php', 'php8', 'phtml', 'inc'], true);
     }
 
+    /**
+     * Root-relative form of one walked path (once-044: routed through
+     * PathCanonical, so a backslash-joined Windows tree — including a
+     * drive-prefixed root such as C:\proj — strips correctly and emits
+     * canonical forward-slash segments for the exclude matcher). An
+     * entry that IS the root still answers '' (the walk's own gate).
+     */
     private function relpath(string $abs, string $root): string
     {
-        if (str_starts_with($abs, $root . '/')) {
-            return substr($abs, strlen($root) + 1);
-        }
-        if ($abs === $root) {
+        if (PathCanonical::fold($abs) === PathCanonical::fold($root)) {
             return '';
         }
-        return $abs;
+        return PathCanonical::underRoots($abs, [$root]);
     }
 
     public function isExcluded(string $relPath): bool
     {
+        // once-044: the subject enters the matcher in canonical form,
+        // and patterns compile canonical (see compilePattern), so both
+        // sides of every verdict meet in the same separator dialect.
+        $subject = PathCanonical::separators($relPath);
         foreach ($this->patterns as $pattern) {
-            if ($this->matchesPattern($pattern, $relPath)) {
+            if ($this->matchesPattern($pattern, $subject)) {
                 return true;
             }
         }
