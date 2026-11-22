@@ -21,8 +21,22 @@ use Phpdup\Util\AstSerializer;
  *   1. Builds the function body by replacing hole positions in the generalized
  *      AST with parameter variables.
  *   2. Writes the function to {$outDir}/Refactored/{clusterId}.php
- *   3. For each member: parses their file, finds the block, replaces it with
- *      a call to the new function, and writes the file back.
+ *   3. For each file holding members: one read, one parse, every member of
+ *      that file located by node identity in the SAME tree, all replacements
+ *      applied in one traversal, one prettyPrint, one write.
+ *
+ * output-004 (half A) law: the whole cluster is PLANNED (read, parsed,
+ * located, rewritten in memory, count-verified) before a single byte is
+ * written. A member that cannot be located — missing file, unreadable file,
+ * unparseable file, stale span, two members on one node — refuses the
+ * cluster loudly with zero files touched, mirroring the item 1.3
+ * script-refusal posture. The old loop re-read and re-parsed each member's
+ * file AFTER writing the previous member's rewrite, so every member past
+ * the first in a shared file searched its original line spans in reshaped
+ * text and silently applied to nothing — silent partial application, the
+ * exact failure this restructure kills. IO failures are never swallowed:
+ * every read/write carries a real diagnostic. The transaction + rollback
+ * over the write loop is half B (output-S44b).
  */
 final class ApplyExtractor
 {
@@ -64,19 +78,198 @@ final class ApplyExtractor
         // 2. Extract function name from signature.
         $funcName = $this->extractFunctionName($cluster->signature);
 
-        // 3. Build and write the function file.
+        // 3. output-004 (half A): plan every member rewrite — group members
+        //    by file, one read + one parse per file, node-identity
+        //    collection of ALL the file's members from that single tree,
+        //    one replacement pass, count-verify, one prettyPrint — BEFORE
+        //    any filesystem touch. Any miss throws here and the cluster is
+        //    refused with zero files written.
+        $rewrites = $this->planRewrites($cluster, $funcName);
+
+        // 4. Build and write the function file (loud: no @-swallow).
         $functionFile = $this->buildFunctionFile($funcName, $modifiedAst, $cluster);
         $refactoredDir = $outDir . '/Refactored';
-        if (!is_dir($refactoredDir)) {
-            @mkdir($refactoredDir, 0o775, true);
+        if (!is_dir($refactoredDir) && !@mkdir($refactoredDir, 0o775, true) && !is_dir($refactoredDir)) {
+            // The @ keeps the raw warning off the user's stream; the throw
+            // carries it, so the failure is reported, never swallowed.
+            throw new \RuntimeException(sprintf(
+                'ApplyExtractor: refusing cluster %s — could not create %s (%s); no files were written.',
+                $cluster->id,
+                $refactoredDir,
+                self::describeLastFailure($refactoredDir),
+            ));
         }
         $safeId = Slug::safe($cluster->id);
-        file_put_contents($refactoredDir . "/{$safeId}.php", $functionFile);
+        $this->writeFileLoud($cluster, $refactoredDir . "/{$safeId}.php", $functionFile);
 
-        // 4. Rewrite each member's call site.
-        foreach ($cluster->members as $member) {
-            $this->rewriteMemberCallSite($member, $funcName, $cluster);
+        // 5. Write each member's file exactly once — every sibling member of
+        //    the file landed inside the single prettyPrinted tree planned
+        //    above, so one write carries the whole cluster's share.
+        foreach ($rewrites as $file => $code) {
+            $this->writeFileLoud($cluster, $file, $code);
         }
+    }
+
+    /**
+     * Group the cluster's members by file (first-appearance order) and plan
+     * each file's full rewrite without touching the filesystem for writes.
+     *
+     * @return array<string, string> file path => rewritten file text
+     */
+    private function planRewrites(Cluster $cluster, string $funcName): array
+    {
+        /** @var array<string, list<Block>> $byFile */
+        $byFile = [];
+        foreach ($cluster->members as $member) {
+            $byFile[$member->file][] = $member;
+        }
+
+        $rewrites = [];
+        foreach ($byFile as $file => $members) {
+            $rewrites[$file] = $this->planFileRewrite($cluster, $file, $members, $funcName);
+        }
+        return $rewrites;
+    }
+
+    /**
+     * One read, one parse, one node-identity collection, one replacement
+     * pass, one prettyPrint for a whole file — or a loud refusal naming the
+     * member that could not be rewritten. The refusal arrives before the
+     * caller has written anything, so "partial application" is structurally
+     * excluded for every miss class (php-dup-finder-output-004).
+     *
+     * @param list<Block> $members
+     */
+    private function planFileRewrite(Cluster $cluster, string $file, array $members, string $funcName): string
+    {
+        // Silent return, old :332-334 — now a named refusal.
+        if (!is_file($file)) {
+            throw new \RuntimeException(sprintf(
+                'ApplyExtractor: refusing cluster %s — member file %s does not exist (%s); no files were written.',
+                $cluster->id,
+                $file,
+                self::describeMember($members[0]),
+            ));
+        }
+
+        // Silent return, old :337-339 — now a named refusal with the
+        // suppressed diagnostic (the @ keeps the warning off the user's
+        // stream; it rides the exception message instead).
+        error_clear_last();
+        $code = @file_get_contents($file);
+        if ($code === false) {
+            throw new \RuntimeException(sprintf(
+                'ApplyExtractor: refusing cluster %s — member file %s could not be read (%s); no files were written.',
+                $cluster->id,
+                $file,
+                self::describeLastFailure($file),
+            ));
+        }
+
+        // Silent return, old :343-345 — now a named refusal carrying the
+        // php-parser reason.
+        $parser = new AstParser();
+        $stmts = $parser->parseCode($code);
+        if ($stmts === null) {
+            throw new \RuntimeException(sprintf(
+                'ApplyExtractor: refusing cluster %s — member file %s could not be parsed (%s); no files were written.',
+                $cluster->id,
+                $file,
+                $parser->lastError?->getMessage() ?? 'unknown parse error',
+            ));
+        }
+
+        // Node-identity collection (old :349-351 silent miss — now named):
+        // every member of this file is located in THIS single parse, before
+        // any rewrite reshapes the text.
+        /** @var array<int, Node> $replacements spl_object_id(target) => replacement */
+        $replacements = [];
+        /** @var array<int, Block> $claimants spl_object_id(target) => first claimant */
+        $claimants = [];
+        foreach ($members as $member) {
+            $targetNode = $this->findNodeInStmts($stmts, $member);
+            if ($targetNode === null) {
+                throw new \RuntimeException(sprintf(
+                    'ApplyExtractor: refusing cluster %s — no %s node at lines %d-%d in %s (member %s); '
+                    . 'the extraction is stale against the file on disk. No files were written.',
+                    $cluster->id,
+                    $member->kind,
+                    $member->range->start,
+                    $member->range->end,
+                    $file,
+                    self::describeMember($member),
+                ));
+            }
+            $targetId = spl_object_id($targetNode);
+            if (isset($claimants[$targetId])) {
+                throw new \RuntimeException(sprintf(
+                    'ApplyExtractor: refusing cluster %s — two members address the same node at lines %d-%d in %s (%s and %s); '
+                    . 'no files were written.',
+                    $cluster->id,
+                    $member->range->start,
+                    $member->range->end,
+                    $file,
+                    self::describeMember($claimants[$targetId]),
+                    self::describeMember($member),
+                ));
+            }
+            $claimants[$targetId] = $member;
+            $replacements[$targetId] = $this->buildCallReplacement($funcName, $cluster, $targetNode);
+        }
+
+        $newStmts = $this->replaceNodesInStmts($stmts, $replacements, $cluster, $file);
+        return $this->printer->prettyPrintFile($newStmts);
+    }
+
+    /** Compact member label for diagnostics: kind, name (or class), span. */
+    private static function describeMember(Block $member): string
+    {
+        return sprintf(
+            '%s %s [%d-%d]',
+            $member->kind,
+            $member->name ?? $member->class ?? 'anonymous',
+            $member->range->start,
+            $member->range->end,
+        );
+    }
+
+    /**
+     * Write one artifact or throw with the suppressed diagnostic — the old
+     * @file_put_contents swallow is gone: an IO failure aborts the apply
+     * loudly, naming the file and the cluster.
+     */
+    private function writeFileLoud(Cluster $cluster, string $path, string $content): void
+    {
+        error_clear_last();
+        $written = @file_put_contents($path, $content);
+        if ($written === false) {
+            throw new \RuntimeException(sprintf(
+                'ApplyExtractor: cluster %s — writing %s failed (%s).',
+                $cluster->id,
+                $path,
+                self::describeLastFailure($path),
+            ));
+        }
+    }
+
+    /**
+     * Pull the diagnostic behind the most recent @-guarded call on $path.
+     * error_clear_last() runs right before each guarded call, so
+     * error_get_last() is fresh; the "<op>(<path>): " preamble PHP prepends
+     * is trimmed because the surrounding message already names the path.
+     */
+    private static function describeLastFailure(string $path): string
+    {
+        $failure = error_get_last();
+        $message = is_array($failure) ? $failure['message'] : '';
+        foreach (['file_get_contents', 'file_put_contents', 'mkdir'] as $op) {
+            $preamble = sprintf('%s(%s): ', $op, $path);
+            if (str_starts_with($message, $preamble)) {
+                $message = substr($message, strlen($preamble));
+                break;
+            }
+        }
+        return $message !== '' ? $message : 'no diagnostic recorded';
     }
 
     /**
@@ -326,43 +519,6 @@ final class ApplyExtractor
     }
 
     /**
-     * Rewrite a member's call site: replace the block with a function call.
-     */
-    private function rewriteMemberCallSite(Block $member, string $funcName, Cluster $cluster): void
-    {
-        if (!is_file($member->file)) {
-            return;
-        }
-
-        $code = @file_get_contents($member->file);
-        if ($code === false) {
-            return;
-        }
-
-        $parser = new AstParser();
-        $stmts = $parser->parseCode($code);
-        if ($stmts === null) {
-            return;
-        }
-
-        // Find the node matching this block.
-        $targetNode = $this->findNodeInStmts($stmts, $member);
-        if ($targetNode === null) {
-            return;
-        }
-
-        // Build the replacement call.
-        $replacement = $this->buildCallReplacement($funcName, $cluster, $targetNode);
-
-        // Replace in the statements list.
-        $newStmts = $this->replaceNodeInStmts($stmts, $targetNode, $replacement);
-
-        // Pretty-print and write back.
-        $newCode = $this->printer->prettyPrintFile($newStmts);
-        @file_put_contents($member->file, $newCode);
-    }
-
-    /**
      * @param list<Node\Stmt> $stmts
      */
     private function findNodeInStmts(array $stmts, Block $member): ?Node
@@ -456,39 +612,56 @@ final class ApplyExtractor
     }
 
     /**
-     * Replace $target with $replacement in the statement list.
+     * Replace ALL collected targets in one traversal, then count-verify
+     * that every one of them actually landed. A target the pass failed to
+     * visit (realistically: one member nested inside another member's
+     * replaced subtree, which the traverser never re-enters) is a member
+     * miss, not a silent skip — the exception fires before the caller
+     * writes this file, and the cluster is refused.
      *
      * @param list<Node\Stmt> $stmts
+     * @param array<int, Node> $replacements spl_object_id(target) => replacement
      * @return list<Node\Stmt>
      */
-    private function replaceNodeInStmts(array $stmts, Node $target, Node $replacement): array
+    private function replaceNodesInStmts(array $stmts, array $replacements, Cluster $cluster, string $file): array
     {
         $traverser = new NodeTraverser();
-        $targetId = spl_object_id($target);
 
-        $traverser->addVisitor(new class($targetId, $replacement) extends NodeVisitorAbstract {
-            private bool $replaced = false;
+        $visitor = new class($replacements) extends NodeVisitorAbstract {
+            public int $replaced = 0;
 
-            public function __construct(private readonly int $targetId, private readonly Node $replacement)
+            /** @param array<int, Node> $replacements */
+            public function __construct(private readonly array $replacements)
             {
             }
 
             #[\Override]
             public function enterNode(Node $node): ?Node
             {
-                if ($this->replaced) {
-                    return null;
-                }
-                if (spl_object_id($node) === $this->targetId) {
-                    $this->replaced = true;
-                    return $this->replacement;
+                $id = spl_object_id($node);
+                if (isset($this->replacements[$id])) {
+                    ++$this->replaced;
+                    return $this->replacements[$id];
                 }
                 return null;
             }
-        });
+        };
+        $traverser->addVisitor($visitor);
 
         /** @var list<Node\Stmt> $result */
         $result = $traverser->traverse($stmts);
+
+        $expected = count($replacements);
+        if ($visitor->replaced !== $expected) {
+            throw new \RuntimeException(sprintf(
+                'ApplyExtractor: refusing cluster %s — only %d of %d collected member nodes in %s were rewritten '
+                . '(a member nested under another member\'s replacement cannot be addressed); no files were written.',
+                $cluster->id,
+                $visitor->replaced,
+                $expected,
+                $file,
+            ));
+        }
         return $result;
     }
 }
