@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Phpdup\Tests\Unit\Parsing;
 
+use Composer\InstalledVersions;
 use PhpParser\Node;
 use PhpParser\ParserFactory;
 use PHPUnit\Framework\TestCase;
@@ -13,7 +14,8 @@ use Phpdup\Parsing\CacheBlob;
 /**
  * Pins the engine-004/017/020 hardening of the AST disk cache:
  * length-framed blobs, recursive decode screening, the deep-AST write
- * guard, and private dir/file modes.
+ * guard, and private dir/file modes — plus the engine-016/050 key
+ * honesty (parser version + PHP major in the key, content-hash memo).
  */
 final class AstCacheTest extends TestCase
 {
@@ -383,6 +385,89 @@ final class AstCacheTest extends TestCase
         $this->assertNull(CacheBlob::unframe('no colon here'));
     }
 
+    // ---- engine-S24: key honesty (engine-016) + sha1 memo (engine-050) ----
+
+    public function testDerivedKeyBindsParserVersionAndPhpMajor(): void
+    {
+        // Acceptance: keyFor output contains the installed nikic/php-parser
+        // pretty version and the host PHP major — observed end-to-end,
+        // because the key IS the blob filename. The hand-bumped literal
+        // (engine-016) could only claim this; the derivation now does it.
+        $cache = $this->cache();
+        $cache->put($this->sourceFile, $this->parseSource());
+
+        [$format, $parser, $php, $sha] = $this->keyParts(basename($this->onlyBlob(), '.cache'));
+        $this->assertSame('parser-v6', $format, 'the storage-format id stays the key head');
+        $this->assertSame('pp' . self::liveParserLabel(), $parser, 'key must carry the real package label');
+        $this->assertSame('php' . intdiv(PHP_VERSION_ID, 10000), $php, 'key must bind the host PHP major');
+        $this->assertMatchesRegularExpression('/^php\d$/', $php, 'PHP_VERSION_ID majors are single-digit — a php80-style segment would smuggle minor confusion');
+        $this->assertMatchesRegularExpression('/^[0-9a-f]{40}$/', $sha, 'content sha is the key tail');
+    }
+
+    public function testFiveOhKeyIsNotReadableByFiveNineRun(): void
+    {
+        // Two-marker identity: a cache written by a run labelling the
+        // parser "5.0" must never be served to a "5.9" run — replaying
+        // old blobs across a minor bump is the AST-shape lie engine-016
+        // filed (5.0→5.9 already changed `args` shapes once). The
+        // constructor seam pins the marker the derivation would read
+        // from InstalledVersions.
+        $dir = $this->tmp . '/marker-cache';
+        $stmts = $this->parseSource();
+
+        $writer = new AstCache($dir, '5.0');
+        $writer->put($this->sourceFile, $stmts);
+        $blobs = glob($dir . '/*.cache') ?: [];
+        $this->assertCount(1, $blobs);
+        $this->assertMatchesRegularExpression('/^parser-v6_pp5\.0_php\d+_[0-9a-f]{40}\.cache$/', basename((string) $blobs[0]));
+
+        $alien = new AstCache($dir, '5.9');
+        $this->assertNull($alien->get($this->sourceFile), 'a bumped-parser run must not replay the old blob');
+        $this->assertCount(1, glob($dir . '/*.cache') ?: [], 'the alien read must not mint a second blob');
+
+        $twin = new AstCache($dir, '5.0');
+        $this->assertNotNull($twin->get($this->sourceFile), 'the same-marker run still hits — the pin is not a void');
+
+        // Sanitizer belt: a label with a path separator must land
+        // filesystem-safe in the name, never as a directory escape.
+        $slashy = new AstCache($dir, '5.x/dev');
+        $slashy->put($this->sourceFile, $stmts);
+        $after = glob($dir . '/*.cache') ?: [];
+        $this->assertCount(2, $after);
+        $names = array_map(static fn (string $f): string => basename($f), $after);
+        $escaped = array_values(array_filter($names, static fn (string $n): bool => !str_contains($n, 'pp5.0_')));
+        $this->assertCount(1, $escaped);
+        $this->assertMatchesRegularExpression('/^parser-v6_pp5\.x-dev_php\d+_[0-9a-f]{40}\.cache$/', $escaped[0]);
+    }
+
+    public function testMemoSkipsRehashingWarmPathsButRespectsTouches(): void
+    {
+        // engine-050: the second keyFor() on the same path must not
+        // re-hash. The witness counts real sha1_file() passes; the mtime
+        // touch in the middle is the acceptance probe — a changed stat
+        // legitimately forces ONE re-hash, which reproduces the same sha,
+        // so the blob still matches and the read still hits. And the memo
+        // must never outrun content truth: a real edit still misses.
+        $cache = $this->cache();
+
+        $cold = AstCache::hashCount();
+        $cache->put($this->sourceFile, $this->parseSource());
+        $this->assertSame($cold + 1, AstCache::hashCount(), 'cold put hashes once');
+
+        $this->assertNotNull($cache->get($this->sourceFile));
+        $this->assertSame($cold + 1, AstCache::hashCount(), 'warm get must not re-hash');
+
+        touch($this->sourceFile, time() + 3600); // mtime-only change
+        $this->assertNotNull($cache->get($this->sourceFile), 'touched file must still match its blob');
+        $this->assertSame($cold + 2, AstCache::hashCount(), 'the stat change legitimately forces one re-hash');
+
+        $this->assertNotNull($cache->get($this->sourceFile));
+        $this->assertSame($cold + 2, AstCache::hashCount(), 'the refresh re-memoizes');
+
+        file_put_contents($this->sourceFile, "<?php\nfunction greet(\$n) { echo 'rewritten'; }\n");
+        $this->assertNull($cache->get($this->sourceFile), 'the memo never outruns content truth');
+    }
+
     // ---- helpers ----
 
     private function cache(): AstCache
@@ -395,6 +480,32 @@ final class AstCacheTest extends TestCase
         $files = glob($this->tmp . '/cache/*.cache') ?: [];
         $this->assertCount(1, $files, 'exactly one cache blob must exist for this fixture');
         return $files[0];
+    }
+
+    /**
+     * Split a cache key (blob basename minus extension) into its parts,
+     * failing loud if the shape ever drifts from the 4-part
+     * format-id / parser / php-major / sha contract.
+     *
+     * @return array{0:string, 1:string, 2:string, 3:string}
+     */
+    private function keyParts(string $key): array
+    {
+        $parts = explode('_', $key);
+        $this->assertCount(4, $parts, "unexpected cache-key shape: $key");
+        return [$parts[0], $parts[1], $parts[2], $parts[3]];
+    }
+
+    /**
+     * The live parser label exactly as the key derivation renders it.
+     * Re-implements the one-line sanitize rule on purpose: if a future
+     * package label ever needs escaping, this pin catches a divergence
+     * between what the cache writes and what it promises to contain.
+     */
+    private static function liveParserLabel(): string
+    {
+        $pretty = InstalledVersions::getPrettyVersion('nikic/php-parser');
+        return preg_replace('/[^A-Za-z0-9._-]/', '-', $pretty ?? 'unknown') ?? 'unknown';
     }
 
     /** @return list<Node\Stmt> */

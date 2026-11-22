@@ -3,16 +3,22 @@ declare(strict_types=1);
 
 namespace Phpdup\Tests\Unit\Parsing;
 
+use Composer\InstalledVersions;
+use PhpParser\Node;
 use PhpParser\Token;
 use PHPUnit\Framework\TestCase;
 use Phpdup\Persistence\SerializedClassAllowList;
+use Phpdup\Parsing\AstCache;
 use Phpdup\Parsing\CacheBlob;
 use Phpdup\Parsing\TokenCache;
 
 /**
  * Pins the engine-018/020 hardening of the token disk cache: parity
  * with {@see AstCache} through the shared {@see CacheBlob} framing and
- * decode screening, and private dir/file modes.
+ * decode screening, private dir/file modes — and the engine-S24 key
+ * side: parser version + PHP major bound into every key (engine-016),
+ * the content-hash memo (engine-050), and byte-equality of the two
+ * caches' duplicated marker derivation.
  */
 final class TokenCacheTest extends TestCase
 {
@@ -29,14 +35,19 @@ final class TokenCacheTest extends TestCase
 
     protected function tearDown(): void
     {
-        @unlink($this->sourceFile);
-        foreach (glob($this->tmp . '/*') ?: [] as $f) {
-            @unlink($f);
+        // Recursive: the engine-S24 key tests mint cache blobs in fresh
+        // subdirectories (marker/memo/parity pins) next to the sources.
+        $rii = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($this->tmp, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($rii as $f) {
+            if ($f->isDir()) {
+                @rmdir($f->getPathname());
+            } else {
+                @unlink($f->getPathname());
+            }
         }
-        foreach (glob($this->tmp . '/perm-cache/*') ?: [] as $f) {
-            @unlink($f);
-        }
-        @rmdir($this->tmp . '/perm-cache');
         @rmdir($this->tmp);
     }
 
@@ -280,6 +291,103 @@ final class TokenCacheTest extends TestCase
         }
     }
 
+    // ---- engine-S24: key honesty (engine-016) + sha1 memo (engine-050) ----
+
+    public function testDerivedKeyBindsParserVersionAndPhpMajor(): void
+    {
+        // Acceptance (mirrored from AstCacheTest): the token cache keys
+        // with the installed nikic/php-parser pretty version and the host
+        // PHP major, observed end-to-end through the blob filename.
+        $dir = $this->tmp . '/derived-tok';
+        $cache = new TokenCache($dir);
+        $cache->put($this->sourceFile, [new Token(\T_OPEN_TAG, '<?php ', 1, 0)]);
+
+        $parts = explode('_', basename($this->onlyBlobIn($dir, 'tok'), '.tok'));
+        $this->assertCount(4, $parts, 'cache key must keep the 4-part format/parser/php/sha shape');
+        $this->assertSame('tok-v2', $parts[0], 'the storage-format id stays the key head');
+        $this->assertSame('pp' . self::liveParserLabel(), $parts[1], 'key must carry the real package label');
+        $this->assertSame('php' . intdiv(PHP_VERSION_ID, 10000), $parts[2], 'key must bind the host PHP major');
+        $this->assertMatchesRegularExpression('/^php\d$/', $parts[2], 'PHP_VERSION_ID majors are single-digit — a php80-style segment would smuggle minor confusion');
+        $this->assertMatchesRegularExpression('/^[0-9a-f]{40}$/', $parts[3], 'content sha is the key tail');
+    }
+
+    public function testFiveOhKeyIsNotReadableByFiveNineRun(): void
+    {
+        // Two-marker identity on the token side too: engine-016's replay
+        // hazard is a parser-representation hazard for tokens exactly as
+        // it is for ASTs; both caches must refuse cross-marker reads.
+        $dir = $this->tmp . '/marker-tok';
+
+        $writer = new TokenCache($dir, '5.0');
+        $writer->put($this->sourceFile, [new Token(\T_STRING, 'a', 1, 0)]);
+        $blobs = glob($dir . '/*.tok') ?: [];
+        $this->assertCount(1, $blobs);
+        $this->assertMatchesRegularExpression('/^tok-v2_pp5\.0_php\d+_[0-9a-f]{40}\.tok$/', basename((string) $blobs[0]));
+
+        $alien = new TokenCache($dir, '5.9');
+        $this->assertNull($alien->get($this->sourceFile), 'a bumped-parser run must not replay the old blob');
+        $this->assertCount(1, glob($dir . '/*.tok') ?: [], 'the alien read must not mint a second blob');
+
+        $twin = new TokenCache($dir, '5.0');
+        $this->assertNotNull($twin->get($this->sourceFile), 'the same-marker run still hits — the pin is not a void');
+    }
+
+    public function testMemoSkipsRehashingWarmPathsButRespectsTouches(): void
+    {
+        // engine-050, mirrored: cold put hashes once, warm get never
+        // re-reads, an mtime touch re-hashes to the SAME sha (blob still
+        // matches), and a real content edit still misses — the memo never
+        // outruns content truth.
+        $dir = $this->tmp . '/memo-tok';
+        $cache = new TokenCache($dir);
+        $tokens = [new Token(\T_OPEN_TAG, '<?php ', 1, 0)];
+
+        $cold = TokenCache::hashCount();
+        $cache->put($this->sourceFile, $tokens);
+        $this->assertSame($cold + 1, TokenCache::hashCount(), 'cold put hashes once');
+
+        $this->assertNotNull($cache->get($this->sourceFile));
+        $this->assertSame($cold + 1, TokenCache::hashCount(), 'warm get must not re-hash');
+
+        touch($this->sourceFile, time() + 3600); // mtime-only change
+        $this->assertNotNull($cache->get($this->sourceFile), 'touched file must still match its blob');
+        $this->assertSame($cold + 2, TokenCache::hashCount(), 'the stat change legitimately forces one re-hash');
+
+        $this->assertNotNull($cache->get($this->sourceFile));
+        $this->assertSame($cold + 2, TokenCache::hashCount(), 'the refresh re-memoizes');
+
+        file_put_contents($this->sourceFile, "<?php echo 'rewritten';\n");
+        $this->assertNull($cache->get($this->sourceFile));
+    }
+
+    public function testKeyMarkerParityWithAstCache(): void
+    {
+        // engine-S24 had to duplicate the key derivation across the two
+        // caches (its locks admit no shared home for it). This pin makes
+        // silent drift impossible: under default construction both
+        // caches must render the SAME parser + PHP-major marker segment,
+        // and hash the same file to the same sha, into their blob names.
+        $astDir = $this->tmp . '/parity-ast';
+        $tokDir = $this->tmp . '/parity-tok';
+
+        (new AstCache($astDir))->put($this->sourceFile, [new Node\Stmt\Expression(new Node\Scalar\Int_(1))]);
+        (new TokenCache($tokDir))->put($this->sourceFile, [new Token(\T_OPEN_TAG, '<?php ', 1, 0)]);
+
+        $astBlobs = glob($astDir . '/*.cache') ?: [];
+        $tokBlobs = glob($tokDir . '/*.tok') ?: [];
+        $this->assertCount(1, $astBlobs);
+        $this->assertCount(1, $tokBlobs);
+
+        $astParts = explode('_', basename((string) $astBlobs[0], '.cache'));
+        $tokParts = explode('_', basename((string) $tokBlobs[0], '.tok'));
+        $this->assertCount(4, $astParts);
+        $this->assertCount(4, $tokParts);
+        $this->assertSame([$astParts[1], $astParts[2]], [$tokParts[1], $tokParts[2]],
+            'the duplicated engine-S24 derivation drifted between the two caches');
+        $this->assertSame($astParts[3], $tokParts[3], 'the same file must content-hash the same in both memos');
+        $this->assertSame('pp' . self::liveParserLabel(), $astParts[1]);
+    }
+
     // ---- helpers ----
 
     /** @return list<\PhpParser\Token> */
@@ -298,6 +406,24 @@ final class TokenCacheTest extends TestCase
         $files = glob($this->tmp . '/*.tok') ?: [];
         $this->assertCount(1, $files, 'exactly one token blob must exist for this fixture');
         return $files[0];
+    }
+
+    /** Same witness helper, scoped to a fresh per-test cache subdirectory. */
+    private function onlyBlobIn(string $dir, string $extension): string
+    {
+        $files = glob($dir . '/*.' . $extension) ?: [];
+        $this->assertCount(1, $files, "exactly one .$extension blob must exist under $dir");
+        return $files[0];
+    }
+
+    /**
+     * The live parser label exactly as the key derivation renders it —
+     * the same deliberate mirror as AstCacheTest::liveParserLabel.
+     */
+    private static function liveParserLabel(): string
+    {
+        $pretty = InstalledVersions::getPrettyVersion('nikic/php-parser');
+        return preg_replace('/[^A-Za-z0-9._-]/', '-', $pretty ?? 'unknown') ?? 'unknown';
     }
 
     /** Serialized-object prefix for a class, e.g. O:15:"PhpParser\Token". */
