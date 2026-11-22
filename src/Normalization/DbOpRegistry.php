@@ -62,8 +62,10 @@ namespace Phpdup\Normalization;
  * Laravel tree and a bare Illuminate tree issue the very same
  * `->delete()` — so any name shipped by two packs must carry the SAME
  * canonical op in both, and the delete-ish family
- * (`delete`/`truncate` → `db.delete`, `statement`/`affectingStatement`
- * → `db.execute`) must agree with the stock table above. A divergent
+ * (`delete`/`truncate` → `db.delete`, `statement` → `db.execute`, and
+ * pack-only `affectingStatement` → `db.execute` — agreeing through
+ * `statement`'s canonical op, as stock carries no `affectingStatement`
+ * entry) must agree with the stock table above. A divergent
  * pack would make the canonical token of an identical call depend on
  * which pack happened to load (once-125: the Laravel pack had drifted
  * `delete` to `db.write` and `statement`/`affectingStatement` to
