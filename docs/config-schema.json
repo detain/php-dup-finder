@@ -297,6 +297,11 @@
             "type": "string",
             "default": null,
             "description": "Git ref for diff-scoped analysis. When set, phpdup scans only files changed in `git diff --name-only <ref>..HEAD` plus their clone cohort (files sharing n-gram fingerprints with the changed files). Useful for per-PR analysis in CI. CLI: --diff-base. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load — the ref becomes argv of an external git call, so no scanned subtree may choose it (shell-S22; argv confinement of the ref itself lands shell-S23/output-S52)."
+        },
+        "apply": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable the report pipeline's apply mode: a cumulative apply.diff of every cluster refactor patch is written under refactored/ (dry-run posture — F1a emits the same text as --patch; F1b adds real file rewrites). Effective value is flag OR config file: --apply turns it on from argv, \"apply\": true in the root config activates the same mode with no flag, and the flag wins a disagreement (it arrives as a CLI override, which outranks the file layer). Shape-checked like every other key — a non-boolean value exits 2 from --validate-config and from a run (shell-S27, closing shell-015/053; before that leg the key could raw-crash the Config ctor at exit 255 and, when valid, was silently inert without the flag). A per-directory .phpdup.json carrying this key is ignored — the key is not in the per-dir admit set (root-only loud-refusal for write-posture keys is the shell-S22 family this belongs to; its extension is banked, not yet ruled). CLI: --apply."
         }
     }
 }

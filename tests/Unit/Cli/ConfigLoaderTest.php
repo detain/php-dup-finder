@@ -1074,6 +1074,178 @@ final class ConfigLoaderTest extends TestCase
         return [$exit, $tester->getDisplay(), (string)@file_get_contents($jsonPath)];
     }
 
+    // ---- shell-S27: apply key admission + consumption (php-dup-finder-shell-015/053) ----
+
+    public function testApplyDefaultsOff(): void
+    {
+        $config = (new ConfigLoader())->load(paths: ['src'], configFile: null);
+        $this->assertFalse($config->apply);
+    }
+
+    public function testApplyReadsFromConfigFile(): void
+    {
+        // shell-053, first half: a root config file alone must ACTIVATE the
+        // mode at the Config layer — $config->apply is precisely what the
+        // report door now consumes (applyDir pins below).
+        $tmp = sys_get_temp_dir() . '/phpdup-' . uniqid() . '.json';
+        file_put_contents($tmp, json_encode(['apply' => true]));
+        try {
+            $config = (new ConfigLoader())->load(paths: ['src'], configFile: $tmp);
+            $this->assertTrue($config->apply, 'config-file "apply":true is no longer inert at the Config layer');
+        } finally {
+            @unlink($tmp);
+        }
+    }
+
+    public function testApplyOverrideBeatsConfigFile(): void
+    {
+        // The --apply flag lands in the overrides dict (Command), which
+        // outranks the file layer: flag OR config, and the flag wins a
+        // disagreement — same shape as the db_aware pin above.
+        $tmp = sys_get_temp_dir() . '/phpdup-' . uniqid() . '.json';
+        file_put_contents($tmp, json_encode(['apply' => false]));
+        try {
+            $config = (new ConfigLoader())->load(
+                paths: ['src'],
+                configFile: $tmp,
+                overrides: ['apply' => true],
+            );
+            $this->assertTrue($config->apply);
+        } finally {
+            @unlink($tmp);
+        }
+    }
+
+    public function testApplyValidationRejectsNonBoolean(): void
+    {
+        // shell-015: apply was the ONLY bool key admitted, defaulted and
+        // shaped into the ctor without a validate leg — "apply":"yes"
+        // passed --validate-config with exit 0 and raw-crashed a run at
+        // exit 255. The leg joins the db_aware family verbatim.
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('apply must be a boolean');
+        (new ConfigLoader())->validate(['apply' => 'yes']);
+    }
+
+    public function testApplyValidationRejectsEveryNonBoolShape(): void
+    {
+        // Full shape sweep: strings (incl. truthy 'true'), ints 1/0 (PHP's
+        // loose bool would have laundered them), JSON null — array_key_exists
+        // IS true for a null value — plus list and map shapes. The $where
+        // suffix must name the offending file, same wording as the family.
+        foreach (['yes', 'true', 1, 0, null, [], ['x' => 1]] as $bad) {
+            try {
+                (new ConfigLoader())->validate(['apply' => $bad], 'phpdup-x.json');
+                $this->fail('a non-boolean apply value must be refused');
+            } catch (\RuntimeException $e) {
+                $this->assertSame('apply must be a boolean in phpdup-x.json', $e->getMessage());
+            }
+        }
+    }
+
+    public function testApplyValidationAcceptsBooleans(): void
+    {
+        (new ConfigLoader())->validate(['apply' => true]);
+        (new ConfigLoader())->validate(['apply' => false]);
+        $this->expectNotToPerformAssertions();
+    }
+
+    public function testValidateConfigExitsTwoOnNonBoolApply(): void
+    {
+        // Acceptance (1a), the shell-015 repro verbatim: used to print
+        // "config OK" and exit 0.
+        $dir = $this->scratchDir();
+        $bad = $dir . '/phpdup-s27-bad.json';
+        file_put_contents($bad, json_encode(['apply' => 'yes']));
+        [$exit, $display] = $this->analyzeCorpus(
+            $dir . '/never-scanned',
+            $bad,
+            $dir . '/out-s27-vc.json',
+            ['--validate-config' => true],
+        );
+        $this->assertSame(2, $exit, '--validate-config must refuse "apply":"yes"');
+        $this->assertStringContainsString('apply must be a boolean', $display);
+        $this->assertStringNotContainsString('config OK', $display);
+    }
+
+    public function testAnalyzeRunExitsTwoWithCleanMessageOnNonBoolApply(): void
+    {
+        // Acceptance (1b): the same file on a plain run — used to die as a
+        // raw PHP Fatal TypeError at exit 255. Now: one `phpdup:` line, no
+        // trace, the pipeline never starts.
+        $dir = $this->scratchDir();
+        $bad = $dir . '/phpdup-s27-bad-run.json';
+        file_put_contents($bad, json_encode(['apply' => 'yes']));
+        [$exit, $display] = $this->analyzeCorpus($dir, $bad, $dir . '/out-s27-run.json');
+        $this->assertSame(2, $exit);
+        $this->assertStringContainsString('apply must be a boolean', $display);
+        $this->assertStringNotContainsString('TypeError', $display, 'the crash class is gone, not merely re-routed');
+        $this->assertStringNotContainsString('Stack trace', $display);
+    }
+
+    public function testParseRuntimeOptionsAppliesConfigFoldedModeToApplyDir(): void
+    {
+        // shell-053, second half: THE CONSUMPTION POINT. The report door
+        // reads the Config-folded apply (flag OR file), not the raw flag,
+        // so a config-only "apply":true reaches applyDir. Pinned on the
+        // real private door via reflection — the CliDefaultShadowingTest
+        // idiom for this seam.
+        $command = new Command();
+        $method = new \ReflectionMethod($command, 'parseRuntimeOptions');
+
+        $noFlag = new ArrayInput([], $command->getDefinition());
+        $withFlag = new ArrayInput(['--apply' => true], $command->getDefinition());
+
+        // execute() posture: applyMode is exactly what $config->apply says.
+        $foldedOn = $method->invoke($command, $noFlag, new BufferedOutput(), false, true);
+        $this->assertSame('refactored', $foldedOn['reportArgs']['applyDir'],
+            'config-file "apply":true alone activates apply mode (was: flag-only, key inert)');
+        $foldedOff = $method->invoke($command, $noFlag, new BufferedOutput(), false, false);
+        $this->assertNull($foldedOff['reportArgs']['applyDir']);
+
+        // Legacy 4-arg reflection callers (null): the raw flag still drives
+        // the door — the pre-S27 posture stays byte-identical for them.
+        $legacy = $method->invoke($command, $withFlag, new BufferedOutput(), false, null);
+        $this->assertSame('refactored', $legacy['reportArgs']['applyDir'],
+            'the ?? fallback keeps pre-S27 reflection callers reading the flag');
+    }
+
+    public function testAdmissionDoorConvertsCtorTypeErrorToExitTwo(): void
+    {
+        // Acceptance (3): the door catch's \TypeError arm as a CLASS rule —
+        // a Config-construction TypeError is a usage error: one friendly
+        // `phpdup:` line, exit 2 (pre-S27: raw crash, exit 255). The
+        // fixture is DELIBERATE, manufactured through the ConfigLoader
+        // ctor-trap seam installed on the door loader: with the validate
+        // legs in place NO real input can reach the ctor with a bad type
+        // anymore (that is the fix), so the arm needs a seam, not a
+        // reopened hole. Behaviorally non-vacuous: with the arm deleted
+        // the TypeError escapes run() and PHPUnit records this very test
+        // as an error (mutant additionally proven cp -a lane-side).
+        $loader = new ConfigLoader(
+            ctorTrap: static function (): void {
+                throw new \TypeError(
+                    'Phpdup\Cli\Config::__construct(): Argument #44 ($apply) must be of type bool, string given',
+                );
+            },
+        );
+        // AnalysisWorker-style constructor seam (shell-S27): the door takes
+        // the prepared loader; production never passes the parameter.
+        $cmd = new Command(doorLoaderForTests: $loader);
+
+        $app = new Application('phpdup', '0.1.0');
+        $app->add($cmd);
+        $tester = new CommandTester($app->find('analyze'));
+        $exit = $tester->execute(['paths' => ['src']]);
+
+        $this->assertSame(2, $exit, 'a ctor TypeError is a usage error');
+        $display = $tester->getDisplay();
+        $this->assertStringContainsString('phpdup: ', $display);
+        $this->assertStringContainsString('($apply) must be of type bool', $display,
+            'the real ctor message rides the friendly line verbatim');
+        $this->assertStringNotContainsString('Stack trace', $display);
+    }
+
     private static function deleteTree(string $dir): void
     {
         if (!is_dir($dir)) {

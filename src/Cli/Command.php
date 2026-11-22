@@ -87,6 +87,28 @@ final class Command extends SymfonyCommand
      */
     private const MISSING_VALUE_PATTERN = '/^The "(?<flag>-+[^"]+)" option requires a value\.$/';
 
+    /**
+     * shell-S27 TEST SEAM (see {@see self::doorConfigLoader()}): installed
+     * by the unit that must drive the admission door with a prepared
+     * loader — the ctor-TypeError-as-usage-error pin. Production never
+     * passes it; every real load stays a fresh stateless ConfigLoader.
+     */
+    public function __construct(
+        private readonly ?ConfigLoader $doorLoaderForTests = null,
+    ) {
+        parent::__construct();
+    }
+
+    /**
+     * The loader behind every read-admission door in execute() and
+     * --validate-config (shell-S27). null seam ⇒ `new ConfigLoader()` per
+     * load, identical to the pre-seam posture at all three call sites.
+     */
+    private function doorConfigLoader(): ConfigLoader
+    {
+        return $this->doorLoaderForTests ?? new ConfigLoader();
+    }
+
     #[\Override]
     protected function configure(): void
     {
@@ -318,16 +340,27 @@ HELP;
 
             $autoTuneExactOnly = $this->resolveAutoTune($input, $output, $paths, $overrides, $profileExclude);
 
-            $config = (new ConfigLoader())->load(
+            $config = $this->doorConfigLoader()->load(
                 paths: $paths,
                 configFile: $input->getOption('config'),
                 overrides: $overrides,
                 profileExclude: $profileExclude,
             );
-        } catch (\RuntimeException | \InvalidArgumentException $e) {
+        } catch (\RuntimeException | \InvalidArgumentException | \TypeError $e) {
             // Invalid config, un-coercible numeric flag values, and rejected
             // --profile values surface as the conventional friendly exit 2,
             // never as a raw stack trace.
+            //
+            // shell-S27 (php-dup-finder-shell-015) widens this arm to
+            // \TypeError as a CLASS rule: any TypeError surfacing from the
+            // Config construction behind this door is an admission-shape
+            // failure — pre-leg, a root config carrying "apply": "yes"
+            // reached `new Config(...)` unvalidated and died at exit 255
+            // with the raw arg-#44 message. A tests/ census shows zero
+            // legitimate runtime TypeErrors expected to crash raw here
+            // (every "TypeError" hit in tests/ asserts its ABSENCE), so
+            // translating the class loses no debuggability: the friendly
+            // line still carries PHP's full ctor message verbatim.
             $output->writeln('<error>phpdup: ' . $e->getMessage() . '</error>');
             return 2;
         }
@@ -411,22 +444,34 @@ HELP;
             $tryConfig    = $overrides;
             $tryConfig['diff_base'] = null;
             try {
-                $pipelineConfig = (new ConfigLoader())->load(
+                $pipelineConfig = $this->doorConfigLoader()->load(
                     paths: $paths,
                     configFile: $input->getOption('config'),
                     overrides: $tryConfig,
                     profileExclude: $profileExclude,
                 );
-            } catch (\RuntimeException | \InvalidArgumentException $e) {
-                // Same friendly exit-2 posture as the first load; in
-                // practice nothing can newly fail here — the inputs differ
-                // only in the key this block just consumed.
+            } catch (\RuntimeException | \InvalidArgumentException | \TypeError $e) {
+                // Same friendly exit-2 posture as the first load, the same
+                // shell-S27 \TypeError class arm; in practice nothing can
+                // newly fail here — the inputs differ only in the key this
+                // block just consumed.
                 $output->writeln('<error>phpdup: ' . $e->getMessage() . '</error>');
                 return 2;
             }
         }
 
-        $runtimeOptions = $this->parseRuntimeOptions($input, $output, $autoTuneExactOnly);
+        // shell-S27 (php-dup-finder-shell-053): the loaded Config already
+        // folds flag OR file — parseCliOverrides writes overrides['apply']
+        // only when --apply is present, and OverrideResolver precedence
+        // makes an override beat the file. Passing the folded value keeps
+        // the render door and the Config looking at one truth; the raw
+        // flag alone used to leave a config-driven apply inert.
+        $runtimeOptions = $this->parseRuntimeOptions(
+            $input,
+            $output,
+            $autoTuneExactOnly,
+            applyMode: $pipelineConfig->apply,
+        );
         if ($runtimeOptions === null) {
             // shell-S24 (php-dup-finder-shell-013/014): parseRuntimeOptions
             // emitted the specific error and rejected the input — the run
@@ -891,11 +936,17 @@ HELP;
     }
 
     /**
+     * @param bool|null $applyMode  shell-S27 (php-dup-finder-shell-053): the
+     *         effective apply mode folded by the loaded Config — flag OR
+     *         root-config-file, the CLI flag winning the disagreement.
+     *         execute() always passes it; the null default keeps the legacy
+     *         pre-S27 reflection callers (CliDefaultShadowingTest's door
+     *         pins) reading the raw flag alone. No production path sees it.
      * @return array{useCache: bool, exactOnly: bool, showStats: bool, limit: int, cliVerbosity: string, maxMemoryMb: int, stopAfter: Stage|null, watchMode: bool, tuiMode: bool, themeName: string, reportArgs: array<string, mixed>}|null
      *         null = invalid option value (the specific `phpdup:` error line
      *         has been emitted; the caller answers with exit 2, shell-S24)
      */
-    private function parseRuntimeOptions(InputInterface $input, OutputInterface $output, bool $autoTuneExactOnly): ?array
+    private function parseRuntimeOptions(InputInterface $input, OutputInterface $output, bool $autoTuneExactOnly, ?bool $applyMode = null): ?array
     {
         // --no-cache silences INDEX reuse (the per-file IndexStore lookup in
         // PreprocessStage and the cached AST reload in RefactorStage). It does
@@ -973,7 +1024,10 @@ HELP;
             'gitlabSastFile' => $input->getOption('gitlab-sast'),
             'diffDir'        => $input->getOption('diff'),
             'patchFile'      => $input->getOption('patch'),
-            'applyDir'       => $input->getOption('apply') ? 'refactored' : null,
+            // shell-S27 (php-dup-finder-shell-053): apply mode rides the
+            // Config-folded flag OR file value (execute() always passes
+            // $applyMode; the ?? keeps pre-S27 reflection callers honest).
+            'applyDir'       => ($applyMode ?? (bool)$input->getOption('apply')) ? 'refactored' : null,
             'applyDryRun'    => true, // F1a: --apply always behaves as dry-run (F1b will respect --dry-run flag)
             'checkstyleFile' => $input->getOption('checkstyle'),
             'csvFile'        => $input->getOption('csv'),
@@ -1324,7 +1378,7 @@ HELP;
         }
 
         try {
-            (new ConfigLoader())->validate($decoded, $configFile);
+            $this->doorConfigLoader()->validate($decoded, $configFile);
         } catch (\RuntimeException $e) {
             $output->writeln('<error>phpdup: ' . $e->getMessage() . '</error>');
             return 2;

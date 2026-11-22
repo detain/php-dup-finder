@@ -208,6 +208,14 @@ final class Config
         // When true, write a cumulative apply.diff to the refactored/ directory
         // containing all cluster refactor patches concatenated. F1a produces
         // the same output as --patch; F1b will add actual file rewrite.
+        // shell-S27 (php-dup-finder-shell-015/053): the key is now fully
+        // admitted end to end — ConfigLoader::validate() shape-checks it
+        // (bool or the friendly exit 2), and the report door consumes it as
+        // flag OR config: --apply sets overrides['apply']=true (a CLI
+        // override, so it wins any disagreement), while "apply": true in the
+        // root config file activates apply mode with no flag at all. Before
+        // S27 a file value could raw-crash the ctor (no leg) and, when it
+        // survived, nothing read it — the mode was flag-only.
         public readonly bool $apply = false,
         // Safety cap on candidate pairs emitted by Clusterer::generateCandidatePairs()
         // (--candidate-budget N). 0 = unlimited — the fail-fast generation guard is

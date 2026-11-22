@@ -29,9 +29,22 @@ final class ConfigLoader
      *                          collected in skipNotes() regardless, so
      *                          tests can assert them without STDERR
      *                          capture.
+     * @param (\Closure(): void)|null $ctorTrap  shell-S27 TEST SEAM only —
+     *                          every production construction keeps the
+     *                          null default. When a unit installs one,
+     *                          load() invokes it at the
+     *                          exact seat where `new Config(...)` is built,
+     *                          so a DELIBERATE \TypeError fixture can walk
+     *                          the Command admission door without reopening
+     *                          a real shape hole — validate()'s apply leg
+     *                          closed the last config-file path into a ctor
+     *                          TypeError BY DESIGN, which is exactly why the
+     *                          door's \TypeError arm needs its own seam.
      */
-    public function __construct(private readonly bool $warnOnSkip = true)
-    {
+    public function __construct(
+        private readonly bool $warnOnSkip = true,
+        private readonly ?\Closure $ctorTrap = null,
+    ) {
     }
 
     /**
@@ -230,6 +243,16 @@ final class ConfigLoader
         $resolvedExclude = array_values(array_unique($excludeReset
             ? array_merge($configLayer, $dictLayer)
             : array_merge($base->exclude, $profileExclude ?? [], $configLayer, $dictLayer)));
+
+        // shell-S27: the trap, when installed, runs at the ctor seat — the
+        // exact point a malformed value used to surface as a raw
+        // `Uncaught TypeError` out of `new Config(...)` (shell-015). With
+        // validate() now shape-checking every ctor key, no real input can
+        // reach that crash; this seam keeps the door's \TypeError arm
+        // pin-testable without reopening the hole the arm backs up.
+        if ($this->ctorTrap !== null) {
+            ($this->ctorTrap)();
+        }
 
         return new Config(
             paths: $resolvedPaths,
@@ -1108,6 +1131,17 @@ final class ConfigLoader
         }
         if (array_key_exists('low_memory', $data) && !is_bool($data['low_memory'])) {
             throw new \RuntimeException("low_memory must be a boolean$where");
+        }
+        if (array_key_exists('apply', $data) && !is_bool($data['apply'])) {
+            // shell-S27 (php-dup-finder-shell-015): apply was admitted as a
+            // $known key, defaulted, and shaped into the Config ctor — but
+            // it had no leg here, the only bool without one. A root config
+            // carrying "apply": "yes" passed --validate-config with exit 0
+            // and then died mid-run as a raw `Uncaught TypeError ...
+            // ($apply)` at exit 255. This leg makes both doors the
+            // friendly exit 2; Command's load door additionally catches
+            // \TypeError as a class (shell-S27).
+            throw new \RuntimeException("apply must be a boolean$where");
         }
         if (array_key_exists('scorer', $data)) {
             $assertEnum($data['scorer'], 'scorer', ['default', 'ir']);
