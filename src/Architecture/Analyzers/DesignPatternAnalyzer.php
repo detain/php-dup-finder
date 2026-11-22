@@ -12,11 +12,15 @@ use Phpdup\Clustering\Cluster;
  * tags + hole shape. Doesn't re-walk the AST — that would duplicate
  * PatternRecognizer's work.
  *
- *   - Strategy: existing tag 'strategy' or 'crud-handler' with one
- *               'name' / 'call' hole.
- *   - Factory:  cluster's signature contains 'class-string' hole
- *               and the holes' observed values are class names.
- *   - Decorator: builder-chain tag + holes that look like wrappers.
+ *   - Strategy: cluster carries the 'strategy' pattern tag.
+ *   - Factory:  some hole's inferred type is exactly 'class-string'.
+ *   - Builder:  cluster carries the 'builder-chain' pattern tag.
+ *
+ * The old docblock advertised checks this class never made — a
+ * 'crud-handler' tag arm and a one-hole restriction for Strategy,
+ * observed-value class-name verification for Factory, and a Decorator
+ * pattern it never emitted at all (output-055). The doc now describes
+ * the code, nothing more.
  */
 final class DesignPatternAnalyzer implements ArchitecturalAnalyzer
 {

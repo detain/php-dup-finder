@@ -42,6 +42,10 @@ final class DeclaredTwinAnalyzerTest extends TestCase
         file_put_contents($this->tmp . '/zeta.php', sprintf($nearBody, "/**\n * @phpdup-ignore Fabc1234567890ab vendored copy, divergence accepted\n */", 'report_zeta'));
         file_put_contents($this->tmp . '/eta.php', sprintf($nearBody, "//\n// Twin of report_beta() — a symbol-anchored claim.\n//", 'report_eta'));
         file_put_contents($this->tmp . '/theta.php', sprintf($nearBody, "/**\n * Byte-identical to beta.php\n */", 'report_theta'));
+        // output-055: the same directive text twice in one comment — an
+        // occurrence-aware line calc must number the two rows 3 and 4,
+        // not 3 and 3.
+        file_put_contents($this->tmp . '/iota.php', sprintf($nearBody, "/**\n * @phpdup-ignore Fdup1234567890ab vendored copy\n * @phpdup-ignore Fdup1234567890ab vendored copy\n */", 'report_iota'));
     }
 
     protected function tearDown(): void
@@ -86,6 +90,7 @@ final class DeclaredTwinAnalyzerTest extends TestCase
             $this->block('zeta.php', 'report_zeta', self::FAR),
             $this->block('eta.php', 'report_eta', self::NEAR_A),
             $theta,
+            $this->block('iota.php', 'report_iota', self::FAR),
         ] as $b) {
             $index->add($b);
         }
@@ -186,6 +191,26 @@ final class DeclaredTwinAnalyzerTest extends TestCase
         $this->assertSame('directive', $row['kind']);
         $this->assertSame('Fabc1234567890ab', $row['finding_id']);
         $this->assertSame('harvested', $row['verdict'], 'application is banked for the Config/Command leg (HANDOFF)');
+    }
+
+    public function testDuplicateIgnoreDirectivesGetDistinctCorrectLines(): void
+    {
+        $lines = [];
+        foreach ($this->analyzeNoClusters() as $row) {
+            if (basename((string) $row['file']) !== 'iota.php') {
+                continue;
+            }
+            $this->assertSame('directive', $row['kind']);
+            $this->assertSame('@phpdup-ignore', $row['keyword']);
+            $this->assertSame('Fdup1234567890ab', $row['finding_id']);
+            $this->assertSame('harvested', $row['verdict']);
+            $lines[] = $row['line'];
+        }
+
+        $this->assertCount(2, $lines, 'both identical directive lines are harvested');
+        $this->assertSame([3, 4], $lines,
+            'occurrence-aware calc: the first is on line 3, the copy on line 4 — '
+            . 'strpos-of-first-occurrence used to number both 3 (output-055)');
     }
 
     public function testRowsAreSortedByFileAndLine(): void

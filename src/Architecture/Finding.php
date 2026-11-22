@@ -6,8 +6,8 @@ namespace Phpdup\Architecture;
 /**
  * One architectural observation about a cluster — emitted by an
  * {@see ArchitecturalAnalyzer}. Reporters render these alongside
- * pattern tags so reviewers can see "this cluster smells like a
- * God Class" without having to crawl the diff.
+ * pattern tags so reviewers can see "this cluster mixes persistence
+ * and side-effect calls" without having to crawl the diff.
  *
  * Severity is one of:
  *   - 'note'     informational; no action required

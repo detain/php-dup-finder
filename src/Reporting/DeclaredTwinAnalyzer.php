@@ -241,16 +241,20 @@ final class DeclaredTwinAnalyzer
                 $seenComments[$dedupe] = true;
                 $line0 = $comment->getStartLine();
 
-                if (preg_match_all(self::IGNORE_PATTERN, $text, $ignores, PREG_SET_ORDER)) {
+                if (preg_match_all(self::IGNORE_PATTERN, $text, $ignores, PREG_SET_ORDER | PREG_OFFSET_CAPTURE)) {
                     foreach ($ignores as $match) {
+                        // Occurrence-aware, mirroring the claim branch below
+                        // (output-055): strpos() always reports the FIRST
+                        // occurrence, so duplicate directive lines inside
+                        // one comment all minted rows at the first line.
                         $claims[] = [
                             'file' => $file,
                             'kind' => 'directive',
                             'keyword' => '@phpdup-ignore',
-                            'reference' => trim($match[2]) !== '' ? trim($match[2]) : '',
-                            'line' => $line0 + substr_count(substr($text, 0, (int) strpos($text, $match[0])), "\n"),
+                            'reference' => trim($match[2][0]),
+                            'line' => $line0 + substr_count(substr($text, 0, (int) $match[0][1]), "\n"),
                             'comment' => $this->firstLine($text),
-                            'finding_id' => $match[1],
+                            'finding_id' => $match[1][0],
                         ];
                     }
                 }

@@ -147,6 +147,89 @@ final class ArchitecturalAnalyzersTest extends TestCase
         $this->assertNotContains('srp-mixed-concerns', $codes2);
     }
 
+    // ---------------------------------------------------------------
+    // output-034 / output-055: analyzer honesty
+    // ---------------------------------------------------------------
+
+    public function testAllUnknownHolesFireUntypedPostureNotPrimitiveObsession(): void
+    {
+        $cluster = $this->cluster();
+        $cluster->holes = [
+            new Hole('__P0', 'literal', ['1', '2']),   // inferredType defaults to 'mixed'
+            new Hole('__P1', 'name', ['foo', 'bar']),
+            new Hole('__P2', 'call', ['f()', 'g()']),
+        ];
+        $codes = array_column((new AntiPatternAnalyzer())->analyze($cluster), 'code');
+        $this->assertNotContains('primitive-obsession', $codes,
+            'all-mixed holes are missing type signal, the OPPOSITE of scalar overuse (output-034)');
+        $this->assertContains('all-holes-untyped', $codes,
+            'the untyped posture is reported separately');
+    }
+
+    public function testWholeUnionTestedForPrimitiveObsession(): void
+    {
+        // int|string: every arm scalar → obsession fires, unions tested whole.
+        $ok = $this->cluster();
+        $ok->holes = [$this->typedHole('int|string'), $this->typedHole('int|string'), $this->typedHole('int|string')];
+        $this->assertContains('primitive-obsession',
+            array_column((new AntiPatternAnalyzer())->analyze($ok), 'code'));
+
+        // int|LoggerInterface: a non-scalar arm anywhere rules obsession
+        // out — the old first-segment-only test let this through on 'int'.
+        $bad = $this->cluster();
+        $bad->holes = [$this->typedHole('int|LoggerInterface'), $this->typedHole('int|string'), $this->intHole('c')];
+        $codes = array_column((new AntiPatternAnalyzer())->analyze($bad), 'code');
+        $this->assertNotContains('primitive-obsession', $codes);
+        $this->assertNotContains('all-holes-untyped', $codes,
+            'partially typed holes declare neither posture');
+    }
+
+    public function testMixedIsExcludedFromThePrimitiveSet(): void
+    {
+        $cluster = $this->cluster();
+        $cluster->holes = [$this->intHole('a'), $this->intHole('b'), $this->typedHole('mixed')];
+        $codes = array_column((new AntiPatternAnalyzer())->analyze($cluster), 'code');
+        $this->assertNotContains('primitive-obsession', $codes);
+        $this->assertNotContains('all-holes-untyped', $codes);
+    }
+
+    public function testGodClassClaimIsGoneFromTheAnalyzer(): void
+    {
+        // output-034: the docblock advertised a GOD_THRESHOLD-backed God
+        // Class detector that never existed; this pin keeps the fiction
+        // from creeping back without the code.
+        $this->assertFalse((new \ReflectionClass(AntiPatternAnalyzer::class))->hasConstant('GOD_THRESHOLD'));
+    }
+
+    public function testSrpVerbMatchingIsWholeWordNotSubstring(): void
+    {
+        // login() must not read as side-effect 'log'; catalog() must not
+        // hide a 'log' either (output-055 substring false positives).
+        $login = $this->clusterFromCode('<?php function h($a, $db) { $a->login(); $db->query("x"); }');
+        $this->assertNotContains('srp-mixed-concerns',
+            array_column((new SolidAnalyzer())->analyze($login), 'code'));
+
+        $catalog = $this->clusterFromCode('<?php function h($r, $db) { $r->catalog(); $db->query("x"); }');
+        $this->assertNotContains('srp-mixed-concerns',
+            array_column((new SolidAnalyzer())->analyze($catalog), 'code'));
+
+        // Whole-word positives: the verb as a full camel/snake segment counts.
+        $camel = $this->clusterFromCode('<?php function h($l, $db) { $l->writeLog("x"); $db->save("y"); }');
+        $this->assertContains('srp-mixed-concerns',
+            array_column((new SolidAnalyzer())->analyze($camel), 'code'));
+
+        $plain = $this->clusterFromCode('<?php function h($l, $db) { $l->log("x"); $db->query("y"); }');
+        $this->assertContains('srp-mixed-concerns',
+            array_column((new SolidAnalyzer())->analyze($plain), 'code'));
+    }
+
+    private function typedHole(string $type): Hole
+    {
+        $h = new Hole('__P_t', 'literal', ['1', '2']);
+        $h->inferredType = $type;
+        return $h;
+    }
+
     private function clusterFromCode(string $code): Cluster
     {
         $stmts = (new \Phpdup\Parsing\AstParser())->parseCode($code);
