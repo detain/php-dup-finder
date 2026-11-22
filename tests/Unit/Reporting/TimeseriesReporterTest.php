@@ -17,6 +17,43 @@ use Symfony\Component\Console\Output\NullOutput;
 
 final class TimeseriesReporterTest extends TestCase
 {
+    /** CI-sha env keys the reporter consults — neutralized for every test. */
+    private const ENV_KEYS = ['GIT_COMMIT', 'GITHUB_SHA', 'CI_COMMIT_SHA', 'BUILD_VCS_NUMBER'];
+
+    /** @var array<string,string|false> env values to restore in tearDown */
+    private array $envBackup = [];
+
+    /** @var list<string> scratch dirs (tmp git repos) to remove in tearDown */
+    private array $tmpDirs = [];
+
+    private int $dirSeq = 0;
+
+    protected function setUp(): void
+    {
+        // File-based sha detection must not be shadowed by a real CI env
+        // (GitHub Actions sets GITHUB_SHA) leaking into these pins.
+        foreach (self::ENV_KEYS as $key) {
+            $this->envBackup[$key] = getenv($key);
+            putenv($key);
+        }
+    }
+
+    protected function tearDown(): void
+    {
+        foreach ($this->envBackup as $key => $value) {
+            if ($value === false) {
+                putenv($key);
+            } else {
+                putenv($key . '=' . $value);
+            }
+        }
+        $this->envBackup = [];
+        foreach ($this->tmpDirs as $dir) {
+            self::rrmdir($dir);
+        }
+        $this->tmpDirs = [];
+    }
+
     public function testRecordContainsExpectedFields(): void
     {
         $reporter = new TimeseriesReporter(commitSha: 'abc123', timestamp: 1700000000);
@@ -68,6 +105,189 @@ final class TimeseriesReporterTest extends TestCase
         }
     }
 
+    // ------------------------------------------------------------------
+    // output-S05 — packed-refs sha, repo-root derivation, UTC stamps
+    // ------------------------------------------------------------------
+
+    public function testTimestampIsUtcWithExplicitZDesignator(): void
+    {
+        // The finding: date('c') emitted the HOST timezone, so the same run
+        // stamped different offsets on different CI machines. Pin the exact
+        // instant under a hostile non-UTC host timezone.
+        $previous = date_default_timezone_get();
+        date_default_timezone_set('Asia/Tokyo');
+        try {
+            $record = (new TimeseriesReporter(commitSha: 'abc', timestamp: 1700000000))
+                ->buildRecord(new Report(0, 0, 0, [], Config::defaults([])));
+
+            $this->assertSame('2023-11-14T22:13:20Z', $record['timestamp']);
+        } finally {
+            date_default_timezone_set($previous);
+        }
+    }
+
+    public function testDefaultClockTimestampAlsoEndsInZ(): void
+    {
+        $previous = date_default_timezone_get();
+        date_default_timezone_set('US/Hawaii');
+        try {
+            $record = (new TimeseriesReporter(commitSha: 'abc'))
+                ->buildRecord(new Report(0, 0, 0, [], Config::defaults([])));
+
+            $this->assertStringEndsWith('Z', $record['timestamp']);
+        } finally {
+            date_default_timezone_set($previous);
+        }
+    }
+
+    public function testPackedRefsResolvesSha(): void
+    {
+        // Common post-GC state (and what `git pack-refs --all` forces):
+        // the branch exists ONLY in packed-refs — the pre-S05 reader
+        // answered null there. An annotated tag makes packed-refs carry a
+        // peeled '^' line the parser must skip.
+        $repo = $this->makeRepo('packed');
+        $sha  = $this->headSha($repo);
+        $this->git($repo, ['tag', '-a', 'v1', '-m', 'release']);
+        $this->git($repo, ['pack-refs', '--all']);
+        $this->assertFileDoesNotExist($repo . '/.git/refs/heads/main');
+
+        $record = $this->recordFor([$repo]);
+        $this->assertSame($sha, $record['commit_sha']);
+    }
+
+    public function testForeignScanRootBeatsProcessCwd(): void
+    {
+        // The mislabel case: running inside repo A while ANALYZING repo B
+        // (paths: ../other) must stamp B's sha, never A's.
+        $repoA = $this->makeRepo('repo-a');
+        $repoB = $this->makeRepo('repo-b');
+        $shaA  = $this->headSha($repoA);
+        $shaB  = $this->headSha($repoB);
+        $this->assertNotSame($shaA, $shaB, 'distinct fixtures must have distinct shas');
+
+        $previousCwd = getcwd();
+        $this->assertNotFalse($previousCwd);
+        chdir($repoA);
+        try {
+            $record = $this->recordFor([$repoB]);
+        } finally {
+            chdir($previousCwd);
+        }
+
+        $this->assertSame($shaB, $record['commit_sha']);
+    }
+
+    public function testSubdirectoryScanRootWalksUpToRepoRoot(): void
+    {
+        $repo = $this->makeRepo('nested');
+        $this->assertNotFalse(mkdir($repo . '/sub'));
+        file_put_contents($repo . '/sub/nested.php', "<?php\nfunction nested() { return 1; }\n");
+        $this->git($repo, ['add', '--', 'sub/nested.php']);
+        $this->git($repo, ['commit', '-q', '-m', 'nested-dir']);
+        $sha = $this->headSha($repo);
+
+        $record = $this->recordFor([$repo . '/sub']);
+        $this->assertSame($sha, $record['commit_sha']);
+    }
+
+    public function testSingleFileScanRootResolvesThroughItsDirectory(): void
+    {
+        // 'analyze foo.php' roots are legal (FileScanner) — dirname of the
+        // file must start the repo walk.
+        $repo = $this->makeRepo('fileroot');
+        $sha  = $this->headSha($repo);
+
+        $record = $this->recordFor([$repo . '/dup1.php']);
+        $this->assertSame($sha, $record['commit_sha']);
+    }
+
+    public function testDetachedHeadResolvesRawSha(): void
+    {
+        $repo = $this->makeRepo('detached');
+        $sha  = $this->headSha($repo);
+        $this->assertNotFalse(file_put_contents($repo . '/.git/HEAD', $sha . "\n"));
+
+        $record = $this->recordFor([$repo]);
+        $this->assertSame($sha, $record['commit_sha']);
+    }
+
+    public function testGitDirPointerFileIsFollowed(): void
+    {
+        // worktree/submodule layout: '.git' is a FILE naming the real git
+        // dir, absolute or relative to the containing directory.
+        $repo = $this->makeRepo('pointer');
+        $sha  = $this->headSha($repo);
+
+        $absolute = $this->scratchDir('pointer-abs');
+        $this->assertNotFalse(file_put_contents($absolute . '/.git', 'gitdir: ' . $repo . '/.git' . "\n"));
+        $this->assertSame($sha, $this->recordFor([$absolute])['commit_sha']);
+
+        $relativeDir = $this->scratchDir('pointer-rel');
+        $this->assertNotFalse(
+            file_put_contents($relativeDir . '/.git', 'gitdir: ../' . basename($repo) . '/.git' . "\n"),
+        );
+        $this->assertSame($sha, $this->recordFor([$relativeDir])['commit_sha']);
+    }
+
+    public function testWorktreeCommondirResolvesSharedRefs(): void
+    {
+        // A real `git worktree`: HEAD lives in the admin dir, the branch ref
+        // in the shared commondir — both must be consulted.
+        $repo = $this->makeRepo('worktree');
+        $sha  = $this->headSha($repo);
+        $wt   = $this->scratchDir('wt');
+        $this->git($repo, ['worktree', 'add', '-q', $wt, '-b', 'wt-x']);
+
+        $record = $this->recordFor([$wt]);
+        $this->assertSame($sha, $record['commit_sha']);
+    }
+
+    public function testRepoRootOverrideResolvesWithoutScanPaths(): void
+    {
+        // Constructor escape hatch for producers with no usable Config
+        // paths (library callers, future ReportStage wiring).
+        $repo = $this->makeRepo('override');
+        $sha  = $this->headSha($repo);
+
+        $record = (new TimeseriesReporter(repoRoot: realpath($repo) ?: $repo))
+            ->buildRecord(new Report(0, 0, 0, [], Config::defaults([])));
+        $this->assertSame($sha, $record['commit_sha']);
+    }
+
+    public function testNonRepositoryScanRootStaysNull(): void
+    {
+        $dir = $this->scratchDir('nonrepo');
+        // If the tmp parentage ever becomes a repo, the null expectation is
+        // the environment's fault, not the code's.
+        for ($walk = (string) realpath($dir);;) {
+            if (file_exists($walk . '/.git')) {
+                self::markTestSkipped('scratch tree sits inside a git repository: ' . $walk);
+            }
+            $parent = dirname($walk);
+            if ($parent === $walk) {
+                break;
+            }
+            $walk = $parent;
+        }
+
+        $record = $this->recordFor([$dir]);
+        $this->assertNull($record['commit_sha']);
+    }
+
+    public function testEnvShaWinsOverFileDetection(): void
+    {
+        $repo = $this->makeRepo('envwin');
+        putenv('GIT_COMMIT=0123456789abcdef0123456789abcdef01234567');
+
+        $record = $this->recordFor([$repo]);
+        $this->assertSame('0123456789abcdef0123456789abcdef01234567', $record['commit_sha']);
+    }
+
+    // ------------------------------------------------------------------
+    // helpers
+    // ------------------------------------------------------------------
+
     private function buildReport(): Report
     {
         $config = new Config(
@@ -89,5 +309,84 @@ final class TimeseriesReporterTest extends TestCase
             clusters: (new Ranker($config->minClusterImpact))->rank($state->clusters),
             config: $config,
         );
+    }
+
+    /**
+     * @param list<string> $scanPaths
+     * @return array<string,mixed>
+     */
+    private function recordFor(array $scanPaths): array
+    {
+        return (new TimeseriesReporter())->buildRecord(
+            new Report(0, 0, 0, [], Config::defaults($scanPaths)),
+        );
+    }
+
+    private function makeRepo(string $message): string
+    {
+        $dir = $this->scratchDir('repo');
+        $this->git($dir, ['init', '-q', '-b', 'main']);
+        file_put_contents($dir . '/dup1.php', "<?php\nfunction dup1() { return 1; }\n");
+        $this->git($dir, ['add', '--', 'dup1.php']);
+        $this->git($dir, ['commit', '-q', '-m', $message]);
+
+        return $dir;
+    }
+
+    private function headSha(string $repo): string
+    {
+        $out = $this->git($repo, ['rev-parse', 'HEAD']);
+        $this->assertNotEmpty($out);
+
+        return trim($out[0]);
+    }
+
+    /** @param list<string> $args git subcommand argv (run inside $dir) @return list<string> */
+    private function git(string $dir, array $args): array
+    {
+        $argv = ['git', '-C', $dir,
+            '-c', 'user.email=test@phpdup.invalid',
+            '-c', 'user.name=phpdup-test',
+            '-c', 'commit.gpgsign=false',
+            '-c', 'core.hooksPath=/dev/null',
+            ...$args,
+        ];
+        $cmd  = implode(' ', array_map('escapeshellarg', $argv));
+        $out  = [];
+        $code = 0;
+        exec($cmd . ' 2>&1', $out, $code);
+        $this->assertSame(0, $code, 'git ' . implode(' ', $args) . ' failed: ' . implode("\n", $out));
+
+        return $out;
+    }
+
+    private function scratchDir(string $tag): string
+    {
+        $dir = sys_get_temp_dir() . '/phpdup-ts05-' . $tag . '-' . (++$this->dirSeq) . '-' . getmypid() . '-' . spl_object_id($this);
+        if (!is_dir($dir)) {
+            $this->assertNotFalse(mkdir($dir, 0777, true));
+        }
+        $this->tmpDirs[] = $dir;
+
+        return $dir;
+    }
+
+    private static function rrmdir(string $dir): void
+    {
+        if (!is_dir($dir)) {
+            return;
+        }
+        foreach (scandir($dir) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            $path = $dir . '/' . $entry;
+            if (is_dir($path) && !is_link($path)) {
+                self::rrmdir($path);
+            } else {
+                @unlink($path);
+            }
+        }
+        @rmdir($dir);
     }
 }
