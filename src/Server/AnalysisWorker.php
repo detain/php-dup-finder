@@ -35,10 +35,16 @@ use Symfony\Component\Console\Output\NullOutput;
  *     the handler inline).
  *
  * Completion is signalled by the result file `<result-dir>/<jobId>.json`
- * ATOMICALLY appearing (temp write + rename), never by a post-work socket
- * line — the historic bug this leg fixes was the server blocking on an
- * after-the-fact `OK` and false-failing any job slower than its ack
- * timeout while the worker silently produced the result anyway.
+ * ATOMICALLY appearing (temp write + size-verified rename), never by a
+ * post-work socket line — the historic bug this leg fixes was the server
+ * blocking on an after-the-fact `OK` and false-failing any job slower than
+ * its ack timeout while the worker silently produced the result anyway.
+ * Since once-S46 the appearance itself is trustworthy: the temp must have
+ * received every byte (write count AND on-disk size) before the rename, so
+ * a partial stream can never publish a partial result as truth, and the
+ * incoming RUN frame is only complete once its newline sentinel was
+ * consumed — a buffer ending at the peer's EOF is refused loudly with its
+ * byte count, never silently run or silently dropped (php-dup-finder-once-050).
  *
  * The received line is size-bounded by {@see AnalysisWorker::MAX_REQUEST_BYTES};
  * a frame past the cap answers {@see AnalysisWorker::REQUEST_TOO_LONG_ACK}
@@ -162,6 +168,18 @@ final class AnalysisWorker
      * @var (callable(): int|null)|null
      */
     public $parentPidProbe = null;
+
+    /**
+     * Test seam for the result-file write (once-S46): a
+     * `callable(string $tmpPath, string $bytes): int|false` replacing the
+     * temp-write leg, so the failure STATUS arms (false / short count /
+     * lying full count on a short file) are drivable hermetically without
+     * exhausting a disk. Mirrors the {@see $parentPidProbe} pattern:
+     * production never installs it (null = the real writer).
+     *
+     * @var (callable(string, string): int|false)|null
+     */
+    public $resultWriter = null;
 
     /** Parent pid captured at run() start; null = unresolvable (check disabled). */
     private ?int $spawnParentPid = null;
@@ -352,23 +370,56 @@ final class AnalysisWorker
     {
         $jobId = '';
         try {
-            // shell-049: bounded read. An unbounded fgets let a peer wired
-            // straight to the worker socket push a single endless line and
-            // have it buffered whole. stream_get_line stops at
-            // maxRequestBytes+1 bytes looking for the delimiter, so a frame
-            // past the cap is refused from the bound itself — one byte of
-            // slack is all that is ever buffered beyond the cap — and the
-            // worker answers and moves on to the next dispatch.
-            $line = @stream_get_line($client, $this->maxRequestBytes + 1, "\n");
-            if ($line === false || $line === '') {
-                return;
+            // shell-049 read bound + once-S46 (php-dup-finder-once-050)
+            // sentinel discipline, in one explicit scan. An unbounded fgets
+            // once let a peer wired straight to the worker socket push a
+            // single endless line and have it buffered whole; the cap here
+            // still refuses past MAX_REQUEST_BYTES with one byte of slack.
+            // stream_get_line cannot host the sentinel check itself: it
+            // also stops at the peer's EOF without consuming the delimiter,
+            // and its stream feof state cannot tell "delimiter consumed,
+            // peer then died" from "bytes ran out mid-frame" (a completed
+            // frame from an already-shutdown sender reads back flagged
+            // EOF). So the frame is accumulated chunk-wise and is COMPLETE
+            // ONLY ONCE the newline is actually observed. The three early
+            // exits mirror the finding's shapes:
+            //   - past-cap without sentinel  → REQUEST_TOO_LONG_ACK leg;
+            //   - non-empty without sentinel → loud partial-stream refusal
+            //     carrying the byte marker (the historic silent-0 trust: a
+            //     frame complete but for its `\n` parsed fine, was admitted
+            //     and RUN, and a dying dispatcher saw nothing back);
+            //   - empty stream / read error  → deliberate silent probe
+            //     posture (a connection carrying no bytes names no job).
+            $buffer = '';
+            $terminated = false;
+            while (strlen($buffer) <= $this->maxRequestBytes) {
+                $chunk = @fread($client, min(4096, $this->maxRequestBytes + 1 - strlen($buffer)));
+                if ($chunk === false || $chunk === '') {
+                    break; // peer closed or read error: the sentinel never arrived
+                }
+                $buffer .= $chunk;
+                $newline = strpos($buffer, "\n");
+                if ($newline !== false) {
+                    $terminated = true;
+                    $buffer = substr($buffer, 0, $newline);
+                    break;
+                }
             }
-            if (strlen($line) > $this->maxRequestBytes) {
-                @fwrite($client, self::REQUEST_TOO_LONG_ACK);
+            if (!$terminated) {
+                if (strlen($buffer) > $this->maxRequestBytes) {
+                    @fwrite($client, self::REQUEST_TOO_LONG_ACK);
+                } elseif ($buffer !== '') {
+                    // shell-022 discipline: `FAIL 0` echoes no unvalidated token.
+                    @fwrite(
+                        $client,
+                        'FAIL 0 incomplete RUN frame: stream ended after ' . strlen($buffer)
+                            . ' bytes without the newline terminator' . "\n"
+                    );
+                }
                 return;
             }
 
-            $line = rtrim($line, "\r\n");
+            $line = rtrim($buffer, "\r\n");
             if (!str_starts_with($line, 'RUN ')) {
                 return;
             }
@@ -437,12 +488,14 @@ final class AnalysisWorker
                 $this->writeErr($client, $jobId, 'failed to encode result: ' . $e->getMessage());
                 return;
             }
-            if (!$this->publishResult($jobId, $encoded)) {
-                // Accepted and ran, but the result never landed. The server
-                // fails it via the result-file absence-deadline; the ERR
-                // frame is the socket-visible reason for a reader that kept
-                // the connection open (the unit harness).
-                $this->writeErr($client, $jobId, 'failed to write result file');
+            $publishError = $this->publishResult($jobId, $encoded);
+            if ($publishError !== null) {
+                // Accepted and ran, but the result never landed IN FULL. The
+                // server fails it via the result-file absence-deadline; the
+                // ERR frame is the socket-visible reason (with the partial
+                // byte marker) for a reader that kept the connection open
+                // (the unit harness).
+                $this->writeErr($client, $jobId, $publishError);
             }
             // Success is the atomic appearance of `<id>.json`; no post-work
             // line is written, because the dispatcher has already left.
@@ -483,26 +536,60 @@ final class AnalysisWorker
     }
 
     /**
-     * Publish a job's result atomically (shell-032): write to a sibling temp
-     * file then rename. A rename within one directory is atomic, so the
-     * server-side reconcile — which treats "the file is present" as
-     * completion — can never observe a half-written result and build a
-     * summary from truncated bytes. Returns false when neither the write nor
-     * the rename could land the file.
+     * Publish a job's result atomically (shell-032) and only after the write
+     * status vouches for EVERY byte (once-S46, php-dup-finder-once-050):
+     * write to a sibling temp file, verify it landed whole, then rename. A
+     * rename within one directory is atomic, so the server-side reconcile —
+     * which treats "the file is present" as completion — can never observe a
+     * half-written result and build a summary from truncated bytes. The old
+     * posture accepted any non-false return: a short write (disk-full class)
+     * renamed a PARTIAL file into place — under-reported results presented
+     * as truth, the exact silent-success shape this finding names.
+     *
+     * Returns null when the complete result stands at its final name, or the
+     * failure reason (carrying the partial byte marker) when it does not —
+     * the temp is unlinked on every refusal path, so no litter is left and
+     * no incomplete file can ever be renamed into the completion slot.
      */
-    private function publishResult(string $jobId, string $encoded): bool
+    private function publishResult(string $jobId, string $encoded): ?string
     {
+        $expected = strlen($encoded);
         $resultFile = $this->resultDir . '/' . $jobId . '.json';
         $tmp = $resultFile . '.tmp.' . getmypid();
-        if (@file_put_contents($tmp, $encoded) === false) {
+
+        $writer = $this->resultWriter;
+        $written = $writer !== null
+            ? $writer($tmp, $encoded)
+            : @file_put_contents($tmp, $encoded);
+
+        if ($written === false) {
             @unlink($tmp);
-            return false;
+            return 'failed to write result file';
+        }
+        if ($written !== $expected) {
+            // Mid-stream death of the byte kind: the writer streamed 23 of
+            // 40 records' worth of bytes and stopped without an error. A
+            // partial stream is never a completion — refuse, and say how
+            // partial.
+            @unlink($tmp);
+            return 'partial result write: ' . $written . ' of ' . $expected . ' bytes';
+        }
+        // The write status is checked even on a clean end: a full-count
+        // return can still sit on a file whose close lost bytes (the count
+        // lied while the stream ended "happily"). Verify the on-disk size of
+        // the STILL-OWNED temp — no consumer can race a `.tmp` name, unlike
+        // the final one — before the atomic rename hands it to the server.
+        $landed = @filesize($tmp);
+        if ($landed !== $expected) {
+            @unlink($tmp);
+            return 'partial result write: landed ' . ($landed === false ? 0 : $landed)
+                . ' of ' . $expected . ' bytes';
         }
         if (!@rename($tmp, $resultFile)) {
             @unlink($tmp);
-            return false;
+            return 'failed to write result file';
         }
-        return true;
+        return null;
     }
 
     /**
