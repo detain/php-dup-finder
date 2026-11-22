@@ -9,8 +9,12 @@ use Phpdup\Extraction\Block;
 use Phpdup\Extraction\BlockExtractor;
 use Phpdup\Util\LineRange;
 use Phpdup\Parsing\AstParser;
+use Phpdup\Normalization\Normalizer;
 use Phpdup\Refactor\AntiUnifier;
 use Phpdup\Refactor\ApplyExtractor;
+use Phpdup\Refactor\Hole;
+use Phpdup\Refactor\PlacementMiss;
+use Phpdup\Refactor\SignatureBuilder;
 use PhpParser\Node;
 use PhpParser\Node\Expr\Variable;
 
@@ -853,6 +857,353 @@ final class ApplyExtractorTest extends TestCase
         $this->assertStringContainsString('Permission denied', $message, 'the restore failure carries its diagnostic');
         $this->assertStringContainsString('PARTIALLY rewritten', $message);
         chmod($stuck, 0o644);
+    }
+
+    // ---------------------------------------------------------------
+    // output-S48 (php-dup-finder-output-005): hole placement lands ON the
+    // slot its path names (no greedy one-level-too-deep descent), every
+    // miss class refuses the cluster loudly instead of returning silently,
+    // body-extraction failures refuse instead of printing comment stubs
+    // into production files, and no planned buffer reaches the write
+    // window until php-parser itself accepts it.
+    // ---------------------------------------------------------------
+
+    /** Parse code, demand a single top-level Function_, return it. */
+    private function s48Function(string $code): Node\Stmt\Function_
+    {
+        $stmts = (new AstParser())->parseCode($code);
+        $this->assertNotNull($stmts);
+        $this->assertInstanceOf(Node\Stmt\Function_::class, $stmts[0]);
+        return $stmts[0];
+    }
+
+    public function testTerminalPairPlacementReplacesTheSlotNotTheStatementsInnards(): void
+    {
+        // The probe's headline bug: for the standard 2-segment hole path
+        // ['stmts', 1] the old walker descended INTO statement 1 and wrote
+        // the hole inside that statement (or nowhere — its name-blind
+        // first-array-subnode pick had nothing to find in a bare call).
+        // The observed artifact body was `if ($s > 10) { $includeExtra }`:
+        // the hole had eaten the statement, and a bare Variable printed
+        // into a statement list has no terminator, so the generated file
+        // failed php -l. A terminal (property, index) pair now replaces
+        // the SLOT itself, siblings intact, wrapped into a real statement.
+        $func = $this->s48Function('<?php function test($x) { first(); $knob = 1; third(); }');
+
+        $ext = new ApplyExtractor();
+        (new \ReflectionMethod($ext, 'setNodeAtPath'))->invoke($ext, $func, ['stmts', 1], new Variable('includeExtra'));
+
+        $this->assertCount(3, $func->stmts, 'the statement list keeps its shape — only the named slot changed');
+        $slot = $func->stmts[1];
+        $this->assertInstanceOf(
+            Node\Stmt\Expression::class,
+            $slot,
+            'a bare expression landing in a statement slot becomes a full statement',
+        );
+        $this->assertInstanceOf(Variable::class, $slot->expr);
+        $this->assertSame('includeExtra', $slot->expr->name);
+
+        $code = (new \PhpParser\PrettyPrinter\Standard())->prettyPrint([$func]);
+        $this->assertStringContainsString('first();', $code);
+        $this->assertStringContainsString('third();', $code, 'the neighbouring statements survive the placement');
+        $this->assertStringNotContainsString('$knob', $code, 'the holed-out statement is gone, not gutted');
+        $this->assertNotNull(
+            (new AstParser())->parseCode("<?php\n" . $code),
+            'the placed body re-parses — the old placement printed bodies php -l refuses',
+        );
+    }
+
+    public function testExprSlotPlacementIsNotWrapped(): void
+    {
+        // The mirror of the wrap rule: statement slots wrap, EXPRESSION
+        // slots never do — the reflection pin family that has always
+        // replaced `cond.left` in place must keep landing a bare Variable
+        // (wrapping here would rewrite `$x > 0` into an expression of the
+        // wrong class).
+        $func = $this->s48Function('<?php function test($x) { if ($x > 0) { return 1; } }');
+
+        $ext = new ApplyExtractor();
+        (new \ReflectionMethod($ext, 'setNodeAtPath'))->invoke($ext, $func, ['stmts', 0, 'cond', 'left'], new Variable('threshold'));
+
+        $if = $func->stmts[0];
+        $this->assertInstanceOf(Node\Stmt\If_::class, $if);
+        $greater = $if->cond;
+        $this->assertInstanceOf(Node\Expr\BinaryOp\Greater::class, $greater);
+        $this->assertInstanceOf(Variable::class, $greater->left);
+        $this->assertNotInstanceOf(Node\Stmt\Expression::class, $greater->left);
+        $this->assertSame('threshold', $greater->left->name);
+    }
+
+    public function testBareIndexHolePathRefusesPlacement(): void
+    {
+        // A path element must be a property NAME; a bare int addresses
+        // nothing. The old getArrayChild walked subnodes blindly instead.
+        $func = $this->s48Function('<?php function t($x) { one(); two(); }');
+
+        $ext = new ApplyExtractor();
+        $this->expectException(PlacementMiss::class);
+        $this->expectExceptionMessage('position 0 is array index 1');
+        (new \ReflectionMethod($ext, 'setNodeAtPath'))->invoke($ext, $func, [1], new Variable('v'));
+    }
+
+    public function testUnknownPropertyHolePathRefusesPlacement(): void
+    {
+        $func = $this->s48Function('<?php function t($x) { one(); two(); }');
+
+        $ext = new ApplyExtractor();
+        $this->expectException(PlacementMiss::class);
+        $this->expectExceptionMessage('has no subnode "nope"');
+        (new \ReflectionMethod($ext, 'setNodeAtPath'))->invoke($ext, $func, ['stmts', 0, 'nope'], new Variable('v'));
+    }
+
+    public function testWholeArrayTerminalRefusesPlacement(): void
+    {
+        // ['stmts'] with no index names the ARRAY, not a slot — assigning
+        // through it would replace the whole statement list (and a
+        // Variable into a typed array property throws a raw TypeError).
+        $func = $this->s48Function('<?php function t($x) { one(); two(); }');
+
+        $ext = new ApplyExtractor();
+        $this->expectException(PlacementMiss::class);
+        $this->expectExceptionMessage('addresses the whole array property');
+        (new \ReflectionMethod($ext, 'setNodeAtPath'))->invoke($ext, $func, ['stmts'], new Variable('v'));
+    }
+
+    public function testDescentThroughNullRefusesPlacement(): void
+    {
+        // If_->else is null here; the old walker returned silently, so a
+        // hole the template could not address simply vanished.
+        $func = $this->s48Function('<?php function t($x) { if ($x) { one(); } }');
+
+        $ext = new ApplyExtractor();
+        $this->expectException(PlacementMiss::class);
+        $this->expectExceptionMessage('cannot descend through Stmt_If_->else');
+        (new \ReflectionMethod($ext, 'setNodeAtPath'))->invoke($ext, $func, ['stmts', 0, 'else', 'stmts'], new Variable('v'));
+    }
+
+    public function testStaleHoleIndexPathRefusesTheClusterWithZeroWrites(): void
+    {
+        // output-005 end to end: the generalized AST carries a hole whose
+        // path points at body position 5, but the template has one
+        // statement. The old walker returned silently and apply() wrote
+        // every file anyway — the un-hole body shipped. Now the refusal
+        // names the path and NO file exists anywhere: placement misses
+        // land before the plan, so the out tree is never even created.
+        $dir = $this->makeScratchDir();
+        [$file, $blocks] = $this->twoMemberFile($dir);
+
+        $cluster = new Cluster('S48STALE', $blocks, 0.9, false);
+        $cluster->generalizedAst = $blocks[0]->ast;
+        $cluster->signature = 'function notifyByThreshold($u, $s): mixed';
+        $cluster->holes = [new Hole('__P0', 'identifier', ['send("admin", $u)', ''])];
+        $cluster->holePaths = ['__P0' => ['stmts', 5]];
+
+        try {
+            (new ApplyExtractor())->apply($cluster, $dir . '/out');
+            $this->fail('expected the stale hole path to refuse the cluster');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('refusing cluster S48STALE', $e->getMessage());
+            $this->assertStringContainsString('hole placement failed at stmts/5', $e->getMessage());
+            $this->assertStringContainsString('has no index 5', $e->getMessage());
+            $this->assertStringContainsString('disagree', $e->getMessage());
+            $this->assertStringContainsString('no files were written', $e->getMessage());
+        }
+
+        $this->assertStringContainsString('function notifyA', (string) file_get_contents($file),
+            'the member file keeps its original bytes');
+        $this->assertDirectoryDoesNotExist($dir . '/out',
+            'the refusal fires before the plan, not inside the window');
+    }
+
+    public function testMemberRewriteThatDoesNotReParseRefusesBeforeTheWindowOpens(): void
+    {
+        // The re-parse guard earns its keep on the class-body rewrite: a
+        // ClassMethod replaced by a bare `return ...;` statement leaves
+        // `class A { return ...; }` — text php-parser refuses. The old
+        // pipeline wrote that lie to disk anyway (and S44b's read-back
+        // verified the LIE landed byte-for-byte). Now the cluster is
+        // refused before a byte is touched, naming the member file.
+        $dir = $this->makeScratchDir();
+        $srcA = "<?php\nclass A {\n    public function m(\$u, \$s) { if (\$s > 10) { send(\"admin\", \$u); } }\n}\n";
+        $srcB = "<?php\nclass B {\n    public function m(\$u, \$s) { if (\$s > 20) { send(\"moderator\", \$u); } }\n}\n";
+        $fileA = $dir . '/a.php';
+        $fileB = $dir . '/b.php';
+        file_put_contents($fileA, $srcA);
+        file_put_contents($fileB, $srcB);
+
+        $members = [
+            $this->s48MethodBlock($fileA, $srcA),
+            $this->s48MethodBlock($fileB, $srcB),
+        ];
+
+        $cluster = new Cluster('S48M', $members, 0.9, false);
+        $cluster->generalizedAst = $members[0]->ast;
+        $cluster->signature = 'function notifyByThreshold($u, $s): mixed';
+        $cluster->holePaths = ['__P0' => ['stmts', 0]];
+
+        try {
+            (new ApplyExtractor())->apply($cluster, $dir . '/out');
+            $this->fail('expected the unparseable class-body rewrite to be refused before the window');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('refusing cluster S48M', $e->getMessage());
+            $this->assertStringContainsString('the rewrite of ' . $fileA . ' does not re-parse', $e->getMessage());
+            $this->assertStringContainsString('no files were written', $e->getMessage());
+        }
+
+        $this->assertSame($srcA, (string) file_get_contents($fileA));
+        $this->assertSame($srcB, (string) file_get_contents($fileB));
+        $this->assertDirectoryDoesNotExist($dir . '/out');
+    }
+
+    /** Extract the (single) method block from source bound to $file. */
+    private function s48MethodBlock(string $file, string $src): Block
+    {
+        $stmts = (new AstParser())->parseCode($src);
+        $this->assertNotNull($stmts);
+        foreach ((new BlockExtractor(minSize: 1))->extract($file, $stmts) as $block) {
+            if ($block->kind === 'method') {
+                return $block;
+            }
+        }
+        $this->fail("fixture: no method block extracted from {$file}");
+    }
+
+    public function testGeneratedFunctionFileThatDoesNotReParseRefusesBeforeTheWindowOpens(): void
+    {
+        // The artifact side of the same belt: an illegal call name (two
+        // bare words) injected into the generalized template prints
+        // `bad name(...)` into the function file. The generator cannot
+        // emit text php-parser refuses to read — refusal names the
+        // artifact and the member files stay byte-identical.
+        $dir = $this->makeScratchDir();
+        [$file, $blocks] = $this->twoMemberFile($dir);
+
+        $template = Normalizer::deepClone($blocks[0]->ast);
+        $this->assertInstanceOf(Node\Stmt\Function_::class, $template);
+        $if = $template->stmts[0];
+        $this->assertInstanceOf(Node\Stmt\If_::class, $if);
+        $call = $if->stmts[0];
+        $this->assertInstanceOf(Node\Stmt\Expression::class, $call);
+        $this->assertInstanceOf(Node\Expr\FuncCall::class, $call->expr);
+        $call->expr->name = new Node\Name('bad name');
+
+        $cluster = new Cluster('S48G', $blocks, 0.9, false);
+        $cluster->generalizedAst = $template;
+        $cluster->signature = 'function notifyByThreshold($u, $s): mixed';
+        $cluster->holePaths = ['__P0' => ['stmts', 0]];
+
+        try {
+            (new ApplyExtractor())->apply($cluster, $dir . '/out');
+            $this->fail('expected the unparseable artifact buffer to be refused before the window');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('refusing cluster S48G', $e->getMessage());
+            $this->assertStringContainsString('the generated function file does not re-parse', $e->getMessage());
+            $this->assertStringContainsString('no files were written', $e->getMessage());
+        }
+
+        $this->assertStringContainsString('function notifyA', (string) file_get_contents($file),
+            'member files keep their bytes — the refusal came before the window');
+        $this->assertDirectoryDoesNotExist($dir . '/out');
+    }
+
+    public function testBodyExtractionFailureRefusesTheClusterInsteadOfWritingAStub(): void
+    {
+        // The old extractBodyLines() swallowed every Throwable into
+        // `// (body extraction failed)` — a comment stub emitted AS THE
+        // BODY of a production file claiming to be an abstraction, plus a
+        // `// (unsupported node type ...)` stub for the same quiet-lie
+        // treatment. A shape with no function-body reading now refuses the
+        // cluster loudly, and neither stub string exists in the extractor
+        // source any more — not just bypassed, deleted.
+        $dir = $this->makeScratchDir();
+        [$file, $blocks] = $this->twoMemberFile($dir);
+
+        $cluster = new Cluster('S48B', $blocks, 0.9, false);
+        $cluster->generalizedAst = new Node\Identifier('cleanup');
+        $cluster->signature = 'function notifyByThreshold($u, $s): mixed';
+        $cluster->holePaths = ['__P0' => ['stmts', 0]];
+
+        try {
+            (new ApplyExtractor())->apply($cluster, $dir . '/out');
+            $this->fail('expected a loud refusal where body extraction cannot produce a body');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('refusing cluster S48B', $e->getMessage());
+            $this->assertStringContainsString('body extraction failed', $e->getMessage());
+            $this->assertStringContainsString('unsupported node type', $e->getMessage());
+            $this->assertStringContainsString('no files were written', $e->getMessage());
+        }
+
+        $this->assertStringContainsString('function notifyA', (string) file_get_contents($file));
+        $this->assertDirectoryDoesNotExist($dir . '/out');
+
+        $source = (string) file_get_contents(dirname(__DIR__, 3) . '/src/Refactor/ApplyExtractor.php');
+        $this->assertStringNotContainsString('(body extraction failed)', $source);
+        $this->assertStringNotContainsString('(unsupported node type', $source);
+    }
+
+    public function testOptionalBlockHoleLandsAsAValidStatementAndTheArtifactReParses(): void
+    {
+        // The finding end to end, on the REAL generator chain: two files
+        // carrying the same-named function whose bodies differ by one
+        // trailing statement. AntiUnifier surfaces that difference as an
+        // optional_block hole at exactly the 2-segment path ['stmts', i]
+        // the greedy old descent broke (the probe's `if (...) { $knob }`
+        // body failed php -l; the same statement-eaten shape appears here
+        // as a bare un-terminated `$knob` printed into the function
+        // body). SignatureBuilder names the parameters. The artifact now
+        // keeps `send($s);` intact, lands the knob as its own terminated
+        // statement, and passes `php -l`.
+        $dir = $this->makeScratchDir();
+        $srcA = "<?php\nfunction logIt(\$s) { send(\$s); cleanup(); }\n";
+        $srcB = "<?php\nfunction logIt(\$s) { send(\$s); }\n";
+        $fileA = $dir . '/a.php';
+        $fileB = $dir . '/b.php';
+        file_put_contents($fileA, $srcA);
+        file_put_contents($fileB, $srcB);
+
+        $blockA = $this->cloneFunctionBlock($fileA, $srcA, 'logIt');
+        $blockB = $this->cloneFunctionBlock($fileB, $srcB, 'logIt');
+
+        $cluster = new Cluster('S48O', [$blockA, $blockB], 0.9, false);
+        (new AntiUnifier())->unify($cluster);
+        (new SignatureBuilder())->buildSignature($cluster);
+
+        $optionals = array_values(array_filter(
+            $cluster->holes,
+            static fn (Hole $hole): bool => $hole->kind === 'optional_block',
+        ));
+        $this->assertNotEmpty($optionals,
+            'fixture: unify must surface the trailing-statement difference as an optional_block hole');
+
+        $this->assertNotNull($cluster->signature);
+        $returned = (new ApplyExtractor())->apply($cluster, $dir . '/out');
+        $this->assertSame([$fileA, $fileB], $returned);
+
+        $artifact = $dir . '/out/Refactored/S48O.php';
+        $this->assertFileExists($artifact);
+        $body = (string) file_get_contents($artifact);
+        $this->assertStringNotContainsString('cleanup', $body,
+            'the optional statement was holed out of the body, not eaten along with its neighbour');
+        $this->assertMatchesRegularExpression('/send\(\$s\);/', $body, 'the aligned body survives');
+        $this->assertMatchesRegularExpression('/^\s*\$[A-Za-z_][A-Za-z0-9_]*;\s*$/m', $body,
+            'the knob landed as its own terminated statement (the old placement printed a bare, unparseable line)');
+
+        $lint = shell_exec('php -l ' . escapeshellarg($artifact) . ' 2>&1');
+        $this->assertStringContainsString('No syntax errors', (string) $lint,
+            'the generated function file re-parses — the acceptance bar output-005 failed');
+
+        // Call-site shape unchanged by S48 (S45 owns argument work): the
+        // optional hole still rides the literal arg.
+        foreach ([$fileA, $fileB] as $memberFile) {
+            $rewritten = (string) file_get_contents($memberFile);
+            $this->assertStringNotContainsString('function logIt', $rewritten);
+            $this->assertMatchesRegularExpression(
+                '/Refactored\\\\[A-Za-z_][A-Za-z0-9_]*\(0\);/',
+                $rewritten,
+                'the member rewrite calls the extracted function with the literal 0 arg',
+            );
+            $this->assertNotNull((new AstParser())->parseCode($rewritten), 'the rewritten member still parses');
+        }
     }
 }
 

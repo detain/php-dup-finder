@@ -47,6 +47,20 @@ use Phpdup\Util\AstSerializer;
  * whose rewrite the extractor cannot vouch for never exists half on
  * disk, and the returned member-file list — the RefactorPatchReporter's
  * Applied tally — contains exactly the files verified on disk.
+ *
+ * output-005: the holes ride that plan HONESTLY now. setNodeAtPath()
+ * places a terminal (property, index) pair ON the slot its path names
+ * instead of descending one level into the statement being replaced; it
+ * is property-aware (the old name-blind first-array-subnode walk could
+ * not tell TryCatch's `stmts` from its `catches`, nor For's `init` from
+ * its `cond`); and every miss class — unknown property, stale index,
+ * bare-int key, descent through null — throws PlacementMiss instead of
+ * returning silently, so an unreplaced hole can no longer vanish into a
+ * written body. A bare expression landing in a statement slot is wrapped
+ * into a full Stmt\Expression (the probe body `if ($s) { $knob }` has no
+ * terminator and fails `php -l`). Body extraction failures refuse the
+ * cluster rather than printing comment stubs into production files, and
+ * no planned buffer reaches the write window until it has re-parsed.
  */
 final class ApplyExtractor
 {
@@ -126,6 +140,14 @@ final class ApplyExtractor
             $landings[$file] = $pair['rewritten'];
         }
 
+        // 4b. output-005: the plan is final — EVERY buffer the window would
+        //     write must re-parse before the window may open. A generated
+        //     file that php-parser itself refuses to read back is a broken
+        //     abstraction, not a rewrite: refused HERE, before any
+        //     snapshot, mkdir or first byte, so "no files were written"
+        //     remains honest.
+        $this->assertBuffersReparse($cluster, $landings);
+
         // 5. output-004 (half B): open the write window as a TRANSACTION.
         //    The snapshots are the bytes the plan read (member files carry
         //    them — no second read) and the function artifact's on-disk
@@ -181,6 +203,41 @@ final class ApplyExtractor
         //    member files the window rewrote — the RefactorPatchReporter's
         //    Applied tally rides this list, so counted == verified.
         return array_keys($planned);
+    }
+
+    /**
+     * Parse every planned buffer and demand that it reads back.
+     *
+     * output-005: the extractor's promise to a user is that --apply emits
+     * CODE, not text that merely looks like code. Placement and body
+     * extraction each carry their own refusal above; this is the belt for
+     * the composition as a whole — no landing reaches the write window
+     * unless php-parser accepts it. Runs after planning and before the
+     * window opens, so the refusal keeps the half-A posture: zero bytes
+     * touched. The first landing is the generated function artifact; the
+     * rest are member rewrites, named by path.
+     *
+     * @param array<string, string> $landings path => planned bytes
+     * @throws \RuntimeException naming the first buffer that does not re-parse
+     */
+    private function assertBuffersReparse(Cluster $cluster, array $landings): void
+    {
+        $artifactPath = array_key_first($landings);
+        foreach ($landings as $path => $bytes) {
+            $parser = new AstParser();
+            if ($parser->parseCode($bytes) !== null) {
+                continue;
+            }
+            $subject = $path === $artifactPath
+                ? 'the generated function file'
+                : 'the rewrite of ' . $path;
+            throw new \RuntimeException(sprintf(
+                'ApplyExtractor: refusing cluster %s — %s does not re-parse after planning (%s); no files were written.',
+                $cluster->id,
+                $subject,
+                $parser->lastError?->getMessage() ?? 'unknown parse error',
+            ));
+        }
     }
 
     /**
@@ -558,7 +615,22 @@ final class ApplyExtractor
         // For each hole path, navigate to that position in the cloned AST and replace.
         foreach ($pathKeyToHole as $pathKey => $hole) {
             $path = $cluster->holePaths[$hole->placeholder];
-            $this->setNodeAtPath($root, $path, new Node\Expr\Variable(CodeParam::bareName($hole->suggestedName, $hole->placeholder)));
+            try {
+                $this->setNodeAtPath($root, $path, new Node\Expr\Variable(CodeParam::bareName($hole->suggestedName, $hole->placeholder)));
+            } catch (PlacementMiss $miss) {
+                // output-005: the old walker returned SILENTLY on every
+                // miss class, so an unreplaced hole reached disk inside a
+                // rewritten body — invisible partial application, the
+                // exact family this kills. A hole path that does not
+                // describe a slot is a contract violation between
+                // AntiUnifier's walk and this template: refuse the cluster
+                // loudly, before any file is even planned.
+                throw new \RuntimeException(sprintf(
+                    'ApplyExtractor: refusing cluster %s — %s; the hole paths and the generalized AST of this cluster disagree; no files were written.',
+                    $cluster->id,
+                    $miss->getMessage(),
+                ));
+            }
         }
 
         return $root;
@@ -566,120 +638,213 @@ final class ApplyExtractor
 
     /**
      * Set the node at $path to $replacement by traversing from $root.
-     * Stops at the parent of the target node so we can assign the replacement
-     * to the parent's property/array-slot.
      *
-     * @param Node|null $root
-     * @param list<int|string> $path
+     * output-005 rewrite. The old walker consumed a (property, index) pair
+     * greedily and then treated the element right after the pair as "parent
+     * reached" — so the standard 2-segment hole path ['stmts', 0] descended
+     * INTO the statement it was meant to replace and wrote the replacement
+     * inside that statement's own first array subnode (or nowhere): one
+     * level too deep, hole silently dropped. Every miss class — unknown
+     * property, stale index, bare-int key, non-Node slot, descent through
+     * null — simply RETURNED, so a body whose holes were never replaced
+     * still reached disk.
+     *
+     * The contract, restated honestly (this IS the AntiUnifier contract —
+     * semantics unchanged, now actually enforced): every segment is a
+     * SUBNODE NAME of the node in hand, and an array property is followed
+     * by its int index. Navigation stops at the node OWNING the terminal
+     * slot: a terminal (property, index) pair assigns $owner->$prop[$index]
+     * WITHOUT descending into the element being replaced. Any miss throws
+     * PlacementMiss naming the path and the reason; no silent returns are
+     * left in this method.
+     *
+     * Statement-slot honesty: when the slot holds a Node\Stmt and the
+     * replacement is a bare Node\Expr (the optional-block hole is a
+     * Variable), the replacement lands wrapped in Node\Stmt\Expression — a
+     * bare expression printed into a statement list has no terminator (the
+     * probe body `if ($s > 10) { $includeExtra }` failed `php -l`), which
+     * the pre-write re-parse guard would otherwise refuse the whole cluster
+     * for. That is simply how a statement slot must be written.
+     *
+     * @param Node $root the generalized AST clone the holes are placed into
+     * @param list<int|string> $path hole path exactly as AntiUnifier produced it
+     * @param Node $replacement the parameter Variable standing in for the hole
+     * @throws PlacementMiss on every miss class
      */
-    private function setNodeAtPath(?Node $root, array $path, Node $replacement): void
+    private function setNodeAtPath(Node $root, array $path, Node $replacement): void
     {
-        if ($root === null || $path === []) {
+        $count = count($path);
+        if ($count === 0) {
+            throw new PlacementMiss(sprintf(
+                'hole placement failed at <empty path>: a hole path must address at least one slot on %s',
+                AstSerializer::shortType($root),
+            ));
+        }
+
+        $owner = $root;
+        $i = 0;
+
+        // Walk every step EXCEPT the terminal slot: a string followed by an
+        // int consumes both (descend $prop[$index]) — unless the pair ENDS
+        // the path, in which case the pair is the terminal slot itself and
+        // $owner stays right here (the old greedy descent is the bug).
+        while ($i < $count - 1) {
+            $segment = $path[$i];
+            $this->assertSubnode($owner, $segment, $i, $path);
+            $value = $owner->$segment;
+
+            if ($i + 1 < $count && is_int($path[$i + 1])) {
+                $index = $path[$i + 1];
+                if (!is_array($value)) {
+                    throw new PlacementMiss(sprintf(
+                        'hole placement failed at %s: %s->%s is %s, not an array to index',
+                        $this->pathKey($path),
+                        AstSerializer::shortType($owner),
+                        (string) $segment,
+                        get_debug_type($value),
+                    ));
+                }
+                if (!array_key_exists($index, $value)) {
+                    throw new PlacementMiss(sprintf(
+                        'hole placement failed at %s: %s->%s has no index %d',
+                        $this->pathKey($path),
+                        AstSerializer::shortType($owner),
+                        (string) $segment,
+                        $index,
+                    ));
+                }
+                if (!$value[$index] instanceof Node) {
+                    throw new PlacementMiss(sprintf(
+                        'hole placement failed at %s: %s->%s[%d] holds %s, not a node',
+                        $this->pathKey($path),
+                        AstSerializer::shortType($owner),
+                        (string) $segment,
+                        $index,
+                        get_debug_type($value[$index]),
+                    ));
+                }
+                if ($i + 2 === $count) {
+                    // Terminal pair: replace the SLOT ($prop[$index]),
+                    // not the element currently in it.
+                    $this->placeIntoSlot($owner, (string) $segment, $index, $value[$index], $replacement, $path);
+                    return;
+                }
+                $owner = $value[$index];
+                $i += 2;
+                continue;
+            }
+
+            if (!$value instanceof Node) {
+                throw new PlacementMiss(sprintf(
+                    'hole placement failed at %s: cannot descend through %s->%s (%s is not a node)',
+                    $this->pathKey($path),
+                    AstSerializer::shortType($owner),
+                    (string) $segment,
+                    get_debug_type($value),
+                ));
+            }
+            $owner = $value;
+            $i++;
+        }
+
+        // Terminal: $owner OWNS the slot named by the last element.
+        $terminal = $path[$count - 1];
+        $this->assertSubnode($owner, $terminal, $count - 1, $path);
+        $slot = $owner->$terminal;
+
+        if ($slot instanceof Node || $slot === null) {
+            // A null slot is still a slot the path legitimately addresses.
+            $this->placeIntoSlot($owner, (string) $terminal, null, $slot, $replacement, $path);
             return;
         }
 
-        // Navigate to the PARENT of the target node (stop at path[:-1])
-        $current = $root;
-        $i = 0;
-        // Loop until we've processed all but the last key, or until we return early
-        // because we detected we're at the target's parent
-        while ($i < count($path) - 1) {
-            $key = $path[$i];
-            if (is_int($key)) {
-                // Navigate into an array property: find the array and return item at $key
-                $next = $this->getArrayChild($current, $key);
-                if ($next === null) {
-                    return;
-                }
-                $current = $next;
-                $i++;
-            } else {
-                // Navigate into a Node property
-                $prop = $current->$key ?? null;
-                if (is_array($prop)) {
-                    // Array property: next key must be an integer index into this array
-                    if ($i + 1 >= count($path)) {
-                        return;
-                    }
-                    $nextKey = $path[$i + 1];
-                    if (!is_int($nextKey)) {
-                        return;
-                    }
-                    if (!isset($prop[$nextKey]) || !$prop[$nextKey] instanceof Node) {
-                        return;
-                    }
-                    $current = $prop[$nextKey];
-                    $i += 2; // consumed both the array key and the index key
-                    // After consuming array+index, check if we're at the target and should set directly
-                    if ($i === count($path) - 1 && !is_int($path[$i] ?? null)) {
-                        $current->{$path[$i]} = $replacement;
-                        return;
-                    }
-                } elseif ($prop === null) {
-                    return;
-                } else {
-                    // Navigate to the node first
-                    $current = $prop;
-                    // After navigating, check if next key is the final property to set
-                    $nextIdx = $i + 1;
-                    if ($nextIdx === count($path) - 1 && !is_int($path[$nextIdx] ?? null)) {
-                        $current->{$path[$nextIdx]} = $replacement;
-                        return;
-                    }
-                    $i++;
-                }
-            }
+        if (is_array($slot)) {
+            throw new PlacementMiss(sprintf(
+                'hole placement failed at %s: "%s" addresses the whole array property on %s, not one of its slots — a hole path carries its index',
+                $this->pathKey($path),
+                (string) $terminal,
+                AstSerializer::shortType($owner),
+            ));
         }
 
-        // Now $current is the parent, and we set path[-1] on it
-        $lastKey = $path[count($path) - 1];
-        if (is_int($lastKey)) {
-            $this->setArrayChild($current, $lastKey, $replacement);
+        throw new PlacementMiss(sprintf(
+            'hole placement failed at %s: %s->%s holds %s — a hole slot must hold a node or null',
+            $this->pathKey($path),
+            AstSerializer::shortType($owner),
+            (string) $terminal,
+            get_debug_type($slot),
+        ));
+    }
+
+    /**
+     * Every hole-path segment must name a subnode of the node in hand — a
+     * bare array index addresses nothing. (The deleted getArrayChild /
+     * setArrayChild pair was the opposite: name-BLIND, it picked the node's
+     * FIRST array-valued subnode, so TryCatch's `stmts` and `catches` — or
+     * For's `init` and `cond` — were indistinguishable to it. Property
+     * names do the talking now.)
+     *
+     * @param list<int|string> $path
+     * @throws PlacementMiss
+     */
+    private function assertSubnode(Node $node, int|string $segment, int $position, array $path): void
+    {
+        if (is_string($segment) && in_array($segment, $node->getSubNodeNames(), true)) {
+            return;
+        }
+        throw new PlacementMiss(is_string($segment)
+            ? sprintf(
+                'hole placement failed at %s: %s has no subnode "%s"',
+                $this->pathKey($path),
+                AstSerializer::shortType($node),
+                $segment,
+            )
+            : sprintf(
+                'hole placement failed at %s: position %d is array index %d with no property name before it — hole paths address subnode properties by name',
+                $this->pathKey($path),
+                $position,
+                $segment,
+            ));
+    }
+
+    /**
+     * Assign $replacement into $owner->$prop (one $index of an array
+     * property when given) and READ THE SLOT BACK, demanding identity with
+     * what was written — then the placement is a fact, not a hope. Typed
+     * array properties (php-parser v5 If_::$stmts) reject wrong shapes
+     * natively; every other surprise is caught here rather than reaching
+     * the printer.
+     *
+     * @param list<int|string> $path
+     * @throws PlacementMiss
+     */
+    private function placeIntoSlot(Node $owner, string $prop, ?int $index, mixed $slot, Node $replacement, array $path): void
+    {
+        $target = $replacement;
+        if ($slot instanceof Node\Stmt && $replacement instanceof Node\Expr) {
+            // Statement slot + bare expression: wrap or the printed body
+            // lacks its terminator — see setNodeAtPath().
+            $target = new Node\Stmt\Expression($replacement);
+        }
+
+        if ($index === null) {
+            $owner->$prop = $target;
+            $landed = $owner->$prop ?? null;
         } else {
-            $current->$lastKey = $replacement;
+            $owner->$prop[$index] = $target;
+            $after = $owner->$prop ?? null;
+            $landed = is_array($after) ? ($after[$index] ?? null) : null;
         }
-    }
 
-    /**
-     * Get the child node at $index in an array property of $node.
-     * Iterates over all subnode names; the first array-valued property that
-     * has at least $index+1 items wins (handles Function_, If_, etc. which
-     * each have exactly one primary array subnode).
-     */
-    private function getArrayChild(Node $node, int $index): ?Node
-    {
-        foreach ($node->getSubNodeNames() as $prop) {
-            $val = $node->$prop ?? null;
-            if (is_array($val)) {
-                $idx = 0;
-                foreach ($val as $item) {
-                    if ($idx === $index && $item instanceof Node) {
-                        return $item;
-                    }
-                    $idx++;
-                }
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Set the child node at $index in an array property of $node to $replacement.
-     */
-    private function setArrayChild(Node $node, int $index, Node $replacement): void
-    {
-        foreach ($node->getSubNodeNames() as $prop) {
-            $val = $node->$prop ?? null;
-            if (is_array($val)) {
-                $idx = 0;
-                foreach ($val as $itemKey => $item) {
-                    if ($idx === $index && $item instanceof Node) {
-                        $node->$prop[$itemKey] = $replacement;
-                        return;
-                    }
-                    $idx++;
-                }
-            }
+        if (!$landed instanceof Node || $landed !== $target) {
+            throw new PlacementMiss(sprintf(
+                'hole placement failed at %s: assigning %s->%s%s did not land (the slot now holds %s)',
+                $this->pathKey($path),
+                AstSerializer::shortType($owner),
+                $prop,
+                $index === null ? '' : '[' . $index . ']',
+                get_debug_type($landed),
+            ));
         }
     }
 
@@ -703,8 +868,21 @@ final class ApplyExtractor
         $params = $this->extractParameters($cluster->signature ?? '');
         $memberCount = count($cluster->members);
 
-        // Extract the statements from the modified AST to use as function body
-        $bodyLines = $this->extractBodyLines($modifiedAst);
+        // Extract the statements from the modified AST to use as function
+        // body. output-005: if extraction cannot produce a body, the
+        // CLUSTER is refused before a byte of the plan exists. The old
+        // behaviour was the loud kind of silence: catch everything, print
+        // a body-extraction-failed comment stub AS THE BODY, and write a
+        // production file claiming to be an abstraction it was not.
+        try {
+            $bodyLines = $this->extractBodyLines($modifiedAst);
+        } catch (\Throwable $failure) {
+            throw new \RuntimeException(sprintf(
+                'ApplyExtractor: refusing cluster %s — body extraction failed (%s); no files were written.',
+                $cluster->id,
+                $failure->getMessage(),
+            ));
+        }
 
         $lines = [
             '<?php',
@@ -730,41 +908,46 @@ final class ApplyExtractor
     /**
      * Extract body lines from a modified AST node (with holes replaced by variables).
      *
+     * output-005 honesty: no try/catch, no comment stubs. A shape with no
+     * function-body reading THROWS — buildFunctionFile turns that into the
+     * loud cluster refusal. An empty body still prints `// (empty body)`:
+     * that is legal output, not a failure class.
+     *
      * @return list<string> indented PHP code lines
+     * @throws \RuntimeException on a node shape that has no body reading
      */
     private function extractBodyLines(Node $node): array
     {
-        try {
-            // If it's a function or method, use its statements
-            if ($node instanceof Node\Stmt\Function_) {
-                $stmts = $node->stmts;
-            } elseif ($node instanceof Node\Stmt\ClassMethod) {
-                $stmts = $node->stmts;
-            } elseif ($node instanceof Node\Stmt) {
-                // It's a statement (if, for, foreach, while, do, try, switch, match, etc.)
-                // Wrap it as the sole statement in the function body
-                $stmts = [$node];
-            } elseif ($node instanceof Node\Expr) {
-                // It's an expression - wrap in return statement
-                $exprCode = trim($this->printer->prettyPrintExpr($node));
-                return ['    return ' . $exprCode . ';'];
-            } else {
-                return ['    // (unsupported node type: ' . AstSerializer::shortType($node) . ')'];
+        // If it's a function or method, use its statements
+        if ($node instanceof Node\Stmt\Function_) {
+            $stmts = $node->stmts;
+        } elseif ($node instanceof Node\Stmt\ClassMethod) {
+            if ($node->stmts === null) {
+                throw new \RuntimeException('ClassMethod has no body to extract (abstract or interface member)');
             }
-
-            if ($stmts === []) {
-                return ['    // (empty body)'];
-            }
-
-            $body = trim($this->printer->prettyPrint($stmts));
-            if ($body === '') {
-                return ['    // (empty body)'];
-            }
-
-            return explode("\n", $body);
-        } catch (\Throwable) {
-            return ['    // (body extraction failed)'];
+            $stmts = $node->stmts;
+        } elseif ($node instanceof Node\Stmt) {
+            // It's a statement (if, for, foreach, while, do, try, switch, match, etc.)
+            // Wrap it as the sole statement in the function body
+            $stmts = [$node];
+        } elseif ($node instanceof Node\Expr) {
+            // It's an expression - wrap in return statement
+            $exprCode = trim($this->printer->prettyPrintExpr($node));
+            return ['    return ' . $exprCode . ';'];
+        } else {
+            throw new \RuntimeException('unsupported node type: ' . AstSerializer::shortType($node));
         }
+
+        if ($stmts === []) {
+            return ['    // (empty body)'];
+        }
+
+        $body = trim($this->printer->prettyPrint($stmts));
+        if ($body === '') {
+            return ['    // (empty body)'];
+        }
+
+        return explode("\n", $body);
     }
 
     private function extractParameters(string $signature): string
@@ -851,7 +1034,14 @@ final class ApplyExtractor
         $args = [];
         foreach ($cluster->holes as $hole) {
             if ($hole->kind === 'optional_block') {
-                // Optional blocks become a literal false (default value).
+                // output-005 disclosure: this literal 0 rides the bool
+                // position to keep call and signature arity aligned. The
+                // knob Variable currently lands in the extracted body as
+                // an EVALUATED-AND-DISCARDED sibling statement (see
+                // setNodeAtPath's statement-slot wrap), so it gates
+                // nothing yet — optional gating proper is S49a (parameter
+                // promotion), and call-argument construction is S45's to
+                // own. Do not re-shape the arg here.
                 $args[] = new Node\Arg(new Node\Scalar\LNumber(0));
             } else {
                 // Code-domain name (declaration, body rewrites and these
@@ -926,4 +1116,21 @@ final class ApplyExtractor
         }
         return $result;
     }
+}
+
+/**
+ * A hole path that does not describe a slot of the generalized AST.
+ *
+ * output-005: the old setNodeAtPath() returned SILENTLY on every miss
+ * class, so an unreplaced hole reached disk inside a rewritten body —
+ * partial, invisible application, the exact failure family this kills.
+ * PlacementMiss makes every miss loud at its source. It is produced only
+ * inside ApplyExtractor::setNodeAtPath()/assertSubnode()/placeIntoSlot(),
+ * where replaceHolesWithParams() turns it into the cluster refusal — so
+ * it lives with its producer instead of claiming autoload surface it
+ * never uses. Callers may catch \RuntimeException (which it extends) as
+ * the apply-failure class it is.
+ */
+final class PlacementMiss extends \RuntimeException
+{
 }
