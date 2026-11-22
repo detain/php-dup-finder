@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Phpdup\Parallel;
 
 use Phpdup\Persistence\SerializedClassAllowList;
+use Phpdup\Util\Framing;
 
 /**
  * pcntl_fork-based worker pool for embarrassingly parallel batch work.
@@ -27,8 +28,11 @@ use Phpdup\Persistence\SerializedClassAllowList;
  */
 final class WorkerPool
 {
-    /** Length-prefix size for the streaming framing protocol (4 bytes, big-endian uint32). */
-    private const FRAME_HEADER = 4;
+    /**
+     * The streaming wire dialect (four-byte big-endian length prefix +
+     * serialized payload) and its ceilings live in {@see Framing}
+     * (once-S74 / once-089) — shared codec, shared cap, one home.
+     */
 
     /**
      * shell-S13 (php-dup-finder-shell-050): fixed window for one fwrite of a
@@ -616,13 +620,25 @@ final class WorkerPool
                     $buffers[$idx] .= $chunk;
 
                     $closeAfter = false;
-                    while (strlen($buffers[$idx]) >= self::FRAME_HEADER) {
-                        $lenInfo = unpack('N', substr($buffers[$idx], 0, self::FRAME_HEADER));
+                    while (strlen($buffers[$idx]) >= Framing::HEADER_BYTES) {
+                        $lenInfo = unpack('N', substr($buffers[$idx], 0, Framing::HEADER_BYTES));
                         if ($lenInfo === false) break;
                         $len = $lenInfo[1];
-                        if (strlen($buffers[$idx]) < self::FRAME_HEADER + $len) break;
-                        $payload = substr($buffers[$idx], self::FRAME_HEADER, $len);
-                        $buffers[$idx] = substr($buffers[$idx], self::FRAME_HEADER + $len);
+                        // once-089 bounded read: the header is the whole
+                        // commitment, so the cap is enforced AT ANNOUNCEMENT
+                        // TIME — a peer (or a corrupt stream) can never make
+                        // the parent buffer toward an oversized claim. No
+                        // S13-era byte pin is affected: legitimate frames
+                        // never approach Framing::MAX_FRAME_BYTES.
+                        if ($len > Framing::MAX_FRAME_BYTES) {
+                            throw new \RuntimeException(
+                                "Worker $idx announced a frame of $len bytes, above the "
+                                    . Framing::MAX_FRAME_BYTES . ' byte wire cap — refusing to buffer it.'
+                            );
+                        }
+                        if (strlen($buffers[$idx]) < Framing::HEADER_BYTES + $len) break;
+                        $payload = substr($buffers[$idx], Framing::HEADER_BYTES, $len);
+                        $buffers[$idx] = substr($buffers[$idx], Framing::HEADER_BYTES + $len);
 
                         $record = self::decodeFrame($idx, $payload, $allowList);
                         if (is_array($record) && isset($record['__error'])) {
@@ -1045,8 +1061,14 @@ final class WorkerPool
      */
     private static function writeRecord($stream, mixed $record): void
     {
-        $payload = serialize($record);
-        $framed  = pack('N', strlen($payload)) . $payload;
+        // once-S74 / once-089: the shared codec owns the frame shape and
+        // its cap. An oversized record is an explicit protocol error at
+        // emit time — in the child this throw rides the existing
+        // __error/sentinel taxonomy (the parent surfaces "Worker $idx
+        // failed: Framing: …"), never a silently unbounded frame. The
+        // production call passes no ceiling argument: Framing's
+        // MAX_FRAME_BYTES is the wire policy.
+        $framed  = Framing::encode($record);
         $cursor  = 0;
         $total   = strlen($framed);
         $stalled = 0;

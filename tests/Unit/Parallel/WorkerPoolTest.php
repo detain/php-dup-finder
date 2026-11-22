@@ -11,6 +11,9 @@ use Phpdup\Pipeline\Stages\ClusterStage;
 use Phpdup\Pipeline\Stages\PreprocessStage;
 use Phpdup\Pipeline\Stages\RefactorStage;
 use Phpdup\Parallel\WorkerPool;
+use Phpdup\Server\AnalysisWorker;
+use Phpdup\Server\Application;
+use Phpdup\Util\Framing;
 
 final class WorkerPoolTest extends TestCase
 {
@@ -1585,6 +1588,210 @@ final class WorkerPoolTest extends TestCase
         } finally {
             $restore();
         }
+    }
+
+    // ── once-S74 (php-dup-finder-once-089): shared framing-codec caps ──
+    //
+    // Before this era the ceilings were per-channel facts: the pool drain
+    // accepted any announced length up to the uint32 range of the prefix
+    // (and idled forever buffering toward it), and the newline channel's
+    // bound was a derivation private to AnalysisWorker. Framing is now the
+    // single ledger — encode / checkPayloadLength / readLineBounded and the
+    // two caps — and the pins below walk every new arm discriminatorily:
+    // an oversized announcement is refused at HEADER time with a bounded
+    // buffer (and its refusal message is distinctly not the no-sentinel
+    // death a capless parent reads instead), the encoded bytes stay the
+    // historic shape verbatim (every S13/WireTest byte pin replays
+    // unedited), the boundary is pinned from both sides without paying for
+    // a cap-sized allocation, and the shared reader terminates AT the cap
+    // while refusing PAST it with never more than cap + 1 bytes of slack.
+    // Routing itself is censused structurally (S92 precedent): the one
+    // production encode call must pass no ceiling argument, and neither
+    // transport may re-fork a private number.
+
+    public function testAnnouncedFrameAboveTheWireCapIsRefusedAtHeaderTime(): void
+    {
+        if (!WorkerPool::isAvailable()) {
+            $this->markTestSkipped('pcntl unavailable');
+        }
+        $this->withCpuEnv('2', function (): void {
+            /** @var array<int, array{0: resource, 1: resource}> stash of live pairs, in spawn order */
+            $pairs = [];
+            WorkerPool::setSocketPairFactory(static function () use (&$pairs) {
+                $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+                if ($pair === false) {
+                    return false;
+                }
+                $pairs[] = [$pair[0], $pair[1]];
+                return [$pair[0], $pair[1]];
+            });
+            $caught = null;
+            $start  = microtime(true);
+            try {
+                $pool = new WorkerPool(workers: 2);
+                try {
+                    iterator_to_array($pool->runStreaming(range(1, 32), static function (array $batch) use (&$pairs): array {
+                        if ($batch[0] === 1 && isset($pairs[0])) {
+                            // Worker 0 speaks the framing dialect honestly
+                            // in shape and dishonestly in size: it announces
+                            // a payload seven bytes above the cap, dribbles
+                            // eight bytes toward it, then exits.
+                            @fwrite($pairs[0][0], pack('N', Framing::MAX_FRAME_BYTES + 7));
+                            @fwrite($pairs[0][0], str_repeat('A', 8));
+                        }
+                        return [];
+                    }), false);
+                } catch (\RuntimeException $e) {
+                    $caught = $e;
+                }
+            } finally {
+                WorkerPool::setSocketPairFactory(null);
+            }
+            $elapsed = microtime(true) - $start;
+            $this->assertNotNull($caught, 'an oversized announcement must surface to the consumer, not hang or resolve as a worker death');
+            $this->assertMatchesRegularExpression(
+                '/announced a frame of \d+ bytes, above the \d+ byte wire cap/',
+                $caught->getMessage(),
+                'the refusal must name the announcement and the shared cap — NOT the EOF/no-sentinel taxonomy a capless parent reads for the same stream (that message is the RED-before-green shape of this pin)'
+            );
+            $this->assertStringNotContainsString('__done', $caught->getMessage(),
+                'header-time refusal must not degrade into the sentinel-death report');
+            $this->assertLessThan(5.0, $elapsed, 'the header is the whole commitment — the verdict lands without waiting for a payload');
+            $this->assertPoolLeftNoStrayChildren();
+        });
+    }
+
+    public function testProductionWireRoutesThroughTheSharedLedgerNotAForkedNumber(): void
+    {
+        $poolSrc = (string) file_get_contents((string) (new \ReflectionClass(WorkerPool::class))->getFileName());
+        $this->assertSame(1, substr_count($poolSrc, 'Framing::encode('),
+            'writeRecord must route the single production encode through the shared codec');
+        [$close, $args] = $this->runStreamingCallArguments($poolSrc, strpos($poolSrc, 'Framing::encode(') + strlen('Framing::encode('));
+        $this->assertIsInt($close);
+        $this->assertCount(1, $args,
+            'the production call may not pass its own ceiling — Framing::MAX_FRAME_BYTES is the wire policy');
+        $this->assertSame('$record', trim($args[0]), 'the production encode call must frame the record untouched');
+        $this->assertStringContainsString('$len > Framing::MAX_FRAME_BYTES', $poolSrc,
+            'the drain must enforce the shared cap on announcements, not a re-forked number');
+        $this->assertStringNotContainsString('self::FRAME_HEADER', $poolSrc,
+            'the pool must hold no private header-size constant now that Framing owns the shape');
+
+        $workerSrc = (string) file_get_contents((string) (new \ReflectionClass(AnalysisWorker::class))->getFileName());
+        $this->assertStringContainsString('public const MAX_REQUEST_BYTES = Framing::MAX_LINE_BYTES;', $workerSrc,
+            'the worker bound must NAME the shared ledger, not re-derive it from a sibling class');
+        $this->assertStringNotContainsString('Application::MAX_BODY_BYTES + 1024', $workerSrc,
+            'no private mirror of the line-cap derivation may survive in the worker');
+    }
+
+    public function testSharedLineCapStaysByteIdenticalAcrossLedgerWorkerAndHttpAdmission(): void
+    {
+        // The HTTP admission cap stays the definition side (Application
+        // is this era's hands-off file); the ledger and the worker read
+        // the SAME number. ApplicationTest:1248 pins the worker side from
+        // the other direction — this is the third leg, so no pair of the
+        // three may drift without a named red.
+        $this->assertSame(Application::MAX_BODY_BYTES + 1024, Framing::MAX_LINE_BYTES);
+        $this->assertSame(Framing::MAX_LINE_BYTES, AnalysisWorker::MAX_REQUEST_BYTES);
+    }
+
+    public function testEncodeEmitsTheHistoricFramedBytesVerbatim(): void
+    {
+        foreach ([['type' => 'block', 'file' => 'x.php', 'n' => 7], ['__done' => true], ['__error' => 'boom']] as $record) {
+            $payload = serialize($record);
+            $this->assertSame(
+                pack('N', strlen($payload)) . $payload,
+                Framing::encode($record),
+                'the shared codec must produce exactly the pre-S74 wire shape (the S13-era and WireTest byte pins replay unchanged)'
+            );
+        }
+    }
+
+    public function testPayloadCapBoundaryIsHonestOnBothSidesWithoutAllocating(): void
+    {
+        // The integer gate behind encode — pinned at the exact edge so
+        // the real-cap behaviour is proven without a cap-sized string
+        // (same disclosure shape as S92's un-exercised transport leg).
+        Framing::checkPayloadLength(Framing::MAX_FRAME_BYTES); // no throw at the cap
+        $caught = null;
+        try {
+            Framing::checkPayloadLength(Framing::MAX_FRAME_BYTES + 1);
+        } catch (\RuntimeException $e) {
+            $caught = $e;
+        }
+        $this->assertNotNull($caught, 'one byte above the cap must be a loud protocol error, never an oversized frame');
+        $this->assertStringContainsString((string) (Framing::MAX_FRAME_BYTES + 1), $caught->getMessage(),
+            'the refusal names the announced size');
+        $this->assertStringContainsString((string) Framing::MAX_FRAME_BYTES, $caught->getMessage(),
+            'the refusal names the shared cap');
+    }
+
+    public function testEncodeRefusesOverCapAtTheParameterisedBoundary(): void
+    {
+        $record = ['payload' => str_repeat('x', 64)];
+        $caught = null;
+        try {
+            Framing::encode($record, 16); // serialize($record) is far past 16 bytes
+        } catch (\RuntimeException $e) {
+            $caught = $e;
+        }
+        $this->assertNotNull($caught, 'encode must refuse a payload above its ceiling — an oversized record is an explicit protocol error at emit time');
+        $this->assertStringContainsString('above the 16-byte wire cap', $caught->getMessage());
+        $this->assertSame(
+            pack('N', strlen(serialize($record))) . serialize($record),
+            Framing::encode($record, strlen(serialize($record))),
+            'at the boundary the payload still frames exactly (the gate is >, not >=)'
+        );
+    }
+
+    public function testReadLineBoundedTerminatesAtTheSentinelIncludingTheExactCapBoundary(): void
+    {
+        $cap = 8;
+        $frame = Framing::readLineBounded($this->memoryStream("abc\n"), $cap);
+        $this->assertSame(['bytes' => 'abc', 'terminated' => true, 'pastCap' => false], $frame);
+
+        // A line whose content is exactly cap bytes still completes —
+        // the delimiter lands on the slack byte, which the historic loop
+        // read before checking (this pair is what the pre-extraction S46
+        // comment means by "one byte of slack").
+        $frame = Framing::readLineBounded($this->memoryStream("ABCDEFGH\n"), $cap);
+        $this->assertSame(['bytes' => 'ABCDEFGH', 'terminated' => true, 'pastCap' => false], $frame,
+            'content of exactly cap bytes + the newline must terminate');
+
+        // Empty / closed stream: the deliberate silent-probe arm — no
+        // bytes, no verdict, no cap complaint.
+        $frame = Framing::readLineBounded($this->memoryStream(''), $cap);
+        $this->assertSame(['bytes' => '', 'terminated' => false, 'pastCap' => false], $frame);
+    }
+
+    public function testReadLineBoundedRefusesPastCapWithNeverMoreThanCapPlusOneByteOfBuffer(): void
+    {
+        $cap = 8;
+        // A peer dribbling an endless line: refusal by cap, and the
+        // buffer itself stayed bounded — the acceptance's "no unbounded
+        // memory" arm in miniature, mutation-provable against a neutered
+        // read-size or loop-condition cap (either lets the full 20 bytes in).
+        $frame = Framing::readLineBounded($this->memoryStream(str_repeat('9', 20)), $cap);
+        $this->assertFalse($frame['terminated']);
+        $this->assertTrue($frame['pastCap'], 'endless past-cap content must read as pastCap, not as a short line');
+        $this->assertLessThanOrEqual($cap + 1, strlen($frame['bytes']),
+            'the bounded reader never keeps more than cap + 1 slack bytes');
+
+        // One byte past cap, delimiter arrives right after — still
+        // refused: past the cap there is no honest completion.
+        $frame = Framing::readLineBounded($this->memoryStream("123456789\n"), $cap);
+        $this->assertFalse($frame['terminated'], 'content past the cap is refused even when the newline follows immediately');
+        $this->assertTrue($frame['pastCap']);
+        $this->assertSame('123456789', $frame['bytes']);
+    }
+
+    /** @return resource rewind-to-start memory stream carrying $bytes */
+    private function memoryStream(string $bytes)
+    {
+        $stream = fopen('php://memory', 'r+b');
+        $this->assertIsResource($stream);
+        fwrite($stream, $bytes);
+        rewind($stream);
+        return $stream;
     }
 }
 

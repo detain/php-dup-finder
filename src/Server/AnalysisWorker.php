@@ -13,6 +13,7 @@ use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Reporting\JsonReporter;
 use Phpdup\Reporting\Report;
 use Phpdup\Reporting\Ranker;
+use Phpdup\Util\Framing;
 use Symfony\Component\Console\Output\NullOutput;
 
 /**
@@ -154,11 +155,18 @@ final class AnalysisWorker
      * times over, so every frame the HTTP layer admits still passes the
      * worker's read bound untouched.
      *
+     * Since once-S74 (php-dup-finder-once-089) the mirror is no longer a
+     * private re-derivation of the HTTP number: the ceiling is declared
+     * once in {@see Framing::MAX_LINE_BYTES} — the single ledger shared
+     * by this reader and every future serve-side reader of worker lines —
+     * and this constant names that ledger, so the two channels cannot
+     * silently drift apart.
+     *
      * Public so the cap-alignment pin test and any future dispatcher-side
      * check can tie themselves to this one source of truth; spawns that
      * need a different bound use the constructor seam.
      */
-    public const MAX_REQUEST_BYTES = Application::MAX_BODY_BYTES + 1024;
+    public const MAX_REQUEST_BYTES = Framing::MAX_LINE_BYTES;
 
     /**
      * Ack answering a frame that tripped the read bound. `FAIL 0` carries
@@ -484,8 +492,12 @@ final class AnalysisWorker
             // peer then died" from "bytes ran out mid-frame" (a completed
             // frame from an already-shutdown sender reads back flagged
             // EOF). So the frame is accumulated chunk-wise and is COMPLETE
-            // ONLY ONCE the newline is actually observed. The three early
-            // exits mirror the finding's shapes:
+            // ONLY ONCE the newline is actually observed. Since once-S74
+            // (php-dup-finder-once-089) that chunk-wise accumulation lives
+            // in {@see Framing::readLineBounded()} — the same bounded
+            // primitive the serve-side line readers adopt (or will) so no
+            // reader of this channel re-forks the loop and under-caps it.
+            // The three early exits mirror the finding's shapes:
             //   - past-cap without sentinel  → REQUEST_TOO_LONG_ACK leg;
             //   - non-empty without sentinel → loud partial-stream refusal
             //     carrying the byte marker (the historic silent-0 trust: a
@@ -493,23 +505,11 @@ final class AnalysisWorker
             //     and RUN, and a dying dispatcher saw nothing back);
             //   - empty stream / read error  → deliberate silent probe
             //     posture (a connection carrying no bytes names no job).
-            $buffer = '';
-            $terminated = false;
-            while (strlen($buffer) <= $this->maxRequestBytes) {
-                $chunk = @fread($client, min(4096, $this->maxRequestBytes + 1 - strlen($buffer)));
-                if ($chunk === false || $chunk === '') {
-                    break; // peer closed or read error: the sentinel never arrived
-                }
-                $buffer .= $chunk;
-                $newline = strpos($buffer, "\n");
-                if ($newline !== false) {
-                    $terminated = true;
-                    $buffer = substr($buffer, 0, $newline);
-                    break;
-                }
-            }
+            $frame      = Framing::readLineBounded($client, $this->maxRequestBytes);
+            $buffer     = $frame['bytes'];
+            $terminated = $frame['terminated'];
             if (!$terminated) {
-                if (strlen($buffer) > $this->maxRequestBytes) {
+                if ($frame['pastCap']) {
                     @fwrite($client, self::REQUEST_TOO_LONG_ACK);
                 } elseif ($buffer !== '') {
                     // shell-022 discipline: `FAIL 0` echoes no unvalidated token.
