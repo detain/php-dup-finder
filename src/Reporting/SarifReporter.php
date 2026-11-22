@@ -21,7 +21,14 @@ final class SarifReporter
 {
     use WritesReportFile;
 
-    public const SCHEMA  = 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/Schemata/sarif-schema-2.1.0.json';
+    /**
+     * Canonical schema location: the versioned errata01 JSON Schema on the
+     * OASIS publishing site — byte-identical to the `id` field the schema
+     * document declares for itself. The historical raw.githubusercontent
+     * oasis-tcs mirror 404s on both master and main branch shapes, breaking
+     * consumers that resolve $schema (php-dup-finder-once-058).
+     */
+    public const SCHEMA  = 'https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json';
     public const VERSION = '2.1.0';
 
     public function writeTo(Report $report, string $file): void

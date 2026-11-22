@@ -32,6 +32,35 @@ final class SarifReporterTest extends TestCase
         $this->assertSame([], $payload['runs'][0]['results']);
     }
 
+    /**
+     * php-dup-finder-once-058: the historical raw.githubusercontent.com
+     * oasis-tcs mirror URL is dead on both master and main branch shapes
+     * (live-probed 404 at implementation time), so conforming consumers
+     * that fetch $schema break. The constant must carry the versioned
+     * docs.oasis-open.org errata01 path — the location the schema document
+     * declares as its own `id`. Shape pinned here; fetchability verified
+     * once out-of-band (HTTP 200, application/json, size 112,768 B — see
+     * reviews/exec/once-S52.impl.md). No network in this test.
+     */
+    public function testSchemaUrlIsTheLiveOasisErrataPath(): void
+    {
+        $expected = 'https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json';
+        $this->assertSame($expected, SarifReporter::SCHEMA);
+
+        // Shape pins: the exact versioned errata path on the OASIS site —
+        // any drift back to a moving branch mirror goes red independent of
+        // the literal above.
+        $this->assertMatchesRegularExpression(
+            '~^https://docs\.oasis-open\.org/sarif/sarif/v2\.1\.0/errata01/os/schemas/sarif-schema-2\.1\.0\.json$~',
+            SarifReporter::SCHEMA,
+        );
+        $this->assertStringNotContainsString('raw.githubusercontent.com', SarifReporter::SCHEMA);
+
+        $report  = new Report(0, 0, 0, [], Config::defaults([]));
+        $payload = (new SarifReporter())->build($report);
+        $this->assertSame($expected, $payload['$schema'], 'emitted $schema is the constant, not a re-inlined literal');
+    }
+
     public function testFixtureReportEmitsResultPerMember(): void
     {
         $report  = $this->buildReport();
