@@ -764,34 +764,51 @@ final class WorkerPool
      *    the encoder), so false here means a broken/truncated frame — the
      *    old code yielded that false straight into the results stream.
      *  - an object whose class is missing from the allow-list arriving as
-     *    __PHP_Incomplete_Class (a new wire type whose author forgot to
-     *    extend the list). Since shell-S11 (shell-011) this is screened on
-     *    the payload BYTES before decoding — a linear framing pass over a
-     *    string the loop already holds, replacing the recursive walk of
-     *    the whole decoded graph that cost 2.13x the unserialize it gated.
-     *    The verdict is identical for every payload the byte grammar can
-     *    frame (parity pinned in WorkerPoolTest), and an undecidable
-     *    payload falls back to the shared graph screen — never weaker.
-     *    Side effect worth naming: a blocked class parked in a TYPED slot
-     *    used to escape decodeFrame as a raw "Cannot assign
-     *    __PHP_Incomplete_Class to property ..." TypeError mid-decode; the
-     *    bytes screen now refuses it descriptively before unserialize
-     *    ever runs.
+     *    __PHP_Incomplete_Class (a wire type whose author forgot to
+     *    extend the list, or a child coaxed into serializing one).
+     *    Pre-S11 the guard was a recursive walk of the WHOLE decoded
+     *    graph run over EVERY frame — measured at 2.13x the cost of the
+     *    unserialize it gated (447 ms scan vs 210 ms decode). shell-S11
+     *    replaced the unconditional walk with a C-speed candidate pass
+     *    over the frame's own bytes
+     *    ({@see SerializedClassAllowList::firstUnallowlistedClassHeader()}):
+     *    the serializer spells a literal class header for every
+     *    instance it writes, so a frame whose headers all name classes
+     *    that are on the list AND resolvable provably cannot decode an
+     *    incomplete — it skips the walk entirely. Any doubt (an off-
+     *    list name, a forged header framing, an enum token) routes the
+     *    frame through the shared graph walk for the baseline verdict.
+     *    Decision-equivalence is pinned in WorkerPoolTest: poison
+     *    nested three deep is still refused by name, serialized-
+     *    lookalike bait still yields, real graph-wire records still
+     *    restore DAG-shared.
+     *    Side effect worth naming: a blocked class parked in a TYPED
+     *    slot used to escape decodeFrame as a raw "Cannot assign
+     *    __PHP_Incomplete_Class to property ..." TypeError mid-decode;
+     *    the suspect path now refuses it descriptively instead.
      *
      * Sentinel precedence is unaffected: __error/__done frames are plain
-     * arrays of string/bool (the child writes only those shapes), so the
-     * malformed and blocked-class guards can never fire on a well-formed
-     * control frame before the caller inspects them.
+     * arrays of string/bool (the child writes only those shapes) — zero
+     * class headers, so the gate clears them and both guards can never
+     * fire on a well-formed control frame before the caller inspects it.
      *
      * @param list<class-string> $allowList
      */
     private static function decodeFrame(int $idx, string $payload, array $allowList): mixed
     {
-        $screen = SerializedClassAllowList::findBlockedClassInPayload($payload, $allowList);
-        if ($screen !== null && $screen !== SerializedClassAllowList::SCAN_UNDECIDABLE) {
-            throw self::blockedFrameException($idx, $screen);
+        $suspect = SerializedClassAllowList::firstUnallowlistedClassHeader($payload, $allowList);
+        try {
+            $record = @unserialize($payload, ['allowed_classes' => $allowList]);
+        } catch (\TypeError $t) {
+            if ($suspect === null || $suspect === SerializedClassAllowList::SCAN_UNDECIDABLE) {
+                throw $t; // nothing to name — the baseline's own escape, kept verbatim
+            }
+            // A blocked class parked in a typed slot of an allowed
+            // class: PHP throws WHILE assigning the incomplete, mid-
+            // decode. The frame was named by the header gate anyway —
+            // refuse descriptively rather than leak the type system.
+            throw self::blockedFrameException($idx, $suspect);
         }
-        $record = @unserialize($payload, ['allowed_classes' => $allowList]);
         if ($record === false) {
             $preview = addcslashes(substr($payload, 0, 32), "\0..\37\177..\377");
             throw new \RuntimeException(
@@ -800,31 +817,35 @@ final class WorkerPool
                 'Refusing to continue with corrupt data.'
             );
         }
-        if ($screen === SerializedClassAllowList::SCAN_UNDECIDABLE) {
-            // Strict-parity fallback: the byte walk could not frame this
-            // payload, so the shared graph screen — the walk the bytes
-            // form replaced — owns the verdict (shell-011 posture). It is
-            // bounded; an out-budget frame can be neither screened nor
-            // trusted, so it fails loud rather than yielding unchecked
-            // data (the stores' miss posture has no wire analogue).
-            $blocked = SerializedClassAllowList::findIncompleteClass($record);
-            if ($blocked === SerializedClassAllowList::SCAN_UNRESOLVED) {
-                throw new \RuntimeException(
-                    "Worker $idx sent a frame whose payload the byte screen could not frame AND whose " .
-                    'decoded graph exceeded the blocked-class scan budget — refusing to yield unchecked data.'
-                );
-            }
-            if ($blocked !== null) {
-                throw self::blockedFrameException($idx, $blocked);
-            }
+        if ($suspect === null) {
+            return $record; // gate-cleared: the walk could only have found nothing
         }
+        $blocked = SerializedClassAllowList::findIncompleteClass($record);
+        if ($blocked === SerializedClassAllowList::SCAN_UNRESOLVED) {
+            // The graph walk is bounded; an out-budget frame can be
+            // neither screened nor trusted, so it fails loud rather
+            // than yielding unchecked data (the stores' miss posture
+            // has no wire analogue).
+            throw new \RuntimeException(
+                "Worker $idx sent a frame the class-header gate could not clear AND whose " .
+                'decoded graph exceeded the blocked-class scan budget — refusing to yield unchecked data.'
+            );
+        }
+        if ($blocked !== null) {
+            throw self::blockedFrameException($idx, $blocked);
+        }
+        // Bait or restored-real: the unlisted name was spelled only
+        // inside string data (or an E: token that decodes to a real
+        // enum) and the authoritative walk cleared the graph — the
+        // baseline chain walked the same graph and yielded here too.
         return $record;
     }
 
     /**
-     * The one blocked-class refusal wording, shared by the bytes screen
-     * and its graph fallback so both arms speak identically (WireTest
-     * pins: the message carries 'allow-list' and the offending name).
+     * The one blocked-class refusal wording, shared by the typed-slot
+     * refusal and the graph-walk refusal so every blocked frame speaks
+     * identically (WireTest pins: the message carries 'allow-list' and
+     * the offending name).
      */
     private static function blockedFrameException(int $idx, string $blocked): \RuntimeException
     {

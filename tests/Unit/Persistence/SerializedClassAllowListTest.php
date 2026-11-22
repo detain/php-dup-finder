@@ -344,6 +344,20 @@ final class SerializedClassAllowListTest extends TestCase
             self::assertNotFalse($decoded, "fuzz case $case must be decodable — builder emitted a broken shape");
             $graphVerdict = SerializedClassAllowList::findIncompleteClass($decoded);
 
+            // The wire gate's load-bearing invariant: a frame it calls
+            // clean must decode with NO incomplete in the graph (skips
+            // the walk safely), and a graph that does carry one must
+            // never have been called clean (the walk's verdict the gate
+            // skipped would have refused — a hole would be a security
+            // regression, shell-011 acceptance (2)).
+            $gateVerdict = SerializedClassAllowList::firstUnallowlistedClassHeader($payload, $allow);
+            if ($gateVerdict === null) {
+                self::assertNull($graphVerdict, "gate-cleared case $case must decode clean: " . $payload);
+            }
+            if ($graphVerdict !== null) {
+                self::assertNotNull($gateVerdict, "incomplete-carrying case $case must not be gate-cleared: " . $payload);
+            }
+
             self::assertSame(
                 $graphVerdict,
                 $byteVerdict,
@@ -525,6 +539,130 @@ final class SerializedClassAllowListTest extends TestCase
         self::assertNull(
             SerializedClassAllowList::findBlockedClassInPayload($payload, [\Phpdup\Util\LineRange::class]),
             'and back under list A — swapped again, verdict A restored'
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // shell-S11 wire gate: firstUnallowlistedClassHeader()
+    // ---------------------------------------------------------------
+
+    public function testGateClearsHeaderlessAndFullyAllowedPayloads(): void
+    {
+        $allow = SerializedClassAllowList::blockCacheClasses();
+        foreach ([
+            'N;',
+            'i:42;',
+            'b:1;',
+            'd:1.5;',
+            's:5:"hello";',
+            'a:2:{s:1:"a";i:1;s:1:"b";s:3:"xyz";}',
+            serialize(['__done' => true]),
+            serialize(['__error' => 'boom']),
+            serialize(new \Phpdup\Util\LineRange(1, 2)),
+            serialize(['n' => new \PhpParser\Node\Stmt\Nop()]),
+        ] as $payload) {
+            self::assertNull(
+                SerializedClassAllowList::firstUnallowlistedClassHeader($payload, $allow),
+                'gate must clear an allowed/honest payload: ' . addcslashes(substr($payload, 0, 48), "\0..\37")
+            );
+        }
+    }
+
+    public function testGateNamesOffListHeadersShallowAndDeep(): void
+    {
+        $allow = SerializedClassAllowList::blockCacheClasses();
+        self::assertSame(
+            'stdClass',
+            SerializedClassAllowList::firstUnallowlistedClassHeader(serialize(['x' => new \stdClass()]), $allow)
+        );
+        $deep = serialize(['rows' => ['block' => ['x' => ['y' => ['z' => new \ArrayObject()]]]]]);
+        self::assertSame(
+            'ArrayObject',
+            SerializedClassAllowList::firstUnallowlistedClassHeader($deep, $allow),
+            'a header nested five levels down is still spelled literally by the serializer'
+        );
+        self::assertSame(
+            'PhpParser\Error',
+            SerializedClassAllowList::firstUnallowlistedClassHeader(serialize(['e' => new \PhpParser\Error('x')]), $allow),
+            'the engine-S39 forbidden non-Node family routes too'
+        );
+    }
+
+    public function testGateRoutesCaseShuffledAndForgedHeaders(): void
+    {
+        $allow = SerializedClassAllowList::blockCacheClasses();
+        self::assertSame(
+            'stdclass',
+            SerializedClassAllowList::firstUnallowlistedClassHeader('a:1:{i:0;O:8:"stdclass":0:{}}', $allow),
+            'case-shuffled name misses the byte-exact flip — routes to the walk'
+        );
+        self::assertSame(
+            'A',
+            SerializedClassAllowList::firstUnallowlistedClassHeader('O:9:"A"nother":0:{}', $allow),
+            'declared length disagrees with the capture — hand-forged framing'
+        );
+        self::assertSame(
+            'Short',
+            SerializedClassAllowList::firstUnallowlistedClassHeader('O:99999999999999999999999:"Short":0:{}', $allow),
+            'oversized digit string never wraps into a match'
+        );
+        self::assertNotNull(
+            SerializedClassAllowList::firstUnallowlistedClassHeader('O:11:"Phpdup\N' . chr(0) . 'X":0:{}', $allow),
+            'NUL inside a header name cannot hide behind the [^"]* capture'
+        );
+    }
+
+    public function testGateRoutesEnumTokensToTheWalk(): void
+    {
+        $allow = SerializedClassAllowList::blockCacheClasses();
+        $payload = serialize(['e' => \Phpdup\Pipeline\Stage::Scanning]);
+        self::assertSame(
+            \Phpdup\Pipeline\Stage::class . ':Scanning',
+            SerializedClassAllowList::firstUnallowlistedClassHeader($payload, $allow),
+            'E: names carry the case suffix and never match the plain class — slow path (baseline-consistent: real enums decode and the walk yields them)'
+        );
+    }
+
+    public function testGateClearsResolvableNonInstantiableButRoutesUnlistedGhosts(): void
+    {
+        // An allowed+resolvable abstract class name CANNOT arrive as an
+        // incomplete (PHP throws while instantiating — both chains
+        // behave identically), so the gate may clear it. A name that is
+        // ON the list but unresolvable must route: it decodes to an
+        // incomplete exactly like an unlisted one would.
+        $gate = new \ReflectionMethod(SerializedClassAllowList::class, 'firstUnallowlistedClassHeader');
+        $abstractHeader = sprintf('O:%d:"%s":0:{}', strlen(\PhpParser\NodeAbstract::class), \PhpParser\NodeAbstract::class);
+        $ghostHeader    = sprintf('O:%d:"%s":0:{}', strlen('Phpdup\NoSuch\Ghost'), 'Phpdup\NoSuch\Ghost');
+        self::assertNull(
+            $gate->invoke(null, $abstractHeader, [\PhpParser\NodeAbstract::class]),
+            'abstract but resolvable: no incomplete possible — cleared'
+        );
+        self::assertSame(
+            'Phpdup\NoSuch\Ghost',
+            $gate->invoke(null, $ghostHeader, ['Phpdup\NoSuch\Ghost']),
+            'allowed-but-missing class routes despite being on the list'
+        );
+        // Memo identity: two interleaved lists each decide by their own
+        // resolvability set (mirrors the flip memo pin above).
+        self::assertNull(
+            $gate->invoke(null, $abstractHeader, [\PhpParser\NodeAbstract::class]),
+            'back to list A — unresolvable memo must have swapped'
+        );
+    }
+
+    public function testGateTreatsStringBodiesAsPotentialSuspectsNotFalseAcquittals(): void
+    {
+        // Lookalike text inside a string body may trip the header regex
+        // (the gate does not parse framing to know otherwise) — routing
+        // to the walk is the SAFE direction; what must never happen is
+        // a gate-cleared frame carrying a real incomplete, pinned by
+        // the fuzz invariant above.
+        $allow = SerializedClassAllowList::blockCacheClasses();
+        $bait = serialize(['note' => 'O:8:"stdClass":0:{}']);
+        self::assertSame(
+            'stdClass',
+            SerializedClassAllowList::firstUnallowlistedClassHeader($bait, $allow),
+            'bait routes to the authoritative walk (which will clear it)'
         );
     }
 }

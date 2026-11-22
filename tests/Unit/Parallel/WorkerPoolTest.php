@@ -672,11 +672,12 @@ final class WorkerPoolTest extends TestCase
     //
     // decodeFrame is private static; the reflection seam is the pattern
     // WorkerPoolWireTest already uses for the corrupt-frame path. These
-    // pins exercise the GUARD CHAIN (bytes screen → unserialize → graph
-    // fallback) without forking — the end-to-end fork regressions for the
-    // same verdicts live in WorkerPoolWireTest (top-level and
-    // nested-in-Block poison), and they must stay green: the message
-    // still carries 'allow-list' and the offending class name.
+    // pins exercise the GUARD CHAIN (class-header gate → unserialize →
+    // graph walk on suspect frames) without forking — the end-to-end
+    // fork regressions for the same verdicts live in WorkerPoolWireTest
+    // (top-level and nested-in-Block poison), and they must stay green:
+    // the message still carries 'allow-list' and the offending class
+    // name.
 
     /** @param list<class-string> $allowList */
     private function invokeDecodeFrame(int $idx, string $payload, array $allowList): mixed
@@ -688,6 +689,11 @@ final class WorkerPoolTest extends TestCase
 
     public function testDecodeFrameAdmitsRealGraphWireRecord(): void
     {
+        // The hot path acceptance (shell-011): a genuine Block+AST
+        // frame has every header on the resolvable allow-list, so the
+        // gate clears it and the graph walk is skipped entirely — the
+        // record must still restore byte-faithfully, DAG sharing
+        // included (the R: refs point back at headers the gate saw).
         $parser = new \PhpParser\ParserFactory();
         $ast    = $parser->createForNewestSupportedVersion()
             ->parse("<?php\n// c\nfunction greet(\$n) { /* inline */ echo \$n; }\n") ?: [];
@@ -711,7 +717,7 @@ final class WorkerPoolTest extends TestCase
             $this->fail('nested blocked class must throw');
         } catch (\RuntimeException $e) {
             $this->assertMatchesRegularExpression('/allow-list/', $e->getMessage());
-            $this->assertStringContainsString('stdClass', $e->getMessage(), 'the FIRST blocked class on the bytes is named');
+            $this->assertStringContainsString('stdClass', $e->getMessage(), 'the first blocked class the walk meets is named');
             $this->assertStringContainsString('Worker 3', $e->getMessage());
         }
     }
@@ -721,8 +727,9 @@ final class WorkerPoolTest extends TestCase
         // Pre-S11, a foreign object dressed as Block::$range (typed
         // LineRange) escaped @unserialize as a raw "Cannot assign
         // __PHP_Incomplete_Class to property" TypeError from mid-decode.
-        // The bytes screen now refuses it BEFORE the decode — same fail-
-        // loud posture, descriptive message, no type-system leak.
+        // The stdClass header is spelled literally in the bytes, so the
+        // gate flags the frame BEFORE the walk and the refusal names it
+        // descriptively — same fail-loud posture, no type-system leak.
         $block = new \Phpdup\Extraction\Block(
             file: 'x.php',
             range: new \Phpdup\Util\LineRange(1, 2),
@@ -746,7 +753,7 @@ final class WorkerPoolTest extends TestCase
             $this->assertMatchesRegularExpression('/allow-list/', $e->getMessage());
             $this->assertStringContainsString('stdClass', $e->getMessage());
         } catch (\TypeError $e) {
-            $this->fail('raw TypeError escaped the guard — the bytes screen must run before decode: ' . $e->getMessage());
+            $this->fail('raw TypeError escaped the guard — the suspect path must name the frame descriptively: ' . $e->getMessage());
         }
     }
 
@@ -755,7 +762,7 @@ final class WorkerPoolTest extends TestCase
         // S10 early-out interaction (shell-011 acceptance note): the
         // reworked guard must not swallow the corrupt-frame path, and
         // the __done/__error sentinel shapes are plain scalar arrays —
-        // the byte screen passes them through untouched so the drain
+        // zero class headers, so the gate clears them and the drain
         // loop's control-frame inspection still happens first.
         try {
             $this->invokeDecodeFrame(2, "\xff\xfe not serialized", SerializedClassAllowList::blockCacheClasses());
@@ -769,29 +776,46 @@ final class WorkerPoolTest extends TestCase
         }
     }
 
-    public function testDecodeFrameUndecidablePayloadKeepsOldVerdictViaGraphArm(): void
+    public function testDecodeFrameExoticStringTagsKeepBaselineVerdicts(): void
     {
-        // An exotic payload the byte grammar cannot frame (S: tag —
-        // PHP decodes it) falls back to the shared graph screen: clean
-        // payload → yields; poisoned payload → still refused by name.
+        // Exotic S: tag payloads (PHP's decoder accepts them) reach the
+        // BASELINE verdicts through the new chain: a clean one spells no
+        // class header at all, so the gate clears it straight to the
+        // decode; one carrying a blocked object still spells the O:
+        // header literally — the gate flags it and the authoritative
+        // graph walk owns the refusal.
         $allow = SerializedClassAllowList::blockCacheClasses();
         $count = 0;
         $exotic = str_replace('s:', 'S:', serialize(['t' => 'pair', 'msg' => 'hello']), $count);
         $this->assertGreaterThan(0, $count);
         $record = $this->invokeDecodeFrame(0, $exotic, $allow);
-        $this->assertSame(['t' => 'pair', 'msg' => 'hello'], $record, 'fallback walk must admit the honest exotic form');
+        $this->assertSame(['t' => 'pair', 'msg' => 'hello'], $record, 'gate must admit the honest exotic form');
 
         // Same exotic framing, but the payload carries a blocked object:
-        // the graph arm (not the byte arm) owns the refusal.
+        // the graph walk (not the gate's say-so) owns the refusal.
         $evilCount = 0;
         $evilExotic = str_replace('s:', 'S:', serialize(['obj' => new \stdClass()]), $evilCount);
         $this->assertGreaterThan(0, $evilCount);
         try {
             $this->invokeDecodeFrame(4, $evilExotic, $allow);
-            $this->fail('graph-arm fallback must still refuse nested poison');
+            $this->fail('gate-flagged poison must still be refused');
         } catch (\RuntimeException $e) {
             $this->assertMatchesRegularExpression('/allow-list/', $e->getMessage());
             $this->assertStringContainsString('stdClass', $e->getMessage());
         }
+    }
+
+    public function testDecodeFrameAcceptsSerializedLookalikeBaitInStrings(): void
+    {
+        // shell-011 parity arm: a frame whose only 'O:8:"stdClass"' is
+        // TEXT inside a string field (exactly what a comment token in a
+        // real AST can carry) trips the header regex, gets flagged by
+        // the gate, and the walk then clears it — the baseline chain
+        // walked the same graph and yielded. A refusal here would void
+        // honest frames (and the corpus proof is the Golden suite).
+        $allow = SerializedClassAllowList::blockCacheClasses();
+        $frame = ['type' => 'pair', 'note' => 'O:8:"stdClass":0:{} lives only as text here'];
+        $record = $this->invokeDecodeFrame(0, serialize($frame), $allow);
+        $this->assertSame($frame, $record);
     }
 }

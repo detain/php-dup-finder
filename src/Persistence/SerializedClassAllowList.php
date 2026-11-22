@@ -39,13 +39,19 @@ namespace Phpdup\Persistence;
  * `__destruct`/`__wakeup`/`__unserialize` hook.
  *
  * **shell-S11 (php-dup-finder-shell-011, shell-034):** the blocked-class
- * screen lives HERE as the one shared helper —
- * {@see self::findBlockedClassInPayload()} frames the decision over the
- * serialized BYTES on the hot decode path, and
- * {@see self::findIncompleteClass()} is the graph walk it replaces (kept
- * as the strict-parity fallback and the store-side screen). The allow-list
- * itself is memoized end to end: {@see self::blockCacheClasses()} now
- * returns the same list every call.
+ * machinery lives HERE as one shared home with three screens.
+ * {@see self::firstUnallowlistedClassHeader()} is the WIRE hot-path gate:
+ * a single C-speed pass names the first class header the list cannot
+ * vouch for, and a frame it calls clean provably cannot decode an
+ * `__PHP_Incomplete_Class` — so it skips the graph walk the pre-S11
+ * decode ran over every frame (2.13x the cost it gated).
+ * {@see self::findIncompleteClass()} stays the authoritative graph walk
+ * (the moved shell-S19 screen) for every frame the gate cannot clear.
+ * {@see self::findBlockedClassInPayload()} is the stricter byte-grammar
+ * screen over raw payload bytes — kept as the tested store-side utility
+ * shell-S39's allow-list leg consumes. The allow-list itself is
+ * memoized end to end: {@see self::blockCacheClasses()} now returns the
+ * same list every call.
  */
 final class SerializedClassAllowList
 {
@@ -139,6 +145,21 @@ final class SerializedClassAllowList
     private static ?array $flip = null;
 
     /**
+     * Identity pair for the memoized set of $allowList names the
+     * autoloader cannot resolve (shell-011). A header naming such a
+     * class arrives as __PHP_Incomplete_Class EVEN THOUGH the name is
+     * on the list, so the gate may only call a frame clean when no
+     * header spells one of these. The wire re-passes the same memoized
+     * list every frame, so the `===` check builds this once per list.
+     *
+     * @var list<class-string>|null
+     */
+    private static ?array $unresolvableSource = null;
+
+    /** @var array<string,true>|null */
+    private static ?array $unresolvableNames = null;
+
+    /**
      * The phpdup value-object classes that can appear inside a cached
      * cluster set or per-file block list.
      *
@@ -228,17 +249,20 @@ final class SerializedClassAllowList
     }
 
     /**
-     * The ONE shared blocked-class screen over serialized bytes
-     * (shell-S11, php-dup-finder-shell-011): WorkerPool's hot decode
-     * path, and — by stable signature — the S19 stores' loads and the
-     * S39 allow-list leg all consult this instead of forking their own
-     * walk.
+     * The strict blocked-class screen over serialized bytes (shell-S11,
+     * php-dup-finder-shell-011): the store-side utility — S19 loads may
+     * pre-screen blobs and the S39 allow-list leg consumes it by stable
+     * signature. (The WIRE path uses the cheaper
+     * {@see self::firstUnallowlistedClassHeader()} gate instead; the
+     * per-token framing this walk does cannot beat C-speed unserialize
+     * over the same bytes — measured 10x slower than the graph walk it
+     * was meant to replace, so it never ships on the hot decode.)
      *
-     * The old form was a recursive walk of the DECODED graph (every
+     * The old wire form was a recursive walk of the DECODED graph (every
      * Block, every AST node, a fresh `get_object_vars()` array per
      * object) — measured at 2.13x the cost of the unserialize it gates
      * (447 ms scan vs 210 ms decode on identical pair-score streams,
-     * ~0.23 ms/row ≈ 10 s per mid-corpus). The cheap form is a linear
+     * ~0.23 ms/row ≈ 10 s per mid-corpus). The byte form is a linear
      * framing pass over the payload's own bytes: PHP's serialize
      * grammar length-prefixes every string, so the walk can skip string
      * bodies wholesale (the corpus bulk) instead of visiting them, and
@@ -283,6 +307,107 @@ final class SerializedClassAllowList
     public static function findBlockedClassInPayload(string $payload, array $allowList): ?string
     {
         return self::walkPayload($payload, self::flipFor($allowList));
+    }
+
+    /**
+     * The wire's cheap pre-decode gate (shell-S11, php-dup-finder-
+     * shell-011): names the FIRST class header in the serialized bytes
+     * the allow-list cannot vouch for, or null when every header is
+     * provably decodable into a REAL object.
+     *
+     * PHP's serializer spells a literal `O:<len>:"<name>":`,
+     * `C:<len>:"<name>":` or `E:<len>:"<name>":` header for EVERY
+     * object instance in a stream — `r:`/`R:` references always point
+     * back at one of those headers, and no other tag manufactures an
+     * object — so the header set over the bytes is complete. Every
+     * `__PHP_Incomplete_Class` in a decoded graph therefore originates
+     * from exactly one of these headers, which means a frame whose
+     * headers all name classes that are ON the list AND resolvable
+     * cannot contain an incomplete anywhere: the graph walk exists to
+     * find that one marker, so skipping it for such frames is verdict-
+     * preserving by construction, not a heuristic.
+     *
+     * Anything the gate cannot vouch for returns a name (routing the
+     * frame through {@see self::findIncompleteClass()} on the decoded
+     * graph — the baseline chain, unchanged):
+     *  - a header name off the list (real poison; also serialized-
+     *    lookalike bait, which the walk then clears exactly as it
+     *    always did);
+     *  - a name on the list the autoloader cannot find — an allowed
+     *    but missing class decodes to an incomplete just as a
+     *    disallowed one does;
+     *  - a header whose declared length disagrees with the captured
+     *    bytes — a hand-forged name carrying a quote or NUL, which
+     *    PHP (parsing by length, not by quote) would decode to a
+     *    DIFFERENT name than the capture;
+     *  - the `E:` enum form, whose name is `"<class>:<case>"` and so
+     *    never matches a plain class name on the list (legitimate
+     *    worker frames never contain one — a poisoned or exotic
+     *    payload takes the walk and gets its baseline verdict);
+     *  - a payload the scan could not run at all (PCRE resource
+     *    failure) — reported as {@see self::SCAN_UNDECIDABLE}, never
+     *    as clean.
+     *
+     * Case is compared byte-exactly through the memoized flip,
+     * mirroring the byte screen's posture: a case-shuffled smuggle
+     * routes to the walk rather than being waved through.
+     *
+     * @param list<class-string> $allowList
+     * @return string|null the suspect header name (or the SCAN_UNDECIDABLE
+     *                     sentinel), null when the frame provably decodes
+     *                     with no incomplete class in it.
+     */
+    public static function firstUnallowlistedClassHeader(string $payload, array $allowList): ?string
+    {
+        $count = preg_match_all('/[OCE]:(\d+):"([^"]*)"/', $payload, $m);
+        if ($count === false) {
+            return self::SCAN_UNDECIDABLE;
+        }
+        if ($count === 0) {
+            return null; // no class header exists — nothing can decode as incomplete
+        }
+        $flip         = self::flipFor($allowList);
+        $unresolvable = self::unresolvableFor($allowList);
+        for ($i = 0; $i < $count; ++$i) {
+            $name = $m[2][$i];
+            // A declared length beyond 18 digits cannot name a real
+            // class; comparing digit-string length before the int cast
+            // keeps oversized digits from wrapping and coincidentally
+            // matching a short name.
+            if (strlen($m[1][$i]) > 18 || (int) $m[1][$i] !== strlen($name)) {
+                return $name;
+            }
+            if (!isset($flip[$name]) || isset($unresolvable[$name])) {
+                return $name;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The names on $allowList the autoloader cannot resolve (usually
+     * none — the list is built from a live class map and this package's
+     * own classes). Memoized against list identity next to
+     * {@see self::flipFor()}; consulting it is what lets the gate
+     * promise NO incomplete rather than merely no disallowed name.
+     *
+     * @param list<class-string> $allowList
+     * @return array<string,true>
+     */
+    private static function unresolvableFor(array $allowList): array
+    {
+        if ($allowList === self::$unresolvableSource && self::$unresolvableNames !== null) {
+            return self::$unresolvableNames;
+        }
+        $names = [];
+        foreach ($allowList as $class) {
+            if (!class_exists($class)) {
+                $names[$class] = true;
+            }
+        }
+        self::$unresolvableSource = $allowList;
+        self::$unresolvableNames  = $names;
+        return $names;
     }
 
     /**
