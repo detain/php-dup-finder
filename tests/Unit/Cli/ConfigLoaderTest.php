@@ -887,6 +887,49 @@ final class ConfigLoaderTest extends TestCase
         self::assertNull($resolve->invokeArgs($cmd, [$absent, new BufferedOutput(), [], &$overridesAbsent]));
     }
 
+    public function testAutoTuneProbeCountsTheProfileExcludedTree(): void
+    {
+        // r1 MEDIUM-1: the shell-043 seam lives in Command::resolveAutoTune —
+        // the merge of the resolved profile's excludes into the list handed
+        // to AutoTuner::tune(). Nothing above watched it: reverting the
+        // merge (mutant m2) left the WHOLE Unit suite green while the CLI
+        // visibly regressed (excluded trees counted back into the band).
+        // This pin observes what Command actually hands the probe, through
+        // the displayed rationale — the strongest form: the real user line.
+        //
+        // Straddle recipe (m2's repro): 190 app files + a 30-file public/
+        // tree that the laravel profile excludes but the stock defaults do
+        // not. At the default tinyMax=200 the WITH-excludes probe reads
+        // "tiny (190)"; a probe without the merge reads "small (220)" — the
+        // exact regression. Bodies stay one statement long (under every
+        // min_block_size) so the pipeline extracts nothing: only the
+        // rationale line is pinned, and the run is exit-clean in both arms.
+        $dir = $this->scratchDir();
+        $corpus = $this->mintStraddleCorpus($dir . '/s25-straddle', 190, 30);
+
+        [$exit, $display] = $this->analyzeWithProfile($corpus, $dir . '/s25-tune.json', 'laravel', ['--auto-tune' => true]);
+
+        self::assertSame(0, $exit, 'the straddle run is a normal run: ' . $display);
+        self::assertStringContainsString('auto-tune: tiny corpus (190 files)', $display,
+            'RED if resolveAutoTune drops the profile merge — the band must never count the excluded tree');
+
+        // Non-vacuity arm: the same corpus really is a 220-file "small"
+        // tree without the profile — this is the exact line m2 printed on
+        // the mutant tree (r1 §d). Pinning the profile arm alone would pass
+        // vacuously if minting drifted so both reads landed on tiny.
+        $app = new Application('phpdup', '0.1.0');
+        $app->add(new Command());
+        $tester = new CommandTester($app->find('analyze'));
+        $tester->execute([
+            'paths'       => [$corpus],
+            '--auto-tune' => true,
+            '--json'      => $dir . '/s25-tune-control.json',
+            '--no-cache'  => true,
+        ]);
+        self::assertStringContainsString('auto-tune: small corpus (220 files)', $tester->getDisplay(),
+            'the straddle exists: without the profile the public/ tree counts and the band flips');
+    }
+
     /**
      * @param array<string, mixed> $extra
      * @return array{0: int, 1: string} [exit, display]
@@ -914,6 +957,29 @@ final class ConfigLoaderTest extends TestCase
         }
         file_put_contents($dir . '/a.php', "<?php\nfunction s25_util(int \$n): int {\n    \$t = 0;\n    for (\$i = 0; \$i < \$n; \$i++) {\n        \$t += \$i;\n    }\n    return \$t;\n}\n");
         file_put_contents($dir . '/b.php', "<?php\nfunction s25_util2(int \$n): int {\n    \$t = 0;\n    for (\$i = 0; \$i < \$n; \$i++) {\n        \$t += \$i;\n    }\n    return \$t;\n}\n");
+
+        return $dir;
+    }
+
+    /**
+     * Band-straddle tree for the r1 MEDIUM-1 Command pin: $appFiles plain
+     * files at the root (counted by every posture) plus a public/-style
+     * tree the laravel profile excludes but Config::defaults() does not.
+     */
+    private function mintStraddleCorpus(string $dir, int $appFiles, int $publicFiles): string
+    {
+        if (!is_dir($dir)) {
+            mkdir($dir, 0o777, true);
+        }
+        for ($i = 0; $i < $appFiles; $i++) {
+            file_put_contents($dir . "/s25_app_$i.php", "<?php\nfunction s25_app_$i(int \$n): int { return \$n + $i; }\n");
+        }
+        if ($publicFiles > 0) {
+            mkdir($dir . '/public', 0o777, true);
+            for ($i = 0; $i < $publicFiles; $i++) {
+                file_put_contents($dir . "/public/s25_pub_$i.php", "<?php\nfunction s25_pub_$i(int \$n): int { return \$n + $i; }\n");
+            }
+        }
 
         return $dir;
     }

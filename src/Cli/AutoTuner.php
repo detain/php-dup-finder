@@ -8,8 +8,8 @@ use Phpdup\Scanning\FileScanner;
 /**
  * Auto-tunes detection parameters from a quick file-tree probe.
  *
- * Counts files and (rough-) total size before any AST work, then maps
- * the corpus shape to a small decision tree:
+ * Counts files before any AST work, then maps the corpus shape to a
+ * small decision tree:
  *
  *   - tiny     (<200 files)       — relaxed thresholds, surface fixtures
  *                                    and toy projects don't get drowned
