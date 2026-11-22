@@ -43,4 +43,60 @@ final class MinHashSignatureTest extends TestCase
             $this->assertSame(PHP_INT_MAX, $v);
         }
     }
+
+    /**
+     * Pin the documented integer-mix idiom (engine-S31a ledger row 8):
+     * two base hashes per element, row i = (h1 + i*h2) mod 2^32.
+     * Reverting to per-row string reseeding (the 128x cost trap) or
+     * changing either base-hash salt fails this pin.
+     */
+    public function testRowValuesFollowDocumentedIntMixIdiom(): void
+    {
+        foreach (['notify', 'a', 'updateOrInsert($x, $y)', 'x'] as $element) {
+            $h1 = crc32($element) & 0xFFFFFFFF;
+            $h2 = crc32($element . MinHashSignature::HASH_SALT) & 0xFFFFFFFF;
+            if ($h2 === 0) {
+                $h2 = MinHashSignature::ZERO_GUARD;
+            }
+            $expected = [];
+            for ($i = 0; $i < MinHashSignature::SIZE; $i++) {
+                $expected[$i] = ($h1 + $i * $h2) & 0xFFFFFFFF;
+            }
+            $this->assertSame($expected, MinHashSignature::compute([$element => 1]));
+        }
+    }
+
+    public function testSignatureValuesStayInThirtyTwoBitRange(): void
+    {
+        $bag = array_fill_keys(['g1', 'g2', 'g3', 'g4', 'g5', 'g6'], 1);
+        foreach (MinHashSignature::compute($bag) as $v) {
+            $this->assertIsInt($v);
+            $this->assertGreaterThanOrEqual(0, $v);
+            $this->assertLessThan(0x100000000, $v);
+        }
+    }
+
+    /**
+     * A single-element bag's signature is exactly its row walk, so the
+     * walk must never degenerate: with h2 > 0 masked-positive the 128
+     * rows of any element are pairwise distinct unless h2 | 2^32 has
+     * gcd > 2^25 — astronomically rare (disclosed 2^-25). Pin a batch
+     * of real-shaped gram keys to keep that disclosure honest.
+     */
+    public function testRowsAreDistinctForRepresentativeGramKeys(): void
+    {
+        foreach (['7f3a9c2b1d4e8801', '0000000000000000', 'notify', 'send', 'save'] as $element) {
+            $sig = MinHashSignature::compute([$element => 1]);
+            $this->assertCount(MinHashSignature::SIZE, array_unique($sig), $element);
+        }
+    }
+
+    public function testComputeIsDeterministicAcrossInvocations(): void
+    {
+        $bag = array_fill_keys(['p', 'q', 'r'], 3);
+        $this->assertSame(
+            MinHashSignature::compute($bag),
+            MinHashSignature::compute(array_flip(array_keys($bag)))
+        );
+    }
 }
