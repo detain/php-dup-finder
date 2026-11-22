@@ -11,6 +11,7 @@ use Phpdup\Refactor\HoleCoverage;
 use Phpdup\Refactor\PlacementAdvisor;
 use Phpdup\Util\Json;
 use Phpdup\Util\Num;
+use Phpdup\Util\Version;
 use PhpParser\Node;
 use PhpParser\PrettyPrinter\Standard as PrettyPrinter;
 
@@ -50,7 +51,7 @@ final class JsonReporter
     {
         $advisor = new PlacementAdvisor($report->config->paths);
         return [
-            'phpdup_version' => '0.1.0',
+            'phpdup_version' => Version::STRING,
             'schema_version' => JsonSchemaSpec::SCHEMA_VERSION,
             'summary' => [
                 'files'        => $report->files,

@@ -5,6 +5,7 @@ namespace Phpdup\Reporting;
 
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
+use Phpdup\Util\Version;
 
 /**
  * Checkstyle-format XML — consumed by countless CI integrations
@@ -29,7 +30,7 @@ final class CheckstyleReporter
         }
 
         $xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
-        $xml .= "<checkstyle version=\"phpdup-0.2.0\">\n";
+        $xml .= "<checkstyle version=\"phpdup-" . Version::STRING . "\">\n";
         foreach ($byFile as $file => $entries) {
             $xml .= sprintf("  <file name=\"%s\">\n", $this->escape($file));
             foreach ($entries as [$cluster, $member]) {

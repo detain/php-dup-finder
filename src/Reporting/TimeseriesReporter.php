@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Phpdup\Reporting;
 
 use Phpdup\Util\Json;
+use Phpdup\Util\Version;
 
 /**
  * Append-only JSONL: one summary row per analysis run.
@@ -67,7 +68,7 @@ final class TimeseriesReporter
         return [
             'timestamp'        => self::formatUtc($this->timestamp ?? time()),
             'commit_sha'       => $this->commitSha ?? $this->detectCommitSha($report),
-            'phpdup_version'   => '0.1.0',
+            'phpdup_version'   => Version::STRING,
             'files'            => $report->files,
             'blocks'           => $report->blocks,
             'parse_errors'     => $report->parseErrors,

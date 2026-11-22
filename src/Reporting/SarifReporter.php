@@ -7,6 +7,7 @@ use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
 use Phpdup\Util\Json;
 use Phpdup\Util\Num;
+use Phpdup\Util\Version;
 
 /**
  * SARIF 2.1.0 output for GitHub / GitLab PR annotations.
@@ -48,7 +49,7 @@ final class SarifReporter
                         'driver' => [
                             'name'           => 'phpdup',
                             'informationUri' => 'https://github.com/detain/php-dup-finder',
-                            'version'        => '0.2.0',
+                            'version'        => Version::STRING,
                             'rules'          => [
                                 [
                                     'id'   => 'phpdup/duplicate-logic',

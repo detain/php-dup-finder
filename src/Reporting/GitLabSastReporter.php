@@ -6,6 +6,7 @@ namespace Phpdup\Reporting;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
 use Phpdup\Util\Json;
+use Phpdup\Util\Version;
 
 /**
  * GitLab SAST report (schema v15.x).
@@ -34,14 +35,14 @@ final class GitLabSastReporter
             'scanner' => [
                 'id'      => 'phpdup',
                 'name'    => 'phpdup',
-                'version' => '0.2.0',
+                'version' => Version::STRING,
                 'vendor'  => ['name' => 'php-dup-finder'],
                 'url'     => 'https://github.com/detain/php-dup-finder',
             ],
             'analyzer' => [
                 'id'      => 'phpdup',
                 'name'    => 'phpdup',
-                'version' => '0.2.0',
+                'version' => Version::STRING,
                 'vendor'  => ['name' => 'php-dup-finder'],
             ],
             'type'      => 'sast',
