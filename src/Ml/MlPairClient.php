@@ -5,6 +5,7 @@ namespace Phpdup\Ml;
 
 use JsonException;
 use Phpdup\Extraction\Block;
+use Phpdup\Util\Http;
 
 /**
  * HTTP client for an external **pair-similarity** ML scoring
@@ -96,7 +97,11 @@ use Phpdup\Extraction\Block;
  * 198.18.0.0/15, multicast/reserved) stay refused either way. The
  * transports pin the checked addresses and cap response bodies per
  * engine-S19b (see {@see MlClient::curlPinEntries()} / {@see
- * MlClient::pinnedStreamRequest()} and MAX_RESPONSE_BYTES). Callers
+ * MlClient::pinnedStreamRequest()} and MAX_RESPONSE_BYTES); since
+ * once-S89 both Ml clients run their POST legs through the single
+ * shared transport in {@see \Phpdup\Util\Http}, so the curl/stream
+ * mechanics that had drifted apart between the twins cannot drift
+ * again. Callers
  * wanting tighter policy should prefilter the URL.
  *
  * **Per-instance economics (engine-S21, php-dup-finder-engine-032)**
@@ -762,7 +767,9 @@ final class MlPairClient implements PairScorer
      * any transport-level failure, non-2xx HTTP response, pinning
      * refusal, or a response larger than MlClient::MAX_RESPONSE_BYTES.
      * The pinning and cap policy is shared with MlClient (engine-S19b)
-     * so the two transports cannot drift.
+     * and since once-S89 the transport MECHANICS are too — both seam
+     * methods below are thin delegations onto Util\Http, this client
+     * contributing its fork-guarded reused handle (engine-S21).
      *
      * @param array{host: string, port: int, addresses: list<string>} $decision
      * @return string|null Raw response body, or null on transport error or non-2xx response.
@@ -775,160 +782,47 @@ final class MlPairClient implements PairScorer
     }
 
     /**
+     * curl seam: pin-computation policy via MlClient (engine-S19b),
+     * transport mechanics via Util\Http, connection economics via the
+     * one shared handle below (engine-S21 keep-alive).
+     *
      * @param array{host: string, port: int, addresses: list<string>} $decision
      */
     private function postJsonCurl(string $url, string $body, array $decision): ?string
     {
-        $pins = MlClient::curlPinEntries($decision);
-        if ($pins === null) {
-            return null;
-        }
-        // engine-S21 (php-dup-finder-engine-032): one handle per client
-        // instance — the second..Nth pair on the serial path rides the
-        // keep-alive connection the first one established. Every
-        // per-request option below is re-applied on every call, so no
-        // request state (URL, body, write-callback binding) bleeds
-        // forward; the only option that could persist is
-        // CURLOPT_RESOLVE, and the memoized decision pins the SAME
-        // host:port for the instance's whole life, so its entries
-        // cannot drift to a second authority.
         $ch = $this->sharedCurlHandle();
         if ($ch === null) {
             return null;
         }
-        // engine-015 (write-callback cap): the callback owns response
-        // collection and aborts the transfer (CURLE_WRITE_ERROR) the
-        // moment the body would cross the bound — no RETURNTRANSFER
-        // buffering, so a hostile sidecar cannot balloon this worker's
-        // RSS.
-        $buffer     = '';
-        $overflowed = false;
-        $opts       = [
-            CURLOPT_URL            => $url,
-            CURLOPT_POST           => true,
-            CURLOPT_POSTFIELDS     => $body,
-            CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
-            CURLOPT_TIMEOUT        => $this->timeoutSec,
-            CURLOPT_CONNECTTIMEOUT => $this->timeoutSec,
-            CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_PROTOCOLS      => CURLPROTO_HTTP | CURLPROTO_HTTPS,
-            CURLOPT_WRITEFUNCTION  => function (\CurlHandle $handle, string $chunk) use (&$buffer, &$overflowed): int {
-                if (strlen($chunk) > MlClient::MAX_RESPONSE_BYTES - strlen($buffer)) {
-                    $overflowed = true;
-                    return 0;
-                }
-                $buffer .= $chunk;
-                return strlen($chunk);
-            },
-        ];
-        // engine-012(c) (pin): preload the DNS cache with the gate-
-        // checked records so connect resolves nothing on its own.
-        if ($pins !== []) {
-            $opts[CURLOPT_RESOLVE] = $pins;
-        }
-        // CI-85: no curl_close — deprecated in PHP 8.5 and a no-op
-        // since 8.0 (the handle closes on GC), which is why the
-        // try/finally that carried only that call is gone too. Since
-        // engine-S21 the handle outlives a single exec: GC closes it
-        // when the client instance is dropped.
-        curl_setopt_array($ch, $opts);
-        $ok       = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        if ($ok !== true || $overflowed) {
-            return null;
-        }
-        if ($httpCode < 200 || $httpCode >= 300) {
-            return null;
-        }
-        return $buffer;
+        return Http::curlPost($url, $body, MlClient::curlPinEntries($decision), $ch, $this->timeoutSec, MlClient::MAX_RESPONSE_BYTES);
     }
 
     /**
+     * stream seam: rewrite policy via MlClient::pinnedStreamRequest(),
+     * transport mechanics — including the PHP-version split and the
+     * LegacyStreamPost isolation that keeps the deprecated magic-
+     * variable COMPILED read out of every file loaded on >= 8.5 (the
+     * CI-85 leg-5 lesson, and the divergence php-dup-finder-once-112
+     * caught between the twins) — live once in Util\Http::streamPost().
+     *
      * @param array{host: string, port: int, addresses: list<string>} $decision
      */
     private function postJsonStream(string $url, string $body, array $decision): ?string
     {
-        $pin = MlClient::pinnedStreamRequest($url, $decision);
-        if ($pin === null) {
-            return null;
-        }
-        $ctxOpts = [
-            'http' => [
-                'method'          => 'POST',
-                'header'          => $pin['header'],
-                'content'         => $body,
-                'timeout'         => $this->timeoutSec,
-                'ignore_errors'   => true,
-                'follow_location' => 0,
-            ],
-        ];
-        if ($pin['peer_name'] !== null) {
-            $ctxOpts['ssl'] = ['peer_name' => $pin['peer_name']];
-        }
-        $ctx = stream_context_create($ctxOpts);
-        if (function_exists('http_get_last_response_headers')) {
-            // PHP >= 8.5 path: http_get_last_response_headers() replaces the
-            // deprecated $http_response_header magic variable.
-            $fh = @fopen($pin['url'], 'r', false, $ctx);
-            if ($fh === false) {
-                return null;
-            }
-            // engine-015 (bounded read): pull at most MAX_RESPONSE_BYTES + 1
-            // bytes; a longer body is refused without ever being buffered
-            // whole. fopen+stream_get_contents replaces file_get_contents
-            // purely to pass that length bound — the request itself is the
-            // same wrapper operation.
-            $resp = stream_get_contents($fh, MlClient::MAX_RESPONSE_BYTES + 1);
-            fclose($fh);
-            if ($resp === false) {
-                return null;
-            }
-            $headers = (array) http_get_last_response_headers();
-        } else {
-            // PHP < 8.5 path via LegacyStreamPost. The magic variable MUST
-            // NOT be mentioned anywhere in this file: PHP 8.5 deprecates
-            // the COMPILED mention itself, so a literal in the never-taken
-            // ternary branch still fires on every class load (CI-85 leg 5
-            // — MlPairClientTest::testEmptyBaseUrlReturnsNull trips it
-            // without executing the statement), while a variable-variable
-            // read cannot see it at all (the wrapper materialises the
-            // symbol only for direct compiled reads — proven red by
-            // testPinnedStreamTransportConnectsCheckedIpWithoutResolver).
-            // This class is referenced solely below, inside the branch that
-            // can never execute on >= 8.5, so PSR-4 lazy loading keeps the
-            // literal out of every 8.5 opcache: on 8.3/8.4 the identical
-            // fopen+read happens inside the helper's own scope.
-            [$resp, $headers] = LegacyStreamPost::post(
-                $pin['url'],
-                $ctxOpts,
-                MlClient::MAX_RESPONSE_BYTES + 1
-            );
-            if ($resp === null) {
-                return null;
-            }
-        }
-        $httpCode = $this->parseStatusCode($headers);
-        if ($httpCode < 200 || $httpCode >= 300) {
-            return null;
-        }
-        if (strlen($resp) > MlClient::MAX_RESPONSE_BYTES) {
-            return null;
-        }
-        return $resp;
+        return Http::streamPost(MlClient::pinnedStreamRequest($url, $decision), $body, $this->timeoutSec, MlClient::MAX_RESPONSE_BYTES);
     }
 
     /**
-     * Extract HTTP status code from a $http_response_header array.
+     * @internal retained as the thin delegate MlPairClientTest's
+     *           reflection pin (engine era, parseStatusCode matrix)
+     *           reaches; the parsing lives once in Util\Http
+     *           (once-S89).
      *
      * @param array<string> $headers
+     * @phpstan-ignore method.unused (deliberately retained reflection seam, reached only from tests)
      */
     private function parseStatusCode(array $headers): int
     {
-        foreach ($headers as $h) {
-            if (preg_match('/^HTTP\/[\d.]+\s+(\d{3})/', $h, $m)) {
-                return (int)$m[1];
-            }
-        }
-        return 0;
+        return Http::parseStatusCode($headers);
     }
 }

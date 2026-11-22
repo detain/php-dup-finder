@@ -5,6 +5,7 @@ namespace Phpdup\Ml;
 
 use JsonException;
 use Phpdup\Clustering\Cluster;
+use Phpdup\Util\Http;
 
 /**
  * HTTP client for an external ML scoring service.
@@ -55,7 +56,9 @@ use Phpdup\Clustering\Cluster;
  * first checked address, carries the original authority in an explicit
  * Host header, and keeps https certificate identity via ssl.peer_name.
  * Response bodies are capped at MAX_RESPONSE_BYTES on both transports
- * (curl write-callback abort; stream bounded read). Callers that need a
+ * (curl write-callback abort; stream bounded read). The two legs run
+ * through the shared Util\Http transport (once-S89), so this client and
+ * MlPairClient can no longer drift transport code. Callers that need a
  * tighter policy (e.g. only specific hostnames) can still prefilter the
  * URL before constructing the client.
  *
@@ -269,7 +272,8 @@ final class MlClient
      * checked addresses (engine-012 hole c) and the response size caps
      * (engine-015) — are enforced by the consumers of {@see
      * MlClient::gateUrl()}: curlPinEntries() / pinnedStreamRequest()
-     * feed the two postJson transports (engine-S19b).
+     * feed the shared Util\Http transport (engine-S19b, twins collapsed
+     * by once-S89).
      */
     public static function isAllowedUrl(string $url): bool
     {
@@ -595,131 +599,47 @@ final class MlClient
     }
 
     /**
+     * curl seam: this client dials once per cluster, so it uses the
+     * shared transport with a fresh handle per call (null handle — the
+     * pair client's keep-alive reuse economics, engine-S21, would buy
+     * nothing here; see the class docblock).
+     *
      * @param array{host: string, port: int, addresses: list<string>} $decision
      */
     private function postJsonCurl(string $url, string $body, array $decision): ?string
     {
-        $pins = self::curlPinEntries($decision);
-        if ($pins === null) {
-            return null;
-        }
-        $ch = curl_init();
-        if ($ch === false) {
-            return null;
-        }
-        // engine-015 (write-callback cap): the callback owns response
-        // collection and aborts the transfer (CURLE_WRITE_ERROR) the
-        // moment the body would cross the bound — no RETURNTRANSFER
-        // buffering, so a hostile sidecar cannot balloon this worker's
-        // RSS.
-        $buffer     = '';
-        $overflowed = false;
-        $opts       = [
-            CURLOPT_URL            => $url,
-            CURLOPT_POST           => true,
-            CURLOPT_POSTFIELDS     => $body,
-            CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
-            CURLOPT_TIMEOUT        => $this->timeoutSec,
-            CURLOPT_CONNECTTIMEOUT => $this->timeoutSec,
-            // Refuse silly redirects to file:// / gopher:// / ftp://
-            // — only http(s) on the original request is allowed.
-            CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_PROTOCOLS      => CURLPROTO_HTTP | CURLPROTO_HTTPS,
-            CURLOPT_WRITEFUNCTION  => function (\CurlHandle $handle, string $chunk) use (&$buffer, &$overflowed): int {
-                if (strlen($chunk) > self::MAX_RESPONSE_BYTES - strlen($buffer)) {
-                    $overflowed = true;
-                    return 0;
-                }
-                $buffer .= $chunk;
-                return strlen($chunk);
-            },
-        ];
-        // engine-012(c) (pin): preload the DNS cache with the gate-
-        // checked records so connect resolves nothing on its own.
-        if ($pins !== []) {
-            $opts[CURLOPT_RESOLVE] = $pins;
-        }
-        // CI-85: no curl_close — deprecated in PHP 8.5 and a no-op
-        // since 8.0 (the handle closes on GC), which is why the
-        // try/finally that carried only that call is gone too.
-        curl_setopt_array($ch, $opts);
-        $ok       = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        if ($ok !== true || $overflowed) {
-            return null;
-        }
-        if ($httpCode < 200 || $httpCode >= 300) {
-            return null;
-        }
-        return $buffer;
+        return Http::curlPost($url, $body, self::curlPinEntries($decision), null, $this->timeoutSec, self::MAX_RESPONSE_BYTES);
     }
 
     /**
+     * stream seam (engine-S19b pinning + engine-015 cap live in the
+     * shared Util\Http leg — once-S89 collapsed this with the pair
+     * client's twin and fixed the divergence the collapse exposed: this
+     * file used to read the $http_response_header magic variable in a
+     * never-taken ternary, and PHP 8.5 flags the COMPILED mention at
+     * class load regardless (CI-85 leg 5 — the pair client alone had
+     * received that fix). One correct stream leg now serves both
+     * clients; the helper-isolated pre-8.5 read moved to Http too, and
+     * a token census in tests/Unit/Util/HttpTest.php pins that no
+     * transport file compiles the mention again.
+     *
      * @param array{host: string, port: int, addresses: list<string>} $decision
      */
     private function postJsonStream(string $url, string $body, array $decision): ?string
     {
-        $pin = self::pinnedStreamRequest($url, $decision);
-        if ($pin === null) {
-            return null;
-        }
-        $ctxOpts = [
-            'http' => [
-                'method'          => 'POST',
-                'header'          => $pin['header'],
-                'content'         => $body,
-                'timeout'         => $this->timeoutSec,
-                'ignore_errors'   => true,
-                'follow_location' => 0,
-            ],
-        ];
-        if ($pin['peer_name'] !== null) {
-            $ctxOpts['ssl'] = ['peer_name' => $pin['peer_name']];
-        }
-        $ctx = stream_context_create($ctxOpts);
-        $fh  = @fopen($pin['url'], 'r', false, $ctx);
-        if ($fh === false) {
-            return null;
-        }
-        // engine-015 (bounded read): pull at most MAX_RESPONSE_BYTES + 1
-        // bytes; a longer body is refused without ever being buffered
-        // whole. fopen+stream_get_contents replaces file_get_contents
-        // purely to pass that length bound — the request itself is the
-        // same wrapper operation.
-        $resp = stream_get_contents($fh, self::MAX_RESPONSE_BYTES + 1);
-        fclose($fh);
-        if ($resp === false) {
-            return null;
-        }
-        // CI-85: PHP 8.5 deprecates the $http_response_header magic-
-        // variable read; http_get_last_response_headers() replaces it.
-        // On 8.3/8.4 the function does not exist and the legacy branch
-        // runs byte-identical to the old code.
-        $headers  = function_exists('http_get_last_response_headers')
-            ? (array) http_get_last_response_headers()
-            : $http_response_header;
-        $httpCode = $this->parseStatusCode($headers);
-        if ($httpCode < 200 || $httpCode >= 300) {
-            return null;
-        }
-        if (strlen($resp) > self::MAX_RESPONSE_BYTES) {
-            return null;
-        }
-        return $resp;
+        return Http::streamPost(self::pinnedStreamRequest($url, $decision), $body, $this->timeoutSec, self::MAX_RESPONSE_BYTES);
     }
 
     /**
-     * Extract HTTP status code from a $http_response_header array.
+     * @internal retained as the thin delegate MlClientTest's reflection
+     *           pin (engine era, parseStatusCode matrix) reaches; the
+     *           parsing itself lives once in Util\Http (once-S89).
      *
      * @param array<string> $headers
+     * @phpstan-ignore method.unused (deliberately retained reflection seam, reached only from tests)
      */
     private function parseStatusCode(array $headers): int
     {
-        foreach ($headers as $h) {
-            if (preg_match('/^HTTP\/[\d.]+\s+(\d{3})/', $h, $m)) {
-                return (int)$m[1];
-            }
-        }
-        return 0;
+        return Http::parseStatusCode($headers);
     }
 }
