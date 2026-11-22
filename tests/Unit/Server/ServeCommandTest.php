@@ -333,6 +333,65 @@ final class ServeCommandTest extends TestCase
         $this->assertGreaterThan($guard, $sigTerm);
     }
 
+    public function testSignalWiringRidesTheRealCallSites(): void
+    {
+        // shell-S03 r1 (n-3): the install/spawn-env/exit-literal legs were
+        // probe-only. Same pattern as the dispatch pin — positional
+        // inspection of ServeCommand.php, deterministic even where killing
+        // a live daemon is impractical. The live probes stay as the
+        // behavioral half; this closes them at unit level.
+        $src = (string)file_get_contents(
+            (new \ReflectionClass(ServeCommand::class))->getFileName()
+        );
+
+        // (1) execute() installs the handlers BEFORE the worker spawn: a
+        // Ctrl-C during the socket wait must already ride the reap path.
+        $execStart = strpos($src, 'protected function execute(InputInterface');
+        $loopStart = strpos($src, 'while (is_resource($server))');
+        $this->assertIsInt($execStart, 'execute() must exist');
+        $this->assertIsInt($loopStart, 'the accept loop must exist');
+        $upToLoop = substr($src, $execStart, $loopStart - $execStart);
+        $install = strpos($upToLoop, '$this->installSignalHandlers();');
+        $spawn = strpos($upToLoop, '$this->spawnWorker(');
+        $this->assertIsInt($install, 'execute() must call installSignalHandlers()');
+        $this->assertIsInt($spawn, 'execute() must spawn the worker');
+        $this->assertLessThan($spawn, $install, 'handlers must be installed before the spawn');
+
+        // (2) the spawn hands proc_open the merged worker environment — the
+        // PHPDUP_SERVE_PID token's ONLY route to the worker.
+        $spawnStart = strpos($src, 'private function spawnWorker(');
+        $this->assertIsInt($spawnStart);
+        $spawnBody = substr($src, $spawnStart, (int)strpos($src, "\n    }", $spawnStart) - $spawnStart);
+        $procOpen = strpos($spawnBody, 'proc_open(');
+        $envArg = strpos($spawnBody, 'self::workerEnvironment()');
+        $this->assertIsInt($procOpen, 'spawnWorker must proc_open the worker');
+        $this->assertIsInt($envArg, 'the spawn must pass self::workerEnvironment()');
+        $this->assertGreaterThan($procOpen, $envArg, 'the environment must ride the proc_open call');
+
+        // (3) the documented number itself: SIGNAL_EXIT_CODE is literally
+        // 130, and the handler exits THROUGH the constant — the seam-based
+        // assertSame against the same constant alone is a tautology that
+        // survives a value change, so the literal is pinned in source.
+        $this->assertMatchesRegularExpression(
+            '/const SIGNAL_EXIT_CODE = 130;/',
+            $src,
+            'signal death must exit 130 (128+SIGINT) for both signals'
+        );
+        $termStart = strpos($src, 'private function terminateOnSignal(');
+        $this->assertIsInt($termStart);
+        $termBody = substr($src, $termStart, (int)strpos($src, "\n    }", $termStart) - $termStart);
+        $this->assertStringContainsString(
+            'exit(self::SIGNAL_EXIT_CODE);',
+            $termBody,
+            'the unseamed handler must exit through the pinned constant'
+        );
+        $this->assertStringContainsString(
+            '$terminator(self::SIGNAL_EXIT_CODE)',
+            $termBody,
+            'the test seam must receive the same pinned code as the real exit'
+        );
+    }
+
     public function testInstalledHandlersTerminateSelfSentSignalsWith130(): void
     {
         // End-to-end for the install leg itself: after
@@ -391,11 +450,21 @@ final class ServeCommandTest extends TestCase
         file_put_contents($socketPath, '');
         (new \ReflectionProperty(ServeCommand::class, 'workerSocket'))->setValue($command, $socketPath);
 
-        // A real sleep child stands in for the spawned worker so the
-        // proc_terminate leg is genuinely exercised.
-        $proc = proc_open(['sleep', '20'], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        // A real worker TREE stands in for the spawn (shell-S03 r1, m-2):
+        // string spawn puts an sh wrapper in front — the production shape
+        // — and a FOREGROUND non-last command keeps the wrapper WAITING
+        // on a live child, so cleanupWorker's workerTreePids leg is
+        // genuinely hunted. Foreground matters: POSIX (and dash obeys)
+        // forces SIG_IGN on INT/QUIT for `&`-backgrounded jobs, which
+        // would vaccine the child against the very leg pinned here —
+        // the production worker rides the foreground, default
+        // disposition. The barrier pins the child's existence BEFORE the
+        // signal lands: racing it is exactly what let the old childless
+        // fixture pass without exercising the loop.
+        $proc = proc_open('sleep 20; true', [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
         $this->assertIsResource($proc);
         $workerPid = proc_get_status($proc)['pid'];
+        $childPid = $this->waitChildSpawned($workerPid, ['sleep', '20']);
         (new \ReflectionProperty(ServeCommand::class, 'workerProcess'))->setValue($command, $proc);
 
         $codes = [];
@@ -413,13 +482,15 @@ final class ServeCommandTest extends TestCase
         // No fclose($pipes): cleanupWorker's proc_close() already closed the
         // parent-side descriptors — a second close would only double-free.
 
-        // The worker child is terminated + reaped (proc_close inside
-        // cleanupWorker), so the pid is no longer a live process.
-        $deadline = microtime(true) + 2.0;
-        while (microtime(true) < $deadline && @posix_kill($workerPid, 0)) {
-            usleep(20000);
+        // Wrapper reaped by proc_close, and the REAL child gone too: the
+        // tree hunt is the only leg that kills the child before the
+        // wrapper dies, so with the workerTreePids SIGINT loop removed,
+        // the orphaned sleep outlives cleanup and the second assertion
+        // goes red — in every run order (M-1/m-2).
+        $this->assertTreePidReaped($workerPid, 'the wrapper holding the worker');
+        if ($childPid !== null) {
+            $this->assertTreePidReaped($childPid, 'the worker child behind the wrapper');
         }
-        $this->assertFalse(@posix_kill($workerPid, 0), 'signal shutdown must reap the worker child');
     }
 
     public function testWorkerSelfExitsWhenItsParentIsReparented(): void
@@ -427,8 +498,11 @@ final class ServeCommandTest extends TestCase
         // Real run()-loop exit: the probe says "spawn parent 100", then
         // the kernel-equivalent reparent to 1 → run() returns on the very
         // first poll (no blocking accept) and unlinks the socket file the
-        // dead parent's cleanup could never remove. The probe self-destructs
-        // the test (instead of hanging CI) if the loop ever ignores it.
+        // dead parent's cleanup could never remove. The probe
+        // self-destructs the test if a dead verdict INSIDE
+        // parentHasDied() is ever ignored; removing the run-loop call
+        // site instead surfaces as a plain harness timeout, not a
+        // self-destruct (shell-S03 r1, n-4 honesty).
         $socketPath = sys_get_temp_dir() . '/phpdup-s03-orphan-' . uniqid() . '.sock';
         $calls = 0;
         $pids = [100, 1];
@@ -539,6 +613,145 @@ final class ServeCommandTest extends TestCase
         return @posix_kill($candidate, 0) ? null : $candidate;
     }
 
+    // ------------------------------------------------------------------
+    // shell-S03 r1 (M-1/m-2): spawn barriers + liveness helpers for the
+    // reap fixtures. A signal sent before dash finishes installing its
+    // trap (or before the wrapper forks its child) lands on a default
+    // disposition and the reap passes VACUOUSLY — the race the r1 review
+    // measured (0.26 s warm-vacuous vs 1.23 s pinned stubborn path). The
+    // barriers read /proc and block until the fixture has really settled
+    // into the shape the reap is meant to hunt; liveness checks treat a
+    // not-yet-adopted zombie as dead (a reaped grandchild is inherited
+    // and reaped by init, not by this test — kill(pid,0) still succeeds
+    // on the zombie, so raw liveness would race adoption).
+    // ------------------------------------------------------------------
+
+    /**
+     * Exact argv list of a pid per /proc, or null when unreadable.
+     *
+     * @return list<string>|null
+     */
+    private function procArgv(int $pid): ?array
+    {
+        $raw = @file_get_contents("/proc/{$pid}/cmdline");
+        if ($raw === false) {
+            return null;
+        }
+
+        return $raw === '' ? [] : explode("\0", rtrim($raw, "\0"));
+    }
+
+    /**
+     * Block until /proc reports $pid carrying exactly $argv. `trap ""
+     * INT; exec sleep 30` only ignores SIGINT once the exec has replaced
+     * dash (ignored dispositions survive execve), so observing argv
+     * [sleep, 30] is the deterministic proof the stubborn path is armed.
+     * Linux fails loud when the exec never settles; a box without /proc
+     * degrades to a short grace (macOS posture, best-effort).
+     *
+     * @param list<string> $argv
+     */
+    private function waitSpawnSettled(int $pid, array $argv, float $timeoutSeconds = 5.0): bool
+    {
+        if (!is_dir('/proc')) {
+            usleep(200000);
+            return false;
+        }
+        $deadline = microtime(true) + $timeoutSeconds;
+        while (microtime(true) < $deadline) {
+            if ($this->procArgv($pid) === $argv) {
+                return true;
+            }
+            usleep(10000);
+        }
+        $this->fail('spawn barrier: pid ' . $pid . ' never became [' . implode(' ', $argv)
+            . '] — the reap fixture would pass vacuously');
+    }
+
+    /**
+     * Direct children of $ppid per the Linux task-children file.
+     *
+     * @return list<int>
+     */
+    private function procChildren(int $ppid): array
+    {
+        $listed = @file_get_contents("/proc/{$ppid}/task/{$ppid}/children");
+        if ($listed === false) {
+            return [];
+        }
+        $pids = [];
+        foreach (preg_split('/\s+/', trim($listed)) ?: [] as $token) {
+            if ($token !== '' && ctype_digit($token)) {
+                $pids[] = (int)$token;
+            }
+        }
+
+        return $pids;
+    }
+
+    /**
+     * Block until the wrapper $ppid has a DIRECT child with exactly
+     * $argv, and return that child's pid (m-2: the workerTreePids SIGINT
+     * leg needs a real child to hunt). Linux fails loud when the child
+     * never appears; without /proc there is nothing to pin — null lets
+     * the caller run the wrapper-only shape.
+     *
+     * @param list<string> $argv
+     */
+    private function waitChildSpawned(int $ppid, array $argv, float $timeoutSeconds = 5.0): ?int
+    {
+        if (!is_dir('/proc')) {
+            usleep(200000);
+            return null;
+        }
+        $deadline = microtime(true) + $timeoutSeconds;
+        while (microtime(true) < $deadline) {
+            foreach ($this->procChildren($ppid) as $pid) {
+                if ($this->procArgv($pid) === $argv) {
+                    return $pid;
+                }
+            }
+            usleep(10000);
+        }
+        $this->fail('spawn barrier: wrapper ' . $ppid . ' never forked [' . implode(' ', $argv)
+            . '] — the tree hunt would pass vacuously');
+    }
+
+    /**
+     * Dead = the pid is gone, or only a zombie awaiting its (init-side)
+     * reaper remains.
+     */
+    private function pidIsDead(int $pid): bool
+    {
+        if (!@posix_kill($pid, 0)) {
+            return true;
+        }
+        $stat = @file_get_contents("/proc/{$pid}/stat");
+        if ($stat === false) {
+            return true;
+        }
+        $close = strrpos($stat, ')');
+        if ($close === false) {
+            return false;
+        }
+        $fields = preg_split('/\s+/', trim(substr($stat, $close + 1))) ?: [];
+
+        return ($fields[0] ?? '') === 'Z';
+    }
+
+    /**
+     * Pid-liveness assertion after cleanup, bounded poll until the tree
+     * member is dead-or-reaped (never a blocking wait).
+     */
+    private function assertTreePidReaped(int $pid, string $what): void
+    {
+        $deadline = microtime(true) + 2.0;
+        while (microtime(true) < $deadline && !$this->pidIsDead($pid)) {
+            usleep(20000);
+        }
+        $this->assertTrue($this->pidIsDead($pid), 'signal shutdown must reap ' . $what);
+    }
+
     public function testWorkerRunsThroughEnvTokenAndSelfExitsOnDaemonDeath(): void
     {
         // The full production signal for the -9 acceptance leg: a dead
@@ -603,6 +816,18 @@ final class ServeCommandTest extends TestCase
         $this->assertIsResource($proc);
         $pid = proc_get_status($proc)['pid'];
 
+        // M-1 race fix: block until the exec has landed. Before that, the
+        // wrapper still owns a DEFAULT SIGINT disposition — a signal sent
+        // that early dies instantly and the test would pass WITHOUT ever
+        // reaching the SIGKILL escalation (measured: 0.26 s vacuous in
+        // combined runs vs 1.23 s on the pinned stubborn path). argv
+        // [sleep, 30] proves the SIG_IGN trap is in force (ignored
+        // dispositions survive execve), so the INT grace MUST expire and
+        // the escalation arm is exercised deterministically in every
+        // run order. The elapsed lower bound below is the anti-vacuity
+        // assertion itself: <1 s can only mean the stubborn path skipped.
+        $this->waitSpawnSettled($pid, ['sleep', '30']);
+
         $command = new ServeCommand();
         $captured = null;
         $command->signalTerminator = static function (int $code) use (&$captured): void {
@@ -615,12 +840,17 @@ final class ServeCommandTest extends TestCase
         $elapsed = microtime(true) - $start;
 
         $this->assertSame(ServeCommand::SIGNAL_EXIT_CODE, $captured);
+        $this->assertGreaterThanOrEqual(
+            1.0,
+            $elapsed,
+            'the pinned stubborn path must spend the full SIGINT grace — a faster cleanup means the escalation was never reached'
+        );
         $this->assertLessThan(
             4.0,
             $elapsed,
             'cleanup must escalate to SIGKILL instead of blocking proc_close forever'
         );
-        $this->assertFalse(@posix_kill($pid, 0), 'the stubborn worker tree must be gone after cleanup');
+        $this->assertTreePidReaped($pid, 'the stubborn worker tree');
     }
 
     // ------------------------------------------------------------------
