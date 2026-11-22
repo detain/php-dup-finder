@@ -7,26 +7,104 @@
 #     git -C <repo> archive <commit> <subdir> | tar -x -C <tmpdir-outside-repo>
 # NEVER `git worktree add`, NEVER `git checkout` inside these corpora.
 #
-# Capture date: 2026-11-21 (WAVE-1 BENCH lane). Re-verify recipe: §"verification" lines per block.
+# Enforcement law (once-S86 / php-dup-finder-once-108): these digests are
+# BINDING, not advisory. bench/corpora.php compares every digest it can see
+# AT MATERIALIZE TIME — and re-compares cached trees on every run, so a
+# stale copy cannot be silently reused. A mismatch FAILS materialization
+# (exit 1). Refreshing a pin = re-deriving it with the block's recipe and
+# committing the new value. Unpinned corpora/downloads are refused.
+# File-list digests are locale-independent: sha256 of the LC_ALL=C
+# byte-sorted, newline-terminated relative paths (PHP: usort strcmp).
+#
+# Capture dates: 2026-11-21 (WAVE-1 BENCH lane); 2026-11-22 (once-S86
+# enforcement + re-pins below). Re-verify recipe: §"verification" lines per block.
 
 [reports]
 # Ground-truth source documents. Extraction adapters parse EXACTLY these bytes.
-home-my-refactor      = /home/my/refactor.md                    425580 B  sha256:8d1a98f6e7f2af4cba262469f8d717c49aa2499cfa17951b2753ce09bf0b193f
+# home-my-refactor RE-PINNED 2026-11-22 (once-S86): the 2026-11-21 line
+# (425580 B / 8d1a98f6e7f2af4cba262469f8d717c49aa2499cfa17951b2753ce09bf0b193f)
+# had silently rotted — the file is a moving doc; measured on disk 2026-11-22:
+# 561172 B / 32c21348… (the stale-pin finding value PDB-07 recorded). If a
+# digest check fails, review the new bytes, then refresh this line.
+home-my-refactor      = /home/my/refactor.md                    561172 B  sha256:32c213480f69fda51cf23608d780c5aaa50ddfe204a2daa0d90591be85dc9c75
 phlix-refactor        = /home/sites/phlix/refactor.md           271795 B  sha256:c15c23e0e23c56ec20335ea57b77e1621486c4f932989cf8866e1c130d207529
+
+[bench-tools]
+# Third-party benchmark competitors fetched by bench/run-all.sh. The phar is
+# verified at fetch AND on every cached reuse; a digest mismatch aborts.
+# jscpd is installed by EXACT version with npm --ignore-scripts (no floating
+# major, no lifecycle script execution).
+phpcpd-version  = 6.0.3
+phpcpd-url      = https://phar.phpunit.de/phpcpd-6.0.3.phar
+phpcpd-sha256   = 2cbaea7cfda1bb4299d863eb075e977c3f49055dd16d88529fae5150d48a84cb
+jscpd-npm       = 4.3.0
+# verification (phpcpd): curl -sL <phpcpd-url> | sha256sum
+
+[synthetic-fuzz]
+# The bench planter (bench/corpora.php generateSynthetic) is deterministic;
+# the committed ground truth and the planted corpus are byte-pinned here, so
+# planter drift vs the committed manifest fails materialization loudly
+# instead of silently zero-scoring the benchmark.
+ground-truth-sha256    = 8566e533540349c845dbf2440ab0052ac2b29da92a0e110c9c1bf1599f3d0582
+php-files              = 24
+php-filelist-sha256    = ac24fe316cba52e2535a0383682443f253168784468c350d4da80578a81498f3
+php-content-sha256     = 1a3a83920a5977f07ebbc3d775768b8fec006ca73aa644b13a599debd9318297
+# verification:
+#   cd bench/corpora/synthetic-fuzz
+#   sha256sum .ground-truth.json
+#   find . -type f -name '*.php' | sed 's|^\./||' | LC_ALL=C sort | sha256sum
+#   for f in $(find . -type f -name '*.php' | sed 's|^\./||' | LC_ALL=C sort); do printf '%s\n' "$f"; cat "$f"; done | sha256sum
+
+[oss-symfony-console]
+url                 = https://github.com/symfony/console.git
+tag                 = v6.4.0
+commit              = cd9864b47c367450e14ab32f78fdbf98c44c26b6
+sparse              = -
+php-files           = 252
+php-filelist-sha256 = 3615baf85a4a15e72157d2be0dd3e268184a1627185ad35d12ef812b83206fbc
+# verification: git ls-remote <url> 'refs/tags/v6.4.0^{}' == commit; then
+#   find bench/corpora/symfony-console -type f -name '*.php' -printf '%P\n' | LC_ALL=C sort | sha256sum
+
+[oss-phpunit]
+url                 = https://github.com/sebastianbergmann/phpunit.git
+tag                 = 11.5.0
+commit              = 0569902506a6c0878930b87ea79ec3b50ea563f7
+sparse              = src
+php-files           = 920
+php-filelist-sha256 = ea5c039564dab22cc8690a5b654a3db615e3e17a92632577c260354fca327bed
+# verification: same recipe, paths relative to the materialized corpus root
+
+[oss-laravel-framework-illuminate-http]
+url                 = https://github.com/laravel/framework.git
+tag                 = v11.0.0
+commit              = 6089f679d6d29e6071a6448ed5e96de02e57fedb
+sparse              = src/Illuminate/Http
+php-files           = 50
+php-filelist-sha256 = c694a6f20b944382d85135d0d9686307608b54461b487c361152fe574ab9f59a
+# verification: same recipe, paths relative to the materialized corpus root
+
+[oss-wordpress-core-wp-includes]
+url                 = https://github.com/WordPress/WordPress.git
+tag                 = 6.4.2
+commit              = 0730353098a9e36a319695d1f28c122361e4aef7
+sparse              = wp-includes
+php-files           = 715
+php-filelist-sha256 = 65b2dfd5ce3bcade488a49b2ed5e824604fdd527610c1e79488f9f924e98b934
+# verification: same recipe, paths relative to the materialized corpus root
 
 [phlix-server]
 repo                = /home/sites/phlix/phlix-server
 scan-commit         = 375f79924367c826836ec9eaa347c87c1c369fed   # doc §6.1 pin; present locally, verified via cat-file -t commit
 src-php-files       = 796                                        # doc §3.2/Appendix A claim: 796 — EXACT MATCH
-src-filelist-sha256 = 86f6c4eec096bb6ee8a3a6cf2e18580438326b7fc839d48163d901356bf04d5f   # sorted `git ls-tree -r --name-only <pin> -- src`
-# verification: git -C /home/sites/phlix/phlix-server ls-tree -r --name-only 375f7992 -- src | sort | sha256sum
+src-filelist-sha256 = 2671f6777bd03d374ed440831b431fd30bba98a6972b7d25224ea6c311fe8733   # LC_ALL=C byte-sorted `git ls-tree -r --name-only <pin> -- src` (re-pinned 2026-11-22 once-S86 from the locale-collation capture 86f6c4eec096bb6ee8a3a6cf2e18580438326b7fc839d48163d901356bf04d5f — same tree, locale-free recipe)
+# verification: git -C /home/sites/phlix/phlix-server ls-tree -r --name-only 375f7992 -- src | LC_ALL=C sort | sha256sum
 
 [phlix-hub]
 repo                = /home/sites/phlix/phlix-hub
 scan-commit         = ba1ae3b8b66030db419fccd63f148ff3c2b718c1   # doc §6.1 pin; present locally
 src-php-files       = 234                                         # doc §3.2 claim: 234 — EXACT MATCH
-src-filelist-sha256 = c84288b3f7f7ff03afb208cfe9add2634dfd1fc06bf8fd7c31a9207ede677544
-# verification: git -C /home/sites/phlix/phlix-hub ls-tree -r --name-only ba1ae3b8 -- src | sort | sha256sum
+src-filelist-sha256 = d9ae19237f2a6dbc244151b06baa14b8f3f54b1719ce7443311f9243dc41b340   # LC_ALL=C byte-sorted (re-pinned 2026-11-22 once-S86 from the locale-collation capture c84288b3f7f7ff03afb208cfe9add2634dfd1fc06bf8fd7c31a9207ede677544 — same tree, locale-free recipe)
+# verification: git -C /home/sites/phlix/phlix-hub ls-tree -r --name-only ba1ae3b8 -- src | LC_ALL=C sort | sha256sum
 
 [phlix-twin-files]
 # Same relative path in BOTH pinned src/ trees — the doc §6 spot-check row "phlix same-path twins 24/26".
@@ -41,8 +119,8 @@ scan-pin            = ad58b221c5266775415f854aec9d8dc1d2d05977   # HEAD when /ho
 drift-note          = HEAD observed 004b67d9976d1859d6f82224e259f6eab3d69c96 at 2026-11-21 capture (+5 commits, still contains the pin: merge-base --is-ancestor OK). The tree IS MOVING: nightly jobs MUST git-archive the scan-pin, never trust the working tree.
 corpus-roots        = include/Api, include/ajax
 api-ajax-php-files  = 689                                        # doc §3.2 claim: 689 at include/{Api,ajax} — EXACT MATCH at the scan-pin
-api-ajax-filelist-sha256 = 36a9440dca86db115680822f5490f830c84782d79162c3218f27ac78981e2e74
-# verification: git -C /home/my ls-tree -r --name-only ad58b221c5 -- include/Api include/ajax | sort | sha256sum
+api-ajax-filelist-sha256 = ba79b80387a6e24f96348d62731a392966b9df0b4d0b625f852d123176b90fe6   # LC_ALL=C byte-sorted (re-pinned 2026-11-22 once-S86 from the locale-collation capture 36a9440dca86db115680822f5490f830c84782d79162c3218f27ac78981e2e74 — same tree, locale-free recipe)
+# verification: git -C /home/my ls-tree -r --name-only ad58b221c5 -- include/Api include/ajax | LC_ALL=C sort | sha256sum
 
 [home-my-vendor-detain]
 # 97 packages under /home/my/vendor/detain/, of which 96 are git checkouts (phpsysinfo has no .git — the count gap is real and by-design here).
