@@ -443,7 +443,7 @@ A few keys use different fallback paths:
 | `allowed_kinds` | CLI → config `kinds` → the twelve traversable kinds (everything in `BlockExtractor::ALL_KINDS` except `script` — item 1.3's fold kind is opt-in only and never implicit) |
 | `optional_blocks.*` | CLI → config `optional_blocks` → `Config` defaults |
 | `db_aware`, `trinity_collapse` | CLI → config → `Config` defaults |
-| `exclude` | APPEND: `Config` defaults + profile globs + config-file list + programmatic CLI-dict list (deduped, in that order) — never a replacement; `"exclude_reset": true` drops the inherited layers. A `"exclude": []` in any layer is a pure no-op: an empty list adds nothing, and its mere presence wipes nothing. Per-directory `.phpdup.json` lists accumulate down the tree the same way. |
+| `exclude` | APPEND: `Config` defaults + profile globs + config-file list + programmatic CLI-dict list (deduped, in that order) — never a replacement; `"exclude_reset": true` drops the inherited layers. A `"exclude": []` in any layer is a pure no-op: an empty list adds nothing, and its mere presence wipes nothing. Per-directory `.phpdup.json` lists accumulate down the tree the same way — but inside the subtree of the file that carries them their patterns are anchored **relative to that file's own directory**, and they prune the scan walk for real (see "exclude stacks" below). |
 | `paths` | config `paths` → `Config` defaults (CLI argument is separate) |
 
 ### `exclude` stacks — the glob dialect (item 5.2)
@@ -453,6 +453,47 @@ longer wipes them. The one documented escape hatch is `"exclude_reset":
 true` (root config file or any per-directory file): everything inherited
 below that layer (defaults, profile, ancestors) is discarded and only the
 layer's own list survives.
+
+**Per-directory `.phpdup.json` lists are applied at scan time (once-S28,
+php-dup-finder-once-032).** The keys were admitted since item 5.1 but had
+no scan-side consumer: a nested file's `exclude`/`exclude_reset` changed
+the per-file knob view (`Config::effectiveFor()`) while the walk itself
+only ever honored the root-resolved list. The walk now honors them too.
+Each discovered file contributes one layer governing exactly its own
+subtree:
+
+- Its patterns are matched against paths relative to **that file's
+  directory** — a `.phpdup.json` in `legacy/` excluding `gen/**` prunes
+  `legacy/gen/` and everything under it, and says nothing about a
+  `gen/` directory elsewhere in the tree (the root-frame reading in the
+  table above applies to root-list layers; a per-directory layer carries
+  the same dialect in its own frame).
+- Layers chain shallow→deep over the root-resolved list: every list on
+  the chain from the scan root down to the entry's directory stays
+  active, and each layer APPENDS to the accumulated one — the same
+  merge the per-file knob view computes.
+- A layer carrying `"exclude_reset": true` re-roots its subtree: the
+  accumulated chain below it (stock defaults, profile, root file, CLI
+  dict, every ancestor directory) is discarded and only its own list
+  survives. The discard is one-way; deeper layers then append again.
+- Exclusion prunes at the **directory** level, so a whole excluded
+  subtree is never enumerated and its files never enter the scan
+  census — the pruning is silent, exactly as for root-list excludes
+  (`skipped …` notes stay reserved for environment problems). The one
+  exception to the prune is honest re-rooting: when a resetting layer
+  sits inside an excluded directory's subtree, the walk descends so the
+  re-rooted files can reappear (and everything still unmatched by the
+  surviving chain stays skipped).
+- Config **discovery** is governed by the root-resolved exclude list
+  only. A `.phpdup.json` inside a root-excluded tree (a stock
+  `vendor/`, say) is never read — so a vendored package can neither
+  poison the run nor write its own escape hatch out of a tree the user
+  excluded. A file under a subtree excluded by an ANCESTOR per-directory
+  list is still read (and still fails loudly when misconfigured) — it
+  just has no effect unless its own list resets, which re-roots its
+  subtree as promised above.
+- `--exclude` and the root config file's keys keep their CLI-dict frame:
+  root-relative. Only per-directory files introduce a nested anchor.
 
 Patterns are matched against paths relative to the scan root and are
 **segment-safe** — no star form crosses `/` by accident:

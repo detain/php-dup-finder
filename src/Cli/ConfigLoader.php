@@ -556,6 +556,14 @@ final class ConfigLoader
      *
      * Found files override only the subtree rooted at their directory;
      * the actual layered merge happens in {@see Config::effectiveFor()}.
+     * once-S28 (php-dup-finder-once-032): a found file's `exclude` and
+     * `exclude_reset` are now ALSO applied at scan time — ScanningStage
+     * feeds the map to {@see \Phpdup\Scanning\FileScanner} as a
+     * subtree-scoped overlay, so an excluded nested subtree never enters
+     * the scan census and a resetting subtree re-roots. Discovery itself
+     * stays governed by the resolved ROOT exclude list only: a config
+     * inside a root-excluded tree is never read, noted, or able to
+     * resurrect the pruned tree from within it.
      *
      * @param list<string> $paths
      * @param list<string> $excludeGlobs  the exact resolved list Config hands

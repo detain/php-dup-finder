@@ -6,6 +6,10 @@ namespace Phpdup\Tests\Unit\Cli;
 use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\Config;
 use Phpdup\Cli\ConfigLoader;
+use Phpdup\Pipeline\PipelineState;
+use Phpdup\Pipeline\Stages\ScanningStage;
+use Phpdup\Scanning\FileScanner;
+use Symfony\Component\Console\Output\NullOutput;
 
 final class PerDirectoryConfigTest extends TestCase
 {
@@ -590,6 +594,221 @@ final class PerDirectoryConfigTest extends TestCase
         } finally {
             self::rmTree($tmp);
         }
+    }
+
+    // ------------------------------------------------------------------
+    // once-S28 (php-dup-finder-once-032): the per-directory exclude overlay
+    // — nested .phpdup.json exclude/exclude_reset lists are applied at SCAN
+    // time, dir-anchored, chained shallow→deep, one-way reset re-roots.
+    // ------------------------------------------------------------------
+
+    public function testPerDirectoryExcludeSkipsNestedDirInScanCensus(): void
+    {
+        $tmp = self::tmpRoot('s28-census');
+        try {
+            self::writeTree($tmp, [
+                'a.php',
+                'legacy/b.php',
+                'legacy/gen/c.php',
+                'other/gen/d.php',
+            ]);
+            self::writeConfig($tmp . '/legacy', ['exclude' => ['gen/**']]);
+
+            $cfg = (new ConfigLoader(warnOnSkip: false))->load(paths: [$tmp], configFile: null);
+            $real = realpath($tmp . '/legacy');
+            $this->assertArrayHasKey($real, $cfg->perDirectoryOverrides);
+            $this->assertSame(['gen/**'], $cfg->perDirectoryOverrides[$real]['exclude']);
+
+            $files = self::scanCensus($cfg);
+
+            // The nested config prunes legacy/gen/ — its file never enters
+            // the census — while the identically named gen/ OUTSIDE the
+            // config's subtree is untouched: the layer's patterns live in
+            // ITS OWN directory's frame, not the scan root's.
+            $this->assertSame([
+                $tmp . '/a.php',
+                $tmp . '/legacy/b.php',
+                $tmp . '/other/gen/d.php',
+            ], $files);
+        } finally {
+            self::rmTree($tmp);
+        }
+    }
+
+    public function testPerDirectoryExcludeResetReRootsAncestorExcludedSubtree(): void
+    {
+        $tmp = self::tmpRoot('s28-reset');
+        try {
+            self::writeTree($tmp, [
+                'sibling.php',
+                'gen/gone.php',
+                'legacy/keep.php',
+                'legacy/gen/deep.php',
+            ]);
+            // The root-adjacent config excludes both subtrees...
+            self::writeConfig($tmp, ['exclude' => ['gen/**', 'legacy/**']]);
+            // ...and legacy re-roots its own subtree: ancestors AND the
+            // scan-root list are discarded below it (one-way, mirroring
+            // Config::effectiveFor's exclude_reset doctrine).
+            self::writeConfig($tmp . '/legacy', ['exclude_reset' => true, 'exclude' => []]);
+
+            $cfg = (new ConfigLoader(warnOnSkip: false))->load(paths: [$tmp], configFile: null);
+
+            $files = self::scanCensus($cfg);
+
+            $this->assertSame([
+                $tmp . '/legacy/gen/deep.php',
+                $tmp . '/legacy/keep.php',
+                $tmp . '/sibling.php',
+            ], $files);
+        } finally {
+            self::rmTree($tmp);
+        }
+    }
+
+    public function testPerDirectoryExcludeChainAccumulatesAcrossLayers(): void
+    {
+        $tmp = self::tmpRoot('s28-chain');
+        try {
+            self::writeTree($tmp, [
+                'skipme/x.php',
+                'mod/skipme/y.php',
+                'mod/tmp/z.php',
+                'mod/m.php',
+                'tmp/w.php',
+            ]);
+            self::writeConfig($tmp, ['exclude' => ['skipme/**']]);
+            self::writeConfig($tmp . '/mod', ['exclude' => ['tmp/**']]);
+
+            $cfg = (new ConfigLoader(warnOnSkip: false))->load(paths: [$tmp], configFile: null);
+
+            $files = self::scanCensus($cfg);
+
+            // Both lists are active inside mod/ (append, never replace);
+            // each stays anchored to its own directory, so the same-named
+            // directories on the other side of each anchor survive.
+            $this->assertSame([
+                $tmp . '/mod/m.php',
+                $tmp . '/mod/skipme/y.php',
+                $tmp . '/tmp/w.php',
+            ], $files);
+        } finally {
+            self::rmTree($tmp);
+        }
+    }
+
+    public function testScanCensusIsUnchangedForConfigsWithoutExcludeKeys(): void
+    {
+        $tmp = self::tmpRoot('s28-inert');
+        try {
+            self::writeTree($tmp, ['a.php', 'legacy/b.php']);
+            // Knob-only config: admission + effectiveFor stay, the walk
+            // must not learn any new frame from it.
+            self::writeConfig($tmp . '/legacy', ['min_block_size' => 4]);
+
+            $cfg = (new ConfigLoader(warnOnSkip: false))->load(paths: [$tmp], configFile: null);
+
+            $files = self::scanCensus($cfg);
+
+            $this->assertSame([$tmp . '/a.php', $tmp . '/legacy/b.php'], $files);
+            $this->assertSame(
+                4,
+                $cfg->effectiveFor($tmp . '/legacy/b.php')->minBlockSize,
+                'the knob layer still applies where it always did'
+            );
+        } finally {
+            self::rmTree($tmp);
+        }
+    }
+
+    public function testOverlayPruningIsSilentAndRootListStillDominatesOutsideSubtrees(): void
+    {
+        $tmp = self::tmpRoot('s28-silent');
+        try {
+            self::writeTree($tmp, [
+                'vendor/autoload.php',
+                'legacy/b.php',
+                'legacy/gen/c.php',
+            ]);
+            self::writeConfig($tmp . '/legacy', ['exclude' => ['gen/**']]);
+
+            // The stock default vendor exclude prunes vendor/ even with the
+            // overlay bound — the root chain keeps full force OUTSIDE any
+            // resetting subtree.
+            $scanner = new FileScanner(
+                Config::defaults([$tmp])->exclude,
+                warnOnSkip: false,
+                perDirExcludes: [
+                    realpath($tmp . '/legacy') => ['exclude' => ['gen/**'], 'reset' => false],
+                ],
+            );
+            $files = iterator_to_array($scanner->scan($tmp), false);
+            sort($files);
+
+            $this->assertSame([$tmp . '/legacy/b.php'], $files);
+            $this->assertSame([], $scanner->skipNotes(), 'excludes prune silently, overlay included');
+
+            // The public root-frame matcher is unchanged by the overlay.
+            $this->assertFalse($scanner->isExcluded('legacy/gen/c.php'));
+        } finally {
+            self::rmTree($tmp);
+        }
+    }
+
+    public function testResetInsideRootExcludedTreeCannotResurrectItInDiscovery(): void
+    {
+        $tmp = self::tmpRoot('s28-gate');
+        try {
+            self::writeTree($tmp, ['vendor/pkg/evil.php', 'a.php']);
+            // A vendored package writing its own escape hatch: discovery
+            // never reads it (root list prunes vendor/ before descent), so
+            // the map — and therefore the scan overlay — stays empty for
+            // it. The doctrine of testExcludedTreesAreNeverReadByDiscovery,
+            // now also stated from the scan side.
+            self::writeConfig($tmp . '/vendor/pkg', ['exclude_reset' => true]);
+
+            $cfg = (new ConfigLoader(warnOnSkip: false))->load(paths: [$tmp], configFile: null);
+
+            $this->assertCount(0, $cfg->perDirectoryOverrides);
+            $this->assertSame([$tmp . '/a.php'], self::scanCensus($cfg));
+        } finally {
+            self::rmTree($tmp);
+        }
+    }
+
+    /**
+     * Drive the real scan stage and return its census (the sorted file list
+     * the pipeline hands downstream).
+     *
+     * @return list<string>
+     */
+    private static function scanCensus(Config $cfg): array
+    {
+        $state = new PipelineState($cfg);
+        (new ScanningStage())->run($state, new NullOutput());
+        return $state->files;
+    }
+
+    /**
+     * @param list<string> $relPaths slash-separated file paths to create (parents mkdir'd)
+     */
+    private static function writeTree(string $root, array $relPaths): void
+    {
+        foreach ($relPaths as $rel) {
+            $dir = $root . '/' . dirname($rel);
+            if (!is_dir($dir)) {
+                mkdir($dir, 0777, true);
+            }
+            file_put_contents($root . '/' . $rel, "<?php\n");
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private static function writeConfig(string $dir, array $payload): void
+    {
+        file_put_contents($dir . '/.phpdup.json', (string) json_encode($payload));
     }
 
     private static function tmpRoot(string $tag): string

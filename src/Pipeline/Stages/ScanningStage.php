@@ -69,7 +69,15 @@ final class ScanningStage implements CooperativeStageInterface
             }
         }
 
-        $scanner = new FileScanner($config->exclude);
+        // once-S28 (php-dup-finder-once-032): the exclude/exclude_reset of
+        // discovered per-directory `.phpdup.json` files are now applied at
+        // scan time, not just at knob time. The layers ride into FileScanner
+        // as a subtree-scoped overlay (dir-anchored globs, append/reset
+        // chain — see the class docblock there), so a nested config's
+        // excluded subtree never enters the scan census below, and a
+        // resetting subtree re-roots. Configs without either key produce no
+        // layer and cannot change the walk.
+        $scanner = new FileScanner($config->exclude, perDirExcludes: self::excludeLayers($config));
 
         $files = [];
         $sinceYield = 0;
@@ -125,6 +133,32 @@ final class ScanningStage implements CooperativeStageInterface
             "<info>phpdup</info> scanning %d path(s) → %d files",
             count($config->paths), count($files)
         ));
+    }
+
+    /**
+     * The per-directory exclude overlay ScanningStage feeds FileScanner
+     * (once-S28): only discovered configs carrying `exclude` and/or
+     * `exclude_reset` become layers; the values arrive already validated
+     * (non-empty-string list / boolean) by ConfigLoader. Configs that tune
+     * other keys stay out, so the walk's fast path is untouched for them.
+     *
+     * @return array<string, array{exclude: list<string>, reset: bool}>
+     */
+    private static function excludeLayers(Config $config): array
+    {
+        $layers = [];
+        foreach ($config->perDirectoryOverrides as $dir => $dict) {
+            $hasList = array_key_exists('exclude', $dict);
+            $hasReset = array_key_exists('exclude_reset', $dict);
+            if (!$hasList && !$hasReset) {
+                continue;
+            }
+            $layers[(string) $dir] = [
+                'exclude' => $hasList ? array_values(array_map('strval', (array) $dict['exclude'])) : [],
+                'reset' => $hasReset && (bool) $dict['exclude_reset'],
+            ];
+        }
+        return $layers;
     }
 
     /**

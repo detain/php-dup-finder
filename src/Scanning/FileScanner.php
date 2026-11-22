@@ -37,6 +37,23 @@ use Phpdup\Util\PathCanonical;
  * resolved toward EXCLUDING (fail CLOSED) and reported once through
  * skipNotes(). A hostile config can hide paths behind a visible note; it
  * can neither wedge the scan nor silently void its own excludes.
+ *
+ * Per-directory overlay (once-S28 / php-dup-finder-once-032): the scan walk
+ * can additionally be fed the exclude layers discovered in nested
+ * `.phpdup.json` files (keys: the absolute directory ConfigLoader keyed;
+ * values: that file's own `exclude` list + `exclude_reset` flag). Such a
+ * list is anchored in ITS OWN DIRECTORY's frame — patterns match paths
+ * relative to the config's directory, compiled with the same segment-safe
+ * dialect — and chains with everything above it, shallow→deep, appending
+ * unless it resets. A resetting layer discards everything inherited below
+ * it (the root list and ancestors alike), mirroring Config::effectiveFor().
+ * Excluded directories are pruned silently, exactly as root-excluded ones,
+ * UNLESS a resetting layer sits at or below the pruned directory — that
+ * config re-roots its subtree, so the walk descends and the per-entry
+ * verdicts inside get their chance to flip. The overlay governs scan()
+ * only: isExcluded() and the ConfigLoader discovery gate stay root-list
+ * matchers, so a tree excluded at the ROOT is still never read, never
+ * noted, and can never be resurrected by a config hidden inside it.
  */
 final class FileScanner
 {
@@ -79,15 +96,63 @@ final class FileScanner
     /** @var list<string> human-readable notes for every skipped path */
     private array $skipNotes = [];
 
+    /** @var list<array{dir: string, patterns: list<array{source: string, regex: string, tokens: list<array{0: int, 1: string}>, pcre: bool}>, reset: bool}> */
+    private array $layers = [];
+
+    /**
+     * The overlay layers bound to the root currently being walked, anchored
+     * in root-relative form and sorted shallow→deep (once-S28). Empty while
+     * no scan() with layers is running, so every walk decision falls back
+     * to the root-list fast path.
+     *
+     * @var list<array{rel: string, patterns: list<array{source: string, regex: string, tokens: list<array{0: int, 1: string}>, pcre: bool}>, reset: bool}>
+     */
+    private array $activeLayers = [];
+
     /**
      * @param list<string> $excludeGlobs
      * @param bool         $warnOnSkip emit a stderr warning line per skipped
      *                                 path recorded in skipNotes() (in
      *                                 addition to the note itself).
+     * @param array<string, array{exclude?: list<string>, reset?: bool}> $perDirExcludes
+     *                                 subtree-scoped exclude layers keyed by
+     *                                 the absolute directory of each
+     *                                 discovered `.phpdup.json` (the realpath
+     *                                 form ConfigLoader::discoverPerDirectoryOverrides()
+     *                                 emits). Globs are matched relative to
+     *                                 that directory, in the same segment-safe
+     *                                 dialect; `reset` (the file's
+     *                                 `exclude_reset`) discards everything
+     *                                 inherited below it. scan() only — see
+     *                                 the class docblock.
      */
-    public function __construct(array $excludeGlobs, private readonly bool $warnOnSkip = true)
-    {
+    public function __construct(
+        array $excludeGlobs,
+        private readonly bool $warnOnSkip = true,
+        array $perDirExcludes = [],
+    ) {
         $this->patterns = array_map([$this, 'compilePattern'], $excludeGlobs);
+        foreach ($perDirExcludes as $dir => $layer) {
+            $dir = rtrim(PathCanonical::separators((string) $dir), '/');
+            if ($dir === '') {
+                continue;
+            }
+            $patterns = [];
+            foreach ($layer['exclude'] ?? [] as $glob) {
+                $patterns[] = $this->compilePattern($glob);
+            }
+            $this->layers[] = [
+                'dir' => $dir,
+                'patterns' => $patterns,
+                'reset' => (bool) ($layer['reset'] ?? false),
+            ];
+        }
+        // Chain order is shallow→deep; the segment count of the absolute
+        // directory orders the root-relative anchors under any shared root.
+        usort(
+            $this->layers,
+            static fn (array $a, array $b): int => substr_count($a['dir'], '/') <=> substr_count($b['dir'], '/'),
+        );
     }
 
     /**
@@ -161,6 +226,13 @@ final class FileScanner
             $rootReal = $root;
         }
 
+        // once-S28: bind the per-directory overlay to THIS root before the
+        // walk starts. Layers live in absolute form (ConfigLoader keys); the
+        // walk decides in the root-relative frame, so each anchor is aliased
+        // here. Accepted through both the literal root and its realpath form:
+        // discovery may have keyed a directory through either.
+        $this->activeLayers = $this->bindLayers($root, $rootReal);
+
         $iter = new \RecursiveIteratorIterator(
             new \RecursiveCallbackFilterIterator(
                 $dirIterator,
@@ -183,7 +255,13 @@ final class FileScanner
                         return false;
                     }
                     if ($current->isDir()) {
-                        if ($this->isExcluded($rel . '/')) {
+                        // once-S28: the verdict chains the root list with the
+                        // per-directory layers when any apply. An excluded
+                        // directory is STILL descended when a resetting layer
+                        // sits at or below it — that config re-roots its
+                        // subtree, and the per-entry verdicts inside need
+                        // their chance to flip (re-root honesty).
+                        if ($this->excludesWalkPath($rel, true) && !$this->hasResetAtOrBelow($rel)) {
                             return false;
                         }
                         // NN2: prune unreadable branches BEFORE descending,
@@ -196,7 +274,7 @@ final class FileScanner
                         }
                         return true;
                     }
-                    return !$this->isExcluded($rel);
+                    return !$this->excludesWalkPath($rel, false);
                 }
             ),
             \RecursiveIteratorIterator::LEAVES_ONLY
@@ -220,6 +298,130 @@ final class FileScanner
             // already yielded stay yielded. Note and move on.
             $this->noteSkip($root, 'scan truncated by a permission error mid-descent: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Bind the overlay layers to the root about to be walked (once-S28):
+     * keep the layers whose absolute directory sits under this root (in the
+     * literal or realpath form of it) and re-anchor each survivor in the
+     * root-relative frame the walk decides in. A layer belonging to a
+     * different root can govern no entry of this one and is dropped for
+     * this scan() — the stored layer list itself is never mutated.
+     *
+     * @return list<array{rel: string, patterns: list<array{source: string, regex: string, tokens: list<array{0: int, 1: string}>, pcre: bool}>, reset: bool}>
+     */
+    private function bindLayers(string $root, string $rootReal): array
+    {
+        if ($this->layers === []) {
+            return [];
+        }
+        // Each candidate root form accepts two anchor shapes: a config
+        // sitting IN the scan root anchors to '' and governs the whole
+        // tree; otherwise the '/'-suffixed prefix is required, so a
+        // sibling /tmp/projX can never bind through /tmp/proj.
+        $roots = [];
+        foreach ([$root, $rootReal] as $candidate) {
+            $trimmed = rtrim($candidate, '/');
+            if ($trimmed !== '' && !isset($roots[$trimmed])) {
+                $roots[$trimmed] = true;
+            }
+        }
+        $active = [];
+        foreach ($this->layers as $layer) {
+            $rel = null;
+            foreach (array_keys($roots) as $candidate) {
+                if ($layer['dir'] === $candidate) {
+                    $rel = '';
+                    break;
+                }
+                if (str_starts_with($layer['dir'], $candidate . '/')) {
+                    $rel = substr($layer['dir'], strlen($candidate) + 1);
+                    break;
+                }
+            }
+            if ($rel === null) {
+                continue;
+            }
+            $active[] = [
+                'rel' => $rel,
+                'patterns' => $layer['patterns'],
+                'reset' => $layer['reset'],
+            ];
+        }
+        return $active; // already shallow→deep (sorted at construction)
+    }
+
+    /**
+     * The walk's full exclusion verdict for one root-relative path
+     * (once-S28): the root list plus the per-directory chain, shallow→deep.
+     * One membership test covers both entry kinds — a layer applies when
+     * the entry path starts with `anchor/`, which means strictly-below for
+     * directories (the config at D governs D's contents, never D itself, so
+     * a `.phpdup.json`'s own directory is never self-pruned) and at-or-below
+     * for files (whose rel carries the basename). A resetting layer
+     * discards the accumulated chain below it, including the root list; the
+     * discard is one-way, exactly like Config::effectiveFor(). With no
+     * layers bound the verdict is the plain root match, byte-for-byte the
+     * pre-overlay walk.
+     */
+    private function excludesWalkPath(string $rel, bool $isDir): bool
+    {
+        if ($this->activeLayers === []) {
+            return $this->isExcluded($isDir ? $rel . '/' : $rel);
+        }
+        $chain = [];
+        $rootSuppressed = false;
+        foreach ($this->activeLayers as $layer) {
+            if ($layer['rel'] !== '' && !str_starts_with($rel, $layer['rel'] . '/')) {
+                continue;
+            }
+            if ($layer['reset']) {
+                $rootSuppressed = true;
+                $chain = [];
+            }
+            $chain[] = $layer;
+        }
+        if (!$rootSuppressed && $this->isExcluded($isDir ? $rel . '/' : $rel)) {
+            return true;
+        }
+        foreach ($chain as $layer) {
+            // The subject for a layer's own patterns is the entry path in
+            // THAT layer's frame — the dir-anchored reading the docs promise.
+            $subject = $layer['rel'] === ''
+                ? $rel
+                : substr($rel, strlen($layer['rel']) + 1);
+            if ($isDir) {
+                $subject .= '/';
+            }
+            foreach ($layer['patterns'] as $pattern) {
+                if ($this->matchesPattern($pattern, $subject)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Does a resetting overlay layer sit at or below this (excluded)
+     * directory? Only then may the walk descend a pruned branch: a re-root
+     * inside is the sole honest way to revive that subtree. A layer
+     * anchored at the scan root ('' rel) never qualifies — it sits above
+     * every walked directory, so a directory excluded despite it was
+     * excluded by that layer's own surviving list, and only a strictly
+     * deeper reset can contradict it.
+     */
+    private function hasResetAtOrBelow(string $relDir): bool
+    {
+        foreach ($this->activeLayers as $layer) {
+            if (!$layer['reset']) {
+                continue;
+            }
+            if ($layer['rel'] === $relDir || str_starts_with($layer['rel'], $relDir . '/')) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private function noteSkip(string $path, string $reason): void
