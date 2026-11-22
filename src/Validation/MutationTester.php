@@ -15,9 +15,17 @@ use Phpdup\Semantic\DataflowSummarizer;
  * through it → compare outputs) needs a sandbox runtime and is out
  * of scope here. This skeleton implements a *static-only* check
  * that flags clusters where members carry side effects we can't
- * easily replay (DB calls, file I/O, header writes). Reporters
- * surface these as a `behavioural-divergence` warning so reviewers
- * know to mutation-test the cluster manually.
+ * easily replay (DB calls, file I/O, header writes).
+ *
+ * Status (once-S32 truth pass, engine-S31 catalog policy): NOT
+ * WIRED. Nothing in the pipeline instantiates this class and no
+ * reporter emits its verdicts — the former prose claimed reporters
+ * surfaced a `behavioural-divergence` warning, but that string
+ * existed nowhere outside this header (finding once-036). Kept as a
+ * tested building block (tests/Unit/Validation/MutationTesterTest)
+ * for a future opt-in validation stage, per the engine-S31a ledger
+ * philosophy: cohesive, tested, merely unwired classes stay with
+ * truthful docblocks.
  *
  * Probe accounting (php-dup-finder-output-031): a member whose AST
  * was not loaded cannot be probed. The check now distinguishes

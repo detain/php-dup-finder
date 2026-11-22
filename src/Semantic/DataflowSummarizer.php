@@ -37,7 +37,7 @@ use PhpParser\NodeFinder;
  *     the sidecar pair vector; the sideEffects flag itself is not a
  *     wire feature, so this file is inert to ML feature identity.
  *   - {@see \Phpdup\Validation\MutationTester} selects side-effect-
- *     bearing blocks.
+ *     bearing blocks (itself NOT WIRED — see its header; once-S32).
  *   - {@see \Phpdup\Similarity\BehaviouralSimilarity} scores by I/O
  *     shape — itself a PLANNED type-4 tier, not wired into the
  *     Clusterer (engine-S31a ledger row 3/16).

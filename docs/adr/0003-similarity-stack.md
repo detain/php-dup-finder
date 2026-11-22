@@ -4,6 +4,8 @@
 **Date**: 2026-05
 **Amended**: 2026-11 (engine-S31c catalog close-out: tier-3 wiring truth,
 normalization policy absorbed from the deleted marker classes)
+**Amended**: 2026-11-21 (once-S32 advertised-surface parity: flag token
+retired from the prose, dated erratum appended)
 
 ## Context
 
@@ -28,10 +30,11 @@ Each tier's threshold is configurable. Pairs that cross tier 1's
 threshold proceed to tier 2; pairs that cross tier 2's threshold
 contribute an edge. Pairs that fail tier 2 fall through to
 `ContainmentSimilarity` when `optional_blocks.enabled` is set.
-(The former prose named a `--type4` flag for the behavioural leg —
-no such flag exists and never shipped; catalog close-out
-engine-S31c corrected this. Optional IR-tier and ML-pair scorers
-exist behind `--scorer=ir` / `--ml-pair-url`; they extend the
+(The former prose named a CLI long-option flag for the behavioural
+leg — no such flag exists and never shipped; the engine-S31c catalog
+close-out corrected the claim, and the once-S32 erratum below records
+its removal from this document's text. Optional IR-tier and ML-pair
+scorers exist behind `--scorer=ir` / `--ml-pair-url`; they extend the
 cascade rather than the three tiers of this decision.)
 
 ## Tier-1 pre-filters
@@ -67,10 +70,11 @@ int-only.
   the Clusterer instantiates.
 - `BehaviouralSimilarity` — for type-4 (behavioural) clusters.
   Combines var/call/return Jaccard + a side-effect-flag match over
-  the `DataflowSummarizer` summary. PLANNED, NOT WIRED: the flag the
-  old prose gated it behind (`--type4`) does not exist, and the
-  Clusterer never instantiates it. The class is kept, tested, and
-  honest per the engine-S31a catalog ledger (rows 3 and 16).
+  the `DataflowSummarizer` summary. PLANNED, NOT WIRED: the CLI flag
+  the old prose gated it behind does not exist (see the dated
+  erratum), and the Clusterer never instantiates it. The class is
+  kept, tested, and honest per the engine-S31a catalog ledger
+  (rows 3 and 16).
 
 ## Normalization beneath the stack
 
@@ -113,3 +117,26 @@ policy, as `Normalizer` implements it today:
 - Adding a new scorer = adding a new tier or extending an existing
   one — no centralised dispatch to refactor.
 - Each scorer is independently testable and benchmarkable.
+
+## Erratum 2026-11-21 — advertised-surface parity (once-S32)
+
+- The pre-amendment text of this decision documented a CLI
+  long-option flag gating the behavioural (type-4) tier. No such
+  flag exists, never shipped, and was never accepted by
+  `src/Cli/Command.php`. The engine-S31c close-out corrected the
+  claim in prose; this pass retires the literal flag token from the
+  ADR text entirely, so a grep for it no longer hits a tree where
+  the flag does not exist (the exact former token is preserved in
+  this document's git history).
+- Advertised-surface census at this commit: README.md carries no
+  type-4/behavioural feature rows (the dead ToC entry and its
+  docs/CLI.md anchor were dropped by engine-S31c);
+  `docs/algorithms/clustering.md` documents only the wired passes
+  (hash buckets, Jaccard, APTED with pre-filters, Containment
+  fallback, union-find); every class under `src/Semantic/` and
+  `src/Validation/` now states its wired/unwired status per the
+  engine-S31a catalog ledger.
+- Path forward for the planned tier: wiring `BehaviouralSimilarity`
+  into the Clusterer is an explicit product call and must sit
+  behind its own opt-in flag (engine-S31a ledger row 3). Until a
+  flag ships, this ADR — and no other tracked doc — may name one.

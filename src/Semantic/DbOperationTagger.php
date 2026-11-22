@@ -15,8 +15,17 @@ use Phpdup\Normalization\DbOpRegistry;
  * does one DB read and one DB write looks the same as another
  * function with one read and one write, regardless of whether the
  * libraries are Eloquent, Doctrine, PDO, mysqli, raw SQL, or any
- * mix. This is the input to the type-4 tag-Jaccard scoring band
- * added by option 3 of `docs/plans/orm-db-semantic-dedup.md`.
+ * mix.
+ *
+ * Status (once-S32 truth pass, engine-S31 catalog policy): LIVE
+ * through the ML sidecar only — {@see \Phpdup\Ml\PairFeatures}
+ * builds DB-tag pair features with this tagger (default constructor
+ * injection). The type-4 tag-Jaccard scoring band of option 3 of
+ * `docs/plans/orm-db-semantic-dedup.md` rides
+ * {@see \Phpdup\Similarity\BehaviouralSimilarity}, which is a
+ * PLANNED tier NOT WIRED into the Clusterer (engine-S31a ledger
+ * row 3; docs/adr/0003 erratum 2026-11-21) — so no clustering
+ * output consults these tags today.
  *
  * **Example summary**
  *
