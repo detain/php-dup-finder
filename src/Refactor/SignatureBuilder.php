@@ -37,6 +37,14 @@ final class SignatureBuilder
         $required = [];
         $optional = [];
         foreach ($cluster->holes as $hole) {
+            if ($hole->placeholder === AntiUnifier::CAP_SENTINEL) {
+                // output-S57 r1 F1: one parameter line per hole is the
+                // render rule for template gaps; the cap sentinel is not a
+                // gap (zero-disagreement members routed by AntiUnifier).
+                // Emitting it would fabricate `$__cap` (or, pre-synth-skip,
+                // the misleading `$expr`) in an otherwise exact signature.
+                continue;
+            }
             $type = CodeParam::typeText($hole->inferredType);
             // Code-domain projection of the display name (CodeParam owns the
             // '$'-boundary; byte-identical for the sigil-carrying names the

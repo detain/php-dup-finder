@@ -132,6 +132,15 @@ final class ParameterSynthesizer
     {
         $usedNames = [];
         foreach ($cluster->holes as $hole) {
+            if ($hole->placeholder === AntiUnifier::CAP_SENTINEL) {
+                // output-S57 r1 F1: the cap sentinel is an EVIDENCE marker
+                // (the routed tail was never observed), never a template
+                // gap. Its rows are all MISSING — inferring from them would
+                // fabricate a parameter no member contains. Leave the
+                // sentinel synthesizer-inert; refusal chains read its
+                // degraded flag, not its name.
+                continue;
+            }
             $hole->inferredType = $this->inferType($hole);
             $hole->suggestedName = $this->suggestName($hole, $usedNames);
         }

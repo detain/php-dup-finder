@@ -15,6 +15,7 @@ use Phpdup\Pipeline\Stages\ClusterStage;
 use Phpdup\Pipeline\Stages\PreprocessStage;
 use Phpdup\Pipeline\Stages\RefactorStage;
 use Phpdup\Pipeline\Stages\ScanningStage;
+use Phpdup\Refactor\AntiUnifier;
 use Phpdup\Refactor\HoleCoverage;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\NullOutput;
@@ -193,5 +194,59 @@ final class RefactorStageTest extends TestCase
             $blocks[] = $extracted[0];
         }
         return new Cluster($id, $blocks, 1.0, false);
+    }
+
+    /**
+     * N byte-IDENTICAL members — the exact-duplicate storm shape that
+     * anti-unifies to zero real holes, so the only hole a routed run can
+     * carry is the {@see AntiUnifier::CAP_SENTINEL} evidence marker.
+     */
+    private function identicalClusterOf(int $n, string $id): Cluster
+    {
+        $parser = new AstParser();
+        $extractor = new BlockExtractor(minSize: 1);
+        $blocks = [];
+        for ($i = 0; $i < $n; $i++) {
+            $stmts = $parser->parseCode('<?php function twin() { notify(1); }');
+            $extracted = $extractor->extract(sprintf('t%02d.php', $i), $stmts);
+            $this->assertNotEmpty($extracted);
+            $blocks[] = $extracted[0];
+        }
+        return new Cluster($id, $blocks, 1.0, false);
+    }
+
+    // ── output-S57 fix-r1 (r1 F1): the cap sentinel must stay signature-inert ──
+
+    public function testZeroHoleRoutedClusterKeepsTrivialSignature(): void
+    {
+        // A >cap cluster of byte-identical members has ZERO template gaps:
+        // its truthful signature is the uncapped twin's `function twin(): mixed`
+        // — no phantom $expr (pre-cure: suggestName's 'subtree'→'expr' rule),
+        // no degraded $__cap param line either. The sentinel itself must
+        // survive in holes so coverage/refusal keep telling the truth.
+        $state = new PipelineState($this->handConfig());
+        $state->clusters = [$this->identicalClusterOf(33, 'TWINS')];
+
+        (new RefactorStage(useCache: false))->run($state, new NullOutput());
+
+        $cluster = $state->clusters[0];
+        $this->assertSame(
+            'function twin(): mixed',
+            $cluster->signature,
+            'a routed zero-hole cluster keeps the same signature as its uncapped identical twin',
+        );
+        $this->assertStringNotContainsString('$', (string) $cluster->signature, 'no parameter may surface');
+
+        $this->assertCount(1, $cluster->holes, 'holes stay exactly the one degraded sentinel');
+        $sentinel = $cluster->holes[0];
+        $this->assertSame(AntiUnifier::CAP_SENTINEL, $sentinel->placeholder);
+        $this->assertCount(33, $sentinel->observedValues, 'one MISSING row per member survives');
+        $this->assertTrue($sentinel->isDegraded());
+        $this->assertSame('', $sentinel->suggestedName, 'the sentinel is synthesizer-inert');
+
+        $this->assertTrue(
+            HoleCoverage::isDegraded($cluster),
+            'the --apply refusal chain (RefactorPatchReporter) still sees routed evidence as degraded',
+        );
     }
 }
