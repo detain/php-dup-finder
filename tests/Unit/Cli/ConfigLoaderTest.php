@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace Phpdup\Tests\Unit\Cli;
 
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\Console\Application;
+use Phpdup\Cli\Command;
 use Phpdup\Cli\ConfigLoader;
 
 final class ConfigLoaderTest extends TestCase
@@ -580,5 +582,72 @@ final class ConfigLoaderTest extends TestCase
         $loader = new ConfigLoader(warnOnSkip: false);
         $loader->load(paths: ['src'], configFile: null);
         $this->assertSame([], $loader->skipNotes(), 'a clean run records nothing');
+    }
+
+    // ---- engine-S25: engine-006 read-path trust gate wiring ----
+
+    public function testTrustInRootCacheIsCliOnlyNotAConfigFileKey(): void
+    {
+        // Belt (non-vacuous). The opt-in is a CLI flag, deliberately NOT a
+        // shapeOverrides/per-directory key, so a poisoned `.phpdup.json`
+        // committed into a cloned tree can never silently arm cache reads —
+        // trusting a decoy cache has to be an explicit per-invocation act.
+        // ConfigLoader::validate() must therefore reject it as unknown.
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage("Unknown config key 'trust_in_root_cache'");
+        (new ConfigLoader())->validate(['trust_in_root_cache' => true]);
+    }
+
+    public function testCommandRegistersCamelFlagAndNoSnakeAlias(): void
+    {
+        // Use the repo idiom (Application::add triggers Command::configure()
+        // exactly once, same as a real `phpdup analyze` boot) rather than a
+        // raw reflection call, which would double-register the paths arg.
+        $app = new Application();
+        $app->add(new Command());
+        $definition = $app->find('analyze')->getDefinition();
+
+        $this->assertTrue($definition->hasOption('trust-in-root-cache'),
+            'the kebab CLI flag is registered');
+        $this->assertFalse($definition->hasOption('trust_in_root_cache'),
+            'no snake_case form leaks into the CLI (it is a config-key shape, not a flag)');
+    }
+
+    public function testCommandDetectsCacheInsideScanRoot(): void
+    {
+        $root = sys_get_temp_dir() . '/phpdup-root-' . uniqid('', true);
+        $project = $root . '/project';
+        mkdir($project, 0o777, true);
+        try {
+            $probe = new Command();
+            $detect = new \ReflectionMethod($probe, 'cacheResidesInScanRoot');
+            $detect->setAccessible(true);
+            $in = static fn (string $cache, array $paths): bool => (bool)$detect->invoke($probe, $cache, $paths);
+
+            // The PoC, verbatim: relative default cache + a `.` root.
+            $this->assertTrue($in('.phpdup-cache', ['.']),
+                'the default relative cache is inside a `.` scan root — the poisoning posture');
+
+            // Absolute cache nested under the (existing) named root.
+            $this->assertTrue($in($project . '/.phpdup-cache', [$project]),
+                'a cache under the scan root is in-root');
+            $this->assertTrue($in($project . '/.phpdup-cache', [$root]),
+                'a cache under a parent scan root is in-root too');
+
+            // A cold cache dir reached through `..` (never created on disk)
+            // must still normalise lexically to inside the root.
+            $this->assertTrue($in($project . '/sub/../.phpdup-cache', [$project]),
+                'the lexical walk resolves .. for a not-yet-created cache dir');
+
+            // A cache OUTSIDE every scan root is trusted (normal CI posture:
+            // point cache_dir at a shared temp dir → no refusal, no notice).
+            $this->assertFalse($in($root . '/elsewhere-cache', [$project]),
+                'a cache outside the scan roots is not refused');
+            $this->assertFalse($in('/var/tmp/phpdup-shared-cache', [$project]),
+                'an absolute external cache is not refused');
+        } finally {
+            @rmdir($project);
+            @rmdir($root);
+        }
     }
 }

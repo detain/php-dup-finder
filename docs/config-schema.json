@@ -97,7 +97,7 @@
         "cache_dir": {
             "type": "string",
             "default": ".phpdup-cache",
-            "description": "Directory used for the AST cache and per-file index snapshots."
+            "description": "Directory used for the AST cache and per-file index snapshots. The default is RELATIVE, so a normal run stores blobs inside the scanned tree; when that is the case phpdup refuses to read the cache unless you pass the CLI-only --trust-in-root-cache flag (engine-006: a committed cache in a cloned repo could be a planted decoy). Point cache_dir outside the tree (e.g. a shared temp dir) to keep reads trusted without the flag. CLI: --trust-in-root-cache (no config-file key; there is no 'trust_in_root_cache' setting here by design — the opt-in must be explicit per invocation)."
         },
         "parallelism": {
             "type": "string",

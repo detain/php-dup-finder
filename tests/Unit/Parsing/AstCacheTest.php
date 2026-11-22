@@ -28,10 +28,14 @@ final class AstCacheTest extends TestCase
         mkdir($this->tmp . '/src', 0o775, true);
         $this->sourceFile = $this->tmp . '/src/Hello.php';
         file_put_contents($this->sourceFile, "<?php\nfunction greet(\$n) { if (\$n) { echo 'hi'; } }\n");
+        // engine-006 trust gate is process-wide static state — start every
+        // test disarmed (the production default) so ordering can never leak.
+        AstCache::refuseInRootCacheReads(false);
     }
 
     protected function tearDown(): void
     {
+        AstCache::refuseInRootCacheReads(false);
         $rii = new \RecursiveIteratorIterator(
             new \RecursiveDirectoryIterator($this->tmp, \FilesystemIterator::SKIP_DOTS),
             \RecursiveIteratorIterator::CHILD_FIRST
@@ -466,6 +470,81 @@ final class AstCacheTest extends TestCase
 
         file_put_contents($this->sourceFile, "<?php\nfunction greet(\$n) { echo 'rewritten'; }\n");
         $this->assertNull($cache->get($this->sourceFile), 'the memo never outruns content truth');
+    }
+
+    // ---- engine-S25: engine-006 read-path trust gate ----
+
+    public function testDisarmedGateServesACommittedDecoyBlob(): void
+    {
+        // The vulnerability surface the gate defends. A repo author ships a
+        // `.phpdup-cache/` whose blob under the VICTIM's content key holds a
+        // fabricated AST. With the gate off (the --trust-in-root-cache
+        // posture, and every legacy default), the cache is trusted and the
+        // forged tree is served verbatim — proving the gate is the only
+        // thing between a planted blob and a reported "duplicate".
+        $victim = $this->tmp . '/src/Victim.php';
+        file_put_contents($victim, "<?php\nfunction real_helper(): int { return 1; }\n");
+
+        $decoy = [new Node\Stmt\Function_('decoy_fn', [
+            'stmts' => [new Node\Stmt\Expression(new Node\Scalar\Int_(999))],
+        ])];
+        $cache = $this->cache();
+        $cache->put($victim, $decoy); // mint the blob under the victim's key
+
+        $this->assertFalse(AstCache::refusesInRootCacheReads(), 'default posture is disarmed');
+        $served = $cache->get($victim);
+        $this->assertNotNull($served, 'unrefused read must trust the on-disk blob');
+        $this->assertInstanceOf(Node\Stmt\Function_::class, $served[0]);
+        $this->assertSame('decoy_fn', $served[0]->name->toString(),
+            'served tree is the planted decoy, NOT the file\'s real function');
+    }
+
+    public function testArmedGateRefusesTheSameDecoyBlob(): void
+    {
+        // Same fixture, gate armed by Command for an in-root cache and no
+        // opt-in: the read is refused BEFORE hashing or touching the blob, so
+        // get() is null and the caller falls back to a real parse. The decoy
+        // can no longer surface — this is the security acceptance, stated as
+        // a differential against the disarmed test above.
+        $victim = $this->tmp . '/src/Victim.php';
+        file_put_contents($victim, "<?php\nfunction real_helper(): int { return 1; }\n");
+
+        $decoy = [new Node\Stmt\Function_('decoy_fn', [
+            'stmts' => [new Node\Stmt\Expression(new Node\Scalar\Int_(999))],
+        ])];
+        $cache = $this->cache();
+        $cache->put($victim, $decoy);
+
+        AstCache::refuseInRootCacheReads(true);
+        $this->assertTrue(AstCache::refusesInRootCacheReads());
+        $this->assertNull($cache->get($victim), 'armed gate must never serve the planted blob');
+    }
+
+    public function testGateIsReadPathOnlyAndNotALeakyVoid(): void
+    {
+        // Writes survive the gate (a cold run still repopulates the correct
+        // blob) and re-disarming restores reads for files cached while it
+        // was off — so the safety posture is per-run, never a permanent
+        // cache kill switch.
+        $cache = $this->cache();
+        $cache->put($this->sourceFile, $this->parseSource()); // honest blob, gate off
+
+        AstCache::refuseInRootCacheReads(true);
+
+        // get() is cold while armed...
+        $this->assertNull($cache->get($this->sourceFile));
+
+        // ...but put() still writes: a second file lands a new blob.
+        $extra = $this->tmp . '/src/Extra.php';
+        file_put_contents($extra, "<?php\nfunction extra(): void {}\n");
+        $cache->put($extra, $this->parseSource($extra));
+        $this->assertCount(2, glob($this->tmp . '/cache/*.cache') ?: [],
+            'writes must not be gated');
+
+        // Re-disarm: both honest entries are readable again (not voided).
+        AstCache::refuseInRootCacheReads(false);
+        $this->assertNotNull($cache->get($this->sourceFile));
+        $this->assertNotNull($cache->get($extra));
     }
 
     // ---- helpers ----

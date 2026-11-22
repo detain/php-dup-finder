@@ -96,6 +96,21 @@ final class ConfigDefaultsExcludesTest extends TestCase
         $this->assertContains('plain_method.php', $basenames);
     }
 
+    public function testCacheDirDefaultStaysInsideTreeRefuseReadIsTheCure(): void
+    {
+        // engine-S25 / owner ruling (b): the engine-006 cache-poisoning fix
+        // is the read-path trust gate, NOT a relocation of the cache
+        // default. `.phpdup-cache` stays relative (so the documented warm-
+        // cache and CI-action-caching postures are unchanged); Command now
+        // refuses to READ such a cache when it sits inside a scan root,
+        // unless --trust-in-root-cache opts back in. This pins the default
+        // so a future relocation of the value cannot masquerade as the
+        // security fix, and documents that the cure is the gate.
+        $this->assertSame('.phpdup-cache', Config::defaults([])->cacheDir);
+        $this->assertContains('**/.phpdup-cache/**', Config::defaults([])->exclude,
+            'the cache dir is itself excluded from scanning — unrelated to the read gate');
+    }
+
     private function corpus(): string
     {
         if ($this->tmpDir === null) {

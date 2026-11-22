@@ -19,6 +19,7 @@ use Phpdup\Pipeline\Stages\PreprocessStage;
 use Phpdup\Pipeline\Stages\RefactorStage;
 use Phpdup\Pipeline\Stages\ReportStage;
 use Phpdup\Pipeline\Stages\ScanningStage;
+use Phpdup\Parsing\AstCache;
 use Phpdup\Reporting\BaselineStore;
 use Phpdup\Scanning\FileScanner;
 use Symfony\Component\Console\Command\Command as SymfonyCommand;
@@ -132,7 +133,8 @@ final class Command extends SymfonyCommand
             ->addOption('max-memory', null, InputOption::VALUE_REQUIRED, 'Soft memory ceiling in MB. When peak RSS exceeds this mid-pipeline, phpdup logs a warning and suggests --exact-only.')
             ->addOption('low-memory', null, InputOption::VALUE_NONE, 'Reduce memory footprint: use CompactNgramBag (32-bit fingerprint) and CanonicalNodePool interning for lower RSS at the cost of some speed.')
             ->addOption('stage', null, InputOption::VALUE_REQUIRED, 'Run pipeline only up to STAGE (scanning|preprocessing|clustering|refactoring|reporting); useful for incremental debugging')
-            ->addOption('diff-base', null, InputOption::VALUE_REQUIRED, 'Git ref for diff-scoped analysis. When set, phpdup scans only files changed in `git diff --name-only <ref>..HEAD` plus their clone cohort (files sharing n-gram fingerprints with the changed files).');
+            ->addOption('diff-base', null, InputOption::VALUE_REQUIRED, 'Git ref for diff-scoped analysis. When set, phpdup scans only files changed in `git diff --name-only <ref>..HEAD` plus their clone cohort (files sharing n-gram fingerprints with the changed files).')
+            ->addOption('trust-in-root-cache', null, InputOption::VALUE_NONE, 'Read the on-disk AST cache even when cache_dir resolves inside a scan root. Off by default: a committed cache inside a cloned tree can be a planted decoy, so an untrusted run refuses those reads (reports real code, one cold pass) and prints a notice. Opt in only for repositories you control.');
 
         // ── Interactive / UI ───────────────────────────────────────────────
         $this
@@ -179,7 +181,8 @@ Options grouped by category:
 
   <comment>Performance / runtime</comment>
     --workers (-j), --no-cache, --no-incremental, --no-lazy-ast,
-    --max-memory, --low-memory, --stage, --diff-base
+    --max-memory, --low-memory, --stage, --diff-base,
+    --trust-in-root-cache
 
  <comment>Interactive / UI</comment>
    --tui, --plain, --theme, --watch
@@ -333,7 +336,87 @@ HELP;
         ];
         $buildPipeline = $this->buildPipelineFactory($pipelineOpts);
 
+        // engine-006 read-path trust gate. The default cache_dir is the
+        // relative `.phpdup-cache`, so a normal run stores blobs INSIDE the
+        // scanned tree. Cloning an untrusted repo and running `analyze .`
+        // would then serve the repo author's committed decoy blob as if it
+        // were freshly parsed code. Unless the operator opts in with
+        // --trust-in-root-cache, refuse every disk-cache read for such a
+        // run: the analysis is simply cold (real source is re-parsed), and
+        // a planted cache can no longer fabricate a duplicate. Armed BEFORE
+        // dispatch so the pcntl_fork workers inherit the flag (true fork);
+        // the serial fallback reads the same process-wide state. Writes stay
+        // untouched — a cold read repopulates the correct blob for next time.
+        $trustInRootCache = (bool)$input->getOption('trust-in-root-cache');
+        $cacheInUse = $runtimeOptions['useCache'] && $pipelineConfig->cacheDir !== '';
+        $refuseInRootCacheReads = $cacheInUse
+            && !$trustInRootCache
+            && $this->cacheResidesInScanRoot($pipelineConfig->cacheDir, $pipelineConfig->paths);
+        AstCache::refuseInRootCacheReads($refuseInRootCacheReads);
+        if ($refuseInRootCacheReads) {
+            $output->writeln(sprintf(
+                '<comment>phpdup: ignoring the AST cache in %s because it lives inside the scanned tree (a committed cache there could be a planted decoy). This run is cold; pass --trust-in-root-cache only for repositories you trust.</comment>',
+                $pipelineConfig->cacheDir,
+            ));
+        }
+
         return $this->dispatch($input, $output, $pipelineConfig, $buildPipeline, $runtimeOptions, $diffCohort);
+    }
+
+    /**
+     * True when $cacheDir resolves to a location inside (or equal to) any of
+     * the scan roots in $paths. Both sides are reduced to a lexical absolute
+     * path — realpath() when the target exists so symlinks collapse, and a
+     * segment walk when it does not (a cold cache dir is created later, by
+     * the AstCache constructor inside the workers) — before the prefix test.
+     *
+     * @param list<string> $paths
+     */
+    private function cacheResidesInScanRoot(string $cacheDir, array $paths): bool
+    {
+        $cwd = getcwd();
+        if ($cwd === false) {
+            return false; // cannot resolve the relative default; fail open (no refusal)
+        }
+        $cacheAbs = self::toAbsolutePath($cacheDir, $cwd);
+        foreach ($paths as $root) {
+            if ($root === '') {
+                continue;
+            }
+            $rootAbs = self::toAbsolutePath($root, $cwd);
+            $prefix = $rootAbs === '/' ? '/' : $rootAbs . '/';
+            if ($cacheAbs === $rootAbs || str_starts_with($cacheAbs, $prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Resolve $path against $cwd to a trailing-slash-free absolute path,
+     * preferring realpath (existing paths, symlinks collapsed) and falling
+     * back to a pure lexical walk that only strips `.` / `..` / empty
+     * segments — never touching the filesystem for a not-yet-created dir.
+     */
+    private static function toAbsolutePath(string $path, string $cwd): string
+    {
+        $real = @realpath($path);
+        if ($real !== false) {
+            return $real;
+        }
+        $absolute = $path !== '' && $path[0] === '/' ? $path : $cwd . '/' . $path;
+        $segments = [];
+        foreach (explode('/', $absolute) as $segment) {
+            if ($segment === '' || $segment === '.') {
+                continue;
+            }
+            if ($segment === '..') {
+                array_pop($segments);
+                continue;
+            }
+            $segments[] = $segment;
+        }
+        return '/' . implode('/', $segments);
     }
 
     /**

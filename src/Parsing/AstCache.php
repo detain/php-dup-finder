@@ -40,6 +40,14 @@ use Phpdup\Persistence\SerializedClassAllowList;
  * ASTs embed every string literal of the scanned sources, so a
  * group-readable cache leaks secrets and enables poisoning on shared
  * runners. Shared caches across trust boundaries are unsupported.
+ *
+ * Because the default `cache_dir` is the relative `.phpdup-cache`, the
+ * blob store normally lands INSIDE the scanned tree — so cloning an
+ * untrusted repository and running `analyze .` would otherwise serve a
+ * planted decoy blob as real code (engine-006). {@see refuseInRootCacheReads()}
+ * is the read-path trust gate Command arms for that case: when set, every
+ * get() is a cold miss and the source is genuinely re-parsed, while
+ * `--trust-in-root-cache` opts back in to the fast-but-trusting reads.
  */
 final class AstCache
 {
@@ -73,6 +81,18 @@ final class AstCache
     private static int $hashCount = 0;
 
     /**
+     * engine-006 read-path trust gate. When true, every AstCache::get()
+     * returns null regardless of what is on disk — the decoy blob is never
+     * read or served and the source tree is fully re-parsed. Command.php
+     * arms this once before pipeline dispatch when the cache resolves
+     * inside a scan root and `--trust-in-root-cache` was not passed;
+     * because WorkerPool uses pcntl_fork (true-fork), children inherit
+     * the armed value automatically. Default false: every existing call
+     * path is byte-identical to before this gate existed.
+     */
+    private static bool $refuseInRootCacheReads = false;
+
+    /**
      * @param string      $cacheDir               disk cache directory ('' disables the cache)
      * @param string|null $parserVersionOverride  pins the parser marker inside cache keys
      *                                            (the two-marker identity unit, engine-S24);
@@ -99,6 +119,13 @@ final class AstCache
     public function get(string $path): ?array
     {
         if (!$this->isEnabled()) {
+            return null;
+        }
+        if (self::$refuseInRootCacheReads) {
+            // engine-006 trust gate: the cache resolved inside an untrusted
+            // scan root and no --trust-in-root-cache opt-in was given. Refuse
+            // the read BEFORE hashing or touching the blob, so a committed
+            // decoy can never surface — the caller re-parses real source.
             return null;
         }
         $key = $this->keyFor($path);
@@ -139,6 +166,33 @@ final class AstCache
     public static function hashCount(): int
     {
         return self::$hashCount;
+    }
+
+    /**
+     * Arm or disarm the engine-006 read-path trust gate for the whole
+     * process. Pass `true` to force every disk-cache read to miss (the
+     * safe posture when the cache directory lives inside an untrusted
+     * scan root); pass `false` to restore normal cache reads (the
+     * `--trust-in-root-cache` opt-in, and the run-scoped default).
+     *
+     * The gate is deliberately coarse — it refuses ALL reads, not just
+     * ones the caller can prove are inside the root — because the
+     * in-root decision is made once, upstream, where the scan roots are
+     * known. AstCache instances are constructed in three non-lockable
+     * sites (PreprocessWorker, RefactorStage, DeclaredTwinAnalyzer), so a
+     * process-wide flag set before dispatch is the only seam that reaches
+     * them — and the true-fork worker pool inherits it for free. Writes
+     * are never gated: a cold read simply repopulates the correct blob.
+     */
+    public static function refuseInRootCacheReads(bool $refuse): void
+    {
+        self::$refuseInRootCacheReads = $refuse;
+    }
+
+    /** Whether the engine-006 read gate is currently armed (test probe). */
+    public static function refusesInRootCacheReads(): bool
+    {
+        return self::$refuseInRootCacheReads;
     }
 
     /**
