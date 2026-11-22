@@ -561,7 +561,7 @@ final class PhpdupModelTest extends TestCase
     private function buildThrowingModel(\Throwable $failure): PhpdupModel
     {
         $factory = static function () use ($failure): array {
-            $gen = (static function (): \Generator {
+            $gen = (static function () use ($failure): \Generator {
                 yield Stage::Scanning;
                 yield Stage::Clustering;
                 throw $failure;

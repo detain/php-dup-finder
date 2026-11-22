@@ -50,10 +50,12 @@ final class TuiRunnerTest extends TestCase
      */
     public function testRunWithModelReturnsOneAfterPipelineHalt(): void
     {
-        $model = $this->driveLiveTui(shouldThrow: true);
+        [$model, $status] = $this->driveLiveTui(shouldThrow: true);
 
         $this->assertNotNull($model->pipelineError, 'halt surfaced on the model');
+        $this->assertSame('TED budget blown', $model->pipelineError);
         $this->assertSame(1, $model->exitCode());
+        $this->assertSame(1, $status, 'runWithModel propagates the halt as exit 1');
     }
 
     /**
@@ -62,10 +64,11 @@ final class TuiRunnerTest extends TestCase
      */
     public function testRunWithModelReturnsZeroOnCleanRun(): void
     {
-        $model = $this->driveLiveTui(shouldThrow: false);
+        [$model, $status] = $this->driveLiveTui(shouldThrow: false);
 
         $this->assertNull($model->pipelineError);
         $this->assertSame(0, $model->exitCode());
+        $this->assertSame(0, $status);
     }
 
     /**
