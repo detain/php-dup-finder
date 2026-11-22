@@ -583,4 +583,376 @@ final class ApplyExtractorTest extends TestCase
             'the member file keeps its original bytes');
         $this->assertDirectoryDoesNotExist($refactoredDir);
     }
+
+    // ---------------------------------------------------------------
+    // output-S44b (php-dup-finder-output-004, half B): the write window
+    // is a transaction — every touched path is snapshotted before the
+    // first byte, every landing is read back byte-for-byte, and any
+    // window failure restores the snapshots before it lets the loud
+    // refusal leave. The returned member list is the reporter's
+    // verified Applied tally.
+    // ---------------------------------------------------------------
+
+    /**
+     * Two files, one clone member each — the cross-file shape the write
+     * window lands in plan order (function artifact, member 1's file,
+     * member 2's file), so a failure on member 2 has already dirtied the
+     * artifact and member 1's file: exactly the torn state a rollback
+     * must erase.
+     *
+     * @return array{0: string, 1: string, 2: list<Block>, 3: string, 4: string}
+     *         [fileA, fileB, members, srcA, srcB]
+     */
+    private function twoFileMembers(string $dir): array
+    {
+        $srcA = "<?php\n"
+            . "function notifyAlpha(\$u, \$s) { if (\$s > 10) { send(\"admin\", \$u); } }\n";
+        $srcB = "<?php\n"
+            . "function notifyBeta(\$u, \$s) { if (\$s > 20) { send(\"moderator\", \$u); } }\n";
+        $fileA = $dir . '/alpha.php';
+        $fileB = $dir . '/beta.php';
+        file_put_contents($fileA, $srcA);
+        file_put_contents($fileB, $srcB);
+        return [
+            $fileA,
+            $fileB,
+            [
+                $this->cloneFunctionBlock($fileA, $srcA, 'notifyAlpha'),
+                $this->cloneFunctionBlock($fileB, $srcB, 'notifyBeta'),
+            ],
+            $srcA,
+            $srcB,
+        ];
+    }
+
+    /** Extract one named function block from source bound to $file. */
+    private function cloneFunctionBlock(string $file, string $src, string $name): Block
+    {
+        $stmts = (new AstParser())->parseCode($src);
+        $this->assertNotNull($stmts);
+        foreach ((new BlockExtractor(minSize: 1))->extract($file, $stmts) as $block) {
+            if ($block->kind === 'function' && $block->name === $name) {
+                return $block;
+            }
+        }
+        $this->fail("fixture: no function {$name} extracted from {$file}");
+    }
+
+    public function testApplyReturnsTheVerifiedMemberFilesOnSuccess(): void
+    {
+        // The success contract the RefactorPatchReporter tally rides:
+        // exactly the member files the window rewrote AND read back
+        // byte-for-byte, in plan order — one entry per FILE even when a
+        // file carries two members (the half-A grouping law).
+        $dir = $this->makeScratchDir();
+        [$fileA, $fileB, $members] = $this->twoFileMembers($dir);
+
+        $returned = (new ApplyExtractor())->apply($this->applyReadyCluster('S44L', $members), $dir . '/out');
+
+        $this->assertSame([$fileA, $fileB], $returned);
+        $this->assertStringContainsString('Refactored\\notifyByThreshold(', (string) file_get_contents($fileA));
+        $this->assertStringContainsString('Refactored\\notifyByThreshold(', (string) file_get_contents($fileB));
+        $this->assertFileExists($dir . '/out/Refactored/S44L.php');
+
+        $dir2 = $this->makeScratchDir();
+        [$file, $blocks] = $this->twoMemberFile($dir2);
+        $this->assertSame([$file], (new ApplyExtractor())->apply($this->applyReadyCluster('S44L2', $blocks), $dir2 . '/out'),
+            'one file, two members: one verified path out');
+    }
+
+    public function testMidWindowWriteFailureRollsBackEveryEarlierLandingByteForByte(): void
+    {
+        // The torn-state class: the artifact and member 1's file landed,
+        // member 2's write refuses (chmod-0444 DAC). Without the
+        // transaction the tree stays half-rewritten; with it, member 1 is
+        // restored to its EXACT pre-write bytes, the refused file is
+        // untouched, the artifact is removed, and the directories the
+        // window itself created vanish again.
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            $this->markTestSkipped('root bypasses DAC: a chmod-0444 file stays writable');
+        }
+        $dir = $this->makeScratchDir();
+        [$fileA, $fileB, $members, $srcA, $srcB] = $this->twoFileMembers($dir);
+        chmod($fileB, 0o444);
+
+        try {
+            (new ApplyExtractor())->apply($this->applyReadyCluster('S44X', $members), $dir . '/out');
+            $this->fail('expected the refused second write to abort the window loudly');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('refusing cluster S44X', $e->getMessage());
+            $this->assertStringContainsString('writing ' . $fileB . ' failed', $e->getMessage());
+            $this->assertStringContainsString('Permission denied', $e->getMessage());
+            $this->assertStringContainsString('write window rolled back', $e->getMessage());
+        } finally {
+            chmod($fileB, 0o644);
+        }
+
+        $this->assertSame($srcA, (string) file_get_contents($fileA),
+            'the member file that HAD landed is restored to its exact pre-write bytes');
+        $this->assertSame($srcB, (string) file_get_contents($fileB),
+            'the refused file was never changed');
+        $this->assertFileDoesNotExist($dir . '/out/Refactored/S44X.php',
+            'the function artifact the window wrote is removed');
+        $this->assertDirectoryDoesNotExist($dir . '/out',
+            'directories the window created are removed while empty');
+    }
+
+    public function testLandingThatDoesNotByteMatchThePlanRefusesAndRollsBack(): void
+    {
+        // The injected-failure half of the acceptance: a disk that accepts
+        // the write but never serves the new bytes (S44bLyingDisk). The
+        // read-back verify is what makes the Applied tally VERIFIED —
+        // without it this silent-swallow hardware lie would ship a
+        // half-rewritten tree counted as applied.
+        if (!in_array('s44b-lying-disk', stream_get_wrappers(), true)) {
+            $this->assertTrue(@stream_wrapper_register('s44b-lying-disk', S44bLyingDisk::class));
+        }
+        S44bLyingDisk::$served = [];
+        S44bLyingDisk::$recorded = [];
+
+        $dir = $this->makeScratchDir();
+        $srcA = "<?php\n"
+            . "function notifyAlpha(\$u, \$s) { if (\$s > 10) { send(\"admin\", \$u); } }\n";
+        $srcL = "<?php\n"
+            . "function notifyBeta(\$u, \$s) { if (\$s > 20) { send(\"moderator\", \$u); } }\n";
+        $fileA = $dir . '/alpha.php';
+        file_put_contents($fileA, $srcA);
+        $ghost = 's44b-lying-disk://beta.php';
+        S44bLyingDisk::$served[$ghost] = $srcL;
+
+        $members = [
+            $this->cloneFunctionBlock($fileA, $srcA, 'notifyAlpha'),
+            $this->cloneFunctionBlock($ghost, $srcL, 'notifyBeta'),
+        ];
+
+        try {
+            (new ApplyExtractor())->apply($this->applyReadyCluster('S44V', $members), $dir . '/out');
+            $this->fail('expected the byte-for-byte landing verify to refuse a disk that swallowed the rewrite');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('refusing cluster S44V', $e->getMessage());
+            $this->assertStringContainsString($ghost, $e->getMessage());
+            $this->assertStringContainsString('did not land byte-for-byte', $e->getMessage());
+            $this->assertStringContainsString('write window rolled back', $e->getMessage());
+        }
+
+        $this->assertStringContainsString('Refactored\\notifyByThreshold(', S44bLyingDisk::$recorded[$ghost] ?? '',
+            'the window DID send the rewrite — the read-back verify is what caught the lie');
+        $this->assertSame($srcA, (string) file_get_contents($fileA),
+            'the landed sibling member is restored byte-for-byte');
+        $this->assertFileDoesNotExist($dir . '/out/Refactored/S44V.php');
+        $this->assertDirectoryDoesNotExist($dir . '/out');
+
+        S44bLyingDisk::$served = [];
+        S44bLyingDisk::$recorded = [];
+    }
+
+    public function testExistingFunctionArtifactThatCannotBeReadRefusesBeforeAnyWrite(): void
+    {
+        // The snapshot read is IO too: a stale artifact the run cannot
+        // read back into the snapshot refuses the cluster BEFORE the
+        // window opens — never an un-restorable overwrite.
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            $this->markTestSkipped('root bypasses DAC: a chmod-000 file stays readable');
+        }
+        $dir = $this->makeScratchDir();
+        [$fileA, $fileB, $members, $srcA, $srcB] = $this->twoFileMembers($dir);
+
+        $artifactDir = $dir . '/out/Refactored';
+        mkdir($artifactDir, 0o775, true);
+        $artifact = $artifactDir . '/S44Q.php';
+        file_put_contents($artifact, "<?php\n// previous run\n");
+        chmod($artifact, 0o000);
+
+        try {
+            (new ApplyExtractor())->apply($this->applyReadyCluster('S44Q', $members), $dir . '/out');
+            $this->fail('expected a loud refusal when the prior artifact cannot be snapshotted');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('refusing cluster S44Q', $e->getMessage());
+            $this->assertStringContainsString('could not be read', $e->getMessage());
+            $this->assertStringContainsString($artifact, $e->getMessage());
+            $this->assertStringContainsString('no files were written', $e->getMessage());
+        } finally {
+            chmod($artifact, 0o644);
+        }
+
+        $this->assertSame($srcA, (string) file_get_contents($fileA));
+        $this->assertSame($srcB, (string) file_get_contents($fileB));
+        $this->assertSame("<?php\n// previous run\n", (string) file_get_contents($artifact),
+            'the prior artifact keeps its bytes — nothing overwrote it');
+    }
+
+    public function testFunctionArtifactPathCollisionRefusesTheCluster(): void
+    {
+        // Belt: the snapshot map keys one path once — a member file that
+        // doubles as the artifact destination would silently overwrite
+        // one snapshot with the other. Refused before the window, with a
+        // named diagnostic.
+        $dir = $this->makeScratchDir();
+        mkdir($dir . '/Refactored', 0o775, true);
+        $collide = $dir . '/Refactored/COLLIDE.php';
+        $src = "<?php\n"
+            . "function notifyA(\$u, \$s) { if (\$s > 10) { send(\"admin\", \$u); } }\n"
+            . "function notifyB(\$u, \$s) { if (\$s > 20) { send(\"moderator\", \$u); } }\n";
+        file_put_contents($collide, $src);
+
+        $members = [
+            $this->cloneFunctionBlock($collide, $src, 'notifyA'),
+            $this->cloneFunctionBlock($collide, $src, 'notifyB'),
+        ];
+
+        try {
+            (new ApplyExtractor())->apply($this->applyReadyCluster('COLLIDE', $members), $dir);
+            $this->fail('expected the artifact/member path collision to be refused');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('refusing cluster COLLIDE', $e->getMessage());
+            $this->assertStringContainsString('also a member file path', $e->getMessage());
+            $this->assertStringContainsString($collide, $e->getMessage());
+        }
+
+        $this->assertSame($src, (string) file_get_contents($collide),
+            'the colliding file keeps its original bytes');
+    }
+
+    public function testRollbackReportsAnIncompleteRestoreHonestly(): void
+    {
+        // The belt inside the belt: when a RESTORE write itself fails
+        // (disk holds bytes the snapshot says must go back, but the path
+        // refuses writes), the refusal must say ROLLBACK INCOMPLETE and
+        // name the path — never claim a clean tree it does not have.
+        // Injected straight at rollbackWriteWindow (a real restore-write
+        // failure cannot be staged without a production seam): the window
+        // state is "this path diverged from its snapshot and will not
+        // take the restore write back".
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            $this->markTestSkipped('root bypasses DAC: a chmod-0444 file stays writable');
+        }
+        $dir = $this->makeScratchDir();
+        $stuck = $dir . '/stuck.php';
+        file_put_contents($stuck, "ORIGINAL-ON-DISK-BUT-NOT-IN-THE-SNAPSHOT\n");
+        chmod($stuck, 0o444);
+
+        $cluster = new Cluster('RB', $this->twoMemberFile($dir)[1], 1.0, false);
+        $rollback = new \ReflectionMethod(ApplyExtractor::class, 'rollbackWriteWindow');
+
+        /** @var \RuntimeException $exception */
+        $exception = $rollback->invoke(
+            new ApplyExtractor(),
+            $cluster,
+            [$stuck => 'WHAT-THE-SNAPSHOT-CLAIMS-WAS-THERE-BEFORE'],
+            $dir . '/out',
+            $dir . '/out/Refactored',
+            false,
+            false,
+            'writing ' . $stuck . ' failed (simulated window failure)',
+        );
+        $message = $exception->getMessage();
+
+        $this->assertStringContainsString('refusing cluster RB', $message);
+        $this->assertStringContainsString('ROLLBACK INCOMPLETE', $message);
+        $this->assertStringContainsString($stuck . ' could not be restored', $message);
+        $this->assertStringContainsString('Permission denied', $message, 'the restore failure carries its diagnostic');
+        $this->assertStringContainsString('PARTIALLY rewritten', $message);
+        chmod($stuck, 0o644);
+    }
+}
+
+/**
+ * S44b harness: a stream wrapper that serves reads from {@see
+ * self::$served} but records writes into {@see self::$recorded} where
+ * reads NEVER look — the lying-disk shape the read-back verify exists
+ * for. Same in-file harness style as the S36 wrappers in
+ * UpdateCommandTest.
+ */
+class S44bLyingDisk
+{
+    /** @var array<string, string> bytes the fake disk serves on read */
+    public static array $served = [];
+
+    /** @var array<string, string> bytes the fake disk recorded on write */
+    public static array $recorded = [];
+
+    /** @var resource */
+    public $context;
+
+    private string $readBuffer = '';
+    private int $position = 0;
+    private ?string $writePath = null;
+
+    /** @return array<string,int>|false */
+    public function url_stat(string $path, int $flags): array|false
+    {
+        if (!array_key_exists($path, self::$served)) {
+            return false;
+        }
+        $now = time();
+        return [
+            'dev' => 0, 'ino' => 0, 'mode' => 0100644, 'nlink' => 1,
+            'uid' => 0, 'gid' => 0, 'rdev' => 0, 'size' => strlen(self::$served[$path]),
+            'atime' => $now, 'mtime' => $now, 'ctime' => $now, 'blksize' => -1, 'blocks' => -1,
+        ];
+    }
+
+    public function stream_open(string $path, string $mode, int $options, ?string &$opened_path): bool
+    {
+        $mode = str_replace(['b', 't'], '', $mode);
+        if ($mode === 'w' || $mode === 'x' || $mode === 'c') {
+            if ($mode === 'x' && array_key_exists($path, self::$served)) {
+                return false;
+            }
+            if ($mode !== 'c') {
+                self::$recorded[$path] = '';
+            }
+            $this->writePath = $path;
+            $this->readBuffer = '';
+            $this->position = 0;
+            return true;
+        }
+        if ($mode === 'r' || $mode === 'r+' || $mode === 'a' || $mode === 'a+') {
+            if (!array_key_exists($path, self::$served)) {
+                return false;
+            }
+            $this->readBuffer = self::$served[$path];
+            $this->position = 0;
+            return true;
+        }
+        return false;
+    }
+
+    public function stream_write(string $data): int
+    {
+        if ($this->writePath === null) {
+            return 0;
+        }
+        self::$recorded[$this->writePath] = (self::$recorded[$this->writePath] ?? '') . $data;
+        return strlen($data);
+    }
+
+    public function stream_read(int $count): string
+    {
+        $chunk = substr($this->readBuffer, $this->position, $count);
+        $this->position += strlen($chunk);
+        return $chunk;
+    }
+
+    public function stream_eof(): bool
+    {
+        return $this->position >= strlen($this->readBuffer);
+    }
+
+    /** @return array<string,int> */
+    public function stream_stat(): array
+    {
+        return ['mode' => 0100644, 'size' => strlen($this->readBuffer)];
+    }
+
+    public function stream_close(): void
+    {
+        $this->writePath = null;
+    }
+
+    public function unlink(string $path): bool
+    {
+        unset(self::$served[$path], self::$recorded[$path]);
+        return true;
+    }
 }

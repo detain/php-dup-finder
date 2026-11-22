@@ -35,8 +35,18 @@ use Phpdup\Util\AstSerializer;
  * the first in a shared file searched its original line spans in reshaped
  * text and silently applied to nothing — silent partial application, the
  * exact failure this restructure kills. IO failures are never swallowed:
- * every read/write carries a real diagnostic. The transaction + rollback
- * over the write loop is half B (output-S44b).
+ * every read/write carries a real diagnostic.
+ *
+ * output-004 (half B): the write window is a TRANSACTION. Every path it
+ * can change — the function artifact and each member file — is
+ * snapshotted BEFORE its first byte, every landing is read back and
+ * byte-compared against the plan, and any window failure (refused write,
+ * landing that does not match, un-readable landing) restores the
+ * snapshots byte-for-byte, removes artifacts and directories the window
+ * itself created, and only then lets the loud failure leave. A cluster
+ * whose rewrite the extractor cannot vouch for never exists half on
+ * disk, and the returned member-file list — the RefactorPatchReporter's
+ * Applied tally — contains exactly the files verified on disk.
  */
 final class ApplyExtractor
 {
@@ -54,8 +64,13 @@ final class ApplyExtractor
      * BEFORE any file is written — a synthetic fold has no parse-tree
      * position to rewrite and no call sites to redirect; silent partial
      * application is the failure class this prevents.
+     *
+     * output-004 (half B): on success every returned path was rewritten
+     * AND read back byte-for-byte inside the write-window transaction.
+     *
+     * @return list<string> member file paths rewritten and verified
      */
-    public function apply(Cluster $cluster, string $outDir): void
+    public function apply(Cluster $cluster, string $outDir): array
     {
         foreach ($cluster->members as $member) {
             if ($member->kind === 'script') {
@@ -63,13 +78,13 @@ final class ApplyExtractor
             }
         }
         if ($cluster->generalizedAst === null || $cluster->signature === null) {
-            return;
+            return [];
         }
         if (count($cluster->members) < 2) {
-            return;
+            return [];
         }
         if ($cluster->holePaths === []) {
-            return;
+            return [];
         }
 
         // 1. Build modified AST with hole nodes replaced by Variable references.
@@ -84,11 +99,43 @@ final class ApplyExtractor
         //    one replacement pass, count-verify, one prettyPrint — BEFORE
         //    any filesystem touch. Any miss throws here and the cluster is
         //    refused with zero files written.
-        $rewrites = $this->planRewrites($cluster, $funcName);
+        $planned = $this->planRewrites($cluster, $funcName);
 
-        // 4. Build and write the function file (loud: no @-swallow).
+        // 4. Build the function file and compose the window's full landing
+        //    set (function artifact first, then each member file exactly
+        //    once — every sibling member of a file landed inside the
+        //    single prettyPrinted tree planned above).
         $functionFile = $this->buildFunctionFile($funcName, $modifiedAst, $cluster);
         $refactoredDir = $outDir . '/Refactored';
+        $safeId = Slug::safe($cluster->id);
+        $functionPath = $refactoredDir . "/{$safeId}.php";
+        if (array_key_exists($functionPath, $planned)) {
+            // Snapshot/restore keys one path by one — a member file that
+            // doubles as the artifact destination would silently overwrite
+            // one snapshot with the other. Refuse before the window.
+            throw new \RuntimeException(sprintf(
+                'ApplyExtractor: refusing cluster %s — the function artifact path %s is also a member file path; no files were written.',
+                $cluster->id,
+                $functionPath,
+            ));
+        }
+
+        /** @var array<string, string> $landings path => planned bytes, window order */
+        $landings = [$functionPath => $functionFile];
+        foreach ($planned as $file => $pair) {
+            $landings[$file] = $pair['rewritten'];
+        }
+
+        // 5. output-004 (half B): open the write window as a TRANSACTION.
+        //    The snapshots are the bytes the plan read (member files carry
+        //    them — no second read) and the function artifact's on-disk
+        //    prior state (false = the path did not exist). Directory
+        //    creation runs BEFORE any write: a refused mkdir still leaves
+        //    "no files were written" true (half-A posture), and $outCreated
+        //    / $dirCreated mark the trees the window itself added.
+        $outPreExisted = is_dir($outDir);
+        $snapshot = $this->captureSnapshots($cluster, $planned, $functionPath);
+        $dirCreated = false;
         if (!is_dir($refactoredDir)) {
             // Sibling arms run error_clear_last() immediately before their
             // @-guarded call so describeLastFailure reports THIS attempt —
@@ -104,23 +151,228 @@ final class ApplyExtractor
                     self::describeLastFailure($refactoredDir),
                 ));
             }
+            $dirCreated = true;
         }
-        $safeId = Slug::safe($cluster->id);
-        $this->writeFileLoud($cluster, $refactoredDir . "/{$safeId}.php", $functionFile);
 
-        // 5. Write each member's file exactly once — every sibling member of
-        //    the file landed inside the single prettyPrinted tree planned
-        //    above, so one write carries the whole cluster's share.
-        foreach ($rewrites as $file => $code) {
-            $this->writeFileLoud($cluster, $file, $code);
+        // 6. The window: write every landing once, then read every landing
+        //    back and byte-compare it against the plan. A refused write,
+        //    a landing that did not match, or a landing that cannot be
+        //    re-read aborts the WHOLE window — the snapshots go back
+        //    first, byte-for-byte, then the loud failure leaves. The tree
+        //    never exists in a half-rewritten state (php-dup-finder-output-004).
+        try {
+            foreach ($landings as $path => $bytes) {
+                $this->writeFileLoud($path, $bytes);
+            }
+            $this->verifyLandings($landings);
+        } catch (\Throwable $failure) {
+            throw $this->rollbackWriteWindow(
+                $cluster,
+                $snapshot,
+                $outDir,
+                $refactoredDir,
+                !$outPreExisted,
+                $dirCreated,
+                $failure->getMessage(),
+            );
         }
+
+        // 7. Every landing verified byte-for-byte: return exactly the
+        //    member files the window rewrote — the RefactorPatchReporter's
+        //    Applied tally rides this list, so counted == verified.
+        return array_keys($planned);
+    }
+
+    /**
+     * Snapshot every path the write window is about to touch, BEFORE its
+     * first byte. Member files carry the exact bytes the plan read (one
+     * read per file, half-A law preserved); the function artifact's prior
+     * state is read here, and an existing-but-unreadable artifact refuses
+     * the cluster while nothing has been written yet.
+     *
+     * @param array<string, array{original: string, rewritten: string}> $planned
+     * @return array<string, string|false> path => pre-write bytes, false = absent
+     */
+    private function captureSnapshots(Cluster $cluster, array $planned, string $functionPath): array
+    {
+        $snapshot = [];
+        if (is_file($functionPath)) {
+            error_clear_last();
+            $prior = @file_get_contents($functionPath);
+            if ($prior === false) {
+                throw new \RuntimeException(sprintf(
+                    'ApplyExtractor: refusing cluster %s — the existing artifact %s could not be read (%s); no files were written.',
+                    $cluster->id,
+                    $functionPath,
+                    self::describeLastFailure($functionPath),
+                ));
+            }
+            $snapshot[$functionPath] = $prior;
+        } else {
+            $snapshot[$functionPath] = false;
+        }
+        foreach ($planned as $file => $pair) {
+            $snapshot[$file] = $pair['original'];
+        }
+        return $snapshot;
+    }
+
+    /**
+     * Read every written path back and demand byte equality with the plan.
+     * This is what makes "Applied" a VERIFIED tally: a write the disk
+     * swallowed, short-wrote, or raced against is caught here — inside the
+     * window, while rollback can still undo it.
+     *
+     * @param array<string, string> $landings path => planned bytes
+     */
+    private function verifyLandings(array $landings): void
+    {
+        foreach ($landings as $path => $bytes) {
+            error_clear_last();
+            $onDisk = @file_get_contents($path);
+            if ($onDisk === false) {
+                throw new \RuntimeException(sprintf(
+                    'the rewrite of %s could not be read back (%s)',
+                    $path,
+                    self::describeLastFailure($path),
+                ));
+            }
+            if ($onDisk !== $bytes) {
+                throw new \RuntimeException(sprintf(
+                    'the rewrite of %s did not land byte-for-byte (%d bytes planned, %d on disk)',
+                    $path,
+                    strlen($bytes),
+                    strlen($onDisk),
+                ));
+            }
+        }
+    }
+
+    /**
+     * Restore every snapshotted path to its pre-first-write state and turn
+     * the window failure into the final loud refusal.
+     *
+     * Per path: absent-before ⇒ removed if still there; present-before ⇒
+     * re-written when the current bytes diverge, then re-read to prove the
+     * restore landed. Directories the window itself created are removed
+     * when empty. A restore that itself fails is reported honestly as
+     * ROLLBACK INCOMPLETE — the exception never claims a clean tree it
+     * does not have.
+     *
+     * @param array<string, string|false> $snapshot
+     */
+    private function rollbackWriteWindow(
+        Cluster $cluster,
+        array $snapshot,
+        string $outDir,
+        string $refactoredDir,
+        bool $outCreated,
+        bool $dirCreated,
+        string $cause
+    ): \RuntimeException {
+        $restored = 0;
+        /** @var list<string> $problems */
+        $problems = [];
+
+        foreach ($snapshot as $path => $original) {
+            if ($original === false) {
+                if (!is_file($path)) {
+                    continue;
+                }
+                error_clear_last();
+                if (@unlink($path)) {
+                    ++$restored;
+                    continue;
+                }
+                clearstatcache(true, $path);
+                if (is_file($path)) {
+                    $problems[] = sprintf('%s could not be removed (%s)', $path, self::describeLastFailure($path));
+                }
+                continue;
+            }
+
+            error_clear_last();
+            $current = @file_get_contents($path);
+            if ($current === $original) {
+                continue; // the window never changed this path
+            }
+            error_clear_last();
+            if (@file_put_contents($path, $original) === false) {
+                $problems[] = sprintf('%s could not be restored (%s)', $path, self::describeLastFailure($path));
+                continue;
+            }
+            error_clear_last();
+            if (@file_get_contents($path) !== $original) {
+                $problems[] = sprintf('restoring %s did not land byte-for-byte (%s)', $path, self::describeLastFailure($path));
+                continue;
+            }
+            ++$restored;
+        }
+
+        if ($dirCreated) {
+            $problem = $this->removeOwnEmptyDir($refactoredDir);
+            if ($problem !== null) {
+                $problems[] = $problem;
+            }
+            if ($outCreated) {
+                $problem = $this->removeOwnEmptyDir($outDir);
+                if ($problem !== null) {
+                    $problems[] = $problem;
+                }
+            }
+        }
+
+        $outcome = $problems === []
+            ? sprintf('write window rolled back, %d path(s) restored to their pre-write state.', $restored)
+            : sprintf('ROLLBACK INCOMPLETE — %s; the tree may be PARTIALLY rewritten.', implode('; ', $problems));
+
+        return new \RuntimeException(sprintf(
+            'ApplyExtractor: refusing cluster %s — %s; %s',
+            $cluster->id,
+            $cause,
+            $outcome,
+        ));
+    }
+
+    /**
+     * Remove a directory THIS window created, and only while it is empty —
+     * a concurrent writer having filled it is a reason to keep it, not to
+     * destroy foreign bytes. Returns null when there is nothing to report.
+     */
+    private function removeOwnEmptyDir(string $dir): ?string
+    {
+        if (!is_dir($dir)) {
+            return null;
+        }
+        $entries = @scandir($dir);
+        if ($entries === false) {
+            return sprintf('could not inspect the created directory %s (%s)', $dir, self::describeLastFailure($dir));
+        }
+        foreach ($entries as $entry) {
+            if ($entry !== '.' && $entry !== '..') {
+                return null; // not ours to take — leave it, report nothing
+            }
+        }
+        error_clear_last();
+        if (@rmdir($dir)) {
+            return null;
+        }
+        // clearstatcache before any post-mutation existence re-check:
+        // PHP's stat cache is stale by design after unlink/rmdir, and an
+        // un-cleared is_dir here could re-report a directory that a
+        // concurrent actor already removed.
+        clearstatcache(true, $dir);
+        return is_dir($dir)
+            ? sprintf('the created directory %s could not be removed (%s)', $dir, self::describeLastFailure($dir))
+            : null;
     }
 
     /**
      * Group the cluster's members by file (first-appearance order) and plan
      * each file's full rewrite without touching the filesystem for writes.
      *
-     * @return array<string, string> file path => rewritten file text
+     * @return array<string, array{original: string, rewritten: string}>
+     *         file path => the bytes the plan read + the rewritten text
      */
     private function planRewrites(Cluster $cluster, string $funcName): array
     {
@@ -142,11 +394,14 @@ final class ApplyExtractor
      * pass, one prettyPrint for a whole file — or a loud refusal naming the
      * member that could not be rewritten. The refusal arrives before the
      * caller has written anything, so "partial application" is structurally
-     * excluded for every miss class (php-dup-finder-output-004).
+     * excluded for every miss class (php-dup-finder-output-004). The read
+     * bytes ride out with the rewrite as the transaction's snapshot of
+     * this path (half B) — the plan's one read serves both legs.
      *
      * @param list<Block> $members
+     * @return array{original: string, rewritten: string}
      */
-    private function planFileRewrite(Cluster $cluster, string $file, array $members, string $funcName): string
+    private function planFileRewrite(Cluster $cluster, string $file, array $members, string $funcName): array
     {
         // Silent return, old :332-334 — now a named refusal.
         if (!is_file($file)) {
@@ -224,7 +479,7 @@ final class ApplyExtractor
         }
 
         $newStmts = $this->replaceNodesInStmts($stmts, $replacements, $cluster, $file);
-        return $this->printer->prettyPrintFile($newStmts);
+        return ['original' => $code, 'rewritten' => $this->printer->prettyPrintFile($newStmts)];
     }
 
     /** Compact member label for diagnostics: kind, name (or class), span. */
@@ -242,16 +497,17 @@ final class ApplyExtractor
     /**
      * Write one artifact or throw with the suppressed diagnostic — the old
      * @file_put_contents swallow is gone: an IO failure aborts the apply
-     * loudly, naming the file and the cluster.
+     * loudly, naming the file. The message is the CAUSE clause of the
+     * transaction refusal built in apply() (half B), which prepends the
+     * cluster id and the rollback outcome.
      */
-    private function writeFileLoud(Cluster $cluster, string $path, string $content): void
+    private function writeFileLoud(string $path, string $content): void
     {
         error_clear_last();
         $written = @file_put_contents($path, $content);
         if ($written === false) {
             throw new \RuntimeException(sprintf(
-                'ApplyExtractor: cluster %s — writing %s failed (%s).',
-                $cluster->id,
+                'writing %s failed (%s)',
                 $path,
                 self::describeLastFailure($path),
             ));
@@ -268,7 +524,7 @@ final class ApplyExtractor
     {
         $failure = error_get_last();
         $message = is_array($failure) ? $failure['message'] : '';
-        foreach (['file_get_contents', 'file_put_contents', 'mkdir'] as $op) {
+        foreach (['file_get_contents', 'file_put_contents', 'mkdir', 'unlink', 'rmdir', 'scandir'] as $op) {
             $preamble = sprintf('%s(%s): ', $op, $path);
             if (str_starts_with($message, $preamble)) {
                 $message = substr($message, strlen($preamble));

@@ -41,6 +41,12 @@ use Phpdup\Util\ControlText;
  * `apply-summary.md` artifact instead of masquerading under the dry
  * branch's `apply.diff` name, and every write goes through the
  * sanctioned WritesReportFile trait (mkdir + write in one place).
+ *
+ * output-004 (half B): the F1b tally is honest — a cluster counts
+ * Applied only when {@see ApplyExtractor::apply()} returns a non-empty
+ * list of member files it rewrote and verified byte-for-byte inside its
+ * write-window transaction; zero-landed clusters ride Skipped, and the
+ * summary's verified-member-file line reports the sum of that list.
  */
 final class RefactorPatchReporter
 {
@@ -118,6 +124,7 @@ final class RefactorPatchReporter
                 $extractor = new ApplyExtractor();
                 $skipped = [];
                 $applied = [];
+                $verifiedMemberFiles = 0;
                 foreach ($report->clusters as $cluster) {
                     if (count($cluster->members) < 2) {
                         continue;
@@ -138,17 +145,35 @@ final class RefactorPatchReporter
                         continue;
                     }
                     try {
-                        $extractor->apply($cluster, $dir);
+                        $memberFiles = $extractor->apply($cluster, $dir);
+                        if ($memberFiles === []) {
+                            // output-004 (half B) honest tallies: apply()
+                            // returns EXACTLY the member files it rewrote
+                            // and read back byte-for-byte inside its
+                            // write-window transaction. A cluster that
+                            // landed nothing (a hole-less cluster returns
+                            // before the window ever opens) must never be
+                            // counted Applied — that row would claim a
+                            // refactor the tree never received.
+                            $skipped[] = "# cluster " . CsvReporter::defuseFormula($cluster->id)
+                                . ": nothing applied (no verified member rewrite)";
+                            continue;
+                        }
                         $applied[] = CsvReporter::defuseFormula("{$safeId}.php");
+                        $verifiedMemberFiles += count($memberFiles);
                     } catch (\Throwable $e) {
                         $skipped[] = "# cluster " . CsvReporter::defuseFormula($cluster->id) . ": error - " . $e->getMessage();
                     }
                 }
                 // Write the F1b human summary (output-022: distinct name
                 // AND content kind — this is not a diff, so it no longer
-                // lands under the dry branch's apply.diff name).
+                // lands under the dry branch's apply.diff name). The
+                // member-file line (output-004 half B) states what the
+                // extractor VERIFIED on disk, not what it attempted.
                 $summary = "# phpdup apply summary\n"
-                    . "# Applied: " . count($applied) . " clusters\n";
+                    . "# Applied: " . count($applied) . " clusters\n"
+                    . "# Verified member rewrites: " . $verifiedMemberFiles
+                    . " files (each read back byte-for-byte after the transaction)\n";
                 if ($applied !== []) {
                     $summary .= "# Files: " . implode(', ', $applied) . "\n";
                 }

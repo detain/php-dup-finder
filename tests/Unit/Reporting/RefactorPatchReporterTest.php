@@ -434,4 +434,164 @@ final class RefactorPatchReporterTest extends TestCase
         }
         @rmdir($dir);
     }
+
+    // ── output-004 (half B): honest F1b tallies — counted == verified ───────
+
+    /** Extract one named function block bound to a real file path. */
+    private function s44bBlock(string $file, string $name): Block
+    {
+        $stmts = (new AstParser())->parseCode((string) file_get_contents($file));
+        $this->assertNotNull($stmts);
+        foreach ((new \Phpdup\Extraction\BlockExtractor(minSize: 1))->extract($file, $stmts) as $block) {
+            if ($block->kind === 'function' && $block->name === $name) {
+                return $block;
+            }
+        }
+        $this->fail("fixture: no function {$name} in {$file}");
+    }
+
+    /**
+     * Cluster primed the way the apply chain primes its real ones:
+     * generalizedAst, signature and non-empty hole paths (the extractor's
+     * write window opens; hole-less variants blank the paths to take the
+     * early-return arm).
+     *
+     * @param list<Block> $members
+     */
+    private function s44bCluster(string $id, array $members, bool $withHoles): Cluster
+    {
+        $cluster = new Cluster($id, $members, 1.0, false);
+        $cluster->generalizedAst = $members[0]->ast;
+        $cluster->signature = 'function tallyThing($u, $s): mixed';
+        $cluster->holePaths = $withHoles ? ['__P0' => ['stmts', 0]] : [];
+        return $cluster;
+    }
+
+    /** @param list<Cluster> $clusters */
+    private function s44bReport(string $root, array $clusters): Report
+    {
+        return new Report(
+            files: 4, blocks: 4, parseErrors: 0,
+            clusters: $clusters, config: Config::defaults([$root]),
+        );
+    }
+
+    public function testF1bSummaryTalliesOnlyVerifiedMemberRewrites(): void
+    {
+        // Happy path: apply() returned two member files it rewrote AND
+        // read back byte-for-byte — the summary states both numbers.
+        $dir = sys_get_temp_dir() . '/phpdup-patch-s44b-' . uniqid('', true);
+        mkdir($dir, 0o775, true);
+        $a = $dir . '/alpha.php';
+        $b = $dir . '/beta.php';
+        file_put_contents($a, "<?php\nfunction tallyAlpha(\$u, \$s) { return \$s + 1; }\n");
+        file_put_contents($b, "<?php\nfunction tallyBeta(\$u, \$s) { return \$s + 2; }\n");
+        $out = $dir . '/apply';
+        try {
+            $members = [$this->s44bBlock($a, 'tallyAlpha'), $this->s44bBlock($b, 'tallyBeta')];
+            $report = $this->s44bReport($dir, [$this->s44bCluster('TALLY', $members, true)]);
+            (new RefactorPatchReporter(new SourceTextStore([$dir])))->writeTo($report, $out, apply: true, dryRun: false);
+
+            $summary = (string) file_get_contents($out . '/' . RefactorPatchReporter::APPLY_SUMMARY_FILE);
+            $this->assertStringContainsString("# Applied: 1 clusters\n", $summary);
+            $this->assertStringContainsString(
+                "# Verified member rewrites: 2 files (each read back byte-for-byte after the transaction)\n",
+                $summary,
+                'the member-file line rides apply()s verified list',
+            );
+            $this->assertStringContainsString('# Files: TALLY.php', $summary);
+            $this->assertStringNotContainsString('Skipped:', $summary);
+            $this->assertFileExists($out . '/Refactored/TALLY.php');
+            $this->assertStringContainsString('Refactored\\tallyThing(', (string) file_get_contents($a));
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
+    public function testClusterThatLandsNothingRidesSkippedNotApplied(): void
+    {
+        // The remaining tally dishonesty half B closes: a hole-less
+        // cluster returns from apply() BEFORE the write window opens —
+        // zero files change. Counting it Applied (the old behaviour)
+        // claimed a refactor the tree never received.
+        $dir = sys_get_temp_dir() . '/phpdup-patch-s44b-hole-' . uniqid('', true);
+        mkdir($dir, 0o775, true);
+        $a = $dir . '/alpha.php';
+        $b = $dir . '/beta.php';
+        file_put_contents($a, "<?php\nfunction tallyAlpha(\$u, \$s) { return \$s + 1; }\n");
+        file_put_contents($b, "<?php\nfunction tallyBeta(\$u, \$s) { return \$s + 2; }\n");
+        $srcA = (string) file_get_contents($a);
+        $out = $dir . '/apply';
+        try {
+            $members = [$this->s44bBlock($a, 'tallyAlpha'), $this->s44bBlock($b, 'tallyBeta')];
+            $report = $this->s44bReport($dir, [$this->s44bCluster('NOHOLE', $members, false)]);
+            (new RefactorPatchReporter(new SourceTextStore([$dir])))->writeTo($report, $out, apply: true, dryRun: false);
+
+            $summary = (string) file_get_contents($out . '/' . RefactorPatchReporter::APPLY_SUMMARY_FILE);
+            $this->assertStringContainsString("# Applied: 0 clusters\n", $summary);
+            $this->assertStringContainsString("# Verified member rewrites: 0 files", $summary);
+            $this->assertStringContainsString("# cluster NOHOLE: nothing applied (no verified member rewrite)", $summary);
+            $this->assertStringNotContainsString('# Files:', $summary, 'no Files row for a cluster that landed nothing');
+            $this->assertDirectoryDoesNotExist($out . '/Refactored', 'the write window never opened');
+            $this->assertSame($srcA, (string) file_get_contents($a));
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
+    public function testMidWindowRollbackKeepsTheTallyOnTheCleanClusterOnly(): void
+    {
+        // One clean cluster + one whose member write refuses mid-window
+        // (rollback fires, artifacts vanish): the Applied tally grows
+        // ONLY on the clean verified list, the rolled-back cluster rides
+        // the error rows carrying its refusal + rollback outcome.
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            $this->markTestSkipped('root bypasses DAC: a chmod-0444 file stays writable');
+        }
+        $dir = sys_get_temp_dir() . '/phpdup-patch-s44b-mix-' . uniqid('', true);
+        mkdir($dir, 0o775, true);
+        $a = $dir . '/alpha.php';
+        $b = $dir . '/beta.php';
+        $y = $dir . '/broken-ok.php';
+        $x = $dir . '/broken-blocked.php';
+        file_put_contents($a, "<?php\nfunction tallyAlpha(\$u, \$s) { return \$s + 1; }\n");
+        file_put_contents($b, "<?php\nfunction tallyBeta(\$u, \$s) { return \$s + 2; }\n");
+        file_put_contents($y, "<?php\nfunction tallyBrokenOk(\$u, \$s) { return \$s + 3; }\n");
+        file_put_contents($x, "<?php\nfunction tallyBrokenBlocked(\$u, \$s) { return \$s + 4; }\n");
+        $srcY = (string) file_get_contents($y);
+        $srcX = (string) file_get_contents($x);
+
+        $good = $this->s44bCluster('GOOD', [$this->s44bBlock($a, 'tallyAlpha'), $this->s44bBlock($b, 'tallyBeta')], true);
+        // Member ORDER puts the writable file first in the window: its
+        // rewrite really lands before the blocked second write refuses —
+        // the torn state the rollback must erase.
+        $broken = $this->s44bCluster('BROKEN', [$this->s44bBlock($y, 'tallyBrokenOk'), $this->s44bBlock($x, 'tallyBrokenBlocked')], true);
+        chmod($x, 0o444);
+        $out = $dir . '/apply';
+        try {
+            $report = $this->s44bReport($dir, [$good, $broken]);
+            (new RefactorPatchReporter(new SourceTextStore([$dir])))->writeTo($report, $out, apply: true, dryRun: false);
+
+            $summary = (string) file_get_contents($out . '/' . RefactorPatchReporter::APPLY_SUMMARY_FILE);
+            $this->assertStringContainsString("# Applied: 1 clusters\n", $summary);
+            $this->assertStringContainsString('# Verified member rewrites: 2 files', $summary);
+            $this->assertStringContainsString('# cluster BROKEN: error - ApplyExtractor: refusing cluster BROKEN', $summary);
+            $this->assertStringContainsString('writing ' . $x . ' failed', $summary,
+                'the refused write rides the error row');
+            $this->assertStringContainsString('write window rolled back', $summary,
+                'and so does the rollback outcome');
+            $this->assertStringNotContainsString('BROKEN.php', explode('# Skipped', $summary)[0],
+                'the Files row lists only the clean cluster');
+            $this->assertFileDoesNotExist($out . '/Refactored/BROKEN.php',
+                'the broken window un-landed its artifact');
+            $this->assertSame($srcY, (string) file_get_contents($y),
+                'the member rewrite that HAD landed is restored byte-for-byte');
+            $this->assertSame($srcX, (string) file_get_contents($x));
+            $this->assertStringContainsString('Refactored\\tallyThing(', (string) file_get_contents($a),
+                'the clean cluster keeps its verified rewrites');
+        } finally {
+            chmod($x, 0o644);
+            $this->rrmdir($dir);
+        }
+    }
 }
