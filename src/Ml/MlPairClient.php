@@ -48,6 +48,11 @@ use Phpdup\Extraction\Block;
  *
  * /score-batch wraps one such vector per requested pair; see
  * {@see self::scoreBatch()} for its exact request/response shape.
+ * The same contract, told sidecar-facing (both routes, batch
+ * alignment, the 1 MiB cap and the pinned-transport posture), lives
+ * in docs/ML.md and the "ML pair-scoring sidecar contract" section of
+ * docs/SERVER.md; tools/ml-sidecar-example.php is a runnable reference
+ * server for it.
  *
  * **Failure mode**
  *

@@ -181,3 +181,78 @@ this server's `/jobs` endpoint and renders the resulting JSON via
 the browser-side reporter. The `Application` class is transport-
 agnostic, so the same code can run under FrankenPHP for a single-
 binary deployable artifact.
+
+## ML pair-scoring sidecar contract (outbound, `--ml-pair-url`)
+
+These routes are **not** served by `phpdup serve`. They are the HTTP
+contract this daemon's analysis pipeline dials **out** to when
+`--ml-pair-url` is set, via `Phpdup\Ml\MlPairClient` — the last
+clustering tier (semantics and per-class wiring status:
+[ML.md](ML.md)). A runnable stdlib reference server for both routes
+ships at [`../tools/ml-sidecar-example.php`](../tools/ml-sidecar-example.php).
+
+### `POST /score-pair` — one pair
+
+Request body is ONE combined feature vector: the `feature_version`
+envelope marker followed by EXACTLY the 11 fields of
+`Phpdup\Ml\PairFeatures::WIRE_KEYS`, in that order (booleans travel as
+JSON `true`/`false`; `once-S48` made the const the wire's single source
+of truth, and the unit suite pins the payload against it):
+
+```
+{
+  "feature_version":       1,
+  "structural_hash_match": false,
+  "ngram_jaccard":         0.42,
+  "var_jaccard":           0.55,
+  "call_jaccard":          0.10,
+  "return_jaccard":        1.00,
+  "db_tag_jaccard":        1.00,
+  "ir_token_jaccard":      0.93,
+  "block_size_ratio":      0.85,
+  "kind_match":            true,
+  "block_a_kind":          "method",
+  "block_b_kind":          "method"
+}
+```
+
+Response: `200` + `{ "similarity": 0.91, "confidence": 0.78 }` — both
+numbers must be finite and within `[0, 1]` (they pass
+`MlClient::coerceUnitFloat()` before the tier compares `similarity`
+with `--ml-pair-threshold`; engine-S20).
+
+### `POST /score-batch` — many pairs, one request
+
+Request: `{ "pairs": [ <combined vector>, … ] }` — one vector per
+requested pair, in request order (the parallel path's `PairScoreWorker`
+uses this first and retries individually on a batch miss). Response:
+
+```
+{ "results": [ { "similarity": 0.91, "confidence": 0.78 }, [0.55, 0.9] ] }
+```
+
+`results` is contractually ORDERED: entry *i* answers pair *i*, and it
+must be a sequential JSON list of exactly as many entries as were
+requested — a miscounted or non-list response is voided whole because
+the client consumes it positionally (engine-S20). Each entry is either
+a named object or a positional list whose first two elements are
+`similarity` then `confidence` (trailing fields are ignored). A
+malformed entry — not an array, too short, or numbers failing the
+`[0, 1]` fence — becomes a null slot: that pair receives no ML-tier
+edge while its neighbours keep their verdicts.
+
+### What the sidecar sees on the wire
+
+Every endpoint URL passes the shared SSRF gate (`MlClient::gateUrl()`,
+engine-S19a/b): http(s) only, canonical-IP-literal-or-resolving host,
+and every candidate address cleared of the refused spaces (loopback,
+RFC 1918, CGNAT, link-local, ULA, IPv4-mapped, multicast/reserved/
+broadcast, localhost deny-list) — so today a loopback or private-range
+sidecar URL is refused at admission; the planned opt-in
+`--ml-pair-allow-private` (once-S54, default off) does not exist yet.
+The gate-checked addresses are then the dialled addresses (curl
+`CURLOPT_RESOLVE`; stream rewrite + explicit `Host` + `ssl.peer_name`),
+the gate decision is computed once per client instance and one reused
+keep-alive curl handle carries later requests (engine-S21), and any
+response larger than 1 MiB (`MlClient::MAX_RESPONSE_BYTES`) or any
+non-2xx status is treated as a null verdict.
