@@ -1033,4 +1033,265 @@ final class ServeCommandTest extends TestCase
             'handleClient must fall back to the documented constant'
         );
     }
+
+    // ------------------------------------------------------------------
+    // shell-S05 (shell-033 + shell-047): HTTP framing hardened at the
+    // one place the body size is read. The size gate is fed ONLY by
+    // anchored, exact-name Content-Length lines (an `X-Content-Length:`
+    // decoy cannot hijack the 413 gate, `Content-Lengthings:` never
+    // matches, conflicting duplicates refuse with 400 instead of the
+    // gate and extractHeaders each following their own first-vs-last
+    // winner). Transfer-Encoding — this server never decodes chunked —
+    // is answered 400 with an explanatory body before a body byte is
+    // awaited, and the header section terminates on the RFC 7230
+    // bare-LF pair as well as CRLF CRLF, so a piped LF-only client is
+    // served immediately rather than hanging until it closes.
+    // ------------------------------------------------------------------
+
+    public function testDecoyContentLengthAheadCannotHijackThe413Gate(): void
+    {
+        // The FUZZ proof shape: `X-Content-Length: 999999999` rides the
+        // wire AHEAD of the real `Content-Length: 12`. The old unanchored
+        // first-substring regex grabbed the decoy and answered 413; the
+        // anchored gate uses the real value, reads exactly the 12-byte
+        // body, and the application's own admission verdict answers.
+        $command = new ServeCommand();
+        $command->readTimeoutSeconds = 1;
+        $app = new \Phpdup\Server\Application(new \Phpdup\Server\JobQueue());
+
+        [$raw, $elapsed] = $this->driveClient(
+            $command,
+            "POST /analyze HTTP/1.1\r\nHost: x\r\nX-Content-Length: 999999999\r\nContent-Length: 12\r\n\r\n{\"paths\":[]}",
+            $app
+        );
+
+        $this->assertStringStartsWith('HTTP/1.1 400 Bad Request', $raw);
+        $this->assertStringNotContainsString('413', $raw, 'the decoy must never drive the size gate');
+        $this->assertStringContainsString('paths must be a non-empty array', $raw);
+        $this->assertLessThan(0.5, $elapsed, 'the anchored 12-byte gate must consume the real body, not stall');
+    }
+
+    public function testSmallDecoyAheadCannotBypassAnOversizedRealGate(): void
+    {
+        // The mirror image of the hijack: a decoy SMALLER than the cap in
+        // front of a genuinely oversize real value must not smuggle the
+        // request past the 413 the real number owes it.
+        $command = new ServeCommand();
+        $command->readTimeoutSeconds = 1;
+        $app = new \Phpdup\Server\Application(new \Phpdup\Server\JobQueue());
+
+        [$raw, $elapsed] = $this->driveClient(
+            $command,
+            "POST /analyze HTTP/1.1\r\nX-Content-Length: 5\r\nContent-Length: 20000000\r\n\r\n",
+            $app
+        );
+
+        // 20000000 > Application::MAX_BODY_BYTES (16777216) — the gate
+        // answers before awaiting a single body byte.
+        $this->assertStringStartsWith('HTTP/1.1 413 Payload Too Large', $raw);
+        $this->assertLessThan(0.5, $elapsed);
+    }
+
+    public function testConflictingContentLengthValuesAreRefused400(): void
+    {
+        // Two anchored occurrences, two DIFFERENT values: no first-vs-last
+        // guess is made — the request is refused with an explanatory body
+        // (RFC 7230 3.3.3 point). Content sits behind the headers; none of
+        // it is ever read.
+        $command = new ServeCommand();
+        $command->readTimeoutSeconds = 1;
+        $app = new \Phpdup\Server\Application(new \Phpdup\Server\JobQueue());
+
+        [$raw, $elapsed] = $this->driveClient(
+            $command,
+            "POST /analyze HTTP/1.1\r\nContent-Length: 12\r\nContent-Length: 13\r\n\r\n{\"paths\":[]}x",
+            $app
+        );
+
+        $this->assertStringStartsWith('HTTP/1.1 400 Bad Request', $raw);
+        $this->assertStringContainsString('conflicting Content-Length headers', $raw);
+        $this->assertStringNotContainsString('paths must be a non-empty array', $raw);
+        $this->assertLessThan(0.5, $elapsed);
+    }
+
+    public function testAgreeingDuplicateContentLengthActsAsOneField(): void
+    {
+        // Repeats that ALL say the same thing are one field, not a
+        // conflict: the body is consumed and the application answers.
+        $command = new ServeCommand();
+        $command->readTimeoutSeconds = 1;
+        $app = new \Phpdup\Server\Application(new \Phpdup\Server\JobQueue());
+
+        [$raw] = $this->driveClient(
+            $command,
+            "POST /analyze HTTP/1.1\r\nContent-Length: 12\r\nContent-Length: 12\r\n\r\n{\"paths\":[]}",
+            $app
+        );
+
+        $this->assertStringStartsWith('HTTP/1.1 400 Bad Request', $raw);
+        $this->assertStringNotContainsString('conflicting Content-Length headers', $raw);
+        $this->assertStringContainsString('paths must be a non-empty array', $raw);
+    }
+
+    public function testBareLfTerminatedRequestIsAnsweredWithoutTheClientClosing(): void
+    {
+        // The FUZZ hang (shell-047): driveClient keeps the socket OPEN
+        // after writing, exactly like `printf 'GET /healthz HTTP/1.1\n\n'
+        // | nc host port` whose sender stays connected. Pre-fix the CRLF-
+        // only loop never saw a terminator and rode the read deadline to
+        // a 408 (or, before S04, to close). The LF pair now ends the
+        // header section and healthz answers immediately.
+        $command = new ServeCommand();
+        $command->readTimeoutSeconds = 1;
+        $app = new \Phpdup\Server\Application(new \Phpdup\Server\JobQueue());
+
+        [$raw, $elapsed] = $this->driveClient($command, "GET /healthz HTTP/1.1\n\n", $app);
+
+        $this->assertStringStartsWith('HTTP/1.1 200', $raw);
+        $this->assertStringEndsWith('ok', $raw);
+        $this->assertLessThan(0.5, $elapsed, 'a bare-LF request must be served, never waited on');
+    }
+
+    public function testBareLfFramingCarriesHeadersAndBody(): void
+    {
+        // Leniency is not crippled: an all-LF request WITH a Content-Length
+        // and headers still gates its body and still authenticates from
+        // the extracted header map.
+        $command = new ServeCommand();
+        $command->readTimeoutSeconds = 1;
+        $app = new \Phpdup\Server\Application(new \Phpdup\Server\JobQueue(), null, 'sekrit');
+
+        [$stalled] = $this->driveClient(
+            $command,
+            "POST /analyze HTTP/1.1\nContent-Length: 12\n\n{\"paths\":[]}",
+            $app
+        );
+        $this->assertStringStartsWith('HTTP/1.1 401', $stalled, 'LF headers must reach Authorization extraction');
+
+        [$ok] = $this->driveClient(
+            $command,
+            "POST /analyze HTTP/1.1\nAuthorization: Bearer sekrit\nContent-Length: 12\n\n{\"paths\":[]}",
+            $app
+        );
+        $this->assertStringStartsWith('HTTP/1.1 400', $ok);
+        $this->assertStringContainsString('paths must be a non-empty array', $ok);
+    }
+
+    public function testChunkedTransferEncodingIsRefusedWithExplanation(): void
+    {
+        // The parser never decodes chunked. The framed-looking request
+        // carries NO Content-Length, so pre-fix it sailed to the
+        // application with an empty body (and the old extractHeaders
+        // would have fed the app a garbage one-liner map). Post-fix the
+        // refusal names the framing problem itself.
+        $command = new ServeCommand();
+        $command->readTimeoutSeconds = 1;
+        $app = new \Phpdup\Server\Application(new \Phpdup\Server\JobQueue());
+
+        [$raw, $elapsed] = $this->driveClient(
+            $command,
+            "POST /analyze HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n24\r\n{\"paths\":[\"src\"]}\r\n0\r\n\r\n",
+            $app
+        );
+
+        $this->assertStringStartsWith('HTTP/1.1 400 Bad Request', $raw);
+        $this->assertStringContainsString('Transfer-Encoding is not supported; send Content-Length', $raw);
+        $this->assertStringNotContainsString('invalid JSON', $raw);
+        $this->assertLessThan(0.5, $elapsed, 'the refusal must land before any chunk bytes are awaited');
+
+        // The explanation travels as JSON: the refusal picked up its
+        // Content-Type where the bodyless arms keep the old byte shape.
+        $this->assertStringContainsString("Content-Type: application/json\r\n", $raw);
+    }
+
+    public function testTransferEncodingDecoyNameIsNotRefused(): void
+    {
+        // The TE refusal is anchored too: a benign `X-Transfer-Encoding:`
+        // header must sail through to the application verdict.
+        $command = new ServeCommand();
+        $command->readTimeoutSeconds = 1;
+        $app = new \Phpdup\Server\Application(new \Phpdup\Server\JobQueue());
+
+        [$raw] = $this->driveClient(
+            $command,
+            "POST /analyze HTTP/1.1\r\nX-Transfer-Encoding: chunked\r\nContent-Length: 12\r\n\r\n{\"paths\":[]}",
+            $app
+        );
+
+        $this->assertStringStartsWith('HTTP/1.1 400 Bad Request', $raw);
+        $this->assertStringNotContainsString('Transfer-Encoding is not supported', $raw);
+        $this->assertStringContainsString('paths must be a non-empty array', $raw);
+    }
+
+    public function testAnchoredContentLengthCollectorSeesOnlyExactFieldNames(): void
+    {
+        // Unit half of the acceptance line `Content-Lengthings: does not
+        // match the anchored regex` — plus the decoy name, the case- and
+        // padding-tolerant real matches, and the malformed value the
+        // anchored pattern simply does not count.
+        $collect = new \ReflectionMethod(ServeCommand::class, 'contentLengths');
+
+        $lengths = $collect->invoke(null, implode("\n", [
+            'Content-Lengthings: 12',
+            'X-Content-Length: 999999999',
+            'content-LENGTH: 12',
+            'Content-Length:   7 ',
+            "Content-Length:\t8",
+            'Content-Length: 12x',
+        ]));
+        $this->assertSame([12, 7, 8], $lengths);
+
+        // A tab-indented obs-fold line is not a field at its own name:
+        // `^` must not fire mid-line.
+        $this->assertSame([], $collect->invoke(null, "\tContent-Length: 5"));
+
+        // No separators, no matches, no crash.
+        $this->assertSame([], $collect->invoke(null, 'Host: x\nContent-Length: 9'));
+    }
+
+    public function testExtractHeadersDuplicatePolicyIsDocumentedLastWins(): void
+    {
+        // shell-033 acceptance: LAST-WINS is the extraction posture for
+        // every header (Authorization keeps the final line); the Content-
+        // Length special case is a REJECTION, and it happens upstream in
+        // handleClient — so whatever reaches this extractor has already
+        // passed the distinct-values gate. The LF split is shell-047's:
+        // an all-LF header block extracts per-line, never one garbage
+        // "line" spanning the request.
+        $extract = new \ReflectionMethod(ServeCommand::class, 'extractHeaders');
+        $command = new ServeCommand();
+
+        $headers = $extract->invoke($command, implode("\n", [
+            'GET /healthz HTTP/1.1',
+            'Authorization: Bearer first',
+            'Authorization: Bearer last',
+            'Host: example',
+            'Content-Length: 5',
+            'Content-Length: 9',
+        ]));
+
+        $this->assertSame(['authorization' => 'Bearer last', 'host' => 'example', 'content-length' => '9'], $headers);
+    }
+
+    public function testAnchoredFramingReplacedTheLooseSubstringMatch(): void
+    {
+        // Anti-regression inspection pin (the same style as the S03/S04
+        // structural pins): the old unanchored first-substring scan is
+        // gone from the source, and every new framing arm is wired into
+        // handleClient itself — not merely defined beside it.
+        $src = (string)file_get_contents(
+            (new \ReflectionClass(ServeCommand::class))->getFileName()
+        );
+        $start = strpos($src, 'private function handleClient($client, Application $app): void');
+        $this->assertIsInt($start, 'handleClient must exist');
+        $method = substr($src, $start, strpos($src, "\n    }", $start) - $start);
+
+        $this->assertStringNotContainsString("'Content-Length:\\s*(\\d+)/i'", $src);
+        $this->assertStringNotContainsString('strpos($raw, "\r\n\r\n")', $method);
+        $this->assertStringContainsString('self::headerEnd($raw)', $method);
+        $this->assertStringContainsString('self::contentLengths($headerBlock)', $method);
+        $this->assertStringContainsString('count(array_unique($lengths)) > 1', $method);
+        $this->assertStringContainsString('/^Transfer-Encoding:/mi', $method);
+        $this->assertStringContainsString('HTTP/1\.[01](?:\n|$)', $method);
+    }
 }

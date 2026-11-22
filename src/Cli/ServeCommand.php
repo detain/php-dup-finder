@@ -33,9 +33,19 @@ use Symfony\Component\Console\Output\OutputInterface;
  *   The server refuses to bind publicly without a bearer token.
  * - Inbound bodies are capped at {@see Application::MAX_BODY_BYTES} via
  *   the `Content-Length` header; oversize requests get a 413 response
- *   without ever entering the application.
+ *   without ever entering the application. The gate reads ONLY anchored,
+ *   exact-name `Content-Length` lines (shell-033): a decoy
+ *   `X-Content-Length:` or `Content-Lengthings:` cannot hijack it, and two
+ *   distinct values refuse the request with 400 before any byte-count
+ *   decision (first-vs-last) is made at all.
  * - The method+path pair is matched against an allow-list before the
  *   body is read, so unknown routes do not consume request bytes.
+ * - Request framing is HTTP/1.1 without chunked bodies (shell-047): a
+ *   `Transfer-Encoding` header is answered 400 with an explanatory body
+ *   before any body byte is read, and the header section terminates on
+ *   either the canonical CRLF CRLF or the RFC 7230 bare-LF `\n\n`, so a
+ *   piped LF-only client (`printf 'GET /x HTTP/1.1\n\n' | nc …`) is
+ *   served immediately instead of hanging until it closes.
  * - When a token is set, all requests require `Authorization: Bearer <token>`.
  * - Scanned paths are confined to `--serve-root` via realpath canonicalization
  *   on BOTH `/analyze` and `/jobs`: absolute paths, `..` sequences and
@@ -456,11 +466,22 @@ final class ServeCommand extends SymfonyCommand
                 $this->writeStatus($client, 431, 'Request Header Fields Too Large');
                 return;
             }
-            if (str_contains($raw, "\r\n\r\n")) {
+            // shell-047: the separator is CRLF CRLF or the lenient bare-LF
+            // pair — whichever arrives first ends the header section.
+            if (self::headerEnd($raw) !== null) {
                 break;
             }
         }
-        if (preg_match('#^([A-Z]+) ([^ ]+) HTTP/1\.[01]\r\n#', $raw, $m) !== 1) {
+
+        // shell-047: parse against the CR-stripped header block, so the
+        // request line and every anchored header match see clean LF-
+        // separated lines regardless of the client's line-ending mix. CR
+        // carries no header content — dropping it is loss-free — and the
+        // body bytes stay untouched after the separator.
+        $end = self::headerEnd($raw);
+        $headerBlock = str_replace("\r", '', $end === null ? $raw : substr($raw, 0, $end[0]));
+
+        if (preg_match('#^([A-Z]+) ([^ ]+) HTTP/1\.[01](?:\n|$)#', $headerBlock, $m) !== 1) {
             $this->writeStatus($client, 400, 'Bad Request');
             return;
         }
@@ -472,11 +493,40 @@ final class ServeCommand extends SymfonyCommand
             return;
         }
 
-        $bodyStart = strpos($raw, "\r\n\r\n");
-        $body = $bodyStart === false ? '' : substr($raw, $bodyStart + 4);
-        // Top-level Content-Length parsing for simple JSON bodies.
-        if (preg_match('/Content-Length:\s*(\d+)/i', $raw, $cm) === 1) {
-            $expected = (int)$cm[1];
+        // shell-047: this parser never decodes chunked bodies. Presence of
+        // the framing header (anchored exact name — an `X-Transfer-
+        // Encoding:` decoy passes) refuses the request where it belongs,
+        // before a single body byte is awaited.
+        if (preg_match('/^Transfer-Encoding:/mi', $headerBlock) === 1) {
+            $this->writeStatus(
+                $client,
+                400,
+                'Bad Request',
+                '{"error":"Transfer-Encoding is not supported; send Content-Length"}'
+            );
+            return;
+        }
+
+        // shell-033: the size gate is fed only by anchored, exact-name
+        // Content-Length occurrences. Repeats that agree act as one field
+        // (RFC 7230 3.3.3); conflicting values are a request the daemon
+        // refuses rather than a race between two readers' duplicate policy.
+        $lengths = self::contentLengths($headerBlock);
+        if (count(array_unique($lengths)) > 1) {
+            $this->writeStatus(
+                $client,
+                400,
+                'Bad Request',
+                '{"error":"conflicting Content-Length headers"}'
+            );
+            return;
+        }
+        $expected = $lengths === [] ? null : $lengths[0];
+
+        $body = $end === null ? '' : substr($raw, $end[0] + $end[1]);
+        // Read the claimed body, still capped by MAX_BODY_BYTES at the
+        // stream level so a lying header can never buffer unbounded.
+        if ($expected !== null) {
             if ($expected < 0 || $expected > Application::MAX_BODY_BYTES) {
                 $this->writeStatus($client, 413, 'Payload Too Large');
                 return;
@@ -505,7 +555,7 @@ final class ServeCommand extends SymfonyCommand
 
         // Extract request headers into a lowercase-keyed array for
         // case-insensitive lookup (required for Authorization).
-        $headers = $this->extractHeaders($raw);
+        $headers = $this->extractHeaders($headerBlock);
 
         // respond() is crash-proof by contract (see its docblock): a throw
         // inside the application fails this request with 500 only.
@@ -591,17 +641,76 @@ final class ServeCommand extends SymfonyCommand
     }
 
     /**
-     * Extract HTTP headers from the raw request and return them as a
-     * lowercase-keyed array for case-insensitive lookup.
+     * Locate the header/body separator in a raw request, honouring both
+     * the canonical CRLF CRLF and the RFC 7230 bare-LF leniency a piped
+     * `printf 'GET /healthz HTTP/1.1\n\n' | nc …` client sends
+     * (shell-047). The earliest separator wins; the two byte pairs never
+     * shadow each other (`"\r\n\r\n"` contains no `"\n\n"` and vice
+     * versa), so the searches are independent.
+     *
+     * @return array{0:int,1:int}|null [offset of separator, separator
+     *                                  length], null while it has not
+     *                                  fully arrived
+     */
+    private static function headerEnd(string $raw): ?array
+    {
+        $crlf = strpos($raw, "\r\n\r\n");
+        $lf = strpos($raw, "\n\n");
+        if ($lf === false) {
+            return $crlf === false ? null : [$crlf, 4];
+        }
+        if ($crlf === false || $lf < $crlf) {
+            return [$lf, 2];
+        }
+
+        return [$crlf, 4];
+    }
+
+    /**
+     * Every genuine Content-Length value in the CR-stripped header block
+     * (shell-033). The pattern is anchored to line starts and pinned to
+     * the exact field name, so `X-Content-Length:` and
+     * `Content-Lengthings:` no longer reach the size gate; every real
+     * occurrence is COLLECTED — the caller treats a lone distinct value
+     * as the body length (repeats allowed per RFC 7230 3.3.3) and any
+     * conflict as a 400, replacing the old first-substring regex that
+     * sized the body by one policy while extractHeaders keyed duplicates
+     * by another.
+     *
+     * @return list<int>
+     */
+    private static function contentLengths(string $headerBlock): array
+    {
+        $matched = preg_match_all('/^Content-Length:[ \t]*+(\d+)[ \t]*+$/mi', $headerBlock, $m);
+        if ($matched === false || $matched === 0) {
+            return [];
+        }
+
+        $lengths = [];
+        foreach ($m[1] as $digits) {
+            $lengths[] = (int)$digits;
+        }
+
+        return $lengths;
+    }
+
+    /**
+     * Extract HTTP headers from the CR-stripped, LF-separated header
+     * block (shell-047 normalisation) and return them as a lowercase-
+     * keyed array for case-insensitive lookup.
+     *
+     * Duplicate policy (shell-033): LAST-WINS is the documented posture
+     * for every header, including `content-length` as it is handed to
+     * the application. `Content-Length` conflicts never get here —
+     * handleClient refuses them with 400 before the size gate and this
+     * extraction both see a header block with at most one distinct value.
      *
      * @return array<string,string>
      */
-    private function extractHeaders(string $raw): array
+    private function extractHeaders(string $headerBlock): array
     {
         $headers = [];
-        $headerEnd = strpos($raw, "\r\n\r\n");
-        $headerBlock = $headerEnd !== false ? substr($raw, 0, $headerEnd) : $raw;
-        foreach (explode("\r\n", $headerBlock) as $line) {
+        foreach (explode("\n", $headerBlock) as $line) {
             if (str_contains($line, ':')) {
                 [$key, $value] = explode(':', $line, 2);
                 $headers[strtolower(trim($key))] = trim($value);
@@ -611,13 +720,21 @@ final class ServeCommand extends SymfonyCommand
     }
 
     /**
-     * Send a minimal HTTP/1.1 status response and close.
+     * Send a minimal HTTP/1.1 status response and close. The body is
+     * optional: with none, the bytes are exactly the pre-shell-033
+     * `Content-Length: 0` framing; refusal codes that owe the client a
+     * reason pass an explanatory body and pick up its Content-Type.
      *
      * @param resource $client
      */
-    private function writeStatus($client, int $code, string $reason): void
+    private function writeStatus($client, int $code, string $reason, string $body = ''): void
     {
-        @fwrite($client, "HTTP/1.1 {$code} {$reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        $message = "HTTP/1.1 {$code} {$reason}\r\n";
+        if ($body !== '') {
+            $message .= "Content-Type: application/json\r\n";
+        }
+        $message .= 'Content-Length: ' . strlen($body) . "\r\nConnection: close\r\n\r\n";
+        @fwrite($client, $message . $body);
     }
 
     /**
