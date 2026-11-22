@@ -238,3 +238,41 @@ git push origin v1.2.3
 - If the secret is compromised: rotate immediately (above), and note that
   installed copies still hold the old key — a forced offline upgrade is the
   only clean remediation until the asymmetric scheme lands.
+
+## Target selection truth (once-S99)
+
+`self:update` reads the **stable-only** `/releases/latest` endpoint, and the
+target policy now matches that truth instead of pretending otherwise:
+
+- **`--pre` is removed** (owner ruling: remove, not wire a listing
+  endpoint). It was dead code — the endpoint never lists pre-releases, so
+  nothing was ever "also considered" — and the old skip-arm printed
+  `To install anyway: phpdup self:update --pre`, a promise no flag could
+  keep. Nothing in the shipped output ever suggests the flag again.
+- **A pre-release-shaped reply is refused (exit 1).** If the stable-only
+  endpoint ever answers with a `prerelease: true` shape (a proxy or mirror
+  rewriting it), that is an upstream anomaly: the client fails closed and
+  names the tag, offering no way through.
+- **Downgrades are refused with exit 2** — the project-wide "the request
+  itself is invalid" code (docs/CLI.md: 2 = invalid config), distinct from
+  a runtime failure (1). `self:update` only moves forward, and the refusal
+  echoes BOTH tags honestly: the release target and the running version.
+  To install an older build deliberately, fetch it out of band
+  (`gh release download v1.2.3`) and verify the bytes with the offline
+  `--verify-*` mode above — the same documented path as any targeted
+  install.
+- **An equal target exits 0** as "already up to date": no transfer, no
+  swap, no residue.
+- **Unparseable versions never fabricate a verdict.** The gate compares
+  `version_compare` cores only when both sides parse (`v` prefix optional,
+  pre-release suffix honoured: `1.0.0-RC1` sorts before `1.0.0`). Plain
+  `version_compare('unknown', …)` returns `-1`, so feeding the
+  tag-missing placeholder straight in would call every release-less reply
+  a phantom downgrade; instead it stays uncomparable and the
+  signature/manifest/hash legs decide, as always.
+
+The gate runs **before** asset resolution and before the dry-run report, so
+`--dry-run` previews the refusal instead of bypassing it. All of it is
+pinned through the real `execute()` body in
+`tests/Unit/Cli/UpdateCommandTest.php` (injected-fake-transport matrix plus
+a forked-loopback real-transport leg).

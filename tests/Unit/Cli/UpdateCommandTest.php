@@ -5,6 +5,7 @@ namespace Phpdup\Tests\Unit\Cli;
 
 use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\UpdateCommand;
+use Phpdup\Util\Version;
 use Symfony\Component\Console\Application;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\BufferedOutput;
@@ -32,6 +33,16 @@ use Symfony\Component\Console\Style\SymfonyStyle;
  * formula, the confined --dev-allow-unsigned banner, and the offline
  * --verify-* round-trip code path the CI gate drives (exit 0 good /
  * exit 1 tamper).
+ *
+ * once-S99 legs (php-dup-finder-once-124): target selection is honest —
+ * the dead --pre flag is gone (pin: the option does not exist and no
+ * output ever promises it again), a pre-release-shaped reply refuses
+ * (exit 1), an older target refuses with exit 2 naming both versions,
+ * an equal target is an exit-0 "already up to date" no-op, an
+ * uncomparable tag skips the gate while the manifest legs still decide,
+ * and the whole matrix runs through the REAL execute() body with the
+ * transport injected as a fake (S99UpdateCommand) — plus one leg over
+ * the forked loopback server with the REAL transport.
  */
 final class UpdateCommandTest extends TestCase
 {
@@ -1182,6 +1193,209 @@ final class UpdateCommandTest extends TestCase
         $this->assertStringContainsString('not readable', (string)$command->smokePublic($this->scratchFile('never-created.phar'), null));
     }
 
+    // ------------------------------------------------------------------
+    // once-S99 — target selection truth (php-dup-finder-once-124):
+    // --pre removed, pre-release reply refused, downgrade gate, honest
+    // up-to-date no-op. All legs drive the REAL execute() body.
+    // ------------------------------------------------------------------
+
+    public function testPreOptionIsGoneAndNothingEverPromisesItAgain(): void
+    {
+        // The finding's dead-flag half: `--pre` was consumed but the
+        // stable-only /releases/latest endpoint never returns pre-releases,
+        // so the flag could never change an outcome — while the old skip
+        // arm printed "To install anyway: phpdup self:update --pre", a
+        // promise no flag could keep. Owner ruling: remove (default).
+        $command    = new UpdateCommand();
+        $definition = $command->getDefinition();
+        $this->assertFalse($definition->hasOption('pre'), 'the dead --pre option must no longer exist');
+
+        $help = $command->getHelp();
+        $this->assertStringNotContainsString('To install anyway', $help, 'the unfollowable promise must never come back');
+        $this->assertStringNotContainsString('phpdup self:update --pre', $help, 'help may only narrate the removal, never offer the flag');
+        $this->assertStringContainsString('stable', strtolower($help), 'help discloses the stable-only posture');
+    }
+
+    public function testPrereleaseShapedReplyRefusesWithoutTheDeadEscape(): void
+    {
+        // A stable-only endpoint that nevertheless answers with a
+        // pre-release shape is a proxy/mirror lie: fail closed with exit 1,
+        // name the tag honestly, and offer no way through.
+        $artifact = $this->makeArtifact();
+        [$manifest, $sig] = $this->makeSignedManifestPair($artifact, self::TAG, self::RAW_KEY);
+        $command = $this->s05Command($artifact, $manifest, $sig);
+        $command->keyOverride = self::RAW_KEY;
+        $command->releasePayload['prerelease'] = true;
+
+        $output = new BufferedOutput();
+        $exit   = $command->run(new ArrayInput([]), $output);
+        $flat   = self::flatten($output->fetch());
+
+        $this->assertSame(1, $exit, 'a pre-release-shaped reply on a stable-only endpoint is a refusal, not a skip');
+        $this->assertStringContainsString('as a pre-release', $flat);
+        $this->assertStringContainsString(self::TAG, $flat, 'the refusal names the tag it saw');
+        $this->assertStringNotContainsString('install anyway', $flat, 'the dead promise must never come back');
+        $this->assertStringNotContainsString('--pre', $flat, 'no output path may suggest the removed flag');
+        $this->assertSame(0, $command->realVerifyCalls, 'nothing verifies when the target itself is refused');
+        $this->assertStringEqualsFile($this->fakePharPath(), 'OLD-PHAR-CONTENT');
+        $this->assertSame([], $this->scratchGlob('*.tmp.*'));
+    }
+
+    /**
+     * The version_compare gate's four steerable outcomes, each driven
+     * through the real execute() body with the transport injected as a
+     * fake (the S99 double returns the payload as a trusted 2xx reply —
+     * the sibling real-transport leg below pins the forked-server shape).
+     *
+     * @return array<string, array{0: string, 1: string, 2: array<string, mixed>, 3: int, 4: list<string>}>
+     *         [current version, target tag, input, expected exit, expected substrings]
+     */
+    public static function targetGateCases(): array
+    {
+        return [
+            'older stable refused' => [
+                '9.9.9', 'v9.9.8', [], 2,
+                ['Refusing to downgrade', 'v9.9.8', '9.9.9', 'gh release download v9.9.8'],
+            ],
+            'release-candidate behind stable refused' => [
+                '1.0.0', 'v1.0.0-RC1', [], 2,
+                ['Refusing to downgrade', 'v1.0.0-RC1', '1.0.0'],
+            ],
+            'equal target is an honest no-op' => [
+                '9.9.9', 'v9.9.9', [], 0,
+                ['Already up to date', 'Nothing was downloaded or replaced'],
+            ],
+            'dry-run mirrors the refusal instead of bypassing it' => [
+                '9.9.9', 'v9.9.8', ['--dry-run' => true], 2,
+                ['Refusing to downgrade'],
+            ],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('targetGateCases')]
+    public function testTargetGateDrivesTheRealExecuteBody(
+        string $running,
+        string $tag,
+        array $input,
+        int $expectedExit,
+        array $expectedSubstrings,
+    ): void {
+        // No assets at all in the payload: a refusal that reached asset
+        // resolution would die on the missing-pharm arm with exit 1 — the
+        // expected exits below (2 / 0) prove the gate decides FIRST.
+        $command       = $this->s99Command($tag, $running);
+        $output        = new BufferedOutput();
+        $exit          = $command->run(new ArrayInput($input), $output);
+        $flat          = self::flatten($output->fetch());
+
+        $this->assertSame($expectedExit, $exit);
+        foreach ($expectedSubstrings as $needle) {
+            $this->assertStringContainsString($needle, $flat, 'the gate must echo: ' . $needle);
+        }
+        $this->assertStringNotContainsString('Downloading', $flat, 'a gated target is decided before any transfer');
+        $this->assertSame(0, $command->downloadCalls, 'the gate must short-circuit every download leg');
+        $this->assertStringEqualsFile($this->fakePharPath(), 'OLD-PHAR-CONTENT');
+        $this->assertSame([], $this->scratchGlob('*.tmp.*'));
+    }
+
+    public function testUncomparableTagSkipsTheGateWhileTheManifestLegsStillDecide(): void
+    {
+        // The parse-don't-guess arm, pinned in its SAFE direction: a tag
+        // with no numeric core (GitHub's placeholder 'unknown' compares as
+        // LOWER than every real version — a raw version_compare would
+        // "refuse" it as a phantom downgrade) is not gated by a number
+        // game. The signed-manifest path below is what actually decides —
+        // a gate that refused here would be fabricating a verdict.
+        $artifact = $this->makeArtifact();
+        [$manifest, $sig] = $this->makeSignedManifestPair($artifact, 'nightly-bolt-37', self::RAW_KEY);
+        $command = $this->s05Command($artifact, $manifest, $sig, 'nightly-bolt-37');
+        $command->keyOverride = self::RAW_KEY;
+
+        $output = new BufferedOutput();
+        $exit   = $command->run(new ArrayInput([]), $output);
+        $flat   = self::flatten($output->fetch());
+
+        $this->assertSame(0, $exit, 'an uncomparable tag must proceed to the integrity legs, not exit on a guess');
+        $this->assertStringNotContainsString('Refusing to downgrade', $flat, 'the gate must stay silent when it cannot parse');
+        $this->assertStringContainsString('pinned to the signed manifest', $flat, 'the manifest, not the version parser, carries this install');
+        $this->assertStringEqualsFile($this->fakePharPath(), (string)file_get_contents($artifact), 'the verified install hot-swaps normally');
+    }
+
+    public function testDowngradeRefusalRunsOverTheRealLoopbackTransport(): void
+    {
+        // The same gate observed through the REAL fetchJson + REAL
+        // downloadFile stack (no substituted transport): the forked
+        // loopback server serves a well-formed OLDER release, and the
+        // refusal still lands before a single asset byte is requested.
+        $payload = (string)json_encode([
+            'tag_name'     => 'v9.9.8',
+            'prerelease'   => false,
+            'draft'        => false,
+            'published_at' => '2026-01-01T00:00:00Z',
+            'assets'       => [['name' => 'phpdup.phar', 'browser_download_url' => 'file://' . $this->makeArtifact('s99-unreached.phar')]],
+        ], JSON_UNESCAPED_SLASHES);
+        $reply = self::httpReply('200 OK', ['Content-Type' => 'application/json'], $payload);
+
+        [$pid, $port, $server] = $this->forkHttpServer(static fn(string $request): string => $reply);
+        try {
+            $command             = $this->s99Command('v9.9.8', '9.9.9');
+            $command->releasePayload = null; // inject NOTHING: the real transport dial is the fake server
+            $command->apiUrl     = "http://127.0.0.1:$port/repos/detain/php-dup-finder/releases/latest";
+
+            $output = new BufferedOutput();
+            $exit   = $command->run(new ArrayInput([]), $output);
+            $flat   = self::flatten($output->fetch());
+
+            $this->assertSame(2, $exit, 'the gate must hold on the real transport path too');
+            $this->assertStringContainsString('Refusing to downgrade', $flat);
+            $this->assertStringContainsString('v9.9.8', $flat, 'the echo names the target tag honestly');
+            $this->assertStringContainsString('9.9.9', $flat, 'the echo names the running version honestly');
+            $this->assertSame(0, $command->downloadCalls, 'not even the served asset URL may be dialed for a gated target');
+            $this->assertStringEqualsFile($this->fakePharPath(), 'OLD-PHAR-CONTENT');
+            $this->assertSame([], $this->scratchGlob('*.tmp.*'));
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    public function testPlaceholderTagIsNotAFabricatedDowngrade(): void
+    {
+        // Probe-recorded trap: version_compare('unknown', <real version>)
+        // returns -1, so a gate that fed the tag_name-missing placeholder
+        // straight into the comparison would "refuse" every reply as a
+        // phantom downgrade (exit 2). The honest shape is the EXISTING
+        // missing-asset refusal (exit 1) — the exit code proves the parse
+        // guard, not an invented verdict.
+        $command = $this->s99Command('irrelevant', '9.9.9');
+        unset($command->releasePayload['tag_name']);
+
+        $output = new BufferedOutput();
+        $exit   = $command->run(new ArrayInput([]), $output);
+        $flat   = self::flatten($output->fetch());
+
+        $this->assertSame(1, $exit, 'an unparseable tag must reach the asset arm, not a fabricated downgrade gate');
+        $this->assertStringContainsString('not found in release unknown', $flat);
+        $this->assertStringNotContainsString('Refusing to downgrade', $flat);
+        $this->assertSame(0, $command->downloadCalls);
+        $this->assertStringEqualsFile($this->fakePharPath(), 'OLD-PHAR-CONTENT');
+    }
+
+    public function testRunningVersionIdentityStaysSingleSourced(): void
+    {
+        // once-S30 §7.3 routed here: the no-Application fallback must
+        // return the declared Version::STRING — never a fabricated
+        // '0.0.0' (the old shape that shipped onto the wire as the
+        // User-Agent and would anchor the downgrade gate to a fiction).
+        $command = new S99UpdateCommand();
+        $this->assertSame(Version::STRING, $command->runningVersionViaParent(), 'bare command: the declared constant is the identity');
+
+        $withApp = new S99UpdateCommand();
+        $app     = new Application('phpdup', '7.7.7');
+        $app->add($withApp);
+        $this->assertSame('7.7.7', $withApp->runningVersionViaParent(), 'under an Application its version wins');
+    }
+
     // -- helpers ---------------------------------------------------------
 
     private function scratchDir(): string
@@ -1445,6 +1659,31 @@ final class UpdateCommandTest extends TestCase
 
         $app = new Application('phpdup', '0.0.0');
         $app->add($command);
+        return $command;
+    }
+
+    /**
+     * once-S99 harness: drives the REAL execute() body with a steerable
+     * running version and — in fake-transport mode — an injected 2xx
+     * release payload; with releasePayload null the REAL fetchJson dials
+     * apiUrl (forked loopback server only, never anything else). Every
+     * downloadFile call is counted so the gate's short-circuit promise is
+     * observable, not inferred from absence of output.
+     */
+    private function s99Command(string $tag, string $running): S99UpdateCommand
+    {
+        file_put_contents($this->fakePharPath(), 'OLD-PHAR-CONTENT');
+
+        $command = new S99UpdateCommand();
+        $command->fakePharPath = $this->fakePharPath();
+        $command->versionValue = $running;
+        $command->releasePayload = [
+            'tag_name'     => $tag,
+            'prerelease'   => false,
+            'draft'        => false,
+            'published_at' => '2026-01-01T00:00:00Z',
+            'assets'       => [],
+        ];
         return $command;
     }
 
@@ -1816,6 +2055,74 @@ class TestUpdateCommand extends UpdateCommand
                 return false;
             }
         }
+        return parent::downloadFile($url, $dest, $io);
+    }
+}
+
+/**
+ * once-S99 harness: steerable running version + counted download seam +
+ * optional injected release payload (fake transport). With
+ * $releasePayload = null the REAL fetchJson runs against $apiUrl — the
+ * downgrade legs use that mode to watch the gate short-circuit a
+ * genuine 2xx reply served by the forked loopback server.
+ * runningVersionViaParent() exposes the untouched parent identity chain
+ * for the once-S30 fallback pin (Application-less → Version::STRING).
+ */
+class S99UpdateCommand extends UpdateCommand
+{
+    public string $fakePharPath = '';
+
+    public string $versionValue = '0.0.0';
+
+    public string $apiUrl = '';
+
+    /** @var array<string, mixed>|null non-null = injected trusted 2xx reply */
+    public ?array $releasePayload = null;
+
+    public int $downloadCalls = 0;
+
+    public function runningVersionViaParent(): string
+    {
+        return parent::runningVersion();
+    }
+
+    #[\Override]
+    protected function runningPharPath(): string
+    {
+        return $this->fakePharPath;
+    }
+
+    #[\Override]
+    protected function runningVersion(): string
+    {
+        return $this->versionValue;
+    }
+
+    #[\Override]
+    protected function releasesApiUrl(): string
+    {
+        return $this->apiUrl;
+    }
+
+    #[\Override]
+    protected function githubToken(): string
+    {
+        return '';
+    }
+
+    #[\Override]
+    protected function fetchJson(string $url, array $headers): array
+    {
+        if ($this->releasePayload !== null) {
+            return ['status' => 200, 'json' => $this->releasePayload, 'retryAfter' => null];
+        }
+        return parent::fetchJson($url, $headers);
+    }
+
+    #[\Override]
+    protected function downloadFile(string $url, string $dest, SymfonyStyle $io): bool
+    {
+        $this->downloadCalls++;
         return parent::downloadFile($url, $dest, $io);
     }
 }

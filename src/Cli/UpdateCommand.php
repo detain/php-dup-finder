@@ -48,6 +48,16 @@ use Phar;
  *      is sequenced: the good binary outlives the check, not the other
  *      way around.
  *
+ * Target selection is gated (once-S99, php-dup-finder-once-124): stable
+ * only, forward only. The former `--pre` flag was dead code — the
+ * stable-only `/releases/latest` endpoint never returns a pre-release —
+ * so it is removed; a pre-release-shaped reply is refused outright
+ * (exit 1). A target older than the running version is refused with
+ * exit 2, and a target equal to it exits 0 as "already up to date".
+ * The comparison runs version_compare over the parsed tag; a tag (or a
+ * source-build version string) with no numeric core is uncomparable and
+ * skips the gate — the manifest, signature and hash checks still run.
+ *
  * A placeholder/unset verification key REFUSES verification with an
  * explicit error on every non-dry path. Unsigned installs are possible
  * only through `--dev-allow-unsigned`, which prints a loud banner on
@@ -77,6 +87,12 @@ class UpdateCommand extends SymfonyCommand
 
     /** Manifest schema this client accepts. */
     private const MANIFEST_SCHEMA = 1;
+
+    /** Target-vs-running outcomes of the once-S99 version_compare gate. */
+    private const TARGET_OLDER   = 'older';
+    private const TARGET_SAME    = 'same';
+    private const TARGET_NEWER   = 'newer';
+    private const TARGET_UNKNOWN = 'uncomparable';
 
     /**
      * Build placeholder that ships in the tree. Verification REFUSES while
@@ -150,6 +166,18 @@ Steps performed:
      phar is restored automatically; if that restore fails too, manual
      recovery steps are printed.
 
+Target selection is honest (once-S99):
+  - Stable releases only, forward only. The former <fg=yellow>--pre</> flag
+    was dead — the stable-only /releases/latest endpoint never returns
+    pre-releases — so it is removed, and a reply that nevertheless names
+    a pre-release is refused (exit 1) rather than skipped with a promise
+    no flag could keep.
+  - A release older than the running version is REFUSED with exit 2
+    (the echo names both tags honestly); one equal to it exits 0 as
+    "already up to date". To install an older build deliberately,
+    fetch the release by hand (gh release download) and check the
+    bytes with the offline --verify-* mode below.
+
 Private repositories: the <fg=yellow>GITHUB_TOKEN</> environment
 variable, when set, is sent on the release-API request only. Release
 asset downloads carry no authentication of any kind, so self:update
@@ -182,12 +210,10 @@ HELP
                 InputOption::VALUE_NONE,
                 'Fetch release info and print what would be downloaded, but do not replace anything',
             )
-            ->addOption(
-                'pre',
-                null,
-                InputOption::VALUE_NONE,
-                'Also consider pre-release (alpha/beta/RC) versions',
-            )
+            // once-S99 (php-dup-finder-once-124): the `pre` option is GONE.
+            // It was consumed but meaningless — /releases/latest never lists
+            // pre-releases, so nothing was ever "also considered", and the
+            // hint the old arm printed promised a path that did not exist.
             ->addOption(
                 'output',
                 'o',
@@ -259,7 +285,6 @@ HELP
         }
 
         $dryRun   = (bool)$input->getOption('dry-run');
-        $pre      = (bool)$input->getOption('pre');
         $outPath  = $input->getOption('output');
 
         $io->title('phpdup self-update');
@@ -318,19 +343,50 @@ HELP
             return $this->noReleaseYet($io, $dryRun);
         }
 
-        $tagName   = $release['tag_name']    ?? 'unknown';
+        $tagName    = $release['tag_name']    ?? 'unknown';
         $prerelease = (bool)($release['prerelease'] ?? false);
         $draft      = (bool)($release['draft']      ?? false);
 
-        if ($prerelease && !$pre) {
-            $io->text([
-                "  Latest tag:  <fg=yellow>{$tagName}</>  (pre-release, skipped)",
-                '  To install anyway: <fg=yellow>phpdup self:update --pre</>',
-            ]);
-            return 0;
+        // once-S99 (php-dup-finder-once-124): the pre-release skip arm used
+        // to print "To install anyway: self:update --pre" — a promise no
+        // flag could ever keep, because the stable-only /releases/latest
+        // endpoint this command reads never returns a pre-release. If a
+        // reply nevertheless carries that shape, a proxy or mirror is
+        // rewriting the endpoint: refuse it as the anomaly it is. The
+        // refusal text names the flag's absence — it offers no way through.
+        if ($prerelease) {
+            return $this->failed(
+                $io,
+                "Release metadata names {$tagName} as a pre-release; this client installs stable releases"
+                . ' only. The stable-only release endpoint never offers pre-releases, so a reply that does'
+                . ' is an upstream anomaly and is refused — no flag re-enables it.'
+            );
         }
         if ($draft) {
             return $this->failed($io, "Latest release is a draft and cannot be installed.");
+        }
+
+        // once-S99 (php-dup-finder-once-124): the version_compare gate —
+        // self:update only moves forward. Checked before any asset is
+        // resolved or transferred; an older target exits 2 naming BOTH
+        // versions honestly, an equal one is an informational no-op.
+        $currentVersion = $this->runningVersion();
+        $comparison     = $this->compareTagToRunning($tagName, $currentVersion);
+        if ($comparison === self::TARGET_OLDER) {
+            $io->error([
+                "Refusing to downgrade: the release tagged {$tagName} is older than the running {$currentVersion}.",
+                '  self:update only moves forward. To install an older build deliberately,',
+                "  fetch it by hand (gh release download {$tagName}) and check the bytes",
+                '  with the offline --verify-* mode (docs/RELEASE.md).',
+            ]);
+            return 2;
+        }
+        if ($comparison === self::TARGET_SAME) {
+            $io->success([
+                "Already up to date: the latest release is {$tagName}, matching the running {$currentVersion}.",
+                '  Nothing was downloaded or replaced.',
+            ]);
+            return 0;
         }
 
         $io->text([
@@ -753,6 +809,51 @@ HELP
             return $when === false ? null : max(0, $when - time());
         }
         return null;
+    }
+
+    /**
+     * Compare a release tag against the running version for the install
+     * gate (once-S99, php-dup-finder-once-124).
+     *
+     * Parse, don't guess: BOTH sides must yield a numeric version core or
+     * the outcome is TARGET_UNKNOWN. That arm is load-bearing — plain
+     * `version_compare('unknown', '0.1.0')` returns -1, so feeding the
+     * placeholder tag straight in would "refuse" every release-less reply
+     * as a phantom downgrade, and a source build reporting 'dev-master'
+     * must not be gated by a number game either. Uncomparable targets are
+     * not waved through trustingly: the signature, manifest-tag binding
+     * and hash checks downstream still decide the install.
+     *
+     * @return self::TARGET_OLDER|self::TARGET_SAME|self::TARGET_NEWER|self::TARGET_UNKNOWN
+     */
+    private function compareTagToRunning(string $tagName, string $runningVersion): string
+    {
+        $target  = self::tagVersion($tagName);
+        $current = self::tagVersion($runningVersion);
+        if ($target === null || $current === null) {
+            return self::TARGET_UNKNOWN;
+        }
+
+        $cmp = version_compare($target, $current);
+        if ($cmp < 0) {
+            return self::TARGET_OLDER;
+        }
+        return $cmp === 0 ? self::TARGET_SAME : self::TARGET_NEWER;
+    }
+
+    /**
+     * The comparable version core of a tag or version string: `v1.2.3-RC1`
+     * parses to `1.2.3-RC1` (the v-prefix is decoration; version_compare
+     * orders suffixed releases correctly: RC1 before the stable release).
+     * Anything without a numeric core — 'unknown', 'dev-master', a
+     * hand-named tag — is null: no comparison, no fabricated verdict.
+     */
+    private static function tagVersion(string $tag): ?string
+    {
+        $core = ltrim($tag, 'vV');
+        return preg_match('/^\d+(\.\d+)*(?:[-.+][0-9A-Za-z][0-9A-Za-z.]*)?$/', $core) === 1
+            ? $core
+            : null;
     }
 
     /**
