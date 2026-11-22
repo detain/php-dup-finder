@@ -33,6 +33,12 @@ use Symfony\Component\Console\Output\OutputInterface;
  * resync), so a construction or rebase throw — which pre-closure escaped
  * Loop::run() and died the daemon — is pinned through the same
  * handleChange() drive-by, loop still unexercised.
+ *
+ * once-S08 fix r1 (review LOW-1): the rebase leg of that seam was guarded
+ * but unpinned (guarding its call site away stayed green). The
+ * testRebaseThrow… pin below closes the gap with the prescription's forcing:
+ * a stream-wrapper protocol as the watcher's scan root makes resync()
+ * itself raise, so the per-site-mutant law holds for the third leg too.
  */
 final class WatchRunnerTest extends TestCase
 {
@@ -429,6 +435,88 @@ final class WatchRunnerTest extends TestCase
         $this->assertStringContainsString('restart the command to resume watching', $paused);
     }
 
+    /**
+     * once-S08 fix r1 (review LOW-1): the rebase leg of dispatchGuarded()
+     * was guarded but unpinned — removing its guard (moving resync() out of
+     * the try) left the whole suite green. Forcing: FileScanner swallows
+     * every ENVIRONMENT error the hardened walk can meet (NN2/once-095:
+     * unreadable roots, permission races, hostile globs — no chmod trick
+     * raises), but a thrown exception from a user stream wrapper's
+     * url_stat escapes is_dir() unchanged (PHP 8), so pointing the
+     * watcher's scan root at a one-protocol poison wrapper makes the REAL
+     * resync() → collectWatchableFiles() → scan() chain raise inside the
+     * try, no src seam needed. The pipeline itself still completes
+     * (runs == 1): only the rebase dies — the shape that pre-closure rode
+     * out of Loop::run() and terminated `phpdup watch`.
+     *
+     * Pinned acceptance: no throwable escapes handleChange; exactly one
+     * clean `watch pass failed` line renders (no Usage dump); the announce
+     * stays honest at `watching 0 files`; and the rebase throw COUNTS
+     * toward the skip-note streak — it arms the counter at 1 so the two
+     * construction failures behind it reach MAX and the NEXT event takes
+     * the pause posture (the notice rendering once). If the rebase failure
+     * were dropped from the counter, the cap would arm one event later and
+     * the mid-flight asserts would fail.
+     */
+    public function testRebaseThrowKeepsWatcherAliveAndCountsTowardStreak(): void
+    {
+        stream_wrapper_register(PoisonedRebaseWrapper::PROTOCOL, PoisonedRebaseWrapper::class);
+        try {
+            $stage = new WatchScriptedStage();
+            $output = new BufferedOutput();
+            $attempts = 0;
+            // Construction is healthy on pass 1 (only the rebase dies); the
+            // two later dispatches fail at construction to walk the shared
+            // streak counter up to the cap.
+            $rebuild = function () use (&$attempts): PipelineState {
+                $attempts++;
+                if ($attempts >= 2) {
+                    throw new \RuntimeException('misplaced config in tree');
+                }
+                return new PipelineState(Config::defaults([$this->scanRoot]));
+            };
+            $runner = new WatchRunner(
+                new Pipeline([$stage]), $rebuild, $output, new NullLogger(),
+                PoisonedRebaseWrapper::PROTOCOL . '://root',
+            );
+
+            $runner->handleChange('a.php', FileChangeType::Modified); // must NOT throw
+
+            $first = $output->fetch();
+            $this->assertSame(1, $stage->runs, 'the pass completed; only the rebase died');
+            $this->assertStringContainsString(
+                'phpdup: watch pass failed (RuntimeException): poisoned rebase enumeration', $first,
+            );
+            $this->assertStringContainsString('watching 0 files', $first);
+            $this->assertStringNotContainsString('Usage:', $first);
+            $this->assertStringNotContainsString('Stack trace:', $first);
+
+            $runner->handleChange('b.php', FileChangeType::Modified); // must NOT throw — streak 2
+            $this->assertStringContainsString(
+                'phpdup: watch pass failed (RuntimeException): misplaced config in tree', $output->fetch(),
+            );
+            $this->assertSame(1, $stage->runs, 'a construction throw must not start a pass');
+
+            $runner->handleChange('c.php', FileChangeType::Modified); // must NOT throw — streak 3 = MAX
+            $this->assertStringContainsString('watch pass failed', $output->fetch());
+
+            // Cap reached — and it armed one event EARLIER because the
+            // rebase throw counted: events 2+3 alone would only be 2 of 3.
+            $runner->handleChange('d.php', FileChangeType::Modified); // must NOT throw
+            $paused = $output->fetch();
+            $this->assertSame(1, $stage->runs, 'paused watch must not dispatch again');
+            $this->assertStringContainsString(
+                'watch mode paused after ' . WatchRunner::MAX_CONSECUTIVE_PASS_FAILURES, $paused,
+            );
+            $this->assertStringNotContainsString('watch pass failed', $paused);
+
+            $runner->handleChange('e.php', FileChangeType::Modified); // still alive, notice not repeated
+            $this->assertStringNotContainsString('watch mode paused', $output->fetch());
+        } finally {
+            stream_wrapper_unregister(PoisonedRebaseWrapper::PROTOCOL);
+        }
+    }
+
     private function runner(BufferedOutput $output): WatchRunner
     {
         return new WatchRunner(
@@ -484,5 +572,28 @@ final class WatchScriptedStage implements StageInterface
         if ($this->always !== null) {
             throw $this->always;
         }
+    }
+}
+
+/**
+ * One-protocol stream wrapper whose every stat raises — the once-S08 fix
+ * r1 rebase forcing (see testRebaseThrowKeepsWatcherAliveAndCountsToward
+ * Streak). WatchRunner's FileWatcher treats "<protocol>://root" as its scan
+ * root, so the FIRST filesystem touch inside FileScanner::scan() (the
+ * is_dir gate) runs this url_stat, and PHP 8 lets the exception escape the
+ * fs call into the dispatch guard. Nothing else is reachable: the walk
+ * never starts, no real path is ever named. The protocol is registered for
+ * the lifetime of one test and unregistered in its finally block.
+ */
+final class PoisonedRebaseWrapper
+{
+    public const PROTOCOL = 'phpduprebase';
+
+    /** @var resource|null stream context — property required by the wrapper API */
+    public $context;
+
+    public function url_stat(string $path, int $flags): array|false
+    {
+        throw new \RuntimeException('poisoned rebase enumeration');
     }
 }
