@@ -25,19 +25,45 @@ use SebastianBergmann\Diff\Output\StrictUnifiedDiffOutputBuilder;
  * reads like a real (empty) source, and the pairwise diff section states
  * the same posture instead of diffing placeholder bytes.
  *
- * output-041: three throughput arms, rendering unchanged.
+ * output-041: two throughput arms, rendering unchanged.
  * - Cluster pages are batched into name => html groups flushed together
  *   ({@see DEFAULT_WRITE_BATCH}); batch size 1 reproduces the old
  *   per-page streaming writer byte for byte.
  * - One {@see Differ} serves every diff section of a run instead of a
  *   fresh instance per cluster page ({@see differBuilds()} is the seam).
- * - The highlighter classifies tokens by which alternation arm matched
- *   (named captures) instead of re-running a second regex over the token.
+ *
+ * output-053: the highlighter is lexer-driven — {@see highlightPhp()}
+ * classifies raw-fragment tokens from PHP's own tokenizer (strings and
+ * comments are atomic by the engine's definition, every comment style is
+ * recognised, the CSS comment class .c is actually emitted) and keywords
+ * come from one shared list, {@see KEYWORDS}. The index table's sort JS
+ * reads the column cell by the header's absolute position, a contract the
+ * markup carries and HtmlReporterTest pins (see the thead comment in
+ * {@see renderIndex()}).
  */
 final class HtmlReporter
 {
     /** Cluster pages rendered into one write batch before it is flushed. */
     public const DEFAULT_WRITE_BATCH = 128;
+
+    /**
+     * The single source of truth for highlighted keywords — lower-case
+     * spellings, matched case-insensitively by {@see highlightPhp()}.
+     * output-053: the old regex alternation carried the namespace/trait
+     * import entry twice (main list and trailing arm); this list is
+     * de-duplicated and its lack of repeats is pinned.
+     *
+     * @var list<string>
+     */
+    private const KEYWORDS = [
+        'function', 'return', 'if', 'elseif', 'foreach', 'for', 'while', 'do',
+        'switch', 'case', 'break', 'continue', 'new', 'class', 'interface',
+        'trait', 'extends', 'implements', 'public', 'private', 'protected',
+        'static', 'readonly', 'final', 'abstract', 'use', 'namespace', 'try',
+        'catch', 'finally', 'throw', 'null', 'true', 'false', 'array', 'int',
+        'string', 'float', 'bool', 'mixed', 'self', 'parent', 'void', 'never',
+        'match', 'enum',
+    ];
 
     private ?Differ $differ = null;
 
@@ -149,6 +175,10 @@ final class HtmlReporter
   <span class="hint">Click a column header to sort. Hover signatures to copy.</span>
 </div>
 <table class="clusters" id="clusters">
+<!-- Column-index contract (output-053): a header cell's absolute position
+     among the thead cells is the body-row cell index app.js sorts by; keep
+     header and body cells 1:1 (no colspans) and every data-key aligned with
+     the column it names — HtmlReporterTest pins both sides of this. -->
 <thead><tr>
   <th data-sort="num"     data-key="num">#</th>
   <th data-sort="num"     data-key="size">Members</th>
@@ -416,87 +446,98 @@ final class HtmlReporter
     }
 
     /**
-     * Tiny PHP syntax highlighter — keywords, strings, comments, numbers.
-     * No external dep; output is HTML with <span class="...">.
+     * PHP syntax highlighter driven by the engine's own lexer: the raw
+     * fragment goes through {@see token_get_all()} and every token is
+     * escaped (ENT_QUOTES, UTF-8) and wrapped as one unit. Strings,
+     * comments (all styles: `//`, `#`, `/* *\/`, docblocks) and numbers are
+     * atomic by PHP's definition of them — output-053's core defect was the
+     * old escape-then-regex design, whose single-quote arm could not span a
+     * newline (legal inside a PHP single-quoted string) or an `&`, leaking
+     * the string's words into the keyword/number arms.
      *
-     * Single-pass `preg_replace_callback` with alternation:
-     * - Comments (both // and block comments) are matched as atomic units and
-     *   pass through unchanged — they are never wrapped.
-     * - Strings are matched as atomic units and pass through unchanged.
-     * - Keywords and numbers are wrapped in <span class="k"> / <span class="n">.
+     * Classes emitted: .s string (literal or heredoc segment), .c comment,
+     * .n number (ints, floats, hex, `1_000` separators), .k keyword — a
+     * bare word in {@see KEYWORDS}, compared case-insensitively like PHP
+     * itself matches keywords. A keyword directly followed by `=` is left
+     * plain: HTML-ish fragments such as class="c" can reach the highlighter
+     * as scanned text, and wrapping the word mid-attribute corrupts the
+     * rendered markup (the legacy guard, kept as {@see followedByAssign()};
+     * real `=>` lexes as T_DOUBLE_ARROW and is unaffected). Everything else
+     * — whitespace, variables, punctuation, inline HTML between `?>` and
+     * `<?php` — is escaped plain.
      *
-     * Because comments and strings are consumed as complete units before the
-     * keyword/number patterns are evaluated, the regex engine can never
-     * re-enter those regions. This prevents the double-wrapping that plagued
-     * the sequential-pass architecture (keywords inside comments or strings
-     * were incorrectly highlighted).
-     *
-     * The `class="c"` attribute case is handled by matching the entire string
-     * `&quot;c&quot;` atomically first; the keyword pattern never sees the "class"
-     * inside it.
-     *
-     * output-041: the callback branches on which named capture group matched
-     * (`num` / `kw`) instead of re-running anchored number/keyword regexes
-     * over the token text — the matched alternation arm already encodes the
-     * class. Equivalent because the old re-checks were fully anchored
-     * (`^…$`), so only a token that *is* a whole number or keyword passed
-     * them — exactly the tokens the named arms match. Unmatched trailing
-     * groups are trimmed from `$m` (hence `?? ''`); an earlier group that
-     * did not participate reads `''`.
+     * The fragment is lexed behind a synthetic open tag (dropped before
+     * rendering) because member-source slices and signature lines are PHP
+     * *bodies*; the lexer only enters code mode at an open tag. Escape
+     * posture is unchanged from the pre-lexer design: htmlspecialchars per
+     * unit with the same flags, so a hostile token still cannot open or
+     * close markup (once-S60 owns the non-UTF-8 byte hygiene upgrade).
      */
     private function highlightPhp(string $code): string
     {
-        $escaped = htmlspecialchars($code, ENT_QUOTES, 'UTF-8');
+        $tokens = token_get_all("<?php\n" . $code);
+        // Drop the synthetic opener (its text is not part of $code).
+        array_shift($tokens);
 
-        $kw = 'function|return|if|elseif|foreach|for|while|do|switch|case|break|continue|'
-            . 'new|class|interface|trait|extends|implements|public|private|protected|static|'
-            . 'readonly|final|abstract|use|namespace|try|catch|finally|throw|null|true|false|'
-            . 'array|int|string|float|bool|mixed|self|parent|void|never|use|match|enum';
+        $out = '';
+        $count = count($tokens);
+        for ($i = 0; $i < $count; $i++) {
+            $token = $tokens[$i];
+            $text = is_array($token) ? $token[1] : $token;
+            $id = is_array($token) ? $token[0] : null;
 
-        // Combined alternation: comments (multi-line first, then single-line),
-        // strings (double-quoted, single-quoted), numbers, keywords.
-        // Use ~ as delimiter so &#039; doesn't accidentally close the pattern.
-        // The callback is invoked once per match in left-to-right order.
-        return preg_replace_callback(
-            '~
-            /\*[\s\S]*?\*/                    # multi-line comment
-            | //[^\n]*                         # single-line comment
-            | &quot;[^&]*?&quot;                  # double-quoted string (htmlspecialchars ENT_QUOTES)
-            | &#039;[^&\n]*?&#039;        # single-quoted string
-            | (?P<num>\b\d+(?:\.\d+)?\b)       # numbers
-            | \b(?P<kw>' . $kw . ')\b(?!\s*=)  # keywords (negative lookahead prevents
-                                              # matching keywords before =, e.g. class=
-                                              # in HTML attributes)
-            ~x',
-            static function (array $m): string {
-                $token = $m[0];
+            if ($id === T_COMMENT || $id === T_DOC_COMMENT) {
+                $out .= self::htmlSpan('c', $text);
+                continue;
+            }
+            if (
+                $id === T_CONSTANT_ENCAPSED_STRING
+                || $id === T_ENCAPSED_AND_WHITESPACE
+                || $id === T_START_HEREDOC
+                || $id === T_END_HEREDOC
+            ) {
+                $out .= self::htmlSpan('s', $text);
+                continue;
+            }
+            if ($id === T_LNUMBER || $id === T_DNUMBER) {
+                $out .= self::htmlSpan('n', $text);
+                continue;
+            }
+            if (
+                preg_match('/^[A-Za-z_]+$/', $text) === 1
+                && in_array(strtolower($text), self::KEYWORDS, true)
+                && !$this->followedByAssign($tokens, $i)
+            ) {
+                $out .= self::htmlSpan('k', $text);
+                continue;
+            }
+            $out .= htmlspecialchars($text, ENT_QUOTES, 'UTF-8');
+        }
+        return $out;
+    }
 
-                // Already wrapped (shouldn't happen in single-pass, but guard anyway).
-                if (str_starts_with($token, '<span ')) {
-                    return $token;
-                }
+    /**
+     * True when the next non-whitespace token is a plain `=` — the
+     * HTML-attribute guard described in {@see highlightPhp()}.
+     *
+     * @param list<array{int, string, int}|string> $tokens
+     */
+    private function followedByAssign(array $tokens, int $index): bool
+    {
+        for ($j = $index + 1, $n = count($tokens); $j < $n; $j++) {
+            if (is_array($tokens[$j]) && $tokens[$j][0] === T_WHITESPACE) {
+                continue;
+            }
+            return is_string($tokens[$j]) && $tokens[$j] === '=';
+        }
+        return false;
+    }
 
-                // Numbers: the number arm matched — wrap.
-                if (($m['num'] ?? '') !== '') {
-                    return '<span class="n">' . $token . '</span>';
-                }
-
-                // Keywords: the keyword arm matched (lookahead already verified
-                // we're not in an HTML attribute context like class= + '=') — wrap.
-                if (($m['kw'] ?? '') !== '') {
-                    return '<span class="k">' . $token . '</span>';
-                }
-
-                // Strings: wrap.
-                if (str_starts_with($token, '&quot;') || str_starts_with($token, '&#039;')) {
-                    return '<span class="s">' . $token . '</span>';
-                }
-
-                // Comments: pass through unchanged.
-                return $token;
-            },
-            $escaped,
-        ) ?? $escaped;
+    private static function htmlSpan(string $class, string $text): string
+    {
+        return '<span class="' . $class . '">'
+             . htmlspecialchars($text, ENT_QUOTES, 'UTF-8')
+             . '</span>';
     }
 
     private function firstLine(string $s): string
@@ -510,14 +551,24 @@ final class HtmlReporter
         return <<<'JS'
 (() => {
   // Sort table by clicking <th data-sort="num|text" data-key="…">.
+  //
+  // Column-index contract (output-053): the cell a sort reads is the
+  // clicked header's ABSOLUTE position among its header row's children —
+  // NOT its rank among sortable headers (that was correct only while every
+  // non-sortable column stayed last). The position must equal the index of
+  // the same column's <td> in every body row: header and body cells stay
+  // 1:1 (no colspans) and each data-key keeps the column it names. The
+  // generated markup and this derivation are pinned by HtmlReporterTest's
+  // column-contract tests — move or insert a column and they fail first.
   const table = document.getElementById('clusters');
   if (table) {
     let lastKey = null, asc = true;
-    table.querySelectorAll('th[data-sort]').forEach((th, idx) => {
+    table.querySelectorAll('th[data-sort]').forEach((th) => {
       th.style.cursor = 'pointer';
       th.addEventListener('click', () => {
         const sort = th.dataset.sort;
         const key  = th.dataset.key;
+        const cellIdx = Array.prototype.indexOf.call(th.parentNode.children, th);
         const tbody = table.tBodies[0];
         const rows = Array.from(tbody.querySelectorAll('tr'));
         const defaultDesc = th.dataset.defaultDesc === '1';
@@ -528,7 +579,7 @@ final class HtmlReporter
         }
         lastKey = key;
         const cellValue = (row) => {
-          const cell = row.cells[idx];
+          const cell = row.cells[cellIdx];
           if (sort === 'num') return parseFloat(cell.dataset.num ?? cell.textContent);
           return cell.textContent.trim().toLowerCase();
         };

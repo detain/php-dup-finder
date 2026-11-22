@@ -675,6 +675,199 @@ final class HtmlReporterTest extends TestCase
         }
     }
 
+    // ------------------------------------------------------------------
+    // output-053 (step output-S40): lexer-driven highlighting — atomic
+    // strings with embedded newlines/&, one de-duplicated shared keyword
+    // source, every comment style emitted through the .c class, and the
+    // sortable-header column-index contract pinned on the generated
+    // markup (parsed structure + attribute correctness, not substrings).
+    // ------------------------------------------------------------------
+
+    /**
+     * One-member cluster over $body's lines 2..$endLine plus its temp root
+     * (caller rrmdirs). The member source reaches highlightPhp verbatim.
+     *
+     * @return array{Report, string}
+     */
+    private function lexerReport(string $body, int $endLine): array
+    {
+        $root = sys_get_temp_dir() . '/phpdup-html-lexer-' . uniqid();
+        mkdir($root, 0o775, true);
+        $file = $root . '/f.php';
+        file_put_contents($file, $body);
+        $stmts = (new AstParser())->parseCode($body);
+        $block = new Block(
+            file: $file, range: new LineRange(2, $endLine), kind: 'function',
+            namespace: null, class: null, name: 'm', ast: $stmts[0],
+        );
+        $report = new Report(
+            files: 1, blocks: 1, parseErrors: 0,
+            clusters: [new Cluster('L1', [$block], 1.0, false)],
+            config: Config::defaults([$root]),
+        );
+        return [$report, $root];
+    }
+
+    public function testSingleQuotedStringWithNewlineAndAmpersandIsTokenizedAtomically(): void
+    {
+        // Legal PHP that the old escape-then-regex design could not match:
+        // the single-quote arm was excluded across newlines and any `&`,
+        // so this string's words leaked into the keyword/number arms and
+        // the string never arrived as one unit. The lexer consumes it as
+        // one T_CONSTANT_ENCAPSED_STRING.
+        $body = "<?php\nfunction m()\n{\n    \$msg = 'use & dispatch\nstill \"one\" string';\n    return \$msg;\n}\n";
+        [$report, $root] = $this->lexerReport($body, 7);
+        $dir = $root . '/out';
+        try {
+            (new HtmlReporter())->writeTo($report, $dir);
+            $doc = $this->parseDom($dir . '/cluster-001.html');
+            $x = new \DOMXPath($doc);
+
+            $spans = $x->query('//pre[@class="src"]//span[@class="s"]');
+            $this->assertNotNull($spans);
+            $this->assertSame(1, $spans->length, 'multi-line single-quoted string is not one atomic .s token');
+            $this->assertSame(
+                "'use & dispatch\nstill \"one\" string'",
+                $spans->item(0)->textContent,
+                'entity round-trip through the parsed DOM must restore the raw token bytes',
+            );
+            $this->assertSame(0, $x->query('//span[@class="s"]//span')->length, 'string interior was re-classified');
+            $this->assertSame(0, $x->query('//span[@class="k"][.="use"]')->length, 'keyword leaked out of the string');
+        } finally {
+            $this->rrmdir($root);
+        }
+    }
+
+    public function testEveryCommentStyleRendersWrappedInCommentClass(): void
+    {
+        // output-053: style.css always defined .c but the highlighter never
+        // emitted it. All PHP comment styles lex as single tokens; each must
+        // arrive as one .c span, bytes round-tripped, interior words left
+        // unclassified, code numbers still wrapping next to them.
+        $body = "<?php\nfunction m()\n{\n    // use & 42 note\n    # hash dispatch 7\n    /* block\n       use 99 */\n    return 5;\n}\n";
+        [$report, $root] = $this->lexerReport($body, 9);
+        $dir = $root . '/out';
+        try {
+            (new HtmlReporter())->writeTo($report, $dir);
+            $doc = $this->parseDom($dir . '/cluster-001.html');
+            $x = new \DOMXPath($doc);
+
+            $c = $x->query('//pre[@class="src"]//span[@class="c"]');
+            $this->assertNotNull($c);
+            $this->assertSame(3, $c->length, 'one .c span per comment style');
+            $this->assertSame('// use & 42 note', $c->item(0)->textContent);
+            $this->assertSame('# hash dispatch 7', $c->item(1)->textContent);
+            $this->assertSame("/* block\n       use 99 */", $c->item(2)->textContent, 'block-comment newline preserved');
+            $this->assertSame(0, $x->query('//span[@class="c"]//span')->length, 'comment interior was re-classified');
+
+            $n = $x->query('//pre[@class="src"]//span[@class="n"]');
+            $this->assertNotNull($n);
+            $this->assertSame('5', $n->item($n->length - 1)->textContent, 'code numbers still wrap beside comments');
+
+            $css = (string)file_get_contents($dir . '/style.css');
+            $this->assertStringContainsString('.signature .c, .src .c', $css, 'the emitted class must have the shipped style');
+        } finally {
+            $this->rrmdir($root);
+        }
+    }
+
+    public function testKeywordListIsASingleDeduplicatedSharedSource(): void
+    {
+        $class = new \ReflectionClass(HtmlReporter::class);
+        $kw = (array) $class->getConstant('KEYWORDS');
+        $this->assertNotEmpty($kw, 'KEYWORDS const missing — the highlighter lost its shared source');
+        $this->assertSame(array_values($kw), array_values(array_unique($kw)), 'shared keyword list carries a duplicate');
+
+        $counts = array_count_values(array_map('strtolower', $kw));
+        $this->assertArrayHasKey('use', $counts, 'the import/trait keyword left the list');
+        $this->assertSame(1, $counts['use'], 'output-053: the old two-arm regex carried use twice — one list, one entry');
+
+        // The grep assert of the finding, made permanent: no second quoted
+        // keyword entry survives anywhere in the renderer source.
+        $src = (string) file_get_contents((string) $class->getFileName());
+        $this->assertSame(1, substr_count($src, "'use'"), 'a second quoted entry means a second keyword source exists');
+    }
+
+    public function testKeywordArmColorsEveryOccurrenceFromTheSharedList(): void
+    {
+        $refl = new \ReflectionMethod(HtmlReporter::class, 'highlightPhp');
+
+        $out = (string) $refl->invoke(new HtmlReporter(), "use Foo\\Bar;\nclass C\n{\n    use T;\n}");
+        $this->assertSame(2, substr_count($out, '<span class="k">use</span>'), 'both keyword tokens from the shared list wrap once each');
+        $this->assertStringContainsString('<span class="k">class</span>', $out);
+
+        // PHP matches keywords case-insensitively; the single list is lower
+        // case and the arm compares lower-cased token text.
+        $upper = (string) $refl->invoke(new HtmlReporter(), 'IF ($x) { RETURN 1; }');
+        $this->assertStringContainsString('<span class="k">IF</span>', $upper);
+        $this->assertStringContainsString('<span class="k">RETURN</span>', $upper);
+    }
+
+    public function testSortableHeaderPositionsMatchBodyRowCells(): void
+    {
+        // Column-index contract (output-053): app.js sorts by the clicked
+        // header's ABSOLUTE position among the thead cells — the old code
+        // used its rank among *sortable* headers, correct only while the
+        // non-sortable column stayed last. This pins (a) the generated
+        // header markup: which positions are sortable and under which key;
+        // (b) body/header cell parity with the data the sorted columns
+        // promise at those positions; (c) the shipped JS deriving the
+        // index from the header position itself.
+        $report = $this->buildReport();
+        $dir = sys_get_temp_dir() . '/phpdup-html-sort-' . uniqid();
+        try {
+            (new HtmlReporter())->writeTo($report, $dir);
+            $doc = $this->parseDom($dir . '/index.html');
+            $x = new \DOMXPath($doc);
+
+            $ths = $x->query('//table[@id="clusters"]/thead/tr/th');
+            $this->assertNotNull($ths);
+            $contract = [];
+            foreach ($ths as $pos => $th) {
+                $this->assertInstanceOf(\DOMElement::class, $th);
+                if ($th->hasAttribute('data-sort')) {
+                    $contract[$pos] = [$th->getAttribute('data-key'), $th->getAttribute('data-sort')];
+                }
+            }
+            $this->assertSame([
+                0 => ['num', 'num'],
+                1 => ['size', 'num'],
+                2 => ['similarity', 'num'],
+                3 => ['impact', 'num'],
+                4 => ['confidence', 'num'],
+                5 => ['patterns', 'text'],
+            ], $contract, 'sortable header positions/keys drifted from the contract app.js reads');
+            $signatureTh = $ths->item(6);
+            $this->assertInstanceOf(\DOMElement::class, $signatureTh);
+            $this->assertFalse($signatureTh->hasAttribute('data-sort'), 'Signature column must stay non-sortable');
+
+            $rows = $x->query('//table[@id="clusters"]/tbody/tr');
+            $this->assertNotNull($rows);
+            $this->assertGreaterThan(0, $rows->length, 'no rows to pin parity against');
+            foreach ($rows as $tr) {
+                $this->assertInstanceOf(\DOMElement::class, $tr);
+                $this->assertSame(7, $x->query('td', $tr)->length ?? 0, 'row/header cell parity broken');
+            }
+
+            $first = $report->clusters[0];
+            $cells0 = $x->query('td', $rows->item(0));
+            $this->assertNotNull($cells0);
+            $this->assertSame('1', $cells0->item(0)->getAttribute('data-num'));
+            $this->assertSame((string) $first->size(), $cells0->item(1)->getAttribute('data-num'));
+            $this->assertSame((string) $first->similarity, $cells0->item(2)->getAttribute('data-num'));
+            $this->assertSame((string) $first->impact, $cells0->item(3)->getAttribute('data-num'));
+            $this->assertSame((string) $first->confidence, $cells0->item(4)->getAttribute('data-num'));
+            $this->assertSame(implode(', ', $first->patternTags), trim((string) $cells0->item(5)->textContent));
+
+            $js = (string) (new \ReflectionMethod(HtmlReporter::class, 'js'))->invoke(new HtmlReporter());
+            $this->assertStringContainsString('Column-index contract', $js, 'the JS contract must ship with the asset');
+            $this->assertStringContainsString('Array.prototype.indexOf.call(th.parentNode.children, th)', $js);
+            $this->assertStringNotContainsString('row.cells[idx]', $js, 'the rank-indexed read is the defect this step removed');
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
     private function parseDom(string $file): \DOMDocument
     {
         $prev = libxml_use_internal_errors(true);
