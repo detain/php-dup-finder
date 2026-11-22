@@ -5,13 +5,20 @@ CI integrations, or the [interactive playground](#playground) wired
 to a hosted backend.
 
 ```bash
-phpdup serve --host 0.0.0.0 --port 8080
+# Default bind (loopback) and default port (8080)
+phpdup serve
 ```
 
 The server uses `stream_socket_server` + a hand-rolled HTTP/1.1 parser
 — no ReactPHP / Amp dependency. For high-traffic deployments, swap
 in a more capable runtime (Roadrunner, FrankenPHP, FPM behind nginx)
 and reuse `Phpdup\Server\Application` directly.
+
+Binding a non-loopback address (e.g. `--host 0.0.0.0`) is a guarded
+step, not the default: the server refuses to start unless both
+`--bind-public` and `--token` are given. See
+[Default bind](#default-bind) for the exact refusal and the full
+exposure command.
 
 ## Routes
 
@@ -63,16 +70,56 @@ $ curl -s -X POST http://localhost:8080/analyze \
 
 ### Default bind
 
-The server binds to `127.0.0.1` by default. Exposing it beyond
-localhost requires both `--bind-public` **and** `--token`.
+The server binds to `127.0.0.1:8080` by default. Loopback targets —
+`127.0.0.1`, any `127.x.x.x` address, and the name `localhost` — are
+accepted by the guard with no extra flags and no token:
 
 ```bash
 # Loopback only (default) — no token required
 phpdup serve
-
-# Public bind — token is mandatory
-phpdup serve --bind-public --token YOUR_SECRET_TOKEN
 ```
+
+Anything else is refused **at startup**, before any socket is
+created, so a copied-and-pasted `--host 0.0.0.0` can never silently
+open a network port:
+
+```bash
+$ phpdup serve --host 0.0.0.0
+phpdup serve: refusing to bind to non-loopback host '0.0.0.0' without --bind-public.
+```
+
+Exposing the server beyond loopback is the deliberate, guarded case,
+and it takes two opt-ins. `--bind-public` on its own is refused the
+same way, because an unauthenticated public endpoint hands anyone on
+the network everything under the server's `--serve-root` (by default,
+its launch directory):
+
+```bash
+$ phpdup serve --bind-public
+phpdup serve: --bind-public requires --token to be set (no authentication is enforced by default).
+```
+
+The complete public-exposure command supplies all three parts — a
+non-loopback `--host` to pick the address, `--bind-public` to lift
+the guard, and `--token` to authenticate every request:
+
+```bash
+# Public bind — non-loopback --host + --bind-public + --token
+phpdup serve --host 0.0.0.0 --bind-public --token YOUR_SECRET_TOKEN
+```
+
+Note that `--bind-public` only disarms the guard; it does not change
+the bind address by itself — without an explicit non-loopback
+`--host` the server still comes up on `127.0.0.1`.
+
+Exposing the server also puts `--serve-root` in play: it defaults to
+the directory the server was launched from, and every `paths[]`
+entry a client posts is confined beneath it (see
+[Path confinement](#path-confinement) below). Start a public server
+from — or point `--serve-root` at — exactly the tree you intend it
+to be able to scan, and treat `--token` as non-negotiable: with a
+token set, every request without a matching bearer header is
+answered `401` before any other processing.
 
 ### Bearer token authentication
 
