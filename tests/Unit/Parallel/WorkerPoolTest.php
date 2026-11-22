@@ -1366,6 +1366,226 @@ final class WorkerPoolTest extends TestCase
         fclose($b);
         return $bytes;
     }
+
+    // ── once-S45 (php-dup-finder-once-049): child signal disarm — kill-switch real ──
+    //
+    // fork() copies the parent's signal disposition wholesale. Under the
+    // TUI (Program::catchInterrupts), the CLI SignalHandler, `serve`, or the
+    // watch loop, the parent runs with pcntl_async_signals(true) plus
+    // userland handlers for SIGTERM/SIGINT/SIGHUP whose cooperative contract
+    // is "stop the PARENT's loop" — in a forked worker they run and RETURN,
+    // so the pool's teardown `kill -TERM <worker-pid>` does nothing and the
+    // finally waits out the whole chunk beside a child that believes it is
+    // being asked politely (the finding measured 2.84 s abandon vs 0.21 s).
+    // The pins arm exactly that immortal posture in the test parent and
+    // require: the child branch reports the shed posture through the wire
+    // itself (async OFF, SIGTERM back to SIG_DFL, an inherited SIG_IGN back
+    // to SIG_DFL); a real SIGTERM on a worker pid still kills it AND the
+    // pool marks the death; and the same at raw-process level, where the
+    // waitpid status must be the signal death a shell renders as 143.
+    // Every pin restores the parent process's own posture in a finally —
+    // the disarm runs in children only; the serial fallback must never
+    // touch the process that armed the handlers.
+
+    /** Fork plus the async/get-handler probes need all of it: honest skip. */
+    private function requireSignalDisarmHarness(): void
+    {
+        if (!WorkerPool::isAvailable()) {
+            $this->markTestSkipped('pcntl unavailable');
+        }
+        if (!function_exists('pcntl_async_signals') || !function_exists('pcntl_signal_get_handler')) {
+            $this->markTestSkipped('pcntl_async_signals/pcntl_signal_get_handler unavailable');
+        }
+    }
+
+    /**
+     * Arm the immortal posture from the finding: async delivery ON, a no-op
+     * SIGTERM handler (the catchInterrupts/serve shape), and SIGHUP ignored
+     * (the inherited-SIG_IGN shape the reset must also shed). Returns the
+     * restore closure the caller MUST run in a finally.
+     *
+     * @return \Closure(): void
+     */
+    private function armImmortalParentPosture(): \Closure
+    {
+        $prevAsync = pcntl_async_signals(true);
+        pcntl_signal(SIGTERM, static function (): void {
+            // deliberate no-op: catches the kill and returns — the exact
+            // handler contract that made inherited workers immortal
+        });
+        pcntl_signal(SIGHUP, SIG_IGN);
+
+        return static function () use ($prevAsync): void {
+            pcntl_signal(SIGTERM, SIG_DFL);
+            pcntl_signal(SIGHUP, SIG_DFL);
+            pcntl_async_signals($prevAsync);
+        };
+    }
+
+    /** disarmInheritedSignals is private static; reflection seam per the S13 pattern. */
+    private function invokeDisarmInheritedSignals(): void
+    {
+        $ref = new \ReflectionMethod(WorkerPool::class, 'disarmInheritedSignals');
+        $ref->invoke(null);
+    }
+
+    public function testForkedChildReportsDisarmedAsyncModeAndDefaultHandlers(): void
+    {
+        // Acceptance leg "pcntl_async_signals off in the child branch
+        // asserted via child probe output" — through the real pool wire.
+        // Each child serializes its OWN posture as a scalar record: an
+        // un-disarmed child reports async=true and handler/ignore
+        // dispositions, failing every assertion below.
+        $this->requireSignalDisarmHarness();
+        $restore = $this->armImmortalParentPosture();
+        try {
+            $this->withCpuEnv('2', function (): void {
+                $pool = new WorkerPool(workers: 2);
+                $probes = iterator_to_array($pool->runStreaming(
+                    range(1, 16),
+                    static fn(array $batch): array => [[
+                        'pid'         => getmypid(),
+                        'async'       => pcntl_async_signals(),
+                        // Kernel-default reading, both spellings: PHP
+                        // reports an explicit SIG_DFL restore as int(0)
+                        // (measured on this box) and a never-owned signal
+                        // as false. The immortal shapes this step cures —
+                        // a Closure (the parent's userland handler) or
+                        // true (an inherited SIG_IGN) — are neither.
+                        // Distilled to a plain bool: the wire stays
+                        // scalar-only (socketpair law).
+                        'termDefault' => in_array(pcntl_signal_get_handler(SIGTERM), [false, SIG_DFL], true),
+                        'hupDefault'  => in_array(pcntl_signal_get_handler(SIGHUP), [false, SIG_DFL], true),
+                    ]],
+                ), false);
+                $this->assertCount(2, $probes, 'both forked children probe their own posture');
+                foreach ($probes as $probe) {
+                    $this->assertNotSame(getmypid(), $probe['pid'], 'the probe ran in a forked child, not the serial fallback');
+                    $this->assertFalse($probe['async'], 'async signal dispatch must be OFF in the child branch');
+                    $this->assertTrue($probe['termDefault'], 'an inherited SIGTERM handler must be back to SIG_DFL in the child');
+                    $this->assertTrue($probe['hupDefault'], 'an inherited SIGHUP SIG_IGN must be back to SIG_DFL in the child');
+                }
+            });
+        } finally {
+            $restore();
+        }
+    }
+
+    public function testKillTermOnAWorkerDiesAndIsMarkedDespiteImmortalPosture(): void
+    {
+        // Acceptance leg "parent kill -TERM <worker-pid> → pool marks the
+        // death": the target child reports its pid, then idles two seconds
+        // before its survivor record could ever appear. Fixed shape: the
+        // kill lands default-style within the idle, the stream ends
+        // WITHOUT its sentinel, and the exit-status contract throws naming
+        // the signal. Pre-S45 shape: the child caught its own SIGTERM,
+        // returned, streamed 'late', and the run completed clean.
+        $this->requireSignalDisarmHarness();
+        $restore = $this->armImmortalParentPosture();
+        try {
+            $this->withCpuEnv('2', function (): void {
+                $pool   = new WorkerPool(workers: 2);
+                $start  = microtime(true);
+                $seen   = [];
+                $caught = null;
+                try {
+                    foreach ($pool->runStreaming(
+                        range(1, 16),
+                        static function (array $batch): \Generator {
+                            if (in_array(1, $batch, true)) {
+                                yield ['kind' => 'target', 'pid' => getmypid()];
+                                $deadline = microtime(true) + 2.0;
+                                while (microtime(true) < $deadline) {
+                                    usleep(20000);
+                                }
+                                yield ['kind' => 'late'];
+                                return;
+                            }
+                            foreach ($batch as $x) {
+                                yield ['kind' => 'ok', 'x' => $x];
+                            }
+                        },
+                    ) as $record) {
+                        $seen[] = $record;
+                        if ($record['kind'] === 'target') {
+                            posix_kill($record['pid'], SIGTERM);
+                        }
+                    }
+                } catch (\RuntimeException $e) {
+                    $caught = $e;
+                }
+                $this->assertNotNull(
+                    $caught,
+                    'a SIGTERM-struck worker must surface as a marked death, not a survivor stream'
+                );
+                $this->assertMatchesRegularExpression(
+                    '/Worker \d+ was killed by signal 15 \(SIGTERM\)/',
+                    $caught->getMessage(),
+                    'the pool names the kill it delivered — the kill switch is real under inherited handlers'
+                );
+                $this->assertNotContains(['kind' => 'late'], $seen, 'the killed worker never reached its survivor record');
+                $this->assertLessThan(10.0, microtime(true) - $start, 'the kill is honored promptly — no wait-out-the-chunk hang');
+                $this->assertPoolLeftNoStrayChildren();
+            });
+        } finally {
+            $restore();
+        }
+    }
+
+    public function testDisarmedChildDiesByRawSigtermUnderImmortalParent(): void
+    {
+        // Acceptance leg "child dies 143" at the process layer: a direct
+        // fork under the armed immortal posture, the child's first act
+        // being the very call the pool's child branch makes (reflection
+        // seam), and the raw waitpid status must read as a signal death by
+        // SIGTERM — 128 + 15 = 143, the code a shell reports — never as a
+        // survived exit.
+        $this->requireSignalDisarmHarness();
+        $restore = $this->armImmortalParentPosture();
+        try {
+            $pid = pcntl_fork();
+            if ($pid === -1) {
+                $this->markTestSkipped('pcntl_fork failed');
+            }
+            if ($pid === 0) {
+                while (ob_get_level() > 0) {
+                    ob_end_clean();
+                }
+                $this->invokeDisarmInheritedSignals();
+                // Reach the deadline only if the disarm failed: an
+                // immortal posture swallows the kill and walks out exit(7).
+                $deadline = microtime(true) + 2.0;
+                while (microtime(true) < $deadline) {
+                    usleep(20000);
+                }
+                exit(7);
+            }
+            usleep(150000); // let the child arm its own default dispositions
+            posix_kill($pid, SIGTERM);
+            $status    = 0;
+            $collected = 0;
+            $deadline  = microtime(true) + 6.0;
+            while ($collected !== $pid) {
+                if (microtime(true) >= $deadline) {
+                    $this->fail("worker pid $pid never became collectable after SIGTERM");
+                }
+                $collected = pcntl_waitpid($pid, $status, WNOHANG);
+                if ($collected === -1) {
+                    $this->fail("waitpid for pid $pid failed before the child was reaped");
+                }
+                if ($collected === 0) {
+                    usleep(20000);
+                }
+            }
+            $outcome = pcntl_wifexited($status)
+                ? 'survived the kill and exited ' . pcntl_wexitstatus($status)
+                : 'terminated by signal ' . pcntl_wtermsig($status);
+            $this->assertTrue(pcntl_wifsignaled($status), "the disarmed child must die of SIGTERM (143-shape), got: $outcome");
+            $this->assertSame(SIGTERM, pcntl_wtermsig($status), 'raw terminate signal is SIGTERM — 128 + 15 is the 143 a shell reports');
+        } finally {
+            $restore();
+        }
+    }
 }
 
 /**

@@ -65,6 +65,19 @@ final class WorkerPool
     private const WRITE_STALL_LIMIT = 16;
 
     /**
+     * once-S45 (php-dup-finder-once-049): the TERMINATE-class signals the
+     * parent-side app stack installs handlers for (TUI Program::catchInterrupts
+     * arms SIGINT/SIGTERM/SIGHUP; CLI SignalHandler arms SIGINT; serve and the
+     * watch React loop arm SIGINT/SIGTERM) plus the manual `kill -TERM` /
+     * SIGQUIT teardown shapes. A forked child inherits every one of these
+     * dispositions; {@see disarmInheritedSignals()} hands each back to the
+     * kernel before the child does any work, so the pool's kill switch stays
+     * real. SIGKILL needs no entry — it cannot be caught, ignored or
+     * laundered, which is exactly why the escalation leg always worked.
+     */
+    private const CHILD_DISARM_SIGNALS = [SIGTERM, SIGINT, SIGHUP, SIGQUIT];
+
+    /**
      * shell-038 — ceiling multiplier for the effective concurrent-worker
      * count: the pool never forks more than `4 × detected CPUs` children in
      * one run, no matter how large the requested value is. The request can
@@ -516,6 +529,12 @@ final class WorkerPool
                 }
                 if ($pid === 0) {
                     // child
+                    // once-S45 (php-dup-finder-once-049): the FIRST act is
+                    // to shed the inherited signal posture — the parent's
+                    // TUI/CLI/watch handlers caught under async dispatch
+                    // made this worker's SIGTERM a no-op return, so the
+                    // teardown kill below would wait out the whole chunk.
+                    self::disarmInheritedSignals();
                     @fclose($parentEnd);
                     try {
                         foreach ($task($chunk) as $record) {
@@ -841,6 +860,57 @@ final class WorkerPool
             SIGINT  => 'SIGINT',
             default => 'unnamed',
         };
+    }
+
+    /**
+     * once-S45 (php-dup-finder-once-049): make the pool's kill switch real in
+     * a forked child, whatever the parent had armed before forking.
+     *
+     * fork() copies the parent's signal disposition wholesale. Under the TUI
+     * (Program::catchInterrupts), the CLI SignalHandler, `serve`, or the watch
+     * loop, the parent has pcntl_async_signals(true) plus userland handlers
+     * installed for exactly the signals the pool's lifecycle routes through —
+     * and the handlers' cooperative contract is "stop the PARENT's loop", so
+     * in a child they run and RETURN. A teardown SIGTERM then does nothing:
+     * the worker lives out its whole chunk while the finally's blocking
+     * pcntl_waitpid waits with it (measured abandon 2.84 s against 0.21 s —
+     * the finding's timing differential).
+     *
+     * So the child's first act, before it closes fds or touches the task, is:
+     *   1. async delivery OFF — inherited userland handlers must not fire at
+     *      VM tick points inside the worker, and
+     *   2. every signal in {@see CHILD_DISARM_SIGNALS} reset to SIG_DFL — the
+     *      kernel's default action (terminate) restored for the kill-switch
+     *      set.
+     *
+     * The reset is UNCONDITIONAL, not "only where a handler was installed":
+     * an inherited SIG_IGN swallows the kill just as silently as a returning
+     * handler (same immortal shape, different disposition), and even a
+     * legitimate inherited handler is the PARENT's code — it belongs nowhere
+     * inside a worker. The task closure runs after the disarm, so a worker
+     * with a genuine need may arm its own handlers. Signals outside the
+     * terminate class the lifecycle routes (SIGWINCH, SIGTSTP/SIGCONT) keep
+     * the inherited posture untouched, and SIGPIPE keeps PHP's own internal
+     * handler: its EPIPE→fwrite(false) taxonomy is shell-S13's domain, not a
+     * kill switch. A kill delivered before this method finished is already
+     * pending — with the disposition now SIG_DFL the kernel applies the
+     * default action on delivery, so the worker dies anyway.
+     *
+     * This runs ONLY in the child branch of the fork (or, in pins, through a
+     * reflection seam); the serial fallback executes the task in the parent
+     * and must leave the parent's own posture exactly as its owner armed it.
+     */
+    private static function disarmInheritedSignals(): void
+    {
+        if (!function_exists('pcntl_signal')) {
+            return; // no ext-pcntl: no inherited userland posture to shed
+        }
+        if (function_exists('pcntl_async_signals')) {
+            pcntl_async_signals(false);
+        }
+        foreach (self::CHILD_DISARM_SIGNALS as $signal) {
+            pcntl_signal($signal, SIG_DFL);
+        }
     }
 
     /**
