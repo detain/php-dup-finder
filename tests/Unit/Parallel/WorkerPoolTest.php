@@ -427,4 +427,238 @@ final class WorkerPoolTest extends TestCase
             $this->assertCount(3, $pids);
         });
     }
+
+    // ── once-S77 (once-093 / once-110): portable CPU detection ────────────
+    //
+    // The probe chain must never shell out (the retired shape was
+    // shell_exec('nproc 2>/dev/null'): Linux-only advice, host topology in
+    // quota'd containers, and a redirect cmd doesn't honor on Windows).
+    // "Container with a cpu.max limit → detected == quota" is pinned here
+    // through fixture /sys + /proc strings installed via the probe seam;
+    // PHPDUP_WORKERS semantics are pinned as SEED-NOT-OVERRIDE — the truth
+    // of `$this->workers > 0 ? $this->workers : detectCpuCount()`.
+
+    /**
+     * Run a detection scenario against fixture /sys + /proc strings.
+     * PHPDUP_WORKERS is cleared so the env seed cannot short-circuit the
+     * probe chain; the seam and the environment are restored in finally.
+     *
+     * @param array<string, string> $files path → fixture contents (anything
+     *                                     not listed reads as null/absent)
+     */
+    private function withProbeFixtures(array $files, callable $scenario): void
+    {
+        $original = getenv('PHPDUP_WORKERS');
+        putenv('PHPDUP_WORKERS');
+        WorkerPool::setSysFileReader(static fn(string $path): ?string => $files[$path] ?? null);
+        try {
+            $scenario();
+        } finally {
+            WorkerPool::setSysFileReader(null);
+            if ($original === false) {
+                putenv('PHPDUP_WORKERS');
+            } else {
+                putenv("PHPDUP_WORKERS=$original");
+            }
+        }
+    }
+
+    /** @return string a /proc/cpuinfo body with $n "processor\t:" entries */
+    private static function cpuinfoFixture(int $n): string
+    {
+        $out = '';
+        for ($i = 0; $i < $n; $i++) {
+            $out .= "processor\t: $i\nvendor_id\t: FakeCPU\nmodel name\t: fixture\n\n";
+        }
+        return $out;
+    }
+
+    public function testCpuDetectionNeverShellsOut(): void
+    {
+        // Static-source census (once-093): the detection path in
+        // WorkerPool.php may not invoke a shell — prose mentions inside
+        // comments do not count, code lines do.
+        $lines  = file(__DIR__ . '/../../../src/Parallel/WorkerPool.php');
+        $this->assertNotFalse($lines, 'WorkerPool source must be readable for the census');
+        foreach ($lines as $no => $line) {
+            $trimmed = ltrim($line);
+            if (str_starts_with($trimmed, '*') || str_starts_with($trimmed, '//')
+                || str_starts_with($trimmed, '#') || str_starts_with($trimmed, '/*')) {
+                continue; // comment lines carry the retired-shape prose
+            }
+            $this->assertSame(
+                0,
+                preg_match('/\b(shell_exec|proc_open|popen|passthru|system|exec)\s*\(/', $line),
+                'line ' . ($no + 1) . ' invokes a shell execution function: ' . trim($line)
+            );
+        }
+    }
+
+    public function testCgroupV2QuotaBeatsHostTopology(): void
+    {
+        // Acceptance scenario: container with cpu.max = 2 CPUs on a
+        // 64-processor host → detected == the QUOTA, not the host.
+        $this->withProbeFixtures([
+            '/sys/fs/cgroup/cpu.max' => "200000 100000\n",
+            '/proc/cpuinfo'          => self::cpuinfoFixture(64),
+        ], function (): void {
+            $this->assertSame(2, WorkerPool::detectCpuCount());
+            $this->assertSame(8, WorkerPool::workersCeiling(), 'the ceiling rides the quota-detected count');
+        });
+    }
+
+    public function testCgroupV2PartialQuotaRoundsUp(): void
+    {
+        $this->withProbeFixtures([
+            '/sys/fs/cgroup/cpu.max' => "180000 100000\n", // 1.8 CPUs
+            '/proc/cpuinfo'          => self::cpuinfoFixture(64),
+        ], function (): void {
+            $this->assertSame(2, WorkerPool::detectCpuCount(), '1.8 quota CPUs become 2, not 1');
+        });
+    }
+
+    public function testCgroupV2UnlimitedFallsThroughToCpuinfo(): void
+    {
+        $this->withProbeFixtures([
+            '/sys/fs/cgroup/cpu.max' => "max 100000\n", // unlimited
+            '/proc/cpuinfo'          => self::cpuinfoFixture(3),
+        ], function (): void {
+            $this->assertSame(3, WorkerPool::detectCpuCount());
+        });
+    }
+
+    public function testCgroupV1QuotaAppliesWhenV2Absent(): void
+    {
+        $this->withProbeFixtures([
+            '/sys/fs/cgroup/cpu/cpu.cfs_quota_us'  => "150000\n",
+            '/sys/fs/cgroup/cpu/cpu.cfs_period_us' => "100000\n",
+            '/proc/cpuinfo'                        => self::cpuinfoFixture(96),
+        ], function (): void {
+            $this->assertSame(2, WorkerPool::detectCpuCount(), 'v1 pair 1.5 CPUs rounds up to 2');
+        });
+    }
+
+    public function testCgroupV1UnlimitedQuotaFallsThrough(): void
+    {
+        $this->withProbeFixtures([
+            '/sys/fs/cgroup/cpu/cpu.cfs_quota_us'  => "-1\n", // unlimited
+            '/sys/fs/cgroup/cpu/cpu.cfs_period_us' => "100000\n",
+            '/proc/cpuinfo'                        => self::cpuinfoFixture(8),
+        ], function (): void {
+            $this->assertSame(8, WorkerPool::detectCpuCount());
+        });
+    }
+
+    public function testWindowsProbeIsPortableApiNoShell(): void
+    {
+        // Windows path: no /proc, no /sys — NUMBER_OF_PROCESSORS answers
+        // through plain getenv(), never a `nproc 2>/dev/null` cmd call.
+        $original = getenv('NUMBER_OF_PROCESSORS');
+        putenv('NUMBER_OF_PROCESSORS=12');
+        try {
+            $this->withProbeFixtures([], function (): void {
+                $this->assertSame(12, WorkerPool::detectCpuCount());
+            });
+        } finally {
+            if ($original === false) {
+                putenv('NUMBER_OF_PROCESSORS');
+            } else {
+                putenv("NUMBER_OF_PROCESSORS=$original");
+            }
+        }
+    }
+
+    public function testDeclaredFallbackWhenNothingVisible(): void
+    {
+        // macOS/FreeBSD host with no quota: the OLD code silently answered 4
+        // after a pointless shell_exec; the new chain answers the DECLARED
+        // CPU_FALLBACK_COUNT after every portable probe came up empty.
+        $original = getenv('NUMBER_OF_PROCESSORS');
+        putenv('NUMBER_OF_PROCESSORS');
+        try {
+            $this->withProbeFixtures([], function (): void {
+                $this->assertSame(WorkerPool::CPU_FALLBACK_COUNT, WorkerPool::detectCpuCount());
+            });
+        } finally {
+            if ($original === false) {
+                putenv('NUMBER_OF_PROCESSORS');
+            } else {
+                putenv("NUMBER_OF_PROCESSORS=$original");
+            }
+        }
+    }
+
+    public function testSeamDetectionIsNeverMemoized(): void
+    {
+        // Fixture runs must not poison the production static cache: the
+        // value must follow the seam contents, not the first answer.
+        $this->withProbeFixtures(
+            ['/sys/fs/cgroup/cpu.max' => "200000 100000\n"],
+            function (): void {
+                $this->assertSame(2, WorkerPool::detectCpuCount());
+                WorkerPool::setSysFileReader(
+                    static fn(string $path): ?string => $path === '/sys/fs/cgroup/cpu.max' ? "1000000 100000\n" : null
+                );
+                $this->assertSame(10, WorkerPool::detectCpuCount(), 'a re-installed seam must re-probe, not replay');
+            }
+        );
+    }
+
+    public function testCgroupV2MaxParserCases(): void
+    {
+        $this->assertSame(0, WorkerPool::parseCgroupV2Max(null), 'unreadable file reads as no-quota');
+        $this->assertSame(0, WorkerPool::parseCgroupV2Max(''), 'empty body is malformed, not zero CPUs');
+        $this->assertSame(0, WorkerPool::parseCgroupV2Max("max 100000\n"), 'unlimited');
+        $this->assertSame(0, WorkerPool::parseCgroupV2Max("0 100000\n"), 'non-positive quota is no quota');
+        $this->assertSame(0, WorkerPool::parseCgroupV2Max("200000 0\n"), 'zero period is garbage');
+        $this->assertSame(0, WorkerPool::parseCgroupV2Max("nonsense\n"), 'malformed bodies keep probing');
+        $this->assertSame(1, WorkerPool::parseCgroupV2Max("100000 100000\n"), 'whole CPU');
+        $this->assertSame(1, WorkerPool::parseCgroupV2Max("25000 100000\n"), 'quarter CPU rounds up to 1');
+        $this->assertSame(3, WorkerPool::parseCgroupV2Max("250000 100000\n"), '2.5 rounds up to 3');
+    }
+
+    public function testCgroupV1QuotaParserCases(): void
+    {
+        $this->assertSame(0, WorkerPool::parseCgroupV1Quota(null, '100000'), 'missing quota file');
+        $this->assertSame(0, WorkerPool::parseCgroupV1Quota('-1', null), 'missing period file');
+        $this->assertSame(0, WorkerPool::parseCgroupV1Quota('-1', '100000'), 'unlimited v1 quota');
+        $this->assertSame(0, WorkerPool::parseCgroupV1Quota('150000', '0'), 'zero period is garbage');
+        $this->assertSame(0, WorkerPool::parseCgroupV1Quota('nonsense', '100000'), 'non-numeric is no quota');
+        $this->assertSame(2, WorkerPool::parseCgroupV1Quota("150000\n", "100000\n"), '1.5 rounds up');
+        $this->assertSame(4, WorkerPool::parseCgroupV1Quota("400000", "100000"), 'whole multiple stays whole');
+    }
+
+    public function testParseCpuinfoCases(): void
+    {
+        $this->assertSame(0, WorkerPool::parseCpuinfo(null), 'unreadable /proc/cpuinfo');
+        $this->assertSame(0, WorkerPool::parseCpuinfo('vendor_id : no processors here'), 'no entries');
+        $this->assertSame(3, WorkerPool::parseCpuinfo(self::cpuinfoFixture(3)));
+    }
+
+    public function testEnvSeedNeverOverridesExplicitWorkers(): void
+    {
+        // once-110 seed-not-override: PHPDUP_WORKERS seeds the AUTO count
+        // (and the ceiling), but an explicit request always wins over it.
+        if (!WorkerPool::isAvailable()) {
+            $this->markTestSkipped('pcntl unavailable');
+        }
+        $this->withCpuEnv('2', function (): void {
+            // Seed says 2; the explicit request says 5 (≤ ceiling 8). If
+            // the seed OVERRODE, we would fork 2 children of 8; truth: 5
+            // children of 3 over 15 items.
+            $pool = new WorkerPool(workers: 5);
+            $rows = iterator_to_array(
+                $pool->runStreaming(range(1, 15), static fn(array $batch): array => [getmypid() . ':' . count($batch)]),
+                false,
+            );
+            $this->assertCount(5, $rows, 'the explicit workers=5 must beat the PHPDUP_WORKERS=2 seed');
+            $pids = [];
+            foreach ($rows as $row) {
+                [$pid, $size] = explode(':', $row);
+                $pids[(int)$pid] = true;
+                $this->assertSame(3, (int)$size);
+            }
+            $this->assertCount(5, $pids, 'five real children — proof the request was honoured');
+        });
+    }
 }

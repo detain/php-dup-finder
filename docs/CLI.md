@@ -111,7 +111,7 @@ silent success.
 | Option                                     | Default     | Description                                                                                            |
 |--------------------------------------------|-------------|--------------------------------------------------------------------------------------------------------|
 | `-c, --config FILE`                        | —           | Load settings from a `phpdup.json` config file. CLI flags override file values.                        |
-| `-j, --workers N`                          | `0` (auto)  | Worker count for parallel preprocess + pair scoring. `0` = auto-detect from `nproc` / `/proc/cpuinfo`. `1` = serial. |
+| `-j, --workers N`                          | `0` (auto)  | Worker count for parallel preprocess + pair scoring. `0` = auto-detect the CPU count (see *Worker auto-detection* below; `PHPDUP_WORKERS` seeds it). `1` = serial. A value above the pool ceiling (`4 × detected CPUs`) is admitted with a `phpdup: warning:` note on STDERR — the pool clamps every run to the ceiling instead of failing admission. |
 | `--no-cache`                               | off         | Skip AST **index reuse** for this run: the per-file incremental cache (`IndexStore`) is not read, and the refactor stage does not reload cached ASTs. **Note:** this does not suppress writes — the parser's on-disk AST cache under `cache_dir` is still populated during the run; set `cache_dir` to a throwaway path (e.g. a temp directory) if you need nothing written to disk. |
 | `--no-incremental`                         | off         | Disable per-file index-snapshot reuse. Forces re-fingerprinting every file.                            |
 | `--no-lazy-ast`                            | off         | Keep all original ASTs in memory throughout the run. Higher RSS, slightly faster anti-unification.     |
@@ -253,11 +253,28 @@ is accepted (`--workers ' 4 '` is the same as `--workers 4`). A value that
 is still non-numeric — or outside the option's domain — after trimming
 exits `2` as above.
 
+## Worker auto-detection
+
+When `--workers` is `0` (auto), the CPU count is probed portably — no shell
+is ever invoked. The first positive answer wins:
+
+1. **cgroup CPU quota** — v2 `cpu.max`, then the v1 cpu-controller
+   `cfs_quota_us`/`cfs_period_us` pair. A quota-limited container counts its
+   own share (rounding up: 1.8 CPUs → 2), never the host topology.
+2. **`/proc/cpuinfo`** — one entry per logical CPU (Linux hosts).
+3. **`NUMBER_OF_PROCESSORS`** — the environment variable Windows exports to
+   every process (the portable Windows equivalent of `nproc`).
+4. **Fallback `4`** — a declared default for platforms nothing above can
+   see (e.g. a macOS or FreeBSD host outside a quota).
+
+The detected count also sets the pool ceiling: concurrent children never
+exceed `4 × detected CPUs`, whatever was requested (see `--workers` above).
+
 ## Environment variables
 
 | Variable          | Effect                                                                                  |
 |-------------------|-----------------------------------------------------------------------------------------|
-| `PHPDUP_WORKERS`  | Override worker count (lower precedence than `-j` / `--workers`).                       |
+| `PHPDUP_WORKERS`  | **Seed, not override** (lower precedence than `-j` / `--workers`). Seeds the CPU auto-detection used when the worker count is automatic, and therefore moves the pool ceiling too; an explicit `--workers N` (N ≥ 1) always wins. Non-numeric or ≤ 0 values are ignored. |
 | `COLUMNS`         | Override terminal-width detection for the CLI report.                                   |
 | `SHELL`           | Consulted by `phpdup completion` when no `shell` argument is supplied.                  |
 

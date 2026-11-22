@@ -124,7 +124,7 @@ final class Command extends SymfonyCommand
 
         // ── Performance / runtime ──────────────────────────────────────────
         $this
-            ->addOption('workers', 'j', InputOption::VALUE_REQUIRED, 'Worker count for parallel preprocess + pair scoring (0 = auto, 1 = serial)')
+            ->addOption('workers', 'j', InputOption::VALUE_REQUIRED, 'Worker count for parallel preprocess + pair scoring. 0 = auto-detect CPU count (portable probe chain, PHPDUP_WORKERS seeds it); 1 = serial. Above the pool ceiling (4 x detected CPUs) the run is admitted with a warning and the pool clamps.')
             ->addOption('no-cache', null, InputOption::VALUE_NONE, 'Disable AST cache for this run')
             ->addOption('no-incremental', null, InputOption::VALUE_NONE, 'Disable per-file index reuse')
             ->addOption('no-lazy-ast', null, InputOption::VALUE_NONE, 'Keep all original ASTs in memory (higher RSS, faster anti-unification)')

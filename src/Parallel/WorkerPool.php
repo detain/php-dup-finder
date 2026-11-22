@@ -43,6 +43,15 @@ final class WorkerPool
     public const WORKERS_CEILING_MULTIPLIER = 4;
 
     /**
+     * once-S77 (once-093): the DECLARED fallback CPU count for platforms
+     * the probe chain in {@see detectCpuCount()} cannot see (a macOS or
+     * FreeBSD host without a cgroup quota). The old code hardcoded the same
+     * 4, but reached it silently through a Linux-only shell pipeline; now
+     * it is an intentional, documented floor after every portable probe.
+     */
+    public const CPU_FALLBACK_COUNT = 4;
+
+    /**
      * shell-S10 fix (review L-2): how long the exit-status verification pass
      * waits for a child whose stream has already ended to be collectable on
      * its own before escalating to SIGTERM, then (after the term grace) to
@@ -76,6 +85,18 @@ final class WorkerPool
      */
     private static ?\Closure $socketPairFactory = null;
 
+    /**
+     * Probe-read seam for the CPU-detection file probes (once-S77):
+     * `path → contents|null`. Production never installs it (reads the real
+     * /sys and /proc files through the PHP file API); unit tests install
+     * fixture readers so "container with a cpu.max quota" scenarios are
+     * reproducible on any host. Same restore-in-finally discipline as
+     * {@see setSocketPairFactory()}.
+     *
+     * @var (\Closure(string): (string|null))|null
+     */
+    private static ?\Closure $sysFileReader = null;
+
     public function __construct(
         public readonly int $workers = 0,
     ) {
@@ -90,8 +111,10 @@ final class WorkerPool
 
     /**
      * Hard ceiling for concurrent children in one run: 4 × the detected
-     * CPU count (PHPDUP_WORKERS overrides the CPU detection through
-     * {@see detectCpuCount()}, and therefore moves the ceiling too).
+     * CPU count (PHPDUP_WORKERS SEEDS the detection through
+     * {@see detectCpuCount()} whenever the count is automatic, and
+     * therefore moves the ceiling too — but an explicit `--workers N`
+     * request is independent of it, once-110 seed-not-override).
      */
     public static function workersCeiling(): int
     {
@@ -146,6 +169,43 @@ final class WorkerPool
         return $pair === false ? false : $pair;
     }
 
+    /**
+     * Install the probe-read seam (once-S77); pass null to restore real
+     * file reads. Tests MUST restore it in a finally block: the pool is
+     * shared across the whole test process. While a seam is installed,
+     * {@see detectCpuCount()} probes fresh on every call and never writes
+     * the production memoization cache, so fixture results cannot leak.
+     *
+     * @param (\Closure(string): (string|null))|null $reader
+     */
+    public static function setSysFileReader(?\Closure $reader): void
+    {
+        self::$sysFileReader = $reader;
+    }
+
+    /**
+     * Portable CPU-count detection — no shell (once-S77 retires
+     * `shell_exec('nproc 2>/dev/null')`, which was Linux-only advice,
+     * ignored cgroup quotas (containers counted the whole host), and on
+     * Windows reached cmd with a `2>/dev/null` redirect cmd does not honor).
+     *
+     * Candidate order, first positive wins:
+     *
+     *   1. `PHPDUP_WORKERS` — an explicit SEED for the detection: it
+     *      short-circuits every probe and moves the fork ceiling
+     *      ({@see workersCeiling()}), but it never overrides a
+     *      `--workers N` request with N ≥ 1 (once-110: seed-not-override,
+     *      pinned by WorkerPoolTest and documented in docs/CLI.md).
+     *   2. cgroup CPU quota — v2 `cpu.max`, then the v1 cpu-controller
+     *      cfs_quota/cfs_period pair: a quota-limited container counts its
+     *      share, not the host topology.
+     *   3. `/proc/cpuinfo` processor entries (Linux hosts).
+     *   4. `NUMBER_OF_PROCESSORS` — the portable Windows equivalent, read
+     *      through plain getenv(): no shell, no redirect.
+     *   5. {@see CPU_FALLBACK_COUNT} — the DECLARED default for platforms
+     *      nothing above can see (macOS/FreeBSD hosts), replacing the old
+     *      silent `4` with a documented constant.
+     */
     public static function detectCpuCount(): int
     {
         static $cache = null;
@@ -157,31 +217,142 @@ final class WorkerPool
             return $env;
         }
 
+        // A seam-installed run is a test run: probe fresh, never memoize.
+        if (self::$sysFileReader !== null) {
+            return max(1, self::probeCpuCount());
+        }
+
         if ($cache !== null) {
             return $cache;
         }
+        $cache = max(1, self::probeCpuCount());
+        return $cache;
+    }
 
+    /** The probe chain of {@see detectCpuCount()} after the env seed. */
+    private static function probeCpuCount(): int
+    {
         $candidates = [
-            self::nprocFromCmdline(),
-            (int)shell_exec('nproc 2>/dev/null'),
-            4,
+            self::cgroupQuotaCpuCount(),
+            self::cpuinfoCount(),
+            self::windowsProcessorCount(),
+            self::CPU_FALLBACK_COUNT,
         ];
         foreach ($candidates as $n) {
             if ($n > 0) {
-                $cache = $n;
                 return $n;
             }
         }
-        $cache = 1;
         return 1;
     }
 
-    private static function nprocFromCmdline(): int
+    /**
+     * cgroup CPU quota — the container truth. 0 means "no quota visible,
+     * keep probing". Quotas that are not whole multiples of the period
+     * round UP: 1.8 CPUs still gets 2 children, mirroring the kernel's own
+     * slice delivery over a wall-clock window.
+     */
+    private static function cgroupQuotaCpuCount(): int
     {
-        if (!is_readable('/proc/cpuinfo')) return 0;
-        $cpu = @file_get_contents('/proc/cpuinfo');
-        if ($cpu === false) return 0;
-        return substr_count($cpu, "processor\t:");
+        $v2 = self::parseCgroupV2Max(self::readProbeFile('/sys/fs/cgroup/cpu.max'));
+        if ($v2 > 0) {
+            return $v2;
+        }
+        return self::parseCgroupV1Quota(
+            self::readProbeFile('/sys/fs/cgroup/cpu/cpu.cfs_quota_us'),
+            self::readProbeFile('/sys/fs/cgroup/cpu/cpu.cfs_period_us'),
+        );
+    }
+
+    /**
+     * Parse a cgroup v2 `cpu.max` body: "QUOTA PERIOD" (microseconds) or
+     * "max PERIOD" when unlimited. Non-positive or malformed bodies yield
+     * 0 (= "no quota seen"), never an error.
+     */
+    public static function parseCgroupV2Max(?string $contents): int
+    {
+        if ($contents === null) {
+            return 0;
+        }
+        $fields = preg_split('/\s+/', trim($contents), -1, PREG_SPLIT_NO_EMPTY);
+        if (!is_array($fields) || count($fields) < 2) {
+            return 0;
+        }
+        [$quotaRaw, $periodRaw] = $fields;
+        // "max 100000" is the unlimited spelling; anything non-digit in the
+        // two slots is a malformed body — both keep probing.
+        if (!ctype_digit($quotaRaw) || !ctype_digit($periodRaw)) {
+            return 0;
+        }
+        $quota  = (int)$quotaRaw;
+        $period = (int)$periodRaw;
+        if ($quota <= 0 || $period <= 0) {
+            return 0;
+        }
+        return (int)ceil($quota / $period);
+    }
+
+    /**
+     * Parse the cgroup v1 cpu-controller pair (cfs_quota_us /
+     * cfs_period_us). A quota of -1 (unlimited), a missing side, or any
+     * non-positive value yields 0 (= "no quota seen").
+     */
+    public static function parseCgroupV1Quota(?string $quota, ?string $period): int
+    {
+        if ($quota === null || $period === null) {
+            return 0;
+        }
+        $q = (int)trim($quota);
+        $p = (int)trim($period);
+        if ($q <= 0 || $p <= 0) {
+            return 0;
+        }
+        return (int)ceil($q / $p);
+    }
+
+    /** Linux host topology: one "processor\t:" entry per logical CPU. */
+    private static function cpuinfoCount(): int
+    {
+        return self::parseCpuinfo(self::readProbeFile('/proc/cpuinfo'));
+    }
+
+    /** Parse a /proc/cpuinfo body (null when the file is not readable). */
+    public static function parseCpuinfo(?string $contents): int
+    {
+        if ($contents === null) {
+            return 0;
+        }
+        return substr_count($contents, "processor\t:");
+    }
+
+    /**
+     * Windows: the OS exports NUMBER_OF_PROCESSORS to every process — the
+     * portable equivalent of `nproc` there, read through plain getenv().
+     * On other platforms the variable is simply unset, so the probe falls
+     * through (0) instead of shelling out.
+     */
+    private static function windowsProcessorCount(): int
+    {
+        $raw = getenv('NUMBER_OF_PROCESSORS');
+        if (!is_string($raw)) {
+            return 0;
+        }
+        $n = (int)trim($raw);
+        return $n > 0 ? $n : 0;
+    }
+
+    /** Seam-first read of a probe file; null when absent or unreadable. */
+    private static function readProbeFile(string $path): ?string
+    {
+        $reader = self::$sysFileReader;
+        if ($reader !== null) {
+            return $reader($path);
+        }
+        if (!is_readable($path)) {
+            return null;
+        }
+        $contents = @file_get_contents($path);
+        return $contents === false ? null : $contents;
     }
 
     /**
