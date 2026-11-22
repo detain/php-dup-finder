@@ -1080,4 +1080,355 @@ final class WorkerPoolTest extends TestCase
 
         return [$i, $args];
     }
+
+    // ── shell-S13 (php-dup-finder-shell-050): linear partial-write handling ──
+    //
+    // writeRecord owns the encoder side of the framed worker stream (the
+    // decodeFrame docblock names it). Pre-S13 it re-sliced the whole
+    // shrinking remainder into every fwrite (`substr($framed, $written)`)
+    // and treated any short OR zero return as fatal — under a slowly
+    // draining parent that was quadratic byte churn plus, on a non-blocking
+    // stream, a silent frame truncation. The pins below walk each arm the
+    // rewrite added: the fixed-window cursor's byte-honest delivery and the
+    // blocking-mode refusal posture (a userland sink: deterministic, no
+    // kernel internals), the dead-peer stop (error taxonomy deliberately
+    // UNCHANGED — the pool's EOF/sentinel lifecycle still surfaces it), the
+    // mode gate of the new wait, and the acceptance case itself: one frame
+    // larger than two pipe buffers to a slow reader, end to end through a
+    // real forked writer so the would-block wait and the partial resumption
+    // are traversed for real. Forked pins follow the house discipline used
+    // across this suite (see the forked-HTTP harnesses in HttpTest):
+    // bounded child, event-driven stream_select waits, bounded reap,
+    // pcntl-guarded skip. The window SHAPE itself is the plan's code-review
+    // item — PHP core re-chunks every userland fwrite internally (8 KiB
+    // calls on a sink), so no in-process census can observe the caller's
+    // slice size; the report carries a measured old-vs-new backpressure
+    // bench instead of a fake-precision assertion.
+
+    /** writeRecord is private static; reflection seam per the decodeFrame pattern. */
+    private function invokeWriteRecord($stream, mixed $record): void
+    {
+        $ref = new \ReflectionMethod(WorkerPool::class, 'writeRecord');
+        $ref->invoke(null, $stream, $record);
+    }
+
+    /** awaitWritable is private static; same seam, for the mode-gate pins. */
+    private function invokeAwaitWritable($stream): bool
+    {
+        $ref = new \ReflectionMethod(WorkerPool::class, 'awaitWritable');
+        return (bool) $ref->invoke(null, $stream);
+    }
+
+    /** @return resource a fresh full-accept sink (statics reset) */
+    private function openWindowSink()
+    {
+        if (!in_array('s13-window-sink', stream_get_wrappers(), true)) {
+            stream_wrapper_register('s13-window-sink', S13WindowSink::class);
+        }
+        S13WindowSink::reset();
+        $handle = fopen('s13-window-sink://sink', 'wb');
+        $this->assertIsResource($handle);
+        return $handle;
+    }
+
+    /** A byte pattern where every 1 KiB block differs: any cursor slip shows. */
+    private function buildTaggedBlob(int $bytes): string
+    {
+        $out = '';
+        $tag = 0;
+        while (strlen($out) < $bytes) {
+            $out .= pack('N', $tag) . str_repeat(chr(0x41 + ($tag % 26)), 1020);
+            $tag++;
+        }
+        return $out;
+    }
+
+    public function testWriteRecordResumesTheCursorAfterARefusalAndDeliversTheWholeFrame(): void
+    {
+        // The deterministic in-process cursor pin. The sink refuses exactly
+        // one numbered device call (a would-block inside the first fwrite):
+        // fwrite #1 comes back SHORT, and the rewrite must resume at the
+        // accepted offset and finish the frame. Mutants this lands red:
+        //   - cursor advanced by the requested window (bytes 24K..64K are
+        //     skipped → the delivered stream is the prefix plus a tail from
+        //     64K, never the frame);
+        //   - cursor not advanced (the header re-arrives mid-frame);
+        //   - the pre-S13 posture of quitting on the zero return (delivery
+        //     stops at the refusal).
+        // The window SHAPE (fixed slice, never the shrinking remainder) is
+        // the plan's code-review item: core re-chunks every userland fwrite
+        // internally, so no sink-side census can observe the caller's slice
+        // size — the lane report carries a measured backpressure bench.
+        $sink = $this->openWindowSink();
+        S13WindowSink::$refuseCall = 4;
+
+        $record = ['kind' => 's13-window', 'blob' => $this->buildTaggedBlob(200000)];
+        $start  = microtime(true);
+        $this->invokeWriteRecord($sink, $record);
+
+        $payload = serialize($record);
+        $framed  = pack('N', strlen($payload)) . $payload;
+
+        $this->assertSame($framed, S13WindowSink::$delivered, 'one refused device call must cost nothing: the frame lands whole, in order, un-duplicated');
+        $this->assertGreaterThanOrEqual(4, count(S13WindowSink::$requests), 'the refusal was actually met');
+        $this->assertLessThan(1.0, microtime(true) - $start, 'the resume must be immediate on an accepting sink');
+    }
+
+    public function testWriteRecordStopsPromptlyOnAStreamThatTakesNothing(): void
+    {
+        // Blocking-mode zero posture (production's shape): the child end is
+        // a BLOCKING socketpair stream, so a zero return is already the
+        // kernel's final word — the write ends there without spinning. The
+        // pool's EOF-without-sentinel lifecycle is what surfaces the loss;
+        // a wait-loop or a throw here would change that taxonomy.
+        $sink = $this->openWindowSink();
+        S13WindowSink::$refuseAll = true;
+
+        $start = microtime(true);
+        $this->invokeWriteRecord($sink, ['__done' => true]);
+
+        $this->assertSame('', S13WindowSink::$delivered, 'nothing may land on a stream that takes nothing');
+        $this->assertLessThanOrEqual(2, count(S13WindowSink::$requests), 'the blocking-mode refusal must end the write after at most the first attempt — no retry loop, no stall-belt churn');
+        $this->assertLessThan(1.0, microtime(true) - $start, 'a blocking-mode zero return must end the write, not spin on it');
+    }
+
+    public function testWriteRecordEndsTheWriteOnADeafPeerWithoutThrowing(): void
+    {
+        // Dead-peer posture (broken pipe) is unchanged by S13 — and must
+        // stay unchanged: an aborted stream is surfaced by the drain loop's
+        // EOF path plus S10's exit-status refusal. A rewrite that threw (or
+        // waited) here would turn a cancelled/dead-child run into a
+        // different error shape.
+        $pair = @stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        $this->assertIsArray($pair);
+        [$childEnd, $parentEnd] = $pair;
+        fclose($parentEnd); // the reader is gone before the first byte
+
+        $start = microtime(true);
+        $this->invokeWriteRecord($childEnd, ['__done' => true]);
+        $this->assertLessThan(1.0, microtime(true) - $start, 'the dead-peer stop must be immediate, never a wait');
+        $this->assertTrue(@feof($childEnd), 'the EPIPE condition must leave the stream flagged for the surrounding lifecycle to meet');
+        fclose($childEnd);
+    }
+
+    public function testAwaitWritableHonoursTheStreamsDeclaredMode(): void
+    {
+        // Mode gate of the new wait: only a stream that can NAME its
+        // non-blocking mode is ever parked on. A blocking stream's zero
+        // return is already the kernel's final word; a stream type that
+        // never reports the flag (php://temp carries no 'blocked' key at
+        // all) cannot be waited on honestly and must not enter a loop.
+        $temp = fopen('php://temp', 'w+b');
+        $this->assertIsResource($temp);
+        $this->assertFalse($this->invokeAwaitWritable($temp), 'a stream with no declared mode must not enter a wait loop');
+        fclose($temp);
+
+        $sink = $this->openWindowSink();
+        $this->assertFalse($this->invokeAwaitWritable($sink), 'a blocking-mode stream must not enter a wait loop');
+        fclose($sink);
+
+        $pair = @stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        $this->assertIsArray($pair);
+        [$a, $b] = $pair;
+        $this->assertTrue(stream_set_blocking($b, false));
+        $this->assertTrue($this->invokeAwaitWritable($b), 'an empty non-blocking socket is writable — the wait answers immediately');
+        fclose($a);
+        fclose($b);
+    }
+
+    public function testWriteRecordDeliversAFrameLargerThanTwoPipeBuffersToASlowReader(): void
+    {
+        // The acceptance case verbatim: a record that cannot fit the kernel
+        // queue twice over, streamed to a reader that deliberately lags one
+        // small chunk per event. The writer must meet would-block (fwrite 0)
+        // and partial acceptances (fwrite short) again and again — an empty
+        // queue filled by 64 KiB windows outruns any 16 KiB-per-pulse
+        // reader, so both arms are traversed by necessity, not by luck —
+        // and the delivered stream must be the exact frame.
+        if (!WorkerPool::isAvailable()) {
+            $this->markTestSkipped('pcntl unavailable');
+        }
+
+        $capacity = $this->measureSocketPairCapacity();
+        if ($capacity >= self::PIPE_PROBE_CEILING_BYTES) {
+            $this->markTestSkipped('measured socketpair capacity hit the probe ceiling — fixture would dominate memory');
+        }
+        $size    = $capacity * 2 + (4 << 20);
+        $record  = ['kind' => 's13-slow-reader', 'blob' => $this->buildTaggedBlob($size)];
+        $payload = serialize($record);
+
+        $ctx = hash_init('sha256');
+        hash_update($ctx, pack('N', strlen($payload)));
+        hash_update($ctx, $payload);
+        $expectedHash  = hash_final($ctx);
+        $expectedBytes = 4 + strlen($payload);
+
+        $pair = @stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        $this->assertIsArray($pair);
+        [$childEnd, $parentEnd] = $pair;
+        $this->assertTrue(
+            stream_set_blocking($childEnd, false),
+            'the writer end must be non-blocking: the would-block/wait arm is what this pin drives'
+        );
+
+        $pid = pcntl_fork();
+        if ($pid === -1) {
+            fclose($childEnd);
+            fclose($parentEnd);
+            $this->markTestSkipped('pcntl_fork failed');
+        }
+        if ($pid === 0) {
+            while (ob_get_level() > 0) {
+                ob_end_clean();
+            }
+            fclose($parentEnd);
+            $this->invokeWriteRecord($childEnd, $record);
+            fclose($childEnd);
+            exit(0);
+        }
+
+        // Parent: the slow reader — one bounded chunk per select pulse
+        // (the pool's own drain granularity), and nothing faster.
+        fclose($childEnd);
+        unset($record, $payload); // the fixture is on the wire; the parent only verifies it
+        $this->assertTrue(stream_set_blocking($parentEnd, false));
+        $seenBytes = 0;
+        $head      = '';
+        $running   = hash_init('sha256');
+        $deadline  = microtime(true) + 120.0;
+        while (true) {
+            if (microtime(true) >= $deadline) {
+                posix_kill($pid, SIGKILL);
+                $this->fail('the writer never finished behind its own backpressure — the slow reader saw a stalled stream');
+            }
+            $readSet = [$parentEnd];
+            $write   = null;
+            $except  = null;
+            $ready   = @stream_select($readSet, $write, $except, 1, 0);
+            if ($ready === false) {
+                if (function_exists('pcntl_signal_dispatch')) {
+                    pcntl_signal_dispatch();
+                }
+                continue; // EINTR posture, same as the pool's own drain loop
+            }
+            if ($ready === 0) {
+                if (@feof($parentEnd)) {
+                    break; // the writer closed its end; nothing more will arrive
+                }
+                continue;  // data may still be coming — the child is alive and writing
+            }
+            $chunk = fread($parentEnd, 16384);
+            if ($chunk === false || $chunk === '') {
+                if (@feof($parentEnd)) {
+                    break;
+                }
+                continue;
+            }
+            if ($head === '') {
+                $head = substr($chunk, 0, 4);
+            }
+            $seenBytes += strlen($chunk);
+            hash_update($running, $chunk);
+        }
+
+        $status = 0;
+        pcntl_waitpid($pid, $status);
+        fclose($parentEnd);
+
+        $this->assertTrue(pcntl_wifexited($status), 'the writer must exit cleanly, not die on a signal');
+        $this->assertSame(0, pcntl_wexitstatus($status));
+        $this->assertSame($expectedBytes, $seenBytes, 'the frame must arrive whole — every would-block resumed instead of truncating');
+        $this->assertSame($expectedHash, hash_final($running), 'the frame must arrive byte-exact in order under backpressure');
+        $this->assertSame(4, strlen($head), 'the length header must be the first thing on the wire');
+        $this->assertSame($expectedBytes - 4, unpack('N', $head)[1], 'the header must declare exactly the payload that followed it');
+    }
+
+    /** Ceiling for the socketpair capacity probe (also the fixture guard). */
+    private const PIPE_PROBE_CEILING_BYTES = 64 << 20;
+
+    /** How many bytes an unread socketpair absorbs before fwrite would-blocks. */
+    private function measureSocketPairCapacity(): int
+    {
+        $pair = @stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        $this->assertIsArray($pair);
+        [$a, $b] = $pair;
+        $this->assertTrue(stream_set_blocking($b, false));
+        $fill  = str_repeat('p', 262144);
+        $bytes = 0;
+        while ($bytes < self::PIPE_PROBE_CEILING_BYTES) {
+            $n = @fwrite($b, $fill);
+            if ($n === false || $n === 0) {
+                break;
+            }
+            $bytes += $n;
+        }
+        fclose($a);
+        fclose($b);
+        return $bytes;
+    }
+}
+
+/**
+ * shell-S13 harness: a userland write sink that can simulate a transient
+ * would-block (return 0 on one numbered stream_write call) or a hard
+ * refusal (every call), accepting everything else in full. PHP core
+ * re-chunks each fwrite into its own device calls (8 KiB), so a call-index
+ * refusal drives the exact sequence writeRecord must survive: a SHORT
+ * acceptance (>0 — the cursor must advance by what the device took)
+ * followed by a zero return on a stream in BLOCKING mode (an error
+ * posture). Wrappers cannot be armed non-blocking (stream_set_blocking has
+ * no effect), which keeps the blocking arms landing on awaitWritable()'s
+ * mode gate instead of its wait loop.
+ */
+class S13WindowSink
+{
+    /** @var mixed */
+    public $context;
+
+    /** @var list<int> length of every stream_write call, in order */
+    public static array $requests = [];
+
+    /** @var string everything the sink accepted, concatenated (the wire) */
+    public static string $delivered = '';
+
+    /** 1-based call index that must answer 0 once (a would-block); 0 disables */
+    public static int $refuseCall = 0;
+
+    /** when true every call answers 0 (a stream that will not take data at all) */
+    public static bool $refuseAll = false;
+
+    public static function reset(): void
+    {
+        self::$requests    = [];
+        self::$delivered   = '';
+        self::$refuseCall  = 0;
+        self::$refuseAll   = false;
+    }
+
+    public function stream_open($path, $mode, $options, &$opened_path)
+    {
+        return true;
+    }
+
+    public function stream_write($data)
+    {
+        self::$requests[] = strlen($data);
+        if (self::$refuseAll) {
+            return 0;
+        }
+        if (self::$refuseCall !== 0 && count(self::$requests) === self::$refuseCall) {
+            return 0;
+        }
+        self::$delivered .= $data;
+        return strlen($data);
+    }
+
+    public function stream_eof()
+    {
+        return false;
+    }
+
+    public function stream_close()
+    {
+    }
 }

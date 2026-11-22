@@ -31,6 +31,40 @@ final class WorkerPool
     private const FRAME_HEADER = 4;
 
     /**
+     * shell-S13 (php-dup-finder-shell-050): fixed window for one fwrite of a
+     * framed record. The pre-fix loop handed fwrite the WHOLE shrinking
+     * remainder (`substr($framed, $written)`) on every attempt, so each
+     * partial write under backpressure re-copied every remaining byte —
+     * quadratic memcpy churn exactly when the parent drains slowly. A fixed
+     * window bounds every intermediate copy at this many bytes, making total
+     * copy work linear in the record size.
+     */
+    private const WRITE_WINDOW = 65536;
+
+    /**
+     * shell-S13: how long a would-block parks per stream_select pulse while
+     * waiting for the peer to drain. The select call sleeps in the kernel
+     * until the stream turns writable, so this is the wake-up clock (and the
+     * EINTR re-check cadence), not a spin interval — it matches the one
+     * second pulse the parent-side drain loop uses.
+     */
+    private const WRITE_WAIT_PULSE_SECONDS = 1;
+
+    /**
+     * shell-S13: consecutive writable wake-ups that accepted zero further
+     * bytes before the write is abandoned. Writability is reported on
+     * low-water-mark granularity: a select can answer "writable" a moment
+     * before the kernel would still only take a fraction of the window, and
+     * an AF_UNIX send that can push at least one byte of the window may still
+     * return 0. Genuine slow readers always make progress (the counter
+     * resets on any accepted byte), so this ceiling only ever trips on a
+     * stream that wakes us and refuses to take data — a stall, which must
+     * end the write instead of spinning forever on it (the pool's EOF-
+     * without-sentinel lifecycle then surfaces the truncated stream).
+     */
+    private const WRITE_STALL_LIMIT = 16;
+
+    /**
      * shell-038 — ceiling multiplier for the effective concurrent-worker
      * count: the pool never forks more than `4 × detected CPUs` children in
      * one run, no matter how large the requested value is. The request can
@@ -913,6 +947,29 @@ final class WorkerPool
     }
 
     /**
+     * Write one length-prefixed frame, coping with partial writes LINEARLY.
+     *
+     * shell-S13 (php-dup-finder-shell-050): a record bigger than the socket
+     * buffer leaves fwrite short of the framed length — the kernel answers
+     * with a partial count when only part of the window fits and with 0 when
+     * the peer queue is full. The pre-fix loop was broken for exactly that
+     * shape twice over: it re-sliced the whole shrinking remainder per
+     * attempt (quadratic copies under backpressure) AND it treated every
+     * short/zero return as fatal, silently truncating the frame — a stalled
+     * parent then produced a corrupt stream whose tail never existed,
+     * laundered into the pool as if it had been delivered.
+     *
+     * Now: a fixed {@see WRITE_WINDOW} cursor walks the original framed
+     * string (each copy is bounded, total work linear); any accepted byte
+     * advances the cursor and the write resumes at it; a zero return is
+     * resolved by the stream's own mode via {@see awaitWritable()} — never
+     * a busy-spin, never a give-up mid-frame. A hard stream error (false:
+     * a closed parent end, EPIPE) and a permanently stalled stream still
+     * end the write, and the unchanged error taxonomy routes them: the
+     * half-written frame is met by the drain loop's EOF path and S10's
+     * exit-status check refuses a sentinel-less stream — the stuck peer
+     * surfaces there instead of being absorbed here.
+     *
      * @param resource $stream
      * @param mixed $record  serialized TResult or a {__done:true} / {__error:string} sentinel
      */
@@ -920,14 +977,96 @@ final class WorkerPool
     {
         $payload = serialize($record);
         $framed  = pack('N', strlen($payload)) . $payload;
-        $written = 0;
+        $cursor  = 0;
         $total   = strlen($framed);
-        while ($written < $total) {
-            $n = @fwrite($stream, substr($framed, $written));
-            if ($n === false || $n === 0) {
-                return;
+        $stalled = 0;
+
+        while ($cursor < $total) {
+            // Fixed window into the original string — never the shrinking
+            // remainder (shell-050: each copy is at most WRITE_WINDOW bytes).
+            $n = @fwrite($stream, substr($framed, $cursor, self::WRITE_WINDOW));
+            if ($n === false) {
+                return; // broken pipe / hard error: the pool surfaces the dead child
             }
-            $written += $n;
+            if ($n === 0) {
+                if ($stalled >= self::WRITE_STALL_LIMIT || !self::awaitWritable($stream)) {
+                    return; // a stall or an unwaitable refusal: end, do not spin
+                }
+                $stalled++;
+                continue; // retry the SAME window from the SAME cursor — linear resume
+            }
+            $cursor += $n;
+            $stalled = 0;
+        }
+    }
+
+    /**
+     * Park (event-driven, no busy-spin) until $stream may accept bytes again.
+     *
+     * shell-S13 mode honesty: the same `fwrite() === 0` return means two
+     * different things depending on how the stream is armed. A BLOCKING
+     * stream has already waited in the kernel for whatever it could get, so
+     * zero there is an error posture — return false and let the caller end
+     * the write on the existing surfacing path. A NON-BLOCKING stream
+     * reports a full peer queue with zero; that is a pause, not a death, and
+     * the frame must survive it, so wait on the stream's writability through
+     * stream_select: the select call sleeps in the kernel until the peer
+     * drains (the one-second pulse is the wake-up clock, never a spin
+     * interval, and it doubles as the EINTR re-check cadence, mirroring the
+     * drain loop above). A stream select can keep no answer for at all
+     * (EINTR, or a type it cannot cast — the latter also throws ValueError,
+     * which folds into the same posture) gets two pulses before the wait is
+     * declared mute: an isolated EINTR resumes the normal wait, a mute
+     * stream stops instead of spinning on it.
+     *
+     * There is deliberately no self-imposed write deadline: the child that
+     * reaches this wait is streaming to the parent's drain, and the lifecycle
+     * that decides the parent is gone or cancelled already exists (S12's
+     * cooperative cancel + the finally's SIGTERM/reap, with once-S45 keeping
+     * that kill switch real; a closed peer unwinds to the false arm in
+     * {@see writeRecord()}). Laundering a stuck-but-alive reader into a
+     * timeout here would drop frames the pool may still collect.
+     *
+     * @param resource $stream
+     */
+    private static function awaitWritable($stream): bool
+    {
+        // stream_get_meta_data() documents 'blocked', but not every wrapper
+        // reports it (php://temp carries no such key at runtime), so the
+        // mode default is supplied as a key-union rather than trusting the
+        // offset to exist.
+        $meta = (array) @stream_get_meta_data($stream) + ['blocked' => true];
+        if ($meta['blocked'] !== false) {
+            // Blocking mode (or a stream that cannot name its mode): the
+            // zero return is already the kernel's final word on this write.
+            return false;
+        }
+
+        $unanswered = 0;
+        while (true) {
+            $read     = [];
+            $write    = [$stream];
+            $except   = null;
+            $selectOk = true;
+            try {
+                $ready = @stream_select($read, $write, $except, self::WRITE_WAIT_PULSE_SECONDS, 0);
+            } catch (\ValueError) {
+                $ready   = false; // no castable stream array: select cannot answer for this stream
+                $selectOk = false;
+            }
+            if ($ready === false) {
+                if (function_exists('pcntl_signal_dispatch') && $selectOk) {
+                    pcntl_signal_dispatch(); // EINTR posture: service handlers, then re-ask
+                }
+                if (++$unanswered >= 2) {
+                    return false; // a mute stream is not a stream we can wait on
+                }
+                continue; // give it one more pulse: an isolated EINTR must not truncate
+            }
+            if ($ready === 0) {
+                continue; // the peer has not drained yet — sleep in the kernel, not in a loop
+            }
+            return true; // writable again: retry the same window
         }
     }
 
