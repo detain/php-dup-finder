@@ -12,17 +12,19 @@ use Phpdup\Extraction\Block;
  *
  * Walks each block once and collects the qualified names of every
  * MethodCall / StaticCall / FuncCall it contains, plus a frequency
- * count per name. The resulting signature feeds two consumers:
+ * count per name.
  *
- *   - {@see \Phpdup\Similarity\CallGraphSimilarity} — Jaccard over
- *     signatures, used as a Type-3 fallback when AST similarity is
- *     close to but below the threshold.
- *   - {@see \Phpdup\Architecture\Analyzers\SolidAnalyzer} — already
- *     uses an inline call walk; this class consolidates it.
+ * Status: NOT WIRED (engine-S31a catalog ledger, row 1). The live
+ * pipeline has no consumer for this class: the formerly documented
+ * `Similarity\CallGraphSimilarity` never existed, and
+ * \Phpdup\Architecture\Analyzers\SolidAnalyzer does its own inline
+ * call walk rather than consolidating on this class. Kept as a tested
+ * building block for a possible future call-graph similarity tier;
+ * do not re-add consumer claims until a consumer exists.
  *
- * The graph itself (block-id → callees) is built lazily from the
- * corpus AST when a caller invokes {@see build()}; small heap
- * footprint because we only store names, not full call sites.
+ * The graph (block-id → callee → count) is built in one pass over the
+ * blocks a caller hands to {@see build()}; small heap footprint
+ * because only names and counts are stored, not call sites.
  */
 final class CallGraph
 {

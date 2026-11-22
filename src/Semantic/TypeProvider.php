@@ -8,14 +8,18 @@ namespace Phpdup\Semantic;
  *
  * Implementations wrap external static analysers (Psalm, PHPStan)
  * and translate their issue/typing reports into a uniform
- * `(file, line, expr) → type-string` lookup. Phpdup uses the
- * provider during ParameterSynthesizer to upgrade `mixed` holes to
- * concrete types when an external analyser already inferred them.
+ * `(file, line, expr) → type-string` lookup.
+ *
+ * Status: NOT WIRED (engine-S31a catalog ledger, row 4). The planned
+ * consumer is ParameterSynthesizer — upgrading `mixed` holes to
+ * concrete types when an external analyser already inferred them —
+ * but ParameterSynthesizer constructs no provider today and infers
+ * from the AST alone.
  *
  * The interface is intentionally narrow — phpdup never feeds AST
  * back to the provider, only ever queries it. This keeps providers
  * cheap to implement and makes the {@see NullTypeProvider} fallback
- * a no-op zero-cost default.
+ * a no-op zero-cost default once wiring lands.
  */
 interface TypeProvider
 {

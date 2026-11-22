@@ -19,6 +19,12 @@ use Phpdup\Fingerprint\MinHashSignature;
  *     (so the inverted index's posting lists grow long).
  *   - You want approximate Jaccard similarity at lookup time
  *     (the bands are tuned to the cluster threshold).
+ *
+ * Status: NOT WIRED (engine-S31a catalog ledger, row 7). The live
+ * candidate generator is {@see NgramInvertedIndex}; LSH banding over
+ * {@see MinHashSignature} is the held-back sub-quadratic scaling
+ * path, kept here as a tested building block, not a description of
+ * current pipeline behaviour.
  */
 final class LshIndex
 {

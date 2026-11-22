@@ -33,10 +33,14 @@ use Phpdup\Semantic\DbOperationTagger;
  * — the band kicks in only when at least one of the two blocks
  * has tagged operations.
  *
- * Used as a Type-3 fallback scorer in {@see \Phpdup\Clustering\Clusterer}
- * when both Jaccard and TED reject — gated behind a config flag
- * because false-positive risk is materially higher than for
- * type-1/2/3.
+ * Status: NOT WIRED into the pipeline (engine-S31a catalog ledger,
+ * row 3). The Clusterer's live tier-3 fallback is
+ * {@see ContainmentSimilarity} only; there is no type-4 flag in
+ * src/Cli, and the docs/adr/0003 tier routing that places this
+ * scorer behind `--type4` describes a planned tier, not current
+ * behaviour. False-positive risk is materially higher than for
+ * type-1/2/3, so any future wiring must sit behind an explicit
+ * opt-in flag (product call — see the S31a ledger + once-S79).
  */
 final class BehaviouralSimilarity
 {

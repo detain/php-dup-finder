@@ -18,9 +18,11 @@ use PhpParser\NodeFinder;
  * closures, so nested functions contribute their control-flow
  * constructs to the parent block's summary.
  *
- * Used by {@see \Phpdup\Similarity\BehaviouralSimilarity} as a
- * cheap proxy for true graph-edit-distance — the full CFG-edit
- * computation is research-grade and out of scope here.
+ * Status: NOT WIRED (engine-S31a catalog ledger, row 2). Despite older
+ * prose, {@see \Phpdup\Similarity\BehaviouralSimilarity} does not use
+ * this class — it scores via DataflowSummarizer and DbOperationTagger.
+ * Kept as the cheap CFG-shape primitive for a future type-4 tier; the
+ * full CFG-edit computation is research-grade and out of scope here.
  */
 final class ControlFlowGraph
 {

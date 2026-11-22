@@ -21,6 +21,13 @@ namespace Phpdup\Semantic;
  * Network / process invocation is intentionally out of scope — the
  * caller decides whether to shell out to psalm or pre-stage a
  * cached report. Tests construct via {@see fromArray()}.
+ *
+ * Status: NOT WIRED (engine-S31a catalog ledger, row 5). No code
+ * path constructs a TypeProvider yet; this reader is held ready for
+ * the planned ParameterSynthesizer type-upgrade leg. It only parses
+ * a Psalm JSON report (plain array shapes) — it does not link the
+ * Psalm library, so the composer-pinned Psalm version does not
+ * constrain it.
  */
 final class PsalmTypeProvider implements TypeProvider
 {
