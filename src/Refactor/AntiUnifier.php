@@ -159,6 +159,7 @@ final class AntiUnifier
         //    mis-ordered future call from ever skipping the remap again.
         if ($seedIdx !== 0) {
             foreach ($cluster->holes as $hole) {
+                // belt: unreachable while the pad invariant holds
                 while (count($hole->observedValues) <= $seedIdx) {
                     $hole->appendMissing();
                 }
@@ -255,7 +256,12 @@ final class AntiUnifier
         return array_map(static fn(array $pair): int => $pair[0], $top);
     }
 
-    /** Number of seed candidates to evaluate in the multi-seed search. */
+    /**
+     * Number of seed candidates to evaluate in the multi-seed search.
+     * Widening this pool changes T4c/T4d reachability: those pins (added by
+     * output-S26) need the short member to rank OUT of the top-3-by-size
+     * candidates for the leg-4 collision to land on a non-optional hole.
+     */
     private const SEED_CANDIDATES = 3;
 
     /**
@@ -573,6 +579,7 @@ final class AntiUnifier
         $key = self::pathKey($path);
         if (isset($ctx->holesByPath[$key])) {
             $existing = $ctx->holesByPath[$key];
+            // belt: unreachable while the pad invariant holds
             $this->fillGaps($existing, $memberIdx);
             if ($existing->kind === 'optional_block') {
                 // '<absent>' is the native row of an optional segment —
@@ -599,6 +606,7 @@ final class AntiUnifier
             } else {
                 // Never visited, or diverged beneath the segment: presence
                 // of the seed's statement is unverifiable — gap, not guess.
+                // belt: unreachable while the pad invariant holds
                 $this->fillGaps($hole, $i);
                 $hole->appendMissing();
             }
@@ -634,6 +642,7 @@ final class AntiUnifier
                 // (or never reached it) — back-recording the seed's repr
                 // would misreport differing content as agreement. Whole-
                 // array/null-slot holes keep their all-gap backfill.
+                // belt: unreachable while the pad invariant holds
                 $this->fillGaps($hole, $i);
                 $hole->appendMissing();
             }
@@ -751,6 +760,9 @@ final class UnifyContext
      * local member index => set of path keys the member walked cleanly
      * (its whole subtree under the path was token-equal to the template's).
      * Seed-repr back-records are only honest for marked paths (output-018).
+     * Scaling note: one interned string per (member x clean path); the map
+     * is unbounded inside a cluster but the context is fresh per unify, so
+     * growth is capped by cluster size, which is bounded upstream.
      *
      * @var array<int, array<string, true>>
      */
