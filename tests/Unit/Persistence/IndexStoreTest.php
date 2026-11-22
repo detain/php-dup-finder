@@ -47,6 +47,12 @@ final class IndexStoreTest extends TestCase
     {
         @unlink($this->sourceFile);
         $this->purgeDir($this->cacheDir);
+        // once-S64 rider: scratch cleanup of the relocated shell-S39
+        // dir-trust pins, merged into this class's existing teardown.
+        if ($this->s39Scratch !== null) {
+            self::s39DeleteTree($this->s39Scratch);
+            $this->s39Scratch = null;
+        }
     }
 
     private function purgeDir(string $dir): void
@@ -544,6 +550,80 @@ final class IndexStoreTest extends TestCase
     }
 
     // ------------------------------------------------------------------
+    // once-S64 rider (shell-S39 LOW-3): the dir-trust pins relocated
+    // from SerializedClassAllowListTest. Method bodies and helpers are
+    // verbatim; the only adaptation is that the scratch cleanup merged
+    // into this class's pre-existing tearDown.
+    // ------------------------------------------------------------------
+
+    /**
+     * Leg (b): a FRESH IndexStore dir is private absolutely. The mode
+     * under test is the one the creation request cannot promise on its
+     * own — mkdir's mode argument is masked by the process umask, so a
+     * hostile 0777 environment would yield a 0000 (or under the old
+     * 0775-request, a group-writable) dir without the shell-S39
+     * post-mkdir chmod. Acceptance spelling: stat %a == 700.
+     */
+    public function testFreshIndexStoreDirIsAbsolutePrivateEvenUnderHostileUmask(): void
+    {
+        $base = $this->s39ScratchBase();
+        $dir  = $base . '/fresh';
+
+        $previous = umask(0o777); // would mask a 0700 mkdir() request down to 0000
+        try {
+            $store = new IndexStore($dir, 'cfg-key-s39');
+            clearstatcache(true, $dir);
+            self::assertDirectoryExists($dir);
+            self::assertSame('0700', substr(sprintf('%o', (int) fileperms($dir)), -4),
+                'shell-S39: the fresh cache dir mode is absolute, not umask-relative');
+            self::assertTrue($store->isEnabled());
+        } finally {
+            umask($previous);
+        }
+    }
+
+    /**
+     * Leg (b), the adoption arms. The finding's concrete harm is a
+     * FORGEABLE dir (writable by non-owners) feeding report rows, so
+     * write is the bit that must die — reads are posture the operator
+     * chose. Symlinks are refused outright (no chmod, no cache through
+     * a link we did not create; ServeCommand's results-dir doctrine in
+     * disabled-store form).
+     */
+    public function testAdoptedCacheDirsLoseForeignWriteAndSymlinksAreRefused(): void
+    {
+        $base = $this->s39ScratchBase();
+
+        // 0775 — precisely what the pre-S39 creation request produced:
+        // adopted, but tightened.
+        $legacy = $base . '/legacy-0775';
+        self::s39MkdirMode($legacy, 0o775);
+        $legacyStore = new IndexStore($legacy, 'k');
+        clearstatcache(true, $legacy);
+        self::assertSame('0755', substr(sprintf('%o', (int) fileperms($legacy)), -4),
+            'a group-writable cache dir must come out of the trust path write-clean (shell-052(b))');
+        self::assertTrue($legacyStore->isEnabled(), 'tightening is an upgrade, not a cache death');
+
+        // 0755 — not forgeable: the operator's mode stays untouched.
+        $readShared = $base . '/read-shared-0755';
+        self::s39MkdirMode($readShared, 0o755);
+        self::assertTrue((new IndexStore($readShared, 'k'))->isEnabled());
+        clearstatcache(true, $readShared);
+        self::assertSame('0755', substr(sprintf('%o', (int) fileperms($readShared)), -4));
+
+        // symlink — refuse; the target is never touched through the link.
+        $target = $base . '/symlink-target';
+        self::s39MkdirMode($target, 0o775);
+        $link = $base . '/symlinked';
+        self::assertTrue(symlink($target, $link));
+        self::assertFalse((new IndexStore($link, 'k'))->isEnabled(),
+            'a symlinked cache dir is not a trust anchor');
+        clearstatcache(true, $target);
+        self::assertSame('0775', substr(sprintf('%o', (int) fileperms($target)), -4),
+            'the constructor must not chmod through a symlink');
+    }
+
+    // ------------------------------------------------------------------
     // helpers
     // ------------------------------------------------------------------
 
@@ -701,5 +781,48 @@ final class IndexStoreTest extends TestCase
             $b->structuralHash = sha1(spl_object_hash($b->canonical));
         }
         return $blocks;
+    }
+
+    private ?string $s39Scratch = null;
+
+    private function s39ScratchBase(): string
+    {
+        if ($this->s39Scratch === null) {
+            $dir = sys_get_temp_dir() . '/phpdup-s39-' . getmypid() . '-' . spl_object_id($this);
+            @mkdir($dir, 0o700, true);
+            $this->s39Scratch = $dir;
+        }
+        return $this->s39Scratch;
+    }
+
+    private static function s39MkdirMode(string $dir, int $mode): void
+    {
+        $previous = umask(0); // the requested mode is the created mode, verbatim
+        try {
+            self::assertTrue(@mkdir($dir, $mode, true), "scratch dir {$dir} must exist for the adoption arms");
+        } finally {
+            umask($previous);
+        }
+    }
+
+    private static function s39DeleteTree(string $path): void
+    {
+        if (is_link($path)) {
+            @unlink($path);
+            return;
+        }
+        if (is_dir($path)) {
+            @chmod($path, 0o700); // recover traversal/unlink rights on modes we set back
+            foreach (scandir($path) ?: [] as $entry) {
+                if ($entry !== '.' && $entry !== '..') {
+                    self::s39DeleteTree($path . '/' . $entry);
+                }
+            }
+            @rmdir($path);
+            return;
+        }
+        if (is_file($path)) {
+            @unlink($path);
+        }
     }
 }

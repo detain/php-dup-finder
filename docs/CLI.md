@@ -148,6 +148,24 @@ silent success.
 | `--diff-base REF`                          | —           | Git ref for diff-scoped analysis. When set, scans only files changed in `git diff --name-only <REF>..HEAD` plus their "clone cohort" — all files sharing n-gram fingerprints with the changed files. Useful for per-PR analysis in CI to limit scope to only affected files and their clones. |
 | `--trust-in-root-cache`                    | off         | Read the on-disk AST cache even when `cache_dir` resolves **inside** a scan root. Because the default `cache_dir` is the relative `.phpdup-cache`, a normal run stores blobs inside the tree it scans — so cloning an untrusted repository and running `phpdup analyze .` would otherwise serve the repo author's committed cache entries as freshly parsed code (a cache-poisoning / fabricated-duplicate vector, engine-006). Off by default: an untrusted run **refuses those reads**, reports real code (one cold parse pass) and prints a notice. Pass this flag only for trees you control and whose cache you deliberately committed for reuse. CLI-only (no config-file key); cache writes are unaffected, and the gate holds on the `--workers` fork path too. The default cache posture is otherwise unchanged — `cache_dir` still defaults to `.phpdup-cache`. |
 
+#### Cache retention and pruning
+
+phpdup ships no prune subcommand and no TTL knob — deliberately (once-S64,
+php-dup-finder-once-073, owner ruling: documented removal over an
+implemented flag). Every entry under `cache_dir` is content-addressed: a
+snapshot replays only while its `file_hash`, parser stamp and config key
+all still match, so a stale entry is a correctness non-event — it can
+only waste disk, never serve wrong results. The pruning policy is
+therefore **documented rm**: to reclaim space or clear suspect state,
+delete the cache directory (`rm -rf .phpdup-cache`, or the configured
+`cache_dir`) and rerun; the next analysis rebuilds every slot it needs.
+The stores self-heal around a removed or poisoned tree — a vanished dir
+is recreated private (0700, blobs 0600) by the next construction, a
+group-writable dir is write-tightened on adoption, a symlinked one is
+refused outright with the store degraded to plain misses — and
+`--no-cache` silences reads and writes for a single run without deleting
+anything.
+
 ### TUI / watch
 
 | Option                                     | Default | Description                                                                                          |

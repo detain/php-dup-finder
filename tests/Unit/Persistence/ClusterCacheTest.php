@@ -46,6 +46,13 @@ final class ClusterCacheTest extends TestCase
 
     private function purgeDir(string $dir): void
     {
+        // once-S64: is_dir() follows symlinks — purging "through" a
+        // scratch link would recurse into its target and leave the
+        // link itself behind (rmdir refuses links), leaking the tree.
+        if (is_link($dir)) {
+            @unlink($dir);
+            return;
+        }
         if (!is_dir($dir)) return;
         foreach (scandir($dir) ?: [] as $entry) {
             if ($entry === '.' || $entry === '..') continue;
@@ -717,5 +724,246 @@ PHP;
         $block->id = $id;
         $block->structuralHash = $hash;
         return $block;
+    }
+
+    // ------------------------------------------------------------------
+    // once-S64 (php-dup-finder-once-073): content-free envelope posture
+    // + the cache-family dir-trust census. IndexStore twins live in this
+    // file because the plan names ClusterCacheTest as the step's test
+    // venue; IndexStoreTest is under a relocation-only rider.
+    // ------------------------------------------------------------------
+
+    public function testBareEmptyArrayEnvelopeMissesInBothStoresAndSelfHeals(): void
+    {
+        // The acceptance line, at the envelope level: a payload of
+        // serialize([]) passing EVERY header gate must MISS — not
+        // serve (DATA-005's permanent-hit that hid the file forever
+        // is the defect this kills), and — the once-S64 refinement of
+        // shell-S19's grammar — not hold the run hostage either:
+        // zero bytes carry zero poison, so refusal would be as wrong
+        // as a hit. The slot recomputes and self-heals on next save.
+        // Discrimination arm: a payload that DOES carry bytes yet
+        // breaks the envelope contract stays a loud refusal.
+        $blocks = [$this->mkblock('a', 'h1')];
+
+        $cache = new ClusterCache($this->tmp, 'cfg-key-1');
+        $this->forgeClusterBlob($this->liveMeta($blocks), serialize([]));
+        $this->assertNull($cache->load($blocks),
+            'a content-free empty envelope must be an ordinary miss, never a hit, never a refusal');
+
+        $cache->save($blocks, [new Cluster('C1', $blocks, 1.0, true)]);
+        $healed = (new ClusterCache($this->tmp, 'cfg-key-1'))->load($blocks);
+        $this->assertNotNull($healed, 'the miss must self-heal: save rewrites the slot and it hits again');
+        $this->assertSame('C1', $healed[0]->id);
+
+        // Discrimination: foreign bytes still refuse (the S19 pin for
+        // this shape is testMissingClustersSectionIsRefused; the twin
+        // is spelled here for the pair, kept as refusal proof).
+        $this->forgeClusterBlob($this->liveMeta($blocks), serialize(['written-by-something-else' => true]));
+        try {
+            (new ClusterCache($this->tmp, 'cfg-key-1'))->load($blocks);
+            $this->fail('an envelope carrying foreign content must refuse, not miss');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('carries no "clusters" section', $e->getMessage());
+        }
+
+        // IndexStore twin: same grammar at the block store.
+        $src = $this->tmp . '/s64-empty-src.php';
+        file_put_contents($src, '<?php function s64_empty($x) { return $x; }');
+        $idxDir = $this->tmp . '/s64-empty-idx';
+        $store = new IndexStore($idxDir, 's64-cfg');
+        $header = "PHPDUP-IDX1\nfile_hash:" . sha1_file($src)
+            . "\nparser_version:parser-v6-namesentinel\nconfig_key:s64-cfg\n\n";
+        $empty = serialize([]);
+        file_put_contents($idxDir . '/' . sha1($src) . '.idx', $header . strlen($empty) . ':' . $empty);
+        $this->assertNull($store->load($src),
+            'the block store must miss a content-free empty envelope too (DATA-005 family)');
+
+        $store->save($src, $blocks);
+        $served = $store->load($src);
+        $this->assertNotNull($served, 'index-store slot self-heals as well');
+        $this->assertCount(1, $served);
+
+        $foreign = serialize(['written-by-something-else' => true]);
+        file_put_contents($idxDir . '/' . sha1($src) . '.idx', $header . strlen($foreign) . ':' . $foreign);
+        try {
+            $store->load($src);
+            $this->fail('index store: foreign content must refuse, not miss');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('carries no "blocks" section', $e->getMessage());
+        }
+    }
+
+    public function testFreshClusterCacheDirIsAbsolutePrivateEvenUnderHostileUmask(): void
+    {
+        // once-S64 mirrors the shell-S39 IndexStore posture: mkdir's
+        // mode argument is a request the umask masks; the ctor's
+        // post-mkdir chmod makes 0700 absolute. Acceptance spelling:
+        // stat %a == 700 for a dir created under a hostile 0777.
+        $base = $this->tmp . '/s64-fresh-base';
+        mkdir($base, 0o755);
+        $dir = $base . '/fresh';
+
+        $previous = umask(0o777); // would mask a 0700 mkdir() request down to 0000
+        try {
+            $cache = new ClusterCache($dir, 'cfg');
+            clearstatcache(true, $dir);
+            self::assertDirectoryExists($dir);
+            self::assertSame('0700', substr(sprintf('%o', (int) fileperms($dir)), -4),
+                'once-S64: the cluster cache dir mode is absolute, not umask-relative');
+            self::assertTrue($cache->isEnabled());
+        } finally {
+            umask($previous);
+        }
+    }
+
+    public function testAdoptedClusterCacheDirsLoseForeignWriteAndSymlinksAreRefused(): void
+    {
+        // The adoption arms, mirrored from shell-S39's IndexStore
+        // pins: the finding's concrete harm is a FORGEABLE dir feeding
+        // replayed clusters, so write is the bit that must die —
+        // reads are posture the operator chose. Symlinks refuse
+        // outright (no chmod, no cache through a link we did not
+        // create).
+        $base = $this->tmp . '/s64-adopt-base';
+        mkdir($base, 0o755);
+
+        // 0775 — precisely what the pre-S39 creation request produced:
+        // adopted, but tightened.
+        $legacy = $base . '/legacy-0775';
+        self::s64MkdirMode($legacy, 0o775);
+        $legacyCache = new ClusterCache($legacy, 'k');
+        clearstatcache(true, $legacy);
+        self::assertSame('0755', substr(sprintf('%o', (int) fileperms($legacy)), -4),
+            'a group-writable cluster cache dir must come out of the trust path write-clean');
+        self::assertTrue($legacyCache->isEnabled(), 'tightening is an upgrade, not a cache death');
+
+        // 0755 — not forgeable: the operator's mode stays untouched.
+        $readShared = $base . '/read-shared-0755';
+        self::s64MkdirMode($readShared, 0o755);
+        self::assertTrue((new ClusterCache($readShared, 'k'))->isEnabled());
+        clearstatcache(true, $readShared);
+        self::assertSame('0755', substr(sprintf('%o', (int) fileperms($readShared)), -4));
+
+        // symlink — refuse; the target is never touched through the link.
+        $target = $base . '/symlink-target';
+        self::s64MkdirMode($target, 0o775);
+        $link = $base . '/symlinked';
+        self::assertTrue(symlink($target, $link));
+        self::assertFalse((new ClusterCache($link, 'k'))->isEnabled(),
+            'a symlinked cluster cache dir is not a trust anchor');
+        clearstatcache(true, $target);
+        self::assertSame('0775', substr(sprintf('%o', (int) fileperms($target)), -4),
+            'the constructor must not chmod through a symlink');
+    }
+
+    public function testDisabledStoresNeverWriteThroughSymlinkedDirs(): void
+    {
+        // The shell-S39 certification spelled for the WRITE side — the
+        // hole ClusterCache kept until once-S64: save()'s blind
+        // is_dir-check follows symlinks, so a refused path used to
+        // still receive bytes through the link. A disabled store now
+        // writes nothing at all, in either framed class.
+        $base = $this->tmp . '/s64-writethrough-base';
+        mkdir($base, 0o755);
+        $blocks = [$this->mkblock('a', 'h1')];
+
+        // ClusterCache arm.
+        $ccTarget = $base . '/cc-target';
+        self::s64MkdirMode($ccTarget, 0o755);
+        $ccLink = $base . '/cc-link';
+        self::assertTrue(symlink($ccTarget, $ccLink));
+        $cc = new ClusterCache($ccLink, 'k');
+        self::assertFalse($cc->isEnabled(), 'precondition: cluster store on a symlink is off');
+        $cc->save($blocks, [new Cluster('C1', $blocks, 1.0, true)]);
+        self::assertNull($cc->load($blocks));
+        self::assertSame([], array_values(array_filter(
+            scandir($ccTarget) ?: [],
+            static fn (string $entry): bool => $entry !== '.' && $entry !== '..'
+        )), 'a disabled ClusterCache must leave zero bytes behind the refused path');
+
+        // IndexStore arm.
+        $idxTarget = $base . '/idx-target';
+        self::s64MkdirMode($idxTarget, 0o755);
+        $idxLink = $base . '/idx-link';
+        self::assertTrue(symlink($idxTarget, $idxLink));
+        $src = $base . '/writethrough-src.php';
+        file_put_contents($src, '<?php function s64_wt($x) { return $x; }');
+        $idx = new IndexStore($idxLink, 'k');
+        self::assertFalse($idx->isEnabled(), 'precondition: index store on a symlink is off');
+        $idx->save($src, $blocks);
+        self::assertNull($idx->load($src));
+        self::assertSame([], array_values(array_filter(
+            scandir($idxTarget) ?: [],
+            static fn (string $entry): bool => $entry !== '.' && $entry !== '..'
+        )), 'a disabled IndexStore must leave zero bytes behind the refused path');
+    }
+
+    public function testCacheFamilySharesOnePrivateDirCensus(): void
+    {
+        // Acceptance line "cache dirs 0700 census", spelled at the
+        // family surface this step owns: both framed stores pointed at
+        // ONE fresh shared dir under a hostile umask — the default
+        // `.phpdup-cache` shape of a real run. The shared dir lands on
+        // exactly 0700 (absolute, not umask-relative) and every blob
+        // on exactly 0600 (post-write chmod, not 0666&~umask).
+        $base = $this->tmp . '/s64-census-base';
+        mkdir($base, 0o755);
+        $shared = $base . '/phpdup-cache';
+
+        $src = $base . '/census-src.php';
+        file_put_contents($src, '<?php function s64_census($x) { return $x + 1; }');
+        $blocks = [$this->mkblock('a', 'h1')];
+
+        $previous = umask(0o777);
+        try {
+            $clusterCache = new ClusterCache($shared, 'cfg-key-1');
+            $indexStore   = new IndexStore($shared, 'cfg-key-1');
+            $clusterCache->save($blocks, [new Cluster('C1', $blocks, 1.0, true)]);
+            $indexStore->save($src, $blocks);
+        } finally {
+            umask($previous);
+        }
+
+        self::assertTrue($clusterCache->isEnabled());
+        self::assertTrue($indexStore->isEnabled());
+
+        clearstatcache(true, $shared);
+        self::assertSame('0700', substr(sprintf('%o', (int) fileperms($shared)), -4),
+            'the shared cache-family dir is 0700 even born under a hostile 0777 umask');
+
+        $blobs = [];
+        $it = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($shared, \FilesystemIterator::SKIP_DOTS)
+        );
+        foreach ($it as $entry) {
+            /** @var \SplFileInfo $entry */
+            self::assertTrue($entry->isFile(), 'census: the shared tree holds only the two blobs');
+            $blobs[] = $entry->getPathname();
+        }
+        self::assertCount(2, $blobs, 'census non-vacuity: both stores wrote their blob');
+        // Deterministic regardless of the sha1 file name: the cluster
+        // snapshot is identified by name, the other by elimination.
+        $byKind = array_values(array_filter(
+            $blobs,
+            static fn (string $b): bool => str_ends_with($b, '/clusters.idx')
+        ));
+        self::assertCount(1, $byKind, 'census: the cluster snapshot sits beside the per-file one');
+        foreach ($blobs as $blob) {
+            clearstatcache(true, $blob);
+            self::assertSame('0600', substr(sprintf('%o', (int) fileperms($blob)), -4),
+                "cache family blob {$blob} is exactly 0600 under a hostile-umask birth");
+        }
+    }
+
+    /** umask(0) create, so the requested mode is the created mode verbatim. */
+    private static function s64MkdirMode(string $dir, int $mode): void
+    {
+        $previous = umask(0);
+        try {
+            self::assertTrue(@mkdir($dir, $mode, true), "scratch dir {$dir} must exist for the adoption arms");
+        } finally {
+            umask($previous);
+        }
     }
 }

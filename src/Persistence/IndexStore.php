@@ -52,7 +52,12 @@ use Phpdup\Parsing\CacheBlob;
  * `phpdup: refusing corrupt ...` runtime error (a clean exit 1 at the
  * CLI, never a downstream exit-255 TypeError). A graph too large to
  * walk inside the bounded budget is the unprovable case: ordinary miss
- * semantics, nothing served unchecked.
+ * semantics, nothing served unchecked. The one content-free shape —
+ * a payload that is just `serialize([])` — lands there too (once-S64):
+ * it carries no bytes that could poison, so missing it (recompute and
+ * overwrite) is honest, while the defect it descends from — an empty
+ * payload surviving as a permanent HIT that hid the file forever — is
+ * exactly what a miss can never do.
  *
  * **The directory itself is part of the trust surface (shell-S39,
  * php-dup-finder-shell-052(b)):** a group- or world-writable cache dir
@@ -261,6 +266,19 @@ final class IndexStore
             'allowed_classes' => SerializedClassAllowList::blockCacheClasses(),
         ]);
         if (!is_array($payload)) return null;
+
+        // once-S64 (php-dup-finder-once-073): a bare serialize([]) is
+        // content-free — no poison can hide in zero bytes, and this
+        // writer never emits the shape (save() always names its
+        // section), so it is neither a serve candidate nor a proven
+        // forgery. Ordinary miss: the run recomputes and the very next
+        // save() overwrites the slot. This is the anti-DATA-005 arm —
+        // an empty payload must never become a permanent HIT that
+        // hides the file, and symmetrically a content-free slot is
+        // too little to justify a permanent exit-1. A payload that
+        // does carry bytes yet violates the envelope contract stays a
+        // loud refusal below.
+        if ($payload === []) return null;
 
         // shell-S19 (finding shell-031): payload shape guards. Every
         // header gate has passed, so a payload violating the writer's

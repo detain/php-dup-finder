@@ -53,6 +53,24 @@ use Phpdup\Parsing\CacheBlob;
  * shared with the block store — {@see IndexStore::findIncompleteClass()}
  * (hoist to SerializedClassAllowList once shell-S11 lands). Saves take
  * LOCK_EX: concurrent writers can no longer interleave a torn blob.
+ * The one content-free payload — a bare `serialize([])` — is not a
+ * refusal but an ordinary miss (once-S64, php-dup-finder-once-073):
+ * zero bytes can hide zero poison, the slot simply recomputes and
+ * self-heals, and an empty set may never become the permanent HIT the
+ * finding's DATA-005 era produced.
+ *
+ * **The directory itself is part of the trust surface (once-S64
+ * normalizing this class onto the shell-S39 IndexStore posture):** a
+ * group- or world-writable cache dir lets any co-writer plant
+ * `clusters.idx` and the per-file `.idx` files these stores would
+ * otherwise believe (the header gates prove format, not authorship).
+ * The constructor makes a FRESH dir absolute 0700 (mkdir's mode is a
+ * umask-masked request; the chmod is not), and for a PRE-EXISTING dir
+ * it strips foreign write (0775 → 0755 — exactly the mode this ctor's
+ * pre-S18 ancestors created) or, when that is impossible, switches the
+ * store off. A private dir is a condition of caching, never of
+ * running: every disabled case degrades to plain cache misses, and a
+ * disabled store never writes through the path it refused.
  */
 final class ClusterCache
 {
@@ -76,15 +94,90 @@ final class ClusterCache
     // second invalidation on top of the first is pure cache churn.
     private const PARSER_VERSION = 'cluster-cache-v4';
 
+    /**
+     * Verdict of the once-S64 privacy enforcement run by the
+     * constructor (the shell-S39 posture {@see IndexStore} has carried
+     * since that lane — mirrored here verbatim so both framed
+     * persistence classes answer forgeability the same way): false
+     * when the cache dir exists (or was created) but cannot be made
+     * non-forgeable — a symlinked path, an unfixable mode.
+     * {@see self::isEnabled()} carries it, so a poisoned-by-construction
+     * tree is never read from or written to.
+     */
+    private bool $privateDirOk = true;
+
     public function __construct(
         private readonly string $cacheDir,
         private readonly string $configKey,
     ) {
+        if ($this->cacheDir !== '') {
+            $this->enforcePrivateCacheDir();
+        }
     }
 
     public function isEnabled(): bool
     {
-        return $this->cacheDir !== '';
+        return $this->cacheDir !== '' && is_dir($this->cacheDir) && $this->privateDirOk;
+    }
+
+    /**
+     * shell-S39 posture, spelled once per framed store (see
+     * {@see IndexStore::enforcePrivateCacheDir()} — the two bodies are
+     * the same doctrine at the same surface; hoisting them behind a
+     * shared trait is out of this step's locks):
+     *
+     *  - symlink         → refuse (never chmod or cache through a link
+     *                      we did not create — ServeCommand:is_link
+     *                      precedent);
+     *  - missing         → mkdir(0700) + chmod(0700) so the mode is
+     *                      absolute even under a hostile umask, then
+     *                      verify the fresh dir really is 0700;
+     *  - pre-existing    → adopt as-is when already private to us;
+     *                      otherwise strip group/other WRITE (reads
+     *                      are not the forgery vector — write is),
+     *                      re-verify, and switch the store off on any
+     *                      residual doubt.
+     *
+     * "Switch off" is never an error: the pipeline runs exactly as it
+     * does with `--no-cache`, it simply never replays — or writes —
+     * bytes a stranger could have planted.
+     */
+    private function enforcePrivateCacheDir(): void
+    {
+        $dir = $this->cacheDir;
+
+        if (is_link($dir)) {
+            $this->privateDirOk = false;
+            return;
+        }
+
+        if (!is_dir($dir)) {
+            $created = @mkdir($dir, 0o700, true);
+            if (!$created || !is_dir($dir)) {
+                return; // no dir at all — isEnabled()'s is_dir() gate owns that miss
+            }
+            // mkdir's mode argument is a REQUEST the process umask
+            // masks; chmod makes the 0700 intent absolute — then
+            // verify, and treat any doubt as "not ours to trust".
+            @chmod($dir, 0o700);
+            clearstatcache(true, $dir);
+            $mode = @fileperms($dir);
+            $this->privateDirOk = is_int($mode) && ($mode & 0o777) === 0o700;
+            return;
+        }
+
+        clearstatcache(true, $dir);
+        $mode = @fileperms($dir);
+        if (!is_int($mode) || ($mode & 0o022) === 0) {
+            // Already not forgeable; unobservable stats keep the
+            // pre-existing adopt semantics (isEnabled()'s is_dir gate
+            // owns the vanished-path case).
+            return;
+        }
+        @chmod($dir, $mode & ~0o022 & 0o7777);
+        clearstatcache(true, $dir);
+        $after = @fileperms($dir);
+        $this->privateDirOk = is_int($after) && ($after & 0o022) === 0;
     }
 
     /**
@@ -93,7 +186,7 @@ final class ClusterCache
      */
     public function load(array $blocks): ?array
     {
-        if (!$this->isEnabled() || !is_dir($this->cacheDir)) {
+        if (!$this->isEnabled()) {
             return null;
         }
         $file = $this->cacheDir . '/clusters.idx';
@@ -130,6 +223,15 @@ final class ClusterCache
             'allowed_classes' => SerializedClassAllowList::blockCacheClasses(),
         ]);
         if (!is_array($payload)) {
+            return null;
+        }
+        // once-S64 (php-dup-finder-once-073): bare serialize([]) —
+        // content-free, same anti-DATA-005 grammar as the block
+        // store's arm (see IndexStore::load() for the full rationale):
+        // miss and self-heal, never a hit, and too little content to
+        // justify a permanent refusal. A payload that carries bytes
+        // yet breaks the envelope contract still refuses below.
+        if ($payload === []) {
             return null;
         }
         // shell-S19 (finding shell-031): payload shape guards — the same
@@ -175,10 +277,12 @@ final class ClusterCache
      */
     public function save(array $blocks, array $clusters): void
     {
+        // once-S64: the gate is isEnabled() — the former blind
+        // `!is_dir → mkdir` arm here was the write-through hole a
+        // symlinked cacheDir hides behind (is_dir() follows links),
+        // and dir creation now belongs to the constructor's
+        // enforcement exactly as in IndexStore.
         if (!$this->isEnabled()) return;
-        if (!is_dir($this->cacheDir)) {
-            @mkdir($this->cacheDir, 0o700, true);
-        }
         // Strip the heavy AST nodes before serialization — they're
         // rebuilt on demand by RefactorStage when actually needed.
         $stripped = [];
