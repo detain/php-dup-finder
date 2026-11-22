@@ -278,6 +278,73 @@ final class AutoTunerTest extends TestCase
         }
     }
 
+    public function testAutoTuneBandsTheConfigPathsTreeNotTheCliArg(): void
+    {
+        // once-S26 fix-round-1 (r1 MEDIUM-2): pin the config-"paths" mirror
+        // arm of resolveAutoTune (Command.php:711-720). It replaces the CLI
+        // argument with the root config's "paths" for the band census —
+        // keep-in-step with ConfigLoader::load()'s path resolution (:217):
+        // a config-paths run scans the CONFIG tree, never the CLI argument,
+        // so only the config tree's file count may set the band. Before
+        // this pin the arm had ZERO coverage (reviewer mutant M6 neutered
+        // it and the whole Unit suite stayed green while the probe banded
+        // the wrong tree — the unwatched-mirror class shell-S25 r1 named).
+        //
+        // Straddle around the real tiny/small boundary (tinyMax=200): the
+        // CLI argument is a 197-file tree (tiny — tier fills three knobs),
+        // the config "paths" tree is 201 files (small — tier fills none).
+        // Correct posture: the small band on 201 AND empty overrides. The
+        // neutered posture lands on the never-scanned CLI tree: wrong band
+        // word, wrong count, three bogus gap-fills.
+        $dir     = $this->scratchDir('s26-paths');
+        $cliArg  = $this->mintConfigStraddleTree($dir . '/cli-arg', 197, 0);   // 197 files -> tiny band
+        $cfgTree = $this->mintConfigStraddleTree($dir . '/cfg-tree', 197, 4);  // 201 files -> small band
+        $cfg     = $dir . '/phpdup.json';
+        file_put_contents($cfg, json_encode(['paths' => [$cfgTree]], JSON_THROW_ON_ERROR));
+        $cfgNoPaths = $dir . '/no-paths.json';
+        file_put_contents($cfgNoPaths, '{}');
+
+        try {
+            $cmd     = new Command();
+            $resolve = new \ReflectionMethod($cmd, 'resolveAutoTune');
+
+            $input = new ArrayInput(
+                ['paths' => [$cliArg], '--config' => $cfg, '--auto-tune' => true],
+                $cmd->getDefinition(),
+            );
+            $out       = new BufferedOutput();
+            $overrides = [];
+            $resolve->invokeArgs($cmd, [$input, $out, [$cliArg], &$overrides, null]);
+            $display = $out->fetch();
+
+            $this->assertStringContainsString('auto-tune: small corpus (201 files)', $display,
+                'RED if the config-"paths" mirror arm is neutered: the census must follow the tree the scan will actually read');
+            $this->assertStringNotContainsString('197 files', $display,
+                'the never-scanned CLI-argument tree must not set the band');
+            $this->assertSame([], $overrides,
+                'the small tier keeps defaults — any tiny-tier fill here means the probe read the wrong tree');
+
+            // Control arm: same CLI input, config WITHOUT a "paths" key —
+            // the mirror stands down and the probe falls back to the CLI
+            // argument (non-vacuity: proves WHICH tree each posture counts).
+            $input2 = new ArrayInput(
+                ['paths' => [$cliArg], '--config' => $cfgNoPaths, '--auto-tune' => true],
+                $cmd->getDefinition(),
+            );
+            $out2        = new BufferedOutput();
+            $overrides2  = [];
+            $resolve->invokeArgs($cmd, [$input2, $out2, [$cliArg], &$overrides2, null]);
+            $display2 = $out2->fetch();
+
+            $this->assertStringContainsString('auto-tune: tiny corpus (197 files)', $display2,
+                'without a config "paths" key the probe counts the CLI argument as always');
+            $this->assertArrayHasKey('max_df', $overrides2,
+                'the tiny tier fills gaps on the CLI-arg tree in the control posture');
+        } finally {
+            self::deleteTree($dir);
+        }
+    }
+
     private function analyzeTester(): CommandTester
     {
         $app = new Application('phpdup', '0.1.0');
