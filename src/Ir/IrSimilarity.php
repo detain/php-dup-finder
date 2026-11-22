@@ -4,25 +4,32 @@ declare(strict_types=1);
 namespace Phpdup\Ir;
 
 use Phpdup\Util\Delimiters;
+use Phpdup\Util\Hash;
 
 /**
- * IR-to-IR similarity scorer (option 5 of
- * `docs/plans/orm-db-semantic-dedup.md`).
+ * IR-to-IR similarity scorer — the "option 5" of the ORM/DB-aware
+ * semantic-dedup plan (the plan file itself was deleted repo-wide;
+ * citation cleanup belongs to the once-099 lane, so this docblock
+ * no longer cites the dead path).
  *
  * Two scoring modes:
  *
  *   1. **Hash equality** — when both IR trees produce byte-identical
  *      token streams the score is 1.0. This is the strongest
- *      signal and the cheap fast-path.
+ *      signal and the cheap fast-path *of this scorer*.
  *   2. **Token-Jaccard** — multiset Jaccard over the printed token
  *      lists. Captures partial overlap (e.g. one block has an
  *      extra read that the other doesn't) without paying for a
  *      full tree-edit-distance computation.
  *
- * The plan calls for the eventual scorer to live alongside the
- * existing AST-level scoring tiers. This implementation provides
- * the building blocks; the wiring into the clusterer (as a fifth
- * tier behind `--scorer=ir`) is delivered separately.
+ * NOT WIRED (engine-028 catalog row 12, disposition KEEP, executed
+ * by engine-S31b): the live IR tier behind `--scorer=ir` does NOT
+ * use this class — Clusterer's tier falls back to multiset Jaccard
+ * over the pre-computed `Block::$irBag` token bags via
+ * JaccardSimilarity directly. This scorer remains the object-model
+ * variant (it walks IrNode trees through IrPrinter); whether the
+ * live tier should be re-aimed at it — or it deleted in favour of
+ * the bag path — is a product call held by the ledger.
  */
 final class IrSimilarity
 {
@@ -48,13 +55,21 @@ final class IrSimilarity
     }
 
     /**
-     * Stable structural hash of an IR tree — equal hashes imply
+     * Stable structural id of an IR tree — equal hashes imply
      * identical printed-token streams (the inverse holds modulo
-     * sha1 collisions, which is acceptable for clustering).
+     * xxh128 collisions, which is acceptable for clustering).
+     *
+     * engine-046: ids join the `Util\Hash` (xxh128) + TOKEN_JOIN
+     * digest family that SubtreeHasher uses for structural ids.
+     * The legacy `sha1 + NGRAM_SEP` form sat in a different digest
+     * family than every other id, and rode on the n-gram bag
+     * policy's separator — an NGRAM_SEP change intended for grams
+     * would have silently re-minted IR ids. The transition sample
+     * is pinned in tests/Unit/Ir/IrSimilarityTest.php.
      */
     public function hash(IrNode $ir): string
     {
-        return sha1(implode(Delimiters::NGRAM_SEP, $this->printer->tokens($ir)));
+        return Hash::of(implode(Delimiters::TOKEN_JOIN, $this->printer->tokens($ir)));
     }
 
     /**

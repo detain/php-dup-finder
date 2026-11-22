@@ -8,15 +8,19 @@ use Phpdup\Util\LineRange;
 /**
  * Lightweight block descriptor: location + kind + identity, no AST.
  *
- * Used by streaming-extraction code paths that want to walk a corpus
+ * Built for streaming-extraction code paths that would walk a corpus
  * and emit fingerprints without ever materialising the (possibly
- * large) AST. The corresponding heavy {@see Block} is rebuilt
- * on-demand by {@see BlockAstLoader} when later stages actually
- * need the AST.
+ * large) AST. NOT WIRED today (engine-028 catalog row 11, disposition
+ * KEEP, executed by engine-S31b): BlockExtractor never emits headers
+ * and BlockAstLoader reloads ASTs on live {@see Block} instances,
+ * not on headers — the "streaming fingerprint pass" that would pair
+ * them exists only as this latent value object.
  *
  * The header is deliberately a value object — no setters, no
- * mutation methods. It's safe to ship across worker boundaries via
- * serialize() because it's all primitives + LineRange.
+ * mutation methods. It would be safe to ship across worker
+ * boundaries via serialize() because it is all primitives +
+ * LineRange (a future wiring must still honor the socketpair law:
+ * scalars / JSON strings only on the worker wire).
  */
 final class BlockHeader
 {

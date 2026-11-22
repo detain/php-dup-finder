@@ -20,7 +20,18 @@ use Phpdup\Extraction\Block;
  * this would require LSH/banding to achieve sub-quadratic lookup.
  *
  * This class is currently **not wired** to any production code path
- * (it is defined but never instantiated in the pipeline).
+ * (it is defined but never instantiated in the pipeline) — the
+ * engine-S31a ledger dispositioned it KEEP as already honestly
+ * documented (catalog row 9; engine-S31b verified the claims fresh).
+ *
+ * BloomFilter contract compliance (folded from the engine-S30
+ * one-truth note here at the caller, per its advisory NIT): filters
+ * are write-then-read-only. Every add() happens inside build()
+ * (filterFor() constructs and fills before storing), so by the time
+ * candidatesFor() runs, all stored filters have passed their last
+ * add() and are treated as immutable — read only through
+ * {@see BloomFilter::overlap()}. No mutation after the scan starts,
+ * and no filter reference escapes the class.
  *
  * The filter overlap threshold is calibrated to mirror the rare-gram
  * pre-filter: pairs with overlap below {@see MIN_OVERLAP} are unlikely
