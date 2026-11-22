@@ -6,9 +6,18 @@ namespace Phpdup\Index;
 /**
  * Disk-backed external sort over (string-key, payload) tuples.
  *
- * Used by streaming clustering to merge candidate-pair streams
+ * Built for streaming clustering: merging candidate-pair streams
  * larger than RAM. Splits the input into K-sized run files, sorts
  * each in memory, then K-way merges them on disk.
+ *
+ * NOT WIRED to any production code path (engine-028 catalog row 10,
+ * dispositioned KEEP by the engine-S31a ledger, executed here in
+ * engine-S31b); nothing in src/ or bin/ instantiates it today.
+ *
+ * I/O posture (engine-027, fixed by this step): every spilling and
+ * merge failure throws \RuntimeException — a run that cannot be
+ * re-opened for merging, or a line that cannot be written in full,
+ * aborts the sort instead of silently shrinking the merged stream.
  *
  * The on-disk format is one record per line:
  *
@@ -30,28 +39,32 @@ final class ExternalSort
     /**
      * @param iterable<array{0:string,1:string}> $records  (key, payload) pairs
      * @return \Generator<int, array{0:string,1:string}>  sorted-by-key
+     * @throws \RuntimeException When a run cannot be spilled, fully
+     *         written, or re-opened for merging (engine-027) — every
+     *         run file already created is unlinked on the way out.
      */
     public function sortStream(iterable $records): \Generator
     {
         $runs = [];
-        $buffer = [];
-        $count  = 0;
-        foreach ($records as [$key, $payload]) {
-            $buffer[] = [$key, $payload];
-            if (++$count >= $this->runSize) {
-                $runs[] = $this->flushRun($buffer);
-                $buffer = [];
-                $count  = 0;
-            }
-        }
-        if ($buffer !== []) {
-            $runs[] = $this->flushRun($buffer);
-        }
         try {
+            $buffer = [];
+            $count  = 0;
+            foreach ($records as [$key, $payload]) {
+                $buffer[] = [$key, $payload];
+                if (++$count >= $this->runSize) {
+                    $runs[] = $this->flushRun($buffer);
+                    $buffer = [];
+                    $count  = 0;
+                }
+            }
+            if ($buffer !== []) {
+                $runs[] = $this->flushRun($buffer);
+            }
             yield from $this->mergeRuns($runs);
         } finally {
-            // Clean up every run file even if the consumer iterates
-            // partially, throws, or breaks out of the generator.
+            // Clean up every run file even if a flush or merge
+            // throws, or the consumer iterates partially and breaks
+            // out of the generator.
             foreach ($runs as $f) {
                 @unlink($f);
             }
@@ -64,7 +77,8 @@ final class ExternalSort
      * @param list<array{0:string,1:string}> $buffer
      * @return string Path to the on-disk sorted run.
      * @throws \RuntimeException When tempnam returns false (no writable
-     *         temp dir) or the run file cannot be opened for writing.
+     *         temp dir), the run file cannot be opened for writing,
+     *         or a line cannot be written in full (engine-027).
      */
     private function flushRun(array $buffer): string
     {
@@ -82,13 +96,43 @@ final class ExternalSort
             throw new \RuntimeException("ExternalSort: cannot open run file {$tmp}");
         }
         try {
-            foreach ($buffer as [$k, $v]) {
-                fwrite($h, $k . "\t" . $v . "\n");
-            }
+            $this->writeRunLines($h, $buffer, $tmp);
         } finally {
             fclose($h);
         }
         return $tmp;
+    }
+
+    /**
+     * Persist a sorted buffer as one "<key>\t<payload>\n" line per
+     * record, verifying each write consumed the full line.
+     *
+     * @param resource $h        run-file handle opened for writing
+     * @param list<array{0:string,1:string}> $buffer
+     * @param string   $path     run file path, for the error text
+     * @throws \RuntimeException When fwrite returns fewer bytes than
+     *         the line's byte length (e.g. ENOSPC) — engine-027's
+     *         corrupt-run path. Byte length is the right basis:
+     *         fwrite counts bytes, so multibyte payloads compare
+     *         consistently.
+     */
+    private function writeRunLines($h, array $buffer, string $path): void
+    {
+        foreach ($buffer as [$k, $v]) {
+            $line = $k . "\t" . $v . "\n";
+            // engine-027: an unchecked fwrite can return fewer bytes
+            // than the line (disk full) and leave a corrupt run that
+            // mergeRuns reads back as a legitimately short file.
+            $written = fwrite($h, $line);
+            if ($written !== strlen($line)) {
+                throw new \RuntimeException(
+                    "ExternalSort: short write to run file {$path}"
+                    . ($written === false
+                        ? " (fwrite failed)"
+                        : " (wrote {$written} of " . strlen($line) . " bytes)")
+                );
+            }
+        }
     }
 
     /**
@@ -101,6 +145,9 @@ final class ExternalSort
      *
      * @param list<string> $runs
      * @return \Generator<int, array{0:string,1:string}>
+     * @throws \RuntimeException When a run file cannot be re-opened
+     *         (engine-027: the previous `continue` dropped that run's
+     *         records from the merged stream in silence).
      */
     private function mergeRuns(array $runs): \Generator
     {
@@ -109,21 +156,27 @@ final class ExternalSort
         }
         $handles = [];
         $heads   = [];
-        foreach ($runs as $idx => $path) {
-            $h = fopen($path, 'r');
-            if ($h === false) {
-                continue;
-            }
-            $handles[$idx] = $h;
-            $line = fgets($h);
-            if ($line !== false) {
-                $heads[$idx] = rtrim($line, "\n");
-            } else {
-                @fclose($h);
-                unset($handles[$idx]);
-            }
-        }
         try {
+            foreach ($runs as $idx => $path) {
+                // engine-027: fd limits / pruned temp dirs bite
+                // exactly under the memory pressure this class
+                // exists for — losing a whole run silently is worse
+                // than a loud failure. Mirror flushRun's posture.
+                $h = @fopen($path, 'r');
+                if ($h === false) {
+                    throw new \RuntimeException(
+                        "ExternalSort: cannot re-open run file {$path} for merging"
+                    );
+                }
+                $handles[$idx] = $h;
+                $line = fgets($h);
+                if ($line !== false) {
+                    $heads[$idx] = rtrim($line, "\n");
+                } else {
+                    @fclose($h);
+                    unset($handles[$idx]);
+                }
+            }
             while ($heads !== []) {
                 $minIdx = null;
                 $minKey = null;
