@@ -911,10 +911,63 @@ final class ConfigLoader
     }
 
     /**
+     * Every root-config key the loader admits — the `$known` set validate()
+     * enforces and the complete property set docs/config-schema.json must
+     * document. shell-S31 (php-dup-finder-shell-036): this used to be a
+     * private local list "kept in sync by hand" with the schema and it
+     * silently diverged (43 admitted keys vs 38 documented properties).
+     * It is now PUBLIC so tests/Unit/Cli/ConfigSchemaParityTest.php pins the
+     * two sets mechanically — any drift on either side fails the suite
+     * instead of lying to schema consumers/IDEs.
+     *
+     * @var list<string>
+     */
+    public const KNOWN_KEYS = [
+        'paths', 'exclude', 'exclude_reset',
+        'min_block_size', 'max_block_size',
+        'normalization_mode',
+        'similarity_threshold', 'tree_threshold',
+        'min_cluster_impact', 'max_df', 'ngram_size',
+        'cache_dir', 'parallelism', 'workers',
+        'incremental', 'lazy_ast',
+        'kinds',
+        'optional_blocks',
+        'sort',
+        'ted_weights',
+        'report',
+        'normalization',
+        'db_aware',
+        'trinity_collapse',
+        'db_symbols',
+        'scorer',
+        'fingerprint_id_mode',
+        'scope',
+        'score_mode',
+        'ir_threshold',
+        'ml_pair_url',
+        'ml_pair_threshold',
+        'ml_pair_allow_private',
+        'debug_log',
+        'low_memory',
+        'fail_on_impact',
+        'max_clusters',
+        'candidate_budget',
+        'max_ted_size',
+        'max_hole_coverage',
+        'baseline',
+        'baseline_out',
+        'diff_base', 'apply',
+    ];
+
+    /**
      * Validate a parsed config payload against the documented schema.
      *
-     * Mirrors docs/config-schema.json — kept in sync by hand because we don't
-     * want a JSON-Schema validator dependency just for config loading.
+     * Mirrors docs/config-schema.json — the mirror is PINNED, not by hand:
+     * {@see \Phpdup\Tests\Unit\Cli\ConfigSchemaParityTest} asserts
+     * self::KNOWN_KEYS equals the schema's property set (both directions),
+     * so the two can no longer drift silently. The mirror is still the
+     * shape we hand-check here — we don't want a JSON-Schema validator
+     * dependency just for config loading.
      *
      * @param array<string,mixed> $data
      * @throws \RuntimeException with a field-path on the first violation found.
@@ -923,42 +976,7 @@ final class ConfigLoader
     {
         $where = $source !== null ? " in $source" : '';
 
-        $known = [
-            'paths', 'exclude', 'exclude_reset',
-            'min_block_size', 'max_block_size',
-            'normalization_mode',
-            'similarity_threshold', 'tree_threshold',
-            'min_cluster_impact', 'max_df', 'ngram_size',
-            'cache_dir', 'parallelism', 'workers',
-            'incremental', 'lazy_ast',
-            'kinds',
-            'optional_blocks',
-            'sort',
-            'ted_weights',
-            'report',
-            'normalization',
-            'db_aware',
-            'trinity_collapse',
-            'db_symbols',
-            'scorer',
-            'fingerprint_id_mode',
-            'scope',
-            'score_mode',
-            'ir_threshold',
-            'ml_pair_url',
-            'ml_pair_threshold',
-            'ml_pair_allow_private',
-            'debug_log',
-            'low_memory',
-            'fail_on_impact',
-            'max_clusters',
-            'candidate_budget',
-            'max_ted_size',
-            'max_hole_coverage',
-            'baseline',
-            'baseline_out',
-            'diff_base', 'apply',
-        ];
+        $known = self::KNOWN_KEYS;
         foreach (array_keys($data) as $k) {
             if (!in_array($k, $known, true)) {
                 throw new \RuntimeException("Unknown config key '$k'$where");

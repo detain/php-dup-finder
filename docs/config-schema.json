@@ -17,6 +17,11 @@
             "items": { "type": "string", "minLength": 1 },
             "description": "Glob patterns excluded from the scan. ** matches recursively."
         },
+        "exclude_reset": {
+            "type": "boolean",
+            "default": false,
+            "description": "Opt-out of the item-5.2 append-merge for exclude lists. Excludes normally STACK across defaults -> profile -> root config -> CLI dict -> per-directory layers (deduped); \"exclude_reset\": true discards every INHERITED layer below the resetting one (stock defaults AND profile) so only the config-file/dict lists survive. Also honored per-directory: a .phpdup.json carrying it resets the inherited chain for that subtree at scan time (once-S28), and the --auto-tune probe counts the tree with it applied. Shape-checked boolean — any non-boolean value exits 2. CLI: none (config-file family key)."
+        },
         "min_block_size": {
             "type": "integer",
             "minimum": 1,
@@ -34,6 +39,20 @@
             "enum": ["strict", "default", "aggressive"],
             "default": "aggressive",
             "description": "strict = variable-rename tolerant only. default = also collapse literal values. aggressive = also collapse method, property, and class names."
+        },
+        "normalization": {
+            "type": "object",
+            "additionalProperties": false,
+            "default": {},
+            "description": "Normalization post-pass plugins (root-config object; the only admitted sub-key is plugins — any other sub-key fails the load as an unknown config key).",
+            "properties": {
+                "plugins": {
+                    "type": "array",
+                    "default": [],
+                    "items": { "type": "string", "minLength": 1 },
+                    "description": "Class names implementing Phpdup\\Normalization\\NormalizationPlugin, loaded by name and run by PluginRegistry as a post-pass inside the Normalizer (PreprocessWorker::toolFor() AND the per-file IndexStore cache key both fold this list in, so adding, removing or reordering a plugin invalidates the warm caches rather than replaying stale streams). An empty or absent list is the stock behavior. A per-directory .phpdup.json carrying this key is ignored — the key is not in the per-dir admit set; it is also absent from the CLI roster."
+                }
+            }
         },
         "similarity_threshold": {
             "type": "number",
@@ -87,6 +106,12 @@
             "default": 800,
             "description": "Node-count cap for APTED tree-edit judgment (item 1.2). A candidate pair whose LARGER member exceeds this cap skips the TED call entirely: it is accepted on Jaccard alone with edge tier 'jaccard-unverified' (weight = the Jaccard score), or falls through to the containment/IR/ML tiers unchanged — APTED is the O(n^2)-space quadratic cost site (161s / 1.2GB on a 1000-node pair). Default 800 equals the max_block_size extraction ceiling, so no real block can exceed it and the gate is inert out of the box: every existing verdict, cache and golden stays byte-identical. Lower it (e.g. 200-400) on giant-clone corpora to trade exactness for wall time. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load — a pair spans two directories, so a per-directory cap would be ambiguous. No CLI flag in v1. The cap rides the cluster-cache config key and is applied identically by the serial Clusterer and the parallel PairScoreWorker."
         },
+        "ted_weights": {
+            "type": "string",
+            "enum": ["default", "semantic"],
+            "default": "default",
+            "description": "Edit-cost model for the APTED tree-edit-distance tier (Phpdup\\Similarity\\EditCostModel). 'default' = uniform cost 1.0 per node insert/delete/substitute — the model every historical similarity, cache and golden byte was produced with. 'semantic' = a node-kind weight table (method calls and control flow cost more than literals), honored identically by the serial Clusterer and the parallel PairScoreWorker — one admission feeds both scorers. Admitted as a plain enum at validate() time: an unknown value exits 2 (\"ted_weights must be one of default|semantic\"). Not in the per-directory admit set: a subtree .phpdup.json carrying it is ignored (pair-scoring stance is chosen once per run). The value rides the cluster-cache config key, so switching models replays as a cache MISS rather than mixing cost models inside one cache. CLI: --ted-weights."
+        },
         "max_hole_coverage": {
             "type": "number",
             "minimum": 0,
@@ -109,7 +134,7 @@
             "type": "integer",
             "minimum": 0,
             "default": 0,
-            "description": "Worker count for parallel preprocess + pair scoring. 0 = auto-detect from nproc / /proc/cpuinfo. 1 = serial. Higher is explicit."
+            "description": "Worker count for parallel preprocess + pair scoring. 0 = auto-detect from nproc / /proc/cpuinfo. 1 = serial. Higher is explicit. Values above the pool ceiling (4 x detected CPUs, WorkerPool::workersCeiling()) are admitted, NOT rejected: the run exits 0 with a `phpdup: warning:` load note and WorkerPool::clampWorkers bounds every actual fork set at the ceiling (shell-S10, shell-038 — the fork-storm fix chose clamp-and-warn over validation because an oversized count is a stance, not a shape error). CLI: -j/--workers."
         },
         "incremental": {
             "type": "boolean",
@@ -237,6 +262,12 @@
             "maximum": 1.0,
             "default": 0.80,
             "description": "Similarity threshold for the option-6 ML pair tier. Only consulted when ml_pair_url is set. CLI: --ml-pair-threshold."
+        },
+        "debug_log": {
+            "type": "string",
+            "minLength": 1,
+            "default": null,
+            "description": "Path of a file the run appends its debug (very-verbose) pipeline messages to, via Phpdup\\Pipeline\\DebugLogger — a sink for stage events independent of -v/-vv rendering. Absent (the default) logs nothing to disk. An unwritable path degrades to a surfaced warning and the run still completes (shell-S29 destructor safe-close). Shape rule at load: a non-string or empty string exits 2 (\"debug_log must be a non-empty string\"). ROOT CONFIG ONLY: it names a file the run WRITES, so a per-directory .phpdup.json carrying this key fails discovery loudly (shell-S22 path/ref-bearing family). CLI: --debug-log."
         },
         "ml_pair_allow_private": {
             "type": "boolean",
