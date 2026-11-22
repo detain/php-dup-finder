@@ -142,7 +142,12 @@ const PHPDUP_PHAR_BUILT    = '{{BUILT}}';
 const PHPDUP_PHAR_COMMIT   = '{{COMMIT}}';
 const PHPDUP_PHAR_BRANCH   = '{{BRANCH}}';
 
-\Phar::interceptFileFuncs();
+// Deliberately NO Phar::interceptFileFuncs() here (shell-S35). It reroutes
+// every RELATIVE file call into the phar — so `phpdup.phar analyze .` (and
+// `serve` with relative paths[]) scanned the artifact's own tree and
+// silently reported 0 files while the checkout found clusters. Every load
+// the phar genuinely needs (autoload, profiles/) uses absolute phar://
+// paths and never relied on the interception.
 
 // Phar::running(true)  returns the phar:// stream URL ("phar:///path/foo.phar").
 // Phar::running(false) returns just the on-disk filename ("/path/foo.phar").
@@ -164,12 +169,17 @@ require \$autoload;
 use Symfony\\Component\\Console\\Application;
 use Phpdup\\Cli\\Command;
 use Phpdup\\Cli\\CompletionCommand;
+use Phpdup\\Cli\\InitCommand;
 use Phpdup\\Cli\\ServeCommand;
 use Phpdup\\Cli\\UpdateCommand;
 
 \$app = new Application('phpdup', PHPDUP_PHAR_VERSION);
 \$cmd = new Command();
 \$app->add(\$cmd);
+// `phpdup init` — registered exactly as bin/phpdup does (shell-S35): the
+// stub previously shipped the checkout command surface minus init, so
+// `phpdup.phar list` lied about what the artifact can run.
+\$app->add(new InitCommand());
 \$app->add(new UpdateCommand());
 \$app->add(new CompletionCommand());
 \$app->add(new ServeCommand());
@@ -198,10 +208,11 @@ $phar->startBuffering();
 
 // Counters for the build summary.
 $counters = [
-    'vendor_added'   => 0,
-    'vendor_skipped' => 0,
-    'src_added'      => 0,
-    'bytes_skipped'  => 0,
+    'vendor_added'    => 0,
+    'vendor_skipped'  => 0,
+    'src_added'       => 0,
+    'profiles_added'  => 0,
+    'bytes_skipped'   => 0,
 ];
 
 // 6a. Add vendor/ — filtering out test/docs/CI cruft.
@@ -260,7 +271,23 @@ $distInfo = json_encode([
 ], JSON_PRETTY_PRINT);
 $phar->addFromString(DIST_INFO, (string)$distInfo);
 
-// 6f. Set the launcher stub.
+// 6f. Embed profiles/ — the stub now ships `init`, and InitCommand reads
+// its data at runtime through ProfileRegistry::bundled(), i.e.
+// dirname(__DIR__, 2) . '/profiles' (shell-S35). Inside the phar that path
+// resolves to <phar>/profiles, so the tree must travel with the artifact or
+// the listed command would be a lie. Fail loud rather than ship a stub-only
+// init: this is the same posture as the vendor/autoload guard above.
+$profileFiles = glob(__DIR__ . '/profiles/*.json') ?: [];
+if ($profileFiles === []) {
+    fwrite(STDERR, "build-phar: profiles/*.json not found — shipping the init command without its data would make `phpdup.phar init` dead on arrival\n");
+    exit(1);
+}
+foreach ($profileFiles as $profileFile) {
+    $phar->addFile($profileFile, 'profiles/' . basename($profileFile));
+    $counters['profiles_added']++;
+}
+
+// 6g. Set the launcher stub.
 $phar->setStub($phar->createDefaultStub(STUB_NAME));
 $phar->setMetadata([
     'version' => $version,
@@ -282,7 +309,7 @@ if ($compress) {
 
 $size = filesize($outPath);
 fwrite(STDOUT, sprintf(
-    "build-phar: %s\n  size:    %s bytes (%.2f MB)\n  version: %s\n  commit:  %s\n  vendor:  %d files added, %d skipped (%s bytes saved)\n  src:     %d files added\n",
+    "build-phar: %s\n  size:    %s bytes (%.2f MB)\n  version: %s\n  commit:  %s\n  vendor:  %d files added, %d skipped (%s bytes saved)\n  src:     %d files added\n  profiles: %d files added\n",
     $outPath,
     number_format((int)$size),
     $size / 1024 / 1024,
@@ -292,6 +319,7 @@ fwrite(STDOUT, sprintf(
     $counters['vendor_skipped'],
     number_format($counters['bytes_skipped']),
     $counters['src_added'],
+    $counters['profiles_added'],
 ));
 
 if ($size > 10 * 1024 * 1024) {

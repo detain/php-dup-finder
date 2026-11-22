@@ -398,4 +398,51 @@ final class ServeCommandTest extends TestCase
         }
         $this->assertStringContainsStringIgnoringCase('refused', $errstr);
     }
+
+    // ------------------------------------------------------------------
+    // shell-S35: the phar build is sync-only — a Unix spawn can never exec
+    // the worker from inside the artifact (shell: rc 127 on a phar://
+    // program path; php: refuses to open a phar:// main script), so the
+    // posture is announced up front instead of surfacing as a socket timeout
+    // ------------------------------------------------------------------
+
+    public function testPharPostureWarnsAndRefusesWorkerSpawn(): void
+    {
+        $command = new ServeCommand();
+        $command->pharRunningOverride = '/tmp/anywhere/phpdup.phar';
+        $output = new BufferedOutput();
+
+        $method = new \ReflectionMethod($command, 'spawnWorker');
+
+        // null pid means execute() falls through to the sync-mode
+        // Application; the spawn never reaches the socket wait, the
+        // results-dir leg, or proc_open at all.
+        $this->assertNull($method->invoke($command, $output, sys_get_temp_dir()));
+
+        $printed = $output->fetch();
+        $this->assertStringContainsString('phar build', $printed);
+        $this->assertStringContainsString('cannot be spawned', $printed);
+        $this->assertStringContainsString('running in sync mode', $printed);
+    }
+
+    public function testCheckoutPostureStillReachesTheWorkerBinaryLegs(): void
+    {
+        $command = new ServeCommand();
+        // '' pins the checkout posture verbatim: the phar branch must stay
+        // invisible when the daemon runs from the tree.
+        $command->pharRunningOverride = '';
+        $output = new BufferedOutput();
+
+        $method = new \ReflectionMethod($command, 'spawnWorker');
+
+        // Called directly without a prepared results dir, the documented
+        // checkout leg answers with ITS notice — proving control passed the
+        // phar short-circuit and the worker-binary existence check (real
+        // bin/phpdup-worker on this checkout) untouched.
+        $this->assertNull($method->invoke($command, $output, sys_get_temp_dir()));
+
+        $printed = $output->fetch();
+        $this->assertStringNotContainsString('phar', $printed);
+        $this->assertStringContainsString('result dir not prepared', $printed);
+    }
 }

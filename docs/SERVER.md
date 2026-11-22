@@ -223,6 +223,41 @@ In sync mode (no worker) the `POST` runs the analysis inline and
 settles the row before answering `202`; the async legs above simply do
 not apply.
 
+### Serving from the phar build
+
+The phar ships the same HTTP surface minus the async worker — a
+packaging decision (shell-S35), not an oversight. The spawn is an
+`sh -c` exec, and nothing can execute a script stored inside a phar:
+the shell resolves a `phar://` program path to *no such file* (exit
+127) and `php` refuses to open one as its main script ("Could not open
+input file"). So `serve` names the posture at startup instead of
+waiting five seconds for a socket that can never appear:
+
+```text
+phpdup serve: running from the phar build — the async worker cannot be spawned (phar:// scripts are not executable); running in sync mode
+phpdup serve running in sync mode (no worker)
+```
+
+From there every route answers with the same JSON as the checkout run.
+`POST /jobs` still answers `202` with a `job_id` and settles the row
+inline before responding (the sync-mode semantics above) — the shell-S35
+probe verified the `400` refusal bodies for `..` traversal and absolute
+`paths[]` entries byte-identically from both builds, and scan-leg
+reports byte-identical when driven through absolute paths (with
+`--serve-root ''` disabling confinement, `phpdup.phar` and the
+checkout answered the same 5,811-byte report for a two-clone fixture).
+
+One known limitation sits in the **scanning leg**, not the HTTP leg:
+with a confined `--serve-root`, `paths[]` entries are relative, and PHP
+running a phar as its main script redirects relative-path
+`stat()`/`is_file()`/`is_dir()` calls into the archive itself, so a
+phar-launched scan sees 0 files where the checkout finds clusters
+(`realpath()` and absolute paths are unaffected). Absolutizing the scan
+inputs at the pipeline entry is a fix leg outside this step's files;
+until it lands, run `serve` from a checkout for anything the daemon
+will actually scan. Async legs — ack-at-accept dispatch, terminal-event
+observation, off-thread long jobs — also need the checkout worker.
+
 ## Concurrency posture
 
 `phpdup serve` is a **single-process, serial accept loop**: it handles

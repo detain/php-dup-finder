@@ -27,7 +27,9 @@ use Symfony\Component\Console\Output\OutputInterface;
  *                                 paths[] payload, return JSON report
  *   POST /jobs                  → enqueue an analysis, return job id
  *                                 (async via the worker when it spawned,
- *                                 else synchronous mode)
+ *                                 else synchronous mode; a phar build
+ *                                 never spawns — sync-only posture, see
+ *                                 docs/SERVER.md "Async job posture")
  *   GET  /jobs/{id}             → fetch job status / result
  *   GET  /api/jobs              → list all jobs
  *   GET  /api/jobs/{id}         → fetch job status (status-only)
@@ -238,6 +240,17 @@ final class ServeCommand extends SymfonyCommand
      */
     public ?int $firstByteTimeoutMs = null;
 
+    /**
+     * Test seam for the phar-detection in {@see spawnWorker()} (shell-S35):
+     * null uses the real `Phar::running(false)` — which is always '' inside
+     * a phpunit process started from the checkout, making the phar posture
+     * otherwise untestable here. A probe string is used verbatim as the
+     * running-phar path. Only the detection is seamed; the warning line and
+     * the sync-mode fallthrough run unseamed, like the read-deadline seams
+     * above treat their numbers.
+     */
+    public ?string $pharRunningOverride = null;
+
     /** Why the last {@see prepareResultsDir()} refused startup ('' = none). */
     private string $resultsDirRefusal = '';
 
@@ -396,7 +409,10 @@ final class ServeCommand extends SymfonyCommand
 
         // Spawn background worker for async job processing. The serve root is
         // handed to the worker as a spawn argument so it can independently
-        // re-validate dispatched job paths (defence in depth).
+        // re-validate dispatched job paths (defence in depth). From a phar
+        // build the spawn is refused up front (shell-S35): the worker cannot
+        // be exec'd from inside a phar, so the operator gets the warning
+        // line here and the same sync-mode Application serves the request.
         $workerPid = $this->spawnWorker($output, $serveRoot);
         if ($workerPid === null) {
             $output->writeln('<info>phpdup serve</info> running in sync mode (no worker)');
@@ -816,9 +832,30 @@ final class ServeCommand extends SymfonyCommand
      * Returns the worker PID on success, null on failure (worker
      * not available or failed to start). The worker socket path is
      * stored in {@see $this->workerSocket}.
+     *
+     * A phar run is not a failure to paper over: {@see self::pharRunning()}
+     * detects the artifact and the method returns null with one explicit
+     * warning line (shell-S35 packaging decision — the matching limitation
+     * row lives in docs/SERVER.md "Async job posture").
      */
     private function spawnWorker(OutputInterface $output, string $serveRoot): ?int
     {
+        // shell-S35: the phar carries no worker copy, and that is a
+        // deliberate packaging decision rather than an oversight. A spawn
+        // goes through `sh -c`, and neither side of it can execute a script
+        // stored inside a phar: the shell sees `phar:///…/bin/phpdup-worker`
+        // as a nonexistent program (rc 127), and `php` refuses to open a
+        // phar:// URL as its main script ("Could not open input file").
+        // Shaking a `phar://` path at either one would only mis-fire the
+        // sync-mode notice, so the packaging posture is stated here in one
+        // warning line and `docs/SERVER.md` carries the matching row.
+        if ($this->pharRunning() !== '') {
+            $output->writeln(
+                '<comment>phpdup serve: running from the phar build — the async worker cannot be spawned (phar:// scripts are not executable); running in sync mode</comment>'
+            );
+            return null;
+        }
+
         $workerBin = __DIR__ . '/../../bin/phpdup-worker';
         if (!is_file($workerBin) || !is_executable($workerBin)) {
             $output->writeln('<comment>worker binary not found, running in sync mode</comment>');
@@ -964,6 +1001,16 @@ final class ServeCommand extends SymfonyCommand
         }
         $env[self::WORKER_PID_ENV] = (string)getmypid();
         return $env;
+    }
+
+    /**
+     * The running phar's filesystem path, or '' when executing from a plain
+     * checkout (shell-S35). One line over {@see \Phar::running(false)} so
+     * {@see $pharRunningOverride} can pin the phar posture in unit tests.
+     */
+    private function pharRunning(): string
+    {
+        return $this->pharRunningOverride ?? \Phar::running(false);
     }
 
     /**
