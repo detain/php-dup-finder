@@ -190,7 +190,16 @@ final class TimeseriesReporter
         if ($target === '') {
             return null;
         }
-        $resolved = realpath($target[0] === '/' ? $target : $container . '/' . $target);
+        // A crafted pointer may name a NUL-byte path: realpath() throws there
+        // on PHP 8 where older PHP only returned false. Spaces stay legal —
+        // gitdir targets are filesystem paths, not refs.
+        $path = $target[0] === '/' ? $target : $container . '/' . $target;
+        try {
+            $resolved = realpath($path);
+        } catch (\ValueError) {
+            return null;
+        }
+
         return $resolved !== false && is_dir($resolved) ? $resolved : null;
     }
 
@@ -202,7 +211,11 @@ final class TimeseriesReporter
     private function resolveRef(string $gitDir, string $ref): ?string
     {
         // A crafted HEAD file must not steer reads outside the git dir.
-        if ($ref === '' || $ref[0] === '/' || str_contains($ref, '..')) {
+        // Control bytes and spaces are rejected wholesale: git's own
+        // check-ref-format forbids them in ref names, and an embedded NUL
+        // would make file_get_contents() throw an uncaught ValueError.
+        if ($ref === '' || $ref[0] === '/' || str_contains($ref, '..')
+            || preg_match('/[\x00-\x1f\x7f ]/', $ref) === 1) {
             return null;
         }
 
@@ -241,7 +254,11 @@ final class TimeseriesReporter
         if (is_string($common)) {
             $target = trim($common);
             if ($target !== '') {
-                $resolved = realpath($gitDir . '/' . $target);
+                try {
+                    $resolved = realpath($gitDir . '/' . $target);
+                } catch (\ValueError) {
+                    $resolved = false; // crafted commondir: NUL byte in the path
+                }
                 if ($resolved !== false && is_dir($resolved)) {
                     $dirs[] = $resolved;
                 }

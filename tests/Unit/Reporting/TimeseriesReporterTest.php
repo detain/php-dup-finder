@@ -243,6 +243,46 @@ final class TimeseriesReporterTest extends TestCase
         $this->assertSame($sha, $record['commit_sha']);
     }
 
+    public function testCraftedNulHeadRefYieldsHonestNull(): void
+    {
+        // Fix-round-1 (LOW-1): control bytes in a HEAD-named ref must never
+        // reach the loose-ref read — git's check-ref-format rejects them, so
+        // screening them off loses no real sha, only the ValueError crash.
+        $repo = $this->makeRepo('nul-head');
+        $this->assertNotFalse(file_put_contents($repo . '/.git/HEAD', "ref: foo\0bar\n"));
+
+        $record = $this->recordFor([$repo]);
+        $this->assertNull($record['commit_sha']);
+    }
+
+    public function testCraftedNulGitDirPointerYieldsHonestNull(): void
+    {
+        // Same crash class through the pointer route: a '.git' file naming a
+        // NUL-byte gitdir target degrades to "no repo found", never a fatal.
+        $dir = $this->scratchDir('nul-pointer');
+        $this->assertNotFalse(
+            file_put_contents($dir . '/.git', 'gitdir: ' . $dir . '/.real' . chr(0) . 'x' . "\n"),
+        );
+
+        $record = $this->recordFor([$dir]);
+        $this->assertNull($record['commit_sha']);
+    }
+
+    public function testCraftedNulCommondirDegradesToGitDirAlone(): void
+    {
+        // A crafted commondir (unlike trim()ed surrounding bytes, an EMBEDDED
+        // NUL survives) must only drop the shared-dir search: the repo's own
+        // loose refs still resolve, and realpath() never throws. The sha is
+        // read BEFORE poisoning the file — live git cannot serve rev-parse
+        // through a garbage commondir.
+        $repo = $this->makeRepo('nul-commondir');
+        $sha  = $this->headSha($repo);
+        $this->assertNotFalse(file_put_contents($repo . '/.git/commondir', "../shared\0x\n"));
+
+        $record = $this->recordFor([$repo]);
+        $this->assertSame($sha, $record['commit_sha']);
+    }
+
     public function testRepoRootOverrideResolvesWithoutScanPaths(): void
     {
         // Constructor escape hatch for producers with no usable Config
