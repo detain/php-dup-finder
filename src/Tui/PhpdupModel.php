@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Phpdup\Tui;
 
+use Phpdup\Clustering\Cluster;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Pipeline\Stage;
@@ -383,10 +384,11 @@ final class PhpdupModel implements Model, ProgressListener
 
     private function cycleClusterDetail(int $delta): void
     {
-        if ($this->state->clusters === [] || $this->viewState->detailClusterId === null) {
+        $clusters = $this->sortedClusters();
+        if ($clusters === [] || $this->viewState->detailClusterId === null) {
             return;
         }
-        $ids = array_map(fn($c) => $c->id, $this->state->clusters);
+        $ids = array_map(fn(Cluster $c) => $c->id, $clusters);
         $idx = array_search($this->viewState->detailClusterId, $ids, true);
         if ($idx === false) {
             $this->viewState->detailClusterId = $ids[0];
@@ -399,9 +401,26 @@ final class PhpdupModel implements Model, ProgressListener
 
     private function openDetail(): void
     {
-        if ($this->state->clusters !== []) {
-            $this->viewState->detailClusterId = $this->state->clusters[0]->id;
+        $sorted = $this->sortedClusters();
+        if ($sorted !== []) {
+            $this->viewState->detailClusterId = $sorted[0]->id;
         }
+    }
+
+    /**
+     * The analysis clusters in the view's sort order — the display lens
+     * that makes the advertised `t`/`T` keys real: Enter opens the
+     * frontmost cluster and ←/→ walk the list in this order. Before this
+     * wiring the sort state only ever moved the tip label while the
+     * navigation stayed on raw pipeline order — the dead affordance
+     * php-dup-finder-once-071 names. A pure read through ViewState's
+     * sort door; the analysis state itself is never reordered.
+     *
+     * @return list<Cluster>
+     */
+    private function sortedClusters(): array
+    {
+        return $this->viewState->clusterSort()->apply($this->state->clusters);
     }
 
     /**

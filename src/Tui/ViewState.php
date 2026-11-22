@@ -110,6 +110,14 @@ final class ViewState
             : ClusterSort::DIRECTION_DESC;
     }
 
+    /**
+     * The sort specification for the current view state — the single door
+     * where TUI sort state meets cluster order. PhpdupModel's detail
+     * navigation ({@see PhpdupModel::sortedClusters()}) is its production
+     * consumer: the `t`/`T` keys re-shape the order Enter/←/→ walk, which
+     * is what makes the advertised sort affordance real instead of dead
+     * (php-dup-finder-once-071).
+     */
     public function clusterSort(): ClusterSort
     {
         return new ClusterSort($this->sortMode, $this->sortDirection);
