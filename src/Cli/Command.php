@@ -23,6 +23,7 @@ use Phpdup\Parsing\AstCache;
 use Phpdup\Reporting\BaselineStore;
 use Phpdup\Scanning\FileScanner;
 use Symfony\Component\Console\Command\Command as SymfonyCommand;
+use Symfony\Component\Console\Exception\RuntimeException as ConsoleRuntimeException;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
@@ -76,6 +77,15 @@ final class Command extends SymfonyCommand
      * that constant is private and ConfigLoader is not this lane's file).
      */
     private const TUNER_CONFIG_READ_CAP = 1_048_576;
+
+    /**
+     * Symfony's binding failure for "a value-taking option was named but no
+     * value was read" — the one argv-tokenization error phpdup owns (see
+     * {@see self::run()}). The wording is byte-stable across the supported
+     * symfony/console range (^6.4||^7.0); the capture group is the flag as
+     * the user typed it, long (`--limit`) or short (`-j`) form.
+     */
+    private const MISSING_VALUE_PATTERN = '/^The "(?<flag>-+[^"]+)" option requires a value\.$/';
 
     #[\Override]
     protected function configure(): void
@@ -211,6 +221,69 @@ Options grouped by category:
 
 Run <info>phpdup --help</info> for full descriptions of each option.
 HELP;
+    }
+
+    /**
+     * Bind argv BEFORE the parent's run(), so the one tokenizer error phpdup
+     * owns becomes a phpdup-shaped admission refusal instead of a Symfony
+     * usage dump.
+     *
+     * once-S20 (php-dup-finder-once-023, closing once-S49's banked follow-on):
+     * the exit-code contract says a rejected option prints one clean
+     * `phpdup:` line and exits 2 — the fence shell-S24 built lives in
+     * execute(), which the tokenizer can beat. `--limit -1` never reaches
+     * that fence: a token starting with "-" is read as the NEXT option, so
+     * `--limit` looks value-less, binding throws inside Command::run(), and
+     * the run dies in Symfony's boxed usage text at exit 1 — while the very
+     * same request written `--limit=-1` passes through the boundary and gets
+     * the friendly `limit must be >= 0` exit 2. One intent, two doors.
+     *
+     * This leg translates exactly the missing-value class and nothing else.
+     * Unknown options (`--nope` → "does not exist") stay on Symfony's exit 1:
+     * docs/CLI.md's exit-2 row deliberately does not cover them and
+     * tests/Integration/CliSmokeTest pins that posture until the docs flip.
+     * Re-raising every other binding error untouched keeps this door from
+     * silently rerouting a class the contract does not promise at 2.
+     *
+     * The pre-bind is idempotent (Input::bind resets and re-parses from the
+     * retained argv tokens), so parent::run() re-binds the same definition
+     * and proceeds unchanged; analyze never sets ignoreValidationErrors(),
+     * which would otherwise skip Symfony's own validation pass.
+     */
+    #[\Override]
+    public function run(InputInterface $input, OutputInterface $output): int
+    {
+        $this->mergeApplicationDefinition();
+
+        try {
+            $input->bind($this->getDefinition());
+        } catch (ConsoleRuntimeException $e) {
+            $flag = $this->missingValueFlag($e->getMessage());
+            if ($flag === null) {
+                throw $e; // not the missing-value class — Symfony's door stands
+            }
+
+            $output->writeln(sprintf(
+                '<error>phpdup: The "%s" option requires a value. A value that begins with "-" is only admitted attached to the flag, e.g. %s=<value></error>',
+                $flag,
+                $flag,
+            ));
+
+            return 2;
+        }
+
+        return parent::run($input, $output);
+    }
+
+    /**
+     * The flag behind a "requires a value" binding failure, or null when the
+     * message is any other console error. Narrow on purpose — see run().
+     */
+    private function missingValueFlag(string $message): ?string
+    {
+        return preg_match(self::MISSING_VALUE_PATTERN, $message, $matches) === 1
+            ? $matches['flag']
+            : null;
     }
 
     #[\Override]

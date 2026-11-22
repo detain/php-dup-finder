@@ -6,8 +6,11 @@ namespace Phpdup\Tests\Unit\Cli;
 use Phpdup\Cli\Command;
 use Phpdup\Cli\Config;
 use Phpdup\Cli\ConfigLoader;
+use Phpdup\Reporting\Ranker;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Console\Application;
+use Symfony\Component\Console\Input\ArgvInput;
+use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Tester\CommandTester;
 
 /**
@@ -39,6 +42,14 @@ use Symfony\Component\Console\Tester\CommandTester;
  * detail cards (it is NOT the family's show-all sentinel), `1` prints
  * exactly one card while file sinks stay unlimited, and a large `N`
  * prints every card (the documented show-all recipe).
+ *
+ * once-S20 (php-dup-finder-once-023) closes the exit-code CONTRACT over the
+ * whole runtime family: all six acceptance probes answer with one clean
+ * `phpdup:` line and exit 2 without ever starting the pipeline, and a
+ * dash-leading value written with a space (`--limit -1`) now rides that same
+ * door instead of dying in Symfony's tokenizer at exit 1 with a boxed usage
+ * dump. Unknown options stay at exit 1 on purpose (docs-gated posture; see
+ * the scope pin beside the door legs).
  */
 final class NumericFlagCoercionTest extends TestCase
 {
@@ -401,6 +412,193 @@ final class NumericFlagCoercionTest extends TestCase
 
         $this->assertStringContainsString('showing top 3', $display);
         $this->assertSame(3, substr_count($display, 'Cluster #'));
+    }
+
+    // ── once-S20 (php-dup-finder-once-023): exit-2 admission closure ──────
+    //
+    // The finding's headline shapes — an invalid --stage/--pager/--profile/
+    // --theme printing an error and then running the world at exit 0, and an
+    // out-of-domain --min-safety detonating a raw RuntimeException inside the
+    // Ranker after a full run — were fenced by shell-S24/shell-S25. What this
+    // step owns is the CLOSURE of the contract, pinned end to end:
+    //   (a) all six acceptance probes land on ONE door — a single `phpdup:`
+    //       line, exit 2, and no report anywhere (the error used to scroll
+    //       past under a full listing);
+    //   (b) the shape once-S49's bank row left open: `--limit -1` written
+    //       with a space beat the fence inside Symfony's argv tokenizer
+    //       (a dash-leading token is read as the NEXT option), so the run
+    //       died in Command::run()'s input binding with a boxed usage dump
+    //       at exit 1 while `--limit=-1` got the promised friendly exit 2.
+    //       Same intent, two doors. Command::run() now translates exactly
+    //       the missing-value class onto the phpdup door; the
+    //       unknown-option class stays Symfony's exit 1, because
+    //       tests/Integration/CliSmokeTest pins that posture until
+    //       docs/CLI.md's exit-code table moves with it.
+
+    /**
+     * @return array<string, array{0: string, 1: string, 2: string}>
+     */
+    public static function onceS20AcceptanceProbes(): array
+    {
+        return [
+            'stage-bogus'   => ['--stage', 'bogus', '--stage must be one of'],
+            'pager-7'       => ['--pager', '7', '--pager must be one of'],
+            'profile-nope'  => ['--profile', 'nope', '--profile must be one of'],
+            'theme-nope'    => ['--theme', 'nope', '--theme must be one of'],
+            'min-safety-9'  => ['--min-safety', '9', 'min_safety must be in [0, 1]'],
+            'limit-abc'     => ['--limit', 'abc', 'limit must be an integer'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('onceS20AcceptanceProbes')]
+    public function testEveryRuntimeAdmissionProbeIsOneCleanErrorAndNoReport(string $flag, string $junk, string $messageFragment): void
+    {
+        $sink = $this->corpusDir() . '/s20-' . substr(md5($flag), 0, 8) . '.json';
+        @unlink($sink);
+
+        $tester = $this->commandTester();
+        $exit = $tester->execute(
+            ['paths' => [$this->corpusDir()], $flag => $junk, '--json' => $sink],
+            ['capture_stderr_separately' => true],
+        );
+
+        $this->assertSame(2, $exit, "$flag=$junk must exit 2");
+        $combined = $tester->getErrorOutput() . $tester->getDisplay();
+        $this->assertStringContainsString('phpdup: ' . $messageFragment, $combined);
+        $this->assertSame(1, substr_count(trim($combined), "\n") + 1,
+            'the refusal is the run\'s only word, not one line under a report: ' . var_export($combined, true));
+        $this->assertStringNotContainsString('Cluster #', $combined);
+        $this->assertStringNotContainsString('showing top', $combined);
+        $this->assertStringNotContainsString('Uncaught', $combined);
+        $this->assertStringNotContainsString('RuntimeException', $combined);
+        $this->assertFileDoesNotExist($sink, 'a refused invocation must never write a report');
+    }
+
+    /**
+     * Value-taking runtime flags. Every one of them reaches the coercion
+     * boundary with the equals-form (see the cliNumericFlags provider and
+     * once-S49's limit-negative arm); written with a space and a negative
+     * value they used to escape it into Symfony's exit 1.
+     *
+     * @return array<string, array{0: string}>
+     */
+    public static function dashLeadingValueFlags(): array
+    {
+        return [
+            'limit'      => ['--limit'],
+            'min-safety' => ['--min-safety'],
+            'max-memory' => ['--max-memory'],
+            'stage'      => ['--stage'],
+            'pager'      => ['--pager'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('dashLeadingValueFlags')]
+    public function testDashLeadingValueWithoutEqualsExitsTwoWithoutUsageDump(string $flag): void
+    {
+        $sink = $this->corpusDir() . '/s20-binding.json';
+        @unlink($sink);
+
+        [$exit, $output] = $this->runArgv([$flag, '-1', '--json', $sink, '--plain']);
+
+        $this->assertSame(2, $exit, "$flag -1 must exit 2 (was Symfony's boxed usage dump at 1)");
+        $this->assertStringContainsString('phpdup: The "' . $flag . '" option requires a value', $output);
+        // The teachable half of the door: the equals-form is the remedy.
+        $this->assertStringContainsString($flag . '=<value>', $output);
+        // Symfony's own rendering must be gone: no box, no synopsis dump,
+        // no report.
+        $this->assertStringNotContainsString('Usage:', $output);
+        $this->assertStringNotContainsString('analyze [-c', $output);
+        $this->assertStringNotContainsString('Cluster #', $output);
+        $this->assertStringNotContainsString('Uncaught', $output);
+        $this->assertSame(1, substr_count(trim($output), "\n") + 1,
+            'one clean error line, the run\'s last word: ' . var_export($output, true));
+        $this->assertFileDoesNotExist($sink, 'the pipeline never starts on a refused admission');
+    }
+
+    public function testValuelessRuntimeFlagAtEndOfArgvAlsoExitsTwo(): void
+    {
+        // The non-dash sibling of the same tokenizer class: a value-taking
+        // option with nothing after it at all.
+        foreach (['--limit', '--stage'] as $flag) {
+            [$exit, $output] = $this->runArgv([$flag]);
+
+            $this->assertSame(2, $exit, "$flag with no value must exit 2");
+            $this->assertStringContainsString('phpdup: The "' . $flag . '" option requires a value', $output);
+            $this->assertStringNotContainsString('Usage:', $output);
+            $this->assertSame(1, substr_count(trim($output), "\n") + 1, var_export($output, true));
+        }
+    }
+
+    public function testAttachedNegativeValueStillRidesTheCoercionBoundary(): void
+    {
+        // Ordering pin: the new door sits BEHIND shell-S24's fence, never in
+        // front of it — the equals-form keeps producing the key-named
+        // boundary message, not the tokenizer's.
+        [$exit, $output] = $this->runArgv(['--limit=-1']);
+
+        $this->assertSame(2, $exit);
+        $this->assertStringContainsString('phpdup: limit must be >= 0', $output);
+        $this->assertStringNotContainsString('requires a value', $output);
+
+        // And the trim doctrine is untouched by the door: a padded negative
+        // is a real value (rejected for its domain, not for its shape).
+        [$exit, $output] = $this->runArgv(['--limit', ' -1 ']);
+        $this->assertSame(2, $exit);
+        $this->assertStringContainsString('phpdup: limit must be >= 0', $output);
+    }
+
+    public function testUnknownOptionStillFollowsSymfonysExitOneDoor(): void
+    {
+        // Scope pin for the new door. Unknown options are deliberately NOT
+        // rerouted: docs/CLI.md's exit-2 row does not cover them and
+        // tests/Integration/CliSmokeTest::testUnknownOptionIsUsageErrorExit1
+        // pins exit 1 until the docs flip in the same change. If this leg
+        // ever fails together with that one, the flip was made twice — once
+        // silently.
+        [$exit, $output] = $this->runArgv(['--definitely-not-a-flag']);
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('does not exist', $output);
+        $this->assertStringNotContainsString('phpdup: The', $output);
+    }
+
+    public function testRankerReceivesOnlyTheAdmittedMinSafetyDomain(): void
+    {
+        // once-S20's second acceptance half: min-safety is validated before
+        // USE, so nothing inside the documented [0, 1] domain can make the
+        // ranker throw (the finding's leak was a RuntimeException raised
+        // here after a completed run). The out-of-domain arm never reaches
+        // this constructor at all — pinned by the providers above.
+        foreach ([0.0, 0.5, 1.0] as $minSafety) {
+            $ranker = new Ranker(minSafety: $minSafety);
+            $this->assertSame([], $ranker->rank([]), "minSafety={$minSafety} is admitted, not a crash");
+        }
+    }
+
+    /**
+     * Drive the real argv tokenizer in-process (Application::run with
+     * auto-exit off) — CommandTester hands options through ArrayInput and
+     * can never reproduce a tokenization failure.
+     *
+     * @param list<string> $tail
+     * @return array{0: int, 1: string}
+     */
+    private function runArgv(array $tail): array
+    {
+        $app = new Application('phpdup', '0.1.0');
+        $app->setAutoExit(false);
+        $app->add(new Command());
+
+        $output = new BufferedOutput();
+        // ArgvInput's constructor strips argv[0] as the script name, so the
+        // token list has to carry one — this is the shape bin/phpdup hands it.
+        $exit = $app->run(new ArgvInput(array_merge(
+            ['phpdup', 'analyze', $this->corpusDir()],
+            $tail,
+        )), $output);
+
+        return [$exit, $output->fetch()];
     }
 
     private function commandTester(): CommandTester

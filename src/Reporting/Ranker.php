@@ -41,6 +41,18 @@ final class Ranker
         $this->safetyScorer = $safetyScorer ?? new SafetyScorer($scoreMode);
         // No minSafety range check here: range admission is a CLI/config
         // boundary contract (output-056), not a per-call-site crash leg.
+        //
+        // once-S20 (php-dup-finder-once-023) keeps it that way on purpose.
+        // The ranker-side half of that finding was a raw RuntimeException
+        // (usage dump, exit 1 ≠ the documented 2) fired from HERE after a
+        // full analysis for `--min-safety 5`. That value can no longer be
+        // constructed: ConfigLoader::coerceRuntimeFloat('min_safety', …,
+        // 0.0, 1.0) refuses it at option admission (shell-S24) and the
+        // tokenizer beats no more (Command::run(), same step), so every
+        // number reaching this constructor already carries the [0, 1]
+        // domain — validated before use, never at use. Re-adding a throw
+        // here would resurrect the leak the finding named. Pinned by
+        // tests/Unit/Cli/NumericFlagCoercionTest.
     }
 
     /**
