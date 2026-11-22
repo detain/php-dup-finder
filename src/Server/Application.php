@@ -52,8 +52,10 @@ use Symfony\Component\Console\Output\NullOutput;
  * directory, transitioning the job to completed the moment its result
  * file is present. The {@see self::ASYNC_RESULT_DEADLINE_SECONDS}
  * absence-deadline remains the backstop for channels that stay open yet
- * silent (a wedged worker). Without a worker socket, analysis runs
- * synchronously (sync mode for dev/demo).
+ * silent (a wedged worker). Without a worker socket — a shipped phar
+ * never has one, and a checkout's startup spawn can fail — analysis
+ * runs synchronously as the no-worker fallback (the answer is the same
+ * contract either way), not a demo-mode special case.
  *
  * Queue-capacity admissions (once-002): at {@see JobQueue::MAX_JOBS}
  * the queue evicts the oldest row (terminal first, then pending, then
@@ -420,7 +422,9 @@ final class Application
      *
      * When a worker socket is configured, the job is dispatched to the
      * background worker and this returns immediately (202 Accepted).
-     * When no worker is configured, runs synchronously (sync/demo mode).
+     * When no worker is configured — a shipped phar never has one, and a
+     * checkout's startup spawn can fail — the analysis runs synchronously
+     * before the 202 answer: the no-worker fallback, not a demo mode.
      *
      * @param array<string,mixed> $payload
      * @return array{status:int, headers:array<string,string>, body:string}

@@ -39,13 +39,47 @@ body is read, so unknown routes never consume request bytes. The three
 `/api/*` legs are the async polling surface: `GET /api/jobs`
 reconciles and lists every retained job, `GET /api/jobs/{id}` returns
 one job's status row, and `GET /api/jobs/{id}/result` serves the
-worker's full result file for a completed job.
+worker's full result file for a completed job. The `/score-pair` and
+`/score-batch` names are **not** served routes — they belong to the
+outbound ML sidecar contract described in the section "ML pair-scoring
+sidecar contract" at the bottom of this page.
 
-The `/jobs` endpoint runs synchronously in the demo build but its
-contract is async — `POST /jobs` returns 202 with an id, then the
-client polls `GET /jobs/{id}` until `status === 'completed'`. Wiring
-it to a real worker pool is straightforward (delegate to
-`WorkerPool::run()` and persist state in `JobQueue`).
+`POST /jobs` is asynchronous by default: a normal checkout spawns a
+background `phpdup-worker` at startup (the serve command logs
+`worker spawned (pid …)` when it has) and `POST /jobs` answers `202`
+with the `job_id` the moment the job is admitted; clients then poll
+`GET /jobs/{id}` — or the `/api/jobs/{id}` leg — until `status`
+reaches `completed`. The full ack/timeout/reconcile semantics live in
+[Async job posture](#async-job-posture). When no worker is available
+— phar builds never have one, and a checkout's startup spawn can
+fail — the same routes answer synchronously instead; see
+[Serving from the phar build](#serving-from-the-phar-build).
+
+**Request body fields — `POST /analyze` and `POST /jobs`** (one
+payload shape serves both; re-probed live against `Application::handle()`):
+
+- `paths` — required: a non-empty JSON list of strings naming files or
+  directories inside the server's `--serve-root`. Paths resolve
+  against the server process CWD and are confined to the root;
+  absolute paths, NUL bytes and `..` traversal answer `400` before any
+  analysis (or job) starts.
+- `exact_only` — optional boolean (once-S03). Absent or `false` runs
+  the full analysis; `true` is the HTTP twin of the CLI `--exact-only`
+  posture (only structurally identical clones cluster). Any
+  non-boolean value — including explicit `null` — answers
+  `400 {"error":"exact_only must be a boolean"}`; on `POST /jobs` the
+  refusal happens *before* minting, so no queue row is created. In
+  async mode the worker re-checks the identical verdict
+  (`Application::exactOnlyViolation()`) on the RUN frame and fails it
+  there (defence in depth).
+- `ml_pair_url` — must not be set on `POST /jobs`: it is an
+  `Application::REFUSED_PAYLOAD_KEYS` field, and payloads carrying it
+  are refused with `400 {"error":"job payload must not set: ml_pair_url"}`
+  before the job is minted.
+
+Every `POST` body is capped at `Application::MAX_BODY_BYTES` (16 MiB),
+enforced at the HTTP layer: a declared `Content-Length` over the cap
+answers `413 Payload Too Large` before any body bytes are read.
 
 ## Example
 
@@ -314,12 +348,16 @@ limiting, and allow-list of source IPs where possible.
 
 ## Playground
 
-The intended deployment for the public phpdup playground is a small
-Cloudflare-Pages / Vercel front-end that posts user-pasted PHP to
-this server's `/jobs` endpoint and renders the resulting JSON via
-the browser-side reporter. The `Application` class is transport-
-agnostic, so the same code can run under FrankenPHP for a single-
-binary deployable artifact.
+The playground front-end is **not built**, and today's back-end cannot
+serve its paste story: `phpdup serve` accepts only on-disk `paths`
+under a fixed `--serve-root` — there is no paste/upload endpoint, and
+the planned input route (finding once-088) is an open design decision,
+not shipped behaviour. See `docs/PLAYGROUND.md` for the full honest
+status. What the contract *does* support today: a front-end pointing
+users at files inside a hosted serve-root tree can submit `POST /jobs`
+and render the polled JSON in the browser — and because
+`Application` is transport-agnostic, the same code runs under
+FrankenPHP for a single-binary deployable artifact.
 
 ## ML pair-scoring sidecar contract (outbound, `--ml-pair-url`)
 
