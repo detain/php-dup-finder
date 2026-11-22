@@ -5,6 +5,11 @@ namespace Phpdup\Tests\Unit\Cli;
 
 use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\AutoTuner;
+use Phpdup\Cli\Command;
+use Symfony\Component\Console\Application;
+use Symfony\Component\Console\Input\ArrayInput;
+use Symfony\Component\Console\Output\BufferedOutput;
+use Symfony\Component\Console\Tester\CommandTester;
 
 final class AutoTunerTest extends TestCase
 {
@@ -27,11 +32,19 @@ final class AutoTunerTest extends TestCase
 
     public function testMediumCorpusGetsTighterMaxDf(): void
     {
+        // No-context contract (once-S26): a direct caller that hands the
+        // tuner no effective values gets the RAW tier table — every tier's
+        // full intent, byte-identical rationale to the pre-once-S26 text.
+        // Gap-filtering only starts once the CLI passes context below.
         $sug = (new AutoTuner())->pick(5_000, 50_000_000);
         $this->assertSame('medium', $sug->profile);
         $this->assertSame(8, $sug->overrides['min_block_size']);
         $this->assertSame(0.005, $sug->overrides['max_df']);
         $this->assertArrayNotHasKey('exact_only', $sug->overrides);
+        $this->assertSame(
+            'medium corpus (5000 files): tightening max_df=0.005 (n-gram uniqueness scales with corpus size) and min_block_size=8.',
+            $sug->rationale,
+        );
     }
 
     public function testLargeCorpusForcesExactOnly(): void
@@ -82,6 +95,246 @@ final class AutoTunerTest extends TestCase
         }
     }
 
+    public function testRationaleStringIsPopulated(): void
+    {
+        $sug = (new AutoTuner())->pick(100, 1_000);
+        $this->assertNotSame('', $sug->rationale);
+        $this->assertStringContainsString('tiny', $sug->rationale);
+    }
+
+    // ── once-S26 (php-dup-finder-once-030): read the effective config,
+    //    never override user values, narrate no no-ops ────────────────────
+
+    public function testMediumSilencesIntrinsicEightToEightNoOp(): void
+    {
+        // PD-CFG-12: the medium tier suggested min_block_size=8 against the
+        // stock default of 8 — an "8→8" claim that was never a change. With
+        // the effective values handed in, the no-op entry drops from the
+        // overrides AND the rationale; only the real tightening survives.
+        $sug = (new AutoTuner())->pick(
+            5_000,
+            0,
+            ['min_block_size' => 8, 'min_cluster_impact' => 20, 'max_df' => 0.01],
+        );
+        $this->assertSame('medium', $sug->profile);
+        $this->assertSame(['max_df' => 0.005], $sug->overrides, 'the 8→8 entry is gone from the suggestion');
+        $this->assertStringNotContainsString('min_block_size', $sug->rationale, 'and from the narration: ' . $sug->rationale);
+        $this->assertStringContainsString('tightening max_df=0.005 (n-gram uniqueness scales with corpus size).', $sug->rationale);
+    }
+
+    public function testExplicitMinBlockSizeIsNeverOverwritten(): void
+    {
+        // Acceptance "explicit min_block_size stays": a locked knob drops
+        // from overrides entirely, appears as a truthful kept-clause, and
+        // the tier never claims its own value for it.
+        $sug = (new AutoTuner())->pick(
+            50,
+            0,
+            ['min_block_size' => 12, 'min_cluster_impact' => 20, 'max_df' => 0.01],
+            ['min_block_size'],
+        );
+        $this->assertSame('tiny', $sug->profile);
+        $this->assertArrayNotHasKey('min_block_size', $sug->overrides, 'the tuner must not touch an explicitly-set knob');
+        $this->assertSame(['min_cluster_impact' => 0, 'max_df' => 0.5], $sug->overrides);
+        $this->assertStringContainsString('relaxing min_impact=0, max_df=0.5 so small/fixture trees report findings instead of empty output', $sug->rationale);
+        $this->assertStringContainsString('min_block_size=12 kept (explicitly set)', $sug->rationale);
+        $this->assertStringNotContainsString('min_block_size=4', $sug->rationale, 'the narration must not claim the value it was refused: ' . $sug->rationale);
+    }
+
+    public function testRawCliStringKnobCountsAsExplicit(): void
+    {
+        // parseCliOverrides stores uncoerced strings; the locked side must
+        // treat ' 4 ' as explicit and show it trimmed, never as a float.
+        $sug = (new AutoTuner())->pick(
+            50,
+            0,
+            ['min_block_size' => ' 4 ', 'min_cluster_impact' => 20, 'max_df' => 0.01],
+            ['min_block_size'],
+        );
+        $this->assertArrayNotHasKey('min_block_size', $sug->overrides);
+        $this->assertStringContainsString('min_block_size=4 kept (explicitly set)', $sug->rationale);
+    }
+
+    public function testLockedLargeTierKeepsOnlyExactOnly(): void
+    {
+        // exact_only is not a config-file knob (validate() has no such key)
+        // and rides the disclosed "forced on for very large trees" stance,
+        // so it is the only survivor when both numeric tiers are locked.
+        $sug = (new AutoTuner())->pick(
+            50_000,
+            0,
+            ['min_block_size' => 10, 'min_cluster_impact' => 20, 'max_df' => 0.004],
+            ['min_block_size', 'max_df'],
+        );
+        $this->assertSame('large', $sug->profile);
+        $this->assertSame(['exact_only' => true], $sug->overrides);
+        $this->assertStringContainsString('exact-only to keep memory in check', $sug->rationale);
+        $this->assertStringContainsString('min_block_size=10 kept (explicitly set)', $sug->rationale);
+        $this->assertStringContainsString('max_df=0.004 kept (explicitly set)', $sug->rationale);
+    }
+
+    public function testAllIntentLockedNarratesIdleNotTightening(): void
+    {
+        $sug = (new AutoTuner())->pick(
+            5_000,
+            0,
+            ['min_block_size' => 5, 'max_df' => 0.005, 'min_cluster_impact' => 20],
+            ['min_block_size', 'max_df'],
+        );
+        $this->assertSame([], $sug->overrides);
+        $this->assertStringContainsString('nothing to tighten', $sug->rationale);
+        $this->assertStringNotContainsString('tightening', $sug->rationale);
+        $this->assertStringContainsString('min_block_size=5 kept (explicitly set), max_df=0.005 kept (explicitly set)', $sug->rationale);
+    }
+
+    public function testTuneForwardsEffectiveContextToTheBand(): void
+    {
+        // tune() is the counting seam; prove the context rides through it,
+        // not just pick().
+        $dir = $this->scratchTunerTree(5, 0);
+        try {
+            $sug = (new AutoTuner())->tune(
+                [$dir],
+                [],
+                ['min_block_size' => 4, 'min_cluster_impact' => 20, 'max_df' => 0.01],
+                ['min_block_size'],
+            );
+            $this->assertSame('tiny', $sug->profile);
+            $this->assertSame(['min_cluster_impact' => 0, 'max_df' => 0.5], $sug->overrides);
+            $this->assertStringContainsString('min_block_size=4 kept (explicitly set)', $sug->rationale);
+        } finally {
+            self::deleteTree($dir);
+        }
+    }
+
+    public function testAutoTuneSeesConfigExcludesAndKeepsExplicitKnob(): void
+    {
+        // Command-level pin for the once-S26 legs (same discipline as
+        // shell-S25's profile pin): a 197+4-file straddle around the tiny
+        // band, where the 4-file skipped/ tree is excluded ONLY by the
+        // root --config file. WITH the config the probe must read
+        // "tiny corpus (197 files)"; the control run (no config) must read
+        // "small corpus (201 files)" — non-vacuity: the excludes really
+        // flip the band (PD-CFG-11's blind census is the mutant shape).
+        // The config's explicit min_block_size=5 must never be rewritten
+        // by the tiny tier's 4 (COPY-05's inversion was the old posture).
+        $dir  = $this->scratchDir('s26-cfg');
+        $corpus = $this->mintConfigStraddleTree($dir . '/corpus', 197, 4);
+        $cfg    = $dir . '/phpdup.json';
+        file_put_contents($cfg, json_encode([
+            'exclude'        => ['skipped/**', '**/skipped/**'],
+            'min_block_size' => 5,
+        ], JSON_THROW_ON_ERROR));
+        try {
+            [$exit, $display] = $this->analyzeWithAutoTune($corpus, $cfg, $dir . '/tuned.json');
+            $this->assertSame(0, $exit, 'the config-straddle run is a normal run: ' . $display);
+            $this->assertStringContainsString('auto-tune: tiny corpus (197 files)', $display,
+                'RED if resolveAutoTune drops the config exclude layer — the band must never count the skipped tree');
+            $this->assertStringContainsString('min_block_size=5 kept (explicitly set)', $display,
+                'the config-explicit knob is protected AND honestly narrated');
+            $this->assertStringNotContainsString('min_block_size=4', $display,
+                'the refused tiny-tier value must not appear in the user line');
+
+            // Control arm: same tree, no config — 201 counted, band flips.
+            [, $control] = $this->analyzeWithAutoTune($corpus, null, $dir . '/control.json');
+            $this->assertStringContainsString('auto-tune: small corpus (201 files)', $control,
+                'the straddle exists: without the config excludes skipped/ counts and the band flips');
+        } finally {
+            self::deleteTree($dir);
+        }
+    }
+
+    public function testResolveAutoTuneMergeFillsGapsOnly(): void
+    {
+        // The seam contract, asserted directly: CLI/profile keys live in
+        // $overrides, config-file keys are read from disk — the merged
+        // result may only ADD what neither source named.
+        $dir    = $this->scratchDir('s26-merge');
+        $corpus = $this->mintConfigStraddleTree($dir . '/corpus', 197, 4);
+        $cfg    = $dir . '/phpdup.json';
+        file_put_contents($cfg, json_encode([
+            'exclude' => ['skipped/**', '**/skipped/**'],
+            'min_block_size' => 5,
+        ], JSON_THROW_ON_ERROR));
+        try {
+            $cmd    = new Command();
+            $input  = new ArrayInput(
+                ['paths' => [$corpus], '--config' => $cfg, '--auto-tune' => true],
+                $cmd->getDefinition(),
+            );
+            $resolve = new \ReflectionMethod($cmd, 'resolveAutoTune');
+
+            $overrides = ['min_cluster_impact' => '25']; // as parseCliOverrides leaves a raw CLI string
+            $exact     = $resolve->invokeArgs($cmd, [$input, new BufferedOutput(), [$corpus], &$overrides, null]);
+
+            $this->assertFalse($exact, '197 files after config excludes is a tiny band — exact_only is only a large-tier lever');
+            $this->assertSame(
+                ['min_cluster_impact' => '25', 'max_df' => 0.5],
+                $overrides,
+                'the tiny tier filled max_df only: min_block_size is config-explicit, min_cluster_impact CLI-explicit',
+            );
+        } finally {
+            self::deleteTree($dir);
+        }
+    }
+
+    private function analyzeTester(): CommandTester
+    {
+        $app = new Application('phpdup', '0.1.0');
+        $app->add(new Command());
+
+        return new CommandTester($app->find('analyze'));
+    }
+
+    private function scratchDir(string $tag): string
+    {
+        $dir = sys_get_temp_dir() . '/phpdup-' . $tag . '-' . getmypid() . '-' . uniqid('', true);
+        mkdir($dir, 0o777, true);
+
+        return $dir;
+    }
+
+    /**
+     * @return array{0:int,1:string} [exit, display]
+     */
+    private function analyzeWithAutoTune(string $corpus, ?string $configPath, string $jsonPath): array
+    {
+        $tester = $this->analyzeTester();
+        $exit = $tester->execute(array_filter([
+            'paths'       => [$corpus],
+            '--config'    => $configPath,
+            '--auto-tune' => true,
+            '--json'      => $jsonPath,
+            '--no-cache'  => true,
+        ], static fn($v) => $v !== null));
+
+        return [$exit, $tester->getDisplay()];
+    }
+
+    /**
+     * Tiny-band straddle: $rootFiles plain files at the corpus root (counted
+     * by every posture) plus a skipped/-style tree that ONLY the root
+     * --config exclude removes — stock defaults and every bundled profile
+     * keep it.
+     */
+    private function mintConfigStraddleTree(string $dir, int $rootFiles, int $skippedFiles): string
+    {
+        if (!is_dir($dir)) {
+            mkdir($dir, 0o777, true);
+        }
+        for ($i = 0; $i < $rootFiles; $i++) {
+            file_put_contents($dir . "/s26_util_$i.php", "<?php\nfunction s26_util_$i(int \$n): int { return \$n + $i; }\n");
+        }
+        if ($skippedFiles > 0) {
+            mkdir($dir . '/skipped', 0o777, true);
+            for ($i = 0; $i < $skippedFiles; $i++) {
+                file_put_contents($dir . "/skipped/s26_skip_$i.php", "<?php\nfunction s26_skip_$i(int \$n): int { return \$n + $i; }\n");
+            }
+        }
+
+        return $dir;
+    }
+
     private function scratchTunerTree(int $appFiles, int $vendorFiles): string
     {
         $dir = sys_get_temp_dir() . '/phpdup-tuner-' . getmypid() . '-' . uniqid('', true);
@@ -112,12 +365,5 @@ final class AutoTunerTest extends TestCase
             $item->isDir() ? @rmdir($item->getPathname()) : @unlink($item->getPathname());
         }
         @rmdir($dir);
-    }
-
-    public function testRationaleStringIsPopulated(): void
-    {
-        $sug = (new AutoTuner())->pick(100, 1_000);
-        $this->assertNotSame('', $sug->rationale);
-        $this->assertStringContainsString('tiny', $sug->rationale);
     }
 }

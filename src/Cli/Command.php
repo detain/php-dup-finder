@@ -48,9 +48,13 @@ use Symfony\Component\Console\Output\OutputInterface;
  *  3. resolveAutoTune()      — probe the corpus and append auto-suggested
  *                             overrides; also returns whether --exact-only
  *                             was forced by the tuner. The probe's exclude
- *                             list carries the resolved profile's excludes
- *                             so the band is computed on the tree the run
- *                             will actually scan (shell-S25).
+ *                             list carries the resolved profile's AND the
+ *                             root config file's excludes (exclude_reset
+ *                             honored) so the band is computed on the tree
+ *                             the run will actually scan (shell-S25, then
+ *                             once-S26), and the merge never overwrites a
+ *                             knob the user explicitly set on the CLI, via
+ *                             --profile, or in the config file.
  *  4. ConfigLoader::load()   — applies the three-tier precedence chain
  *                             (overrides → config file → defaults) and
  *                             returns a frozen Config object.
@@ -65,6 +69,14 @@ use Symfony\Component\Console\Output\OutputInterface;
  */
 final class Command extends SymfonyCommand
 {
+    /**
+     * once-S26: bounded-read cap for the auto-tune probe's forgiving
+     * pre-read of the root --config file — deliberately the same figure as
+     * ConfigLoader::MAX_CONFIG_FILE_BYTES (kept as a local mirror because
+     * that constant is private and ConfigLoader is not this lane's file).
+     */
+    private const TUNER_CONFIG_READ_CAP = 1_048_576;
+
     #[\Override]
     protected function configure(): void
     {
@@ -90,7 +102,7 @@ final class Command extends SymfonyCommand
             ->addOption('min-impact', null, InputOption::VALUE_REQUIRED, 'Minimum cluster impact to report')
             ->addOption('exact-only', null, InputOption::VALUE_NONE, 'Skip near-duplicate detection (faster)')
             ->addOption('kinds', null, InputOption::VALUE_REQUIRED, 'Comma-separated block kinds to include (e.g. method,closure). Default: all of method|function|closure|arrow|if|for|foreach|while|do|try|switch|match. The item-1.3 kind script (top-level statement folds) is NOT in that default set — it must be named explicitly, and it currently cannot combine with --apply/--refactor-patch (script clusters are refused by the AST-addressing machinery, typed exit 1; text rendering via --patch/--diff stays allowed).')
-            ->addOption('auto-tune', null, InputOption::VALUE_NONE, 'Probe the corpus before analysis and pick min-block-size / max-df / min-impact based on size; --exact-only is forced on for very large trees. Picked profile is printed; explicit CLI overrides take precedence.')
+            ->addOption('auto-tune', null, InputOption::VALUE_NONE, 'Probe the corpus before analysis and pick min-block-size / max-df / min-impact based on size; --exact-only is forced on for very large trees. The probe counts the tree the run will actually scan (profile and --config excludes applied, exclude_reset honored). Suggestions fill gaps only: a knob explicitly set on the command line, by --profile, or in the --config file is never overwritten, and the printed rationale claims only what was applied.')
             ->addOption('profile', null, InputOption::VALUE_REQUIRED, 'Apply a project profile (laravel|symfony|drupal|wordpress|generic|db-aware-laravel|db-aware-doctrine|db-aware-cake|db-aware-thinkorm|db-aware-medoo|db-aware-propel|db-aware-redbean|db-aware-cycle|db-aware-phpactiverecord|auto) to seed framework-aware excludes + tuning. db-aware-* profiles ship symbol-equivalence packs for various ORMs. "auto" sniffs the scan path for known markers. Explicit CLI flags + --config win over profile values.')
             ->addOption('min-safety', null, InputOption::VALUE_REQUIRED, 'Drop clusters whose refactor-safety score (0..1) is below this threshold. 0 = report all (default).')
             ->addOption('score-mode', null, InputOption::VALUE_REQUIRED, 'Scoring stance for cross-repo clones: global|per-repo|typed (item 5.1, default global). global = legacy math, byte-identical to every stored baseline. per-repo = the >3-namespaces penalty in confidence/safety is evaluated on the namespace spread within the densest member repo, so a subsystem mirrored across packages is no longer double-penalized for its mirroring. typed = audit posture: cross-repo clusters skip that penalty and gain the inverse bonus (a cross-repo clone is the strongest dedup signal: one shared helper erases N repo-local copies). Only clusters with >=2 distinct member repo labels behave differently; everything else scores as before. Equivalently: config key score_mode.')
@@ -664,6 +676,22 @@ HELP;
      * overrides still merge later inside ConfigLoader; the profile is the
      * dominant pre-pipeline exclusion term and is now folded in.
      *
+     * once-S26 (php-dup-finder-once-030): the same honesty extends to the
+     * root --config file. The probe now mirrors ConfigLoader::load()'s path
+     * and exclude resolution (config "paths"/"exclude" applied,
+     * "exclude_reset" honored), and the tuner receives the merged EFFECTIVE
+     * knob values plus the explicitly-set (locked) keys: tuned suggestions
+     * only fill gaps — a knob set on the CLI, via --profile, or in the
+     * config file is never overwritten (COPY-05: tuned values used to enter
+     * the TOP override layer and outrank --config), and the printed
+     * rationale claims only what the merge actually applies (PD-CFG-11's
+     * blind census, PD-CFG-12's "8→8" no-op narration).
+     *
+     * The config file is re-read here under a bounded, FORGIVING pre-read:
+     * any failure answers an empty payload, so admission behavior is
+     * untouched — the authoritative ConfigLoader::load() below still
+     * surfaces the real error through the exit-2 door with its own message.
+     *
      * @param list<string> $paths
      * @param array<string, mixed> $overrides
      * @param list<string>|null $profileExclude excludes resolved from --profile (null = absent)
@@ -675,12 +703,63 @@ HELP;
             return false;
         }
 
-        $base = Config::defaults($paths);
-        $probeExclude = $profileExclude === null
-            ? $base->exclude
-            : array_merge($base->exclude, $profileExclude);
+        $configData = $this->readConfigForTuner($input->getOption('config'));
+
+        // Mirror of ConfigLoader::load()'s path resolution (keep in step
+        // with that formula): a config "paths" key replaces the CLI
+        // argument for the real scan, so the probe must count it too.
+        $tunePaths = $paths;
+        if (isset($configData['paths']) && is_array($configData['paths'])) {
+            $fromConfig = array_values(array_filter(
+                $configData['paths'],
+                static fn($p): bool => is_string($p) && $p !== '',
+            ));
+            if ($fromConfig !== []) {
+                $tunePaths = $fromConfig;
+            }
+        }
+
+        // Mirror of ConfigLoader::load()'s exclude stack (item-5.2 append
+        // semantics, exclude_reset opt-out): the scan will apply exactly
+        // this list, so the band census must see the config's own excludes,
+        // not just defaults + profile (once-S26; PD-CFG-11).
+        $base = Config::defaults($tunePaths);
+        $configLayer = isset($configData['exclude']) && is_array($configData['exclude'])
+            ? array_values(array_filter($configData['exclude'], static fn($e): bool => is_string($e) && $e !== ''))
+            : [];
+        $dictLayer = isset($overrides['exclude']) && is_array($overrides['exclude'])
+            ? array_values(array_filter($overrides['exclude'], static fn($e): bool => is_string($e) && $e !== ''))
+            : [];
+        $excludeReset = (bool)($configData['exclude_reset'] ?? false) || (bool)($overrides['exclude_reset'] ?? false);
+        $probeExclude = array_values(array_unique($excludeReset
+            ? array_merge($configLayer, $dictLayer)
+            : array_merge($base->exclude, $profileExclude ?? [], $configLayer, $dictLayer)));
+
+        // once-S26: a knob is the user's when ANY explicit source names it —
+        // CLI flag or profile (both already sit in $overrides) or the root
+        // config file. Otherwise the run's effective value is the stock
+        // default and the tuner may move it (and must say so only when it
+        // really moves something).
+        $locked    = [];
+        $effective = [];
+        foreach (['min_block_size', 'min_cluster_impact', 'max_df'] as $key) {
+            if (array_key_exists($key, $overrides)) {
+                $locked[]        = $key;
+                $effective[$key] = $overrides[$key];
+            } elseif (array_key_exists($key, $configData)) {
+                $locked[]        = $key;
+                $effective[$key] = $configData[$key];
+            } else {
+                $effective[$key] = match ($key) {
+                    'min_block_size'     => $base->minBlockSize,
+                    'min_cluster_impact' => $base->minClusterImpact,
+                    default              => $base->maxDocumentFrequency,
+                };
+            }
+        }
+
         $tuner = new AutoTuner();
-        $suggestion = $tuner->tune($paths, $probeExclude);
+        $suggestion = $tuner->tune($tunePaths, $probeExclude, $effective, $locked);
         $output->writeln(sprintf(
             '<info>phpdup</info> auto-tune: %s',
             $suggestion->rationale,
@@ -689,15 +768,53 @@ HELP;
         $autoTuneExactOnly = false;
         foreach ($suggestion->overrides as $k => $v) {
             if ($k === 'exact_only') {
+                // Disclosure stays "forced on for very large trees": --exact-only
+                // is a VALUE_NONE stance, not an override-dict knob, so the OR in
+                // parseRuntimeOptions can only make near-dup work stricter.
                 $autoTuneExactOnly = (bool)$v;
                 continue;
             }
+            // Belt over braces: the tuner already filtered $locked out of
+            // $suggestion; this keeps the never-overwrite contract true for
+            // any caller that hands tune() no context.
             if (!array_key_exists($k, $overrides)) {
                 $overrides[$k] = $v;
             }
         }
 
         return $autoTuneExactOnly;
+    }
+
+    /**
+     * Bounded, forgiving pre-read of the root --config payload for the
+     * auto-tune probe (once-S26). Mirrors ConfigLoader::decodeConfigFile()'s
+     * read discipline (size cap, decode depth) but answers [] on EVERY
+     * failure mode — this observer must not change admission behavior: the
+     * authoritative load() still reports the real reason with its own
+     * message through the exit-2 door.
+     *
+     * @return array<array-key,mixed>
+     */
+    private function readConfigForTuner(mixed $configFile): array
+    {
+        if (!is_string($configFile) || $configFile === '' || !is_file($configFile)) {
+            return [];
+        }
+        $handle = @fopen($configFile, 'rb');
+        if ($handle === false) {
+            return [];
+        }
+        $bytes = @stream_get_contents($handle, self::TUNER_CONFIG_READ_CAP + 1);
+        fclose($handle);
+        if ($bytes === false || strlen($bytes) > self::TUNER_CONFIG_READ_CAP) {
+            return [];
+        }
+        try {
+            $decoded = json_decode($bytes, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException) {
+            return [];
+        }
+        return is_array($decoded) ? $decoded : [];
     }
 
     /**
