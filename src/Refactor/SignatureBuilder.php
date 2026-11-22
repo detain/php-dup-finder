@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Phpdup\Refactor;
 
 use Phpdup\Clustering\Cluster;
+use Phpdup\Util\NodePath;
 use PhpParser\Node;
 
 /**
@@ -106,12 +107,12 @@ final class SignatureBuilder
 
         $holeKeys = [];
         foreach ($cluster->holePaths as $path) {
-            $holeKeys[implode('/', array_map('strval', $path))] = true;
+            $holeKeys[NodePath::keyOfList($path)] = true;
         }
 
         $verbs  = [];
         $nouns  = [];
-        $this->mineTokens($template, [], $holeKeys, $verbs, $nouns);
+        $this->mineTokens($template, NodePath::root(), $holeKeys, $verbs, $nouns);
 
         $verb  = $this->uniqueTop($verbs);
         $noun  = $this->uniqueTop($nouns);
@@ -124,14 +125,14 @@ final class SignatureBuilder
     }
 
     /**
-     * @param list<int|string>          $path
+     * @param NodePath                $path
      * @param array<string, true>       $holeKeys
      * @param array<string, int>        $verbs
      * @param array<string, int>        $nouns
      */
-    private function mineTokens(Node $node, array $path, array $holeKeys, array &$verbs, array &$nouns): void
+    private function mineTokens(Node $node, NodePath $path, array $holeKeys, array &$verbs, array &$nouns): void
     {
-        if (isset($holeKeys[implode('/', array_map('strval', $path))])) {
+        if (isset($holeKeys[$path->key()])) {
             return;
         }
 
@@ -139,25 +140,25 @@ final class SignatureBuilder
             ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\NullsafeMethodCall
                 || $node instanceof Node\Expr\StaticCall)
             && $node->name instanceof Node\Identifier
-            && !isset($holeKeys[implode('/', array_map('strval', [...$path, 'name']))])
+            && !isset($holeKeys[$path->child('name')->key()])
         ) {
             $this->bump($verbs, $node->name->name);
         } elseif (
             $node instanceof Node\Expr\FuncCall
             && $node->name instanceof Node\Name
-            && !isset($holeKeys[implode('/', array_map('strval', [...$path, 'name']))])
+            && !isset($holeKeys[$path->child('name')->key()])
         ) {
             $this->bump($verbs, $node->name->getLast());
         } elseif (
             $node instanceof Node\Expr\New_
             && $node->class instanceof Node\Name
-            && !isset($holeKeys[implode('/', array_map('strval', [...$path, 'class']))])
+            && !isset($holeKeys[$path->child('class')->key()])
         ) {
             $this->bump($nouns, $node->class->getLast());
         } elseif (
             $node instanceof Node\Expr\PropertyFetch
             && $node->name instanceof Node\Identifier
-            && !isset($holeKeys[implode('/', array_map('strval', [...$path, 'name']))])
+            && !isset($holeKeys[$path->child('name')->key()])
         ) {
             $this->bump($nouns, $node->name->name);
         }
@@ -165,13 +166,14 @@ final class SignatureBuilder
         foreach ($node->getSubNodeNames() as $sub) {
             $child = $node->$sub;
             if ($child instanceof Node) {
-                $this->mineTokens($child, [...$path, $sub], $holeKeys, $verbs, $nouns);
+                $this->mineTokens($child, $path->child($sub), $holeKeys, $verbs, $nouns);
                 continue;
             }
             if (is_array($child)) {
+                $subPath = $path->child($sub);
                 foreach ($child as $idx => $item) {
                     if ($item instanceof Node) {
-                        $this->mineTokens($item, [...$path, $sub, $idx], $holeKeys, $verbs, $nouns);
+                        $this->mineTokens($item, $subPath->child($idx), $holeKeys, $verbs, $nouns);
                     }
                 }
             }

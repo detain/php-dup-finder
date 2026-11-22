@@ -5,6 +5,7 @@ namespace Phpdup\Refactor;
 
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
+use Phpdup\Util\NodePath;
 use PhpParser\Node;
 
 /**
@@ -45,7 +46,7 @@ final class HoleCoverage
             return null;
         }
         $holes    = self::holeKeys($cluster);
-        [$total, $covered] = self::tally($template, [], $holes);
+        [$total, $covered] = self::tally($template, NodePath::root(), $holes);
         return $total > 0 ? $covered / $total : 0.0;
     }
 
@@ -117,7 +118,7 @@ final class HoleCoverage
     {
         $keys = [];
         foreach ($cluster->holePaths as $path) {
-            $keys[implode('/', array_map('strval', $path))] = true;
+            $keys[NodePath::keyOfList($path)] = true;
         }
         return $keys;
     }
@@ -187,13 +188,13 @@ final class HoleCoverage
     }
 
     /**
-     * @param list<int|string>    $path
+     * @param NodePath            $path
      * @param array<string, true> $holes
      * @return array{int,int} [total units, units inside holes]
      */
-    private static function tally(mixed $value, array $path, array $holes): array
+    private static function tally(mixed $value, NodePath $path, array $holes): array
     {
-        $key = self::pathKey($path);
+        $key = $path->key();
         if (isset($holes[$key])) {
             $units = self::units($value);
             return [$units, $units];
@@ -202,7 +203,7 @@ final class HoleCoverage
             $total   = 1;
             $covered = 0;
             foreach ($value->getSubNodeNames() as $sub) {
-                [$t, $c]      = self::tally($value->$sub, [...$path, $sub], $holes);
+                [$t, $c]      = self::tally($value->$sub, $path->child($sub), $holes);
                 $total       += $t;
                 $covered     += $c;
             }
@@ -212,7 +213,7 @@ final class HoleCoverage
             $total   = 0;
             $covered = 0;
             foreach ($value as $idx => $item) {
-                [$t, $c]  = self::tally($item, [...$path, $idx], $holes);
+                [$t, $c]  = self::tally($item, $path->child($idx), $holes);
                 $total   += $t;
                 $covered += $c;
             }
@@ -242,11 +243,5 @@ final class HoleCoverage
             return $total;
         }
         return $value === null ? 0 : 1;
-    }
-
-    /** @param list<int|string> $path */
-    private static function pathKey(array $path): string
-    {
-        return implode('/', array_map('strval', $path));
     }
 }

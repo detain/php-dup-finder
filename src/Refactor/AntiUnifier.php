@@ -11,6 +11,7 @@ use Phpdup\Extraction\BlockAstLoader;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Util\AstSerializer;
 use Phpdup\Util\Delimiters;
+use Phpdup\Util\NodePath;
 
 /**
  * Computes the most-specific generalization of a cluster's members.
@@ -373,7 +374,7 @@ final class AntiUnifier
         $template = $this->astOf($local[0]);
         $count    = count($local);
         for ($i = 1; $i < $count; $i++) {
-            $this->walk($template, $this->astOf($local[$i]), $i, $ctx, []);
+            $this->walk($template, $this->astOf($local[$i]), $i, $ctx, NodePath::root());
         }
         return [$ctx, $template];
     }
@@ -394,7 +395,6 @@ final class AntiUnifier
     /**
      * Walk one member's node against the template at $path.
      *
-     * @param list<int|string> $path
      * @return bool true when this member's node at $path is token-clean
      *              against the template — every descendant agreed and no
      *              value was recorded here. Only such paths may be
@@ -404,9 +404,9 @@ final class AntiUnifier
      *              path); the mark is recorded per member in
      *              {@see UnifyContext::$passedByMember}.
      */
-    private function walk(?Node $template, ?Node $member, int $memberIdx, UnifyContext $ctx, array $path): bool
+    private function walk(?Node $template, ?Node $member, int $memberIdx, UnifyContext $ctx, NodePath $path): bool
     {
-        $key = self::pathKey($path);
+        $key = $path->key();
         if (isset($ctx->holesByPath[$key])) {
             $this->observe($ctx->holesByPath[$key], $member, $memberIdx);
             return false;
@@ -441,21 +441,22 @@ final class AntiUnifier
             $mVal = $member->$sub;
 
             if ($tVal instanceof Node && $mVal instanceof Node) {
-                if (!$this->walk($tVal, $mVal, $memberIdx, $ctx, [...$path, $sub])) {
+                if (!$this->walk($tVal, $mVal, $memberIdx, $ctx, $path->child($sub))) {
                     $clean = false;
                 }
                 continue;
             }
             if (is_array($tVal) && is_array($mVal)) {
                 if (count($tVal) === count($mVal)) {
+                    $subPath = $path->child($sub);
                     foreach ($tVal as $idx => $tChild) {
                         $mChild = $mVal[$idx];
                         if ($tChild instanceof Node && $mChild instanceof Node) {
-                            if (!$this->walk($tChild, $mChild, $memberIdx, $ctx, [...$path, $sub, $idx])) {
+                            if (!$this->walk($tChild, $mChild, $memberIdx, $ctx, $subPath->child($idx))) {
                                 $clean = false;
                             }
                         } elseif ($tChild !== $mChild && !($tChild === null && $mChild === null)) {
-                            $this->createHole([...$path, $sub, $idx], null, null, $memberIdx, $ctx, 'subtree');
+                            $this->createHole($subPath->child($idx), null, null, $memberIdx, $ctx, 'subtree');
                             $clean = false;
                         }
                     }
@@ -474,7 +475,7 @@ final class AntiUnifier
                 continue;
             }
             if ($tVal === null xor $mVal === null) {
-                $this->createHole([...$path, $sub], null, null, $memberIdx, $ctx, 'subtree');
+                $this->createHole($path->child($sub), null, null, $memberIdx, $ctx, 'subtree');
                 $clean = false;
                 continue;
             }
@@ -504,18 +505,17 @@ final class AntiUnifier
      *
      * @param array<int, mixed> $tList
      * @param array<int, mixed> $mList
-     * @param list<int|string> $path
      */
     private function unifyDivergentArray(
         array $tList,
         array $mList,
         int $memberIdx,
         UnifyContext $ctx,
-        array $path,
+        NodePath $path,
         string $sub,
     ): bool {
         if (!$ctx->optionalBlocksEnabled || !$this->arrayIsStmtList($tList) || !$this->arrayIsStmtList($mList)) {
-            $this->createHole([...$path, $sub], null, null, $memberIdx, $ctx, 'subtree');
+            $this->createHole($path->child($sub), null, null, $memberIdx, $ctx, 'subtree');
             return false;
         }
 
@@ -540,9 +540,10 @@ final class AntiUnifier
         // newly-unmatched positions on this iteration; existing optional holes at
         // these paths reuse their slot.
         $newOptionalCount = 0;
+        $subPath          = $path->child($sub);
         foreach ($matchT as $i => $j) {
             if ($j !== -1) continue;
-            $childKey = self::pathKey([...$path, $sub, $i]);
+            $childKey = $subPath->child($i)->key();
             if (!isset($ctx->holesByPath[$childKey])) $newOptionalCount++;
         }
         $existingOptional = 0;
@@ -553,7 +554,7 @@ final class AntiUnifier
             // Too many optional segments would fall out of this alignment —
             // safer to wrap the whole array as a subtree hole and let the user
             // resolve manually than to ship a 7-boolean signature.
-            $this->createHole([...$path, $sub], null, null, $memberIdx, $ctx, 'subtree');
+            $this->createHole($subPath, null, null, $memberIdx, $ctx, 'subtree');
             return false;
         }
 
@@ -561,8 +562,8 @@ final class AntiUnifier
         $bornHere = [];
         $clean    = !$hasMemberExtras;
         foreach ($tList as $i => $tStmt) {
-            $childPath = [...$path, $sub, $i];
-            $childKey  = self::pathKey($childPath);
+            $childPath = $subPath->child($i);
+            $childKey  = $childPath->key();
             $j         = $matchT[$i];
 
             if ($j >= 0) {
@@ -653,15 +654,14 @@ final class AntiUnifier
      * Record that the member lacks (or already disagrees at) one template
      * statement position inside a diverging stmts array.
      *
-     * @param list<int|string> $path
      * @return Hole|null the hole NEWLY BORN from this call — existing
      *                   holes are appended to, never re-born, so the
      *                   member-extras degrade only touches claims this
      *                   alignment itself minted (output-018).
      */
-    private function createOrAppendOptionalHole(array $path, ?Node $tStmt, int $memberIdx, UnifyContext $ctx): ?Hole
+    private function createOrAppendOptionalHole(NodePath $path, ?Node $tStmt, int $memberIdx, UnifyContext $ctx): ?Hole
     {
-        $key = self::pathKey($path);
+        $key = $path->key();
         if (isset($ctx->holesByPath[$key])) {
             $existing = $ctx->holesByPath[$key];
             // belt: unreachable while the pad invariant holds
@@ -708,16 +708,13 @@ final class AntiUnifier
         $hole->appendObserved(Hole::MISSING);
         $ctx->holes[$holeId]      = $hole;
         $ctx->holesByPath[$key]   = $hole;
-        $ctx->holePaths[$holeId]  = $path;
+        $ctx->holePaths[$holeId]  = $path->toPathList();
         return $hole;
     }
 
-    /**
-     * @param list<int|string> $path
-     */
-    private function createHole(array $path, ?Node $tNode, ?Node $mNode, int $memberIdx, UnifyContext $ctx, string $kind): void
+    private function createHole(NodePath $path, ?Node $tNode, ?Node $mNode, int $memberIdx, UnifyContext $ctx, string $kind): void
     {
-        $key = self::pathKey($path);
+        $key = $path->key();
         if (isset($ctx->holesByPath[$key])) {
             $this->observe($ctx->holesByPath[$key], $mNode, $memberIdx);
             return;
@@ -743,7 +740,7 @@ final class AntiUnifier
         $this->observe($hole, $mNode, $memberIdx);
         $ctx->holes[$holeId]      = $hole;
         $ctx->holesByPath[$key]   = $hole;
-        $ctx->holePaths[$holeId] = $path;
+        $ctx->holePaths[$holeId]  = $path->toPathList();
     }
 
     private function kindForLeaf(Node $template): string
@@ -772,12 +769,6 @@ final class AntiUnifier
             || $node instanceof Node\Stmt\Interface_
             || $node instanceof Node\Stmt\Trait_
             || $node instanceof Node\Stmt\Enum_;
-    }
-
-    /** @param list<int|string> $path */
-    private static function pathKey(array $path): string
-    {
-        return implode('/', array_map('strval', $path));
     }
 
     /**
@@ -854,7 +845,7 @@ final class UnifyContext
     public int $holeCounter = 0;
     /** @var array<string,Hole> by holeId */
     public array $holes = [];
-    /** @var array<string,Hole> by pathKey */
+    /** @var array<string,Hole> by path key (NodePath grammar) */
     public array $holesByPath = [];
     /** @var array<string, list<int|string>> holeId => path */
     public array $holePaths = [];
