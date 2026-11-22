@@ -63,6 +63,23 @@ use Symfony\Component\Console\Output\NullOutput;
  *
  * A poisoned frame never kills the worker: every per-client handler is
  * wrapped so the loop keeps serving the next dispatch.
+ *
+ * Lifecycle (shell-016): the worker is a child of `phpdup serve`, and a
+ * dead parent must not leave it looping forever. The kernel reparents a
+ * child the instant its parent dies, so one poll per loop iteration
+ * (bound by the 5 s accept timeout) comparing the current parent pid to
+ * the spawn-time one is one detection leg. It is not the only one: the
+ * spawn runs through an `sh -c` wrapper, so the worker's direct parent
+ * is that shell — a hard-killed daemon reparents the SHELL, not the
+ * worker. ServeCommand therefore hands its own pid to the child
+ * environment (PHPDUP_SERVE_PID — neither wire nor argv), and the poll
+ * also treats `kill(pid, 0)` failure of that pid as daemon death. On
+ * either leg the worker closes shop and unlinks its own socket file —
+ * the parent's cleanup handler will never run for it. Where both reads
+ * are unresolvable (no ext-posix, no env token, spawned under init) the
+ * check degrades to a deliberate no-op instead of guessing, the same
+ * posture WorkerPool takes without pcntl_fork. No wire change: the
+ * checks read only the worker's own process-table view.
  */
 final class AnalysisWorker
 {
@@ -120,6 +137,22 @@ final class AnalysisWorker
     private bool $running = false;
 
     /**
+     * Test seam for the parent-pid read used by the orphan self-exit
+     * (mirrors the ServeCommand ownerProbe pattern): null uses the real
+     * `posix_getppid()`; a probe feeds pids so the reparent comparison —
+     * which runs unseamed — can be exercised hermetically.
+     *
+     * @var (callable(): int|null)|null
+     */
+    public $parentPidProbe = null;
+
+    /** Parent pid captured at run() start; null = unresolvable (check disabled). */
+    private ?int $spawnParentPid = null;
+
+    /** Owning daemon's pid from the spawn env (shell-016); null = leg disabled. */
+    private ?int $servePid = null;
+
+    /**
      * @param string      $socketPath      Path to the Unix socket to listen on.
      * @param string      $resultDir       Directory where result files are written.
      * @param string|null $serveRoot       Serve root jobs are confined to; null disables
@@ -128,12 +161,18 @@ final class AnalysisWorker
      *                                     null keeps the production cap. The seam exists
      *                                     so tests can drive the overflow path over a
      *                                     socketpair without pushing megabytes.
+     * @param int|null    $servePid        Pid of the owning `phpdup serve` process
+     *                                     (shell-016, from the spawn env); null or a
+     *                                     non-positive value disables the direct
+     *                                     daemon-liveness leg, leaving the reparent
+     *                                     belt — the posture of manual dev spawns.
      */
     public function __construct(
         string $socketPath,
         string $resultDir,
         ?string $serveRoot = null,
-        ?int $maxRequestBytes = null
+        ?int $maxRequestBytes = null,
+        ?int $servePid = null
     ) {
         if ($maxRequestBytes !== null && $maxRequestBytes < 1) {
             throw new \InvalidArgumentException('maxRequestBytes must be a positive byte count');
@@ -142,19 +181,33 @@ final class AnalysisWorker
         $this->resultDir = $resultDir;
         $this->serveRoot = $serveRoot;
         $this->maxRequestBytes = $maxRequestBytes ?? self::MAX_REQUEST_BYTES;
+        $this->servePid = ($servePid !== null && $servePid > 0) ? $servePid : null;
     }
 
     /**
      * Run the worker main loop, accepting and processing jobs.
      *
-     * Blocks until the socket is closed or an unrecoverable error occurs.
+     * Blocks until the socket is closed, an unrecoverable error occurs,
+     * or the spawning `phpdup serve` parent dies (shell-016 — checked at
+     * the top of every iteration, so one idle accept timeout is the
+     * worst-case exit latency).
      */
     public function run(): void
     {
         $this->setupSocket();
         $this->running = true;
+        $this->spawnParentPid = $this->currentParentPid();
 
         while ($this->running) {
+            if ($this->parentHasDied()) {
+                // The serve parent died (the kernel reparented us the
+                // moment it did): quit instead of looping forever as an
+                // orphan, and remove the socket file ourselves — the
+                // parent's cleanupWorker() can no longer do it.
+                $this->running = false;
+                $this->abandonOrphanSocket();
+                break;
+            }
             $client = @stream_socket_accept($this->socket, 5);
             if ($client === false) {
                 continue;
@@ -176,6 +229,74 @@ final class AnalysisWorker
     public function stop(): void
     {
         $this->running = false;
+    }
+
+    /**
+     * Current parent pid, or null when it cannot be resolved (no
+     * ext-posix). The {@see $parentPidProbe} seam overrides the real read
+     * only — the comparison in {@see parentHasDied()} stays unseamed.
+     */
+    private function currentParentPid(): ?int
+    {
+        $probe = $this->parentPidProbe;
+        if ($probe !== null) {
+            return $probe();
+        }
+
+        return function_exists('posix_getppid') ? posix_getppid() : null;
+    }
+
+    /**
+     * True once the owning daemon is gone: either its env-carried pid
+     * stopped existing, or this process was reparented away from its
+     * spawn-time parent.
+     *
+     * The daemon-pid leg is the one that matters through the real spawn
+     * chain (the worker's direct parent is the `sh -c` wrapper, which
+     * keeps waiting even after the daemon dies). The reparent leg is the
+     * belt: it covers manual/dev spawns (no env token), a wrapper killed
+     * out from under the worker, and the pid's death before the OS ever
+     * releases it — a ZOMBIE daemon still answers `kill(pid, 0)`, so
+     * only the un-reaped-parent window leans on reparenting, and the
+     * kernel reparents at death, not at reap, so the two legs together
+     * never depend on the reap. Pid reuse in the daemon-pid slot is a
+     * bounded-theoretical false-alive at worst: pid_max cycles dwarf any
+     * orphan's lifetime, and the reparent leg plus ServeCommand's own
+     * bounded tree reap are already in front of it.
+     *
+     * Fail-open by design: unresolvable reads (no ext-posix), a missing
+     * env token, or a worker spawned directly under init all disable the
+     * affected leg — looping on is the honest answer, never a
+     * speculative self-kill.
+     */
+    private function parentHasDied(): bool
+    {
+        $servePid = $this->servePid;
+        if ($servePid !== null && function_exists('posix_kill') && !@posix_kill($servePid, 0)) {
+            return true;
+        }
+
+        $spawn = $this->spawnParentPid;
+        if ($spawn === null || $spawn <= 1) {
+            return false;
+        }
+
+        $current = $this->currentParentPid();
+
+        return $current !== null && $current !== $spawn;
+    }
+
+    /**
+     * Remove the socket file this worker created when exiting because its
+     * parent is gone: the unlink in ServeCommand::cleanupWorker() will
+     * never run, so without this the dead daemon's /tmp surface outlives
+     * both processes.
+     */
+    private function abandonOrphanSocket(): void
+    {
+        if ($this->socketPath !== '' && file_exists($this->socketPath)) {
+            @unlink($this->socketPath);
+        }
     }
 
     /**

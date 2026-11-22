@@ -5,6 +5,7 @@ namespace Phpdup\Tests\Unit\Server;
 
 use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\ServeCommand;
+use Phpdup\Server\AnalysisWorker;
 use Symfony\Component\Console\Application;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\NullOutput;
@@ -266,5 +267,359 @@ final class ServeCommandTest extends TestCase
 
         @unlink($stray . '/keep.json');
         @rmdir($stray);
+    }
+
+    // ------------------------------------------------------------------
+    // shell-S03 (shell-016): SIGINT/SIGTERM turn a kill into a clean
+    // shutdown — handlers installed at startup, dispatched at the TOP of
+    // every accept-loop iteration (the 30 s timeout `continue` can no
+    // longer run past one), worker reaped + /tmp swept before exit 130.
+    // The worker likewise self-exits once its parent dies; the run-loop
+    // lifecycle pins live here (not ApplicationTest) because this file is
+    // the step's locked surface and the loop is serve-lifecycle, not
+    // wire-protocol.
+    // ------------------------------------------------------------------
+
+    public function testDispatchRunsBeforeTheAcceptTimeoutContinueLeg(): void
+    {
+        // Code inspection pin demanded by the acceptance: the dispatch
+        // call must sit ABOVE both the accept and its timeout `continue`,
+        // so every iteration — including a wake-up from the 30 s timeout —
+        // actions a queued signal before looping back into the block.
+        $src = (string)file_get_contents(
+            (new \ReflectionClass(ServeCommand::class))->getFileName()
+        );
+        $loopStart = strpos($src, 'while (is_resource($server))');
+        $this->assertIsInt($loopStart, 'serve accept loop must exist');
+        $loopEnd = strpos($src, 'return 0;', $loopStart);
+        $this->assertIsInt($loopEnd);
+        $loop = substr($src, $loopStart, $loopEnd - $loopStart);
+
+        $dispatch = strpos($loop, 'pcntl_signal_dispatch();');
+        $accept = strpos($loop, 'stream_socket_accept($server');
+        $continue = strpos($loop, 'continue;');
+
+        $this->assertIsInt($dispatch, 'the loop must dispatch queued signals');
+        $this->assertIsInt($accept);
+        $this->assertIsInt($continue);
+        $this->assertLessThan($accept, $dispatch, 'dispatch must precede the blocking accept');
+        $this->assertLessThan($continue, $dispatch, 'dispatch must precede the timeout continue');
+    }
+
+    public function testInstallSignalHandlersRefusesToInstallWithoutPcntl(): void
+    {
+        // The graceful no-op arm cannot be executed on a pcntl build, so
+        // it is pinned by structure: the guard must return before any
+        // pcntl_* call is reachable.
+        $src = (string)file_get_contents(
+            (new \ReflectionClass(ServeCommand::class))->getFileName()
+        );
+        $start = strpos($src, 'private function installSignalHandlers(): void');
+        $this->assertIsInt($start);
+        $method = substr($src, $start, strpos($src, "\n    }", $start) - $start);
+
+        $guard = strpos($method, "if (!function_exists('pcntl_signal')");
+        $firstPcntlCall = strpos($method, 'pcntl_async_signals(');
+        $this->assertIsInt($guard, 'install must guard on pcntl availability');
+        $this->assertStringContainsString('return;', substr($method, $guard, $firstPcntlCall - $guard));
+        $this->assertIsInt($firstPcntlCall);
+        // SIGINT and SIGTERM must both be claimed, and the pcntl_signal
+        // registrations must sit after the guard.
+        $sigInt = strpos($method, 'pcntl_signal(SIGINT,');
+        $sigTerm = strpos($method, 'pcntl_signal(SIGTERM,');
+        $this->assertIsInt($sigInt);
+        $this->assertIsInt($sigTerm);
+        $this->assertGreaterThan($guard, $sigInt);
+        $this->assertGreaterThan($guard, $sigTerm);
+    }
+
+    public function testInstalledHandlersTerminateSelfSentSignalsWith130(): void
+    {
+        // End-to-end for the install leg itself: after
+        // installSignalHandlers(), a real posix_kill of our own pid is
+        // routed through the real pcntl dispatch into terminateOnSignal — the
+        // terminator seam captures 130 in-process, so cleanup runs while
+        // phpunit survives.
+        if (!function_exists('pcntl_signal') || !function_exists('posix_kill')
+            || !defined('SIGINT') || !defined('SIGTERM')) {
+            $this->markTestSkipped('pcntl/posix required to exercise signal delivery');
+        }
+
+        $codes = [];
+        $command = new ServeCommand();
+        $command->signalTerminator = static function (int $code) use (&$codes): void {
+            $codes[] = $code;
+        };
+
+        $install = new \ReflectionMethod(ServeCommand::class, 'installSignalHandlers');
+        $install->invoke($command);
+        try {
+            posix_kill(getmypid(), SIGINT);
+            pcntl_signal_dispatch();
+            posix_kill(getmypid(), SIGTERM);
+            pcntl_signal_dispatch();
+        } finally {
+            // Leave the test process exactly as we found it.
+            pcntl_signal(SIGINT, SIG_DFL);
+            pcntl_signal(SIGTERM, SIG_DFL);
+            if (function_exists('pcntl_async_signals')) {
+                pcntl_async_signals(false);
+            }
+        }
+
+        $this->assertSame(
+            [ServeCommand::SIGNAL_EXIT_CODE, ServeCommand::SIGNAL_EXIT_CODE],
+            $codes,
+            'both SIGINT and SIGTERM must route through the installed handler to exit 130'
+        );
+    }
+
+    public function testHandleSignalReapsSeededWorkerAndTerminatesWith130(): void
+    {
+        // The full cleanup posture runs unseamed — only the exit itself
+        // is intercepted: live worker child terminated, socket file
+        // removed, results dir swept, exit code 130 captured.
+        $command = new ServeCommand();
+
+        $dir = $command->prepareResultsDir();
+        $this->assertNotNull($dir);
+        $this->s02ResultsDir = $dir;
+        file_put_contents($dir . '/0123456789abcdef.json', '{"clusters":[]}');
+        (new \ReflectionProperty(ServeCommand::class, 'resultDir'))->setValue($command, $dir);
+
+        $socketPath = sys_get_temp_dir() . '/phpdup-s03-seeded-' . uniqid() . '.sock';
+        file_put_contents($socketPath, '');
+        (new \ReflectionProperty(ServeCommand::class, 'workerSocket'))->setValue($command, $socketPath);
+
+        // A real sleep child stands in for the spawned worker so the
+        // proc_terminate leg is genuinely exercised.
+        $proc = proc_open(['sleep', '20'], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        $this->assertIsResource($proc);
+        $workerPid = proc_get_status($proc)['pid'];
+        (new \ReflectionProperty(ServeCommand::class, 'workerProcess'))->setValue($command, $proc);
+
+        $codes = [];
+        $command->signalTerminator = static function (int $code) use (&$codes): void {
+            $codes[] = $code;
+        };
+
+        $handle = new \ReflectionMethod(ServeCommand::class, 'terminateOnSignal');
+        $handle->invoke($command, 2); // SIGINT's number; the handler's code is signal-agnostic
+
+        $this->assertSame([ServeCommand::SIGNAL_EXIT_CODE], $codes);
+        $this->assertFileDoesNotExist($socketPath);
+        $this->assertDirectoryDoesNotExist($dir);
+        $this->s02ResultsDir = '';
+        // No fclose($pipes): cleanupWorker's proc_close() already closed the
+        // parent-side descriptors — a second close would only double-free.
+
+        // The worker child is terminated + reaped (proc_close inside
+        // cleanupWorker), so the pid is no longer a live process.
+        $deadline = microtime(true) + 2.0;
+        while (microtime(true) < $deadline && @posix_kill($workerPid, 0)) {
+            usleep(20000);
+        }
+        $this->assertFalse(@posix_kill($workerPid, 0), 'signal shutdown must reap the worker child');
+    }
+
+    public function testWorkerSelfExitsWhenItsParentIsReparented(): void
+    {
+        // Real run()-loop exit: the probe says "spawn parent 100", then
+        // the kernel-equivalent reparent to 1 → run() returns on the very
+        // first poll (no blocking accept) and unlinks the socket file the
+        // dead parent's cleanup could never remove. The probe self-destructs
+        // the test (instead of hanging CI) if the loop ever ignores it.
+        $socketPath = sys_get_temp_dir() . '/phpdup-s03-orphan-' . uniqid() . '.sock';
+        $calls = 0;
+        $pids = [100, 1];
+        $worker = new AnalysisWorker($socketPath, sys_get_temp_dir(), null);
+        $worker->parentPidProbe = function () use (&$calls, $pids): int {
+            $calls++;
+            if ($calls > count($pids)) {
+                $this->fail('worker loop did not self-exit after the parent died');
+            }
+            return $pids[$calls - 1];
+        };
+
+        $worker->run();
+
+        $this->assertSame(2, $calls, 'exit must land on the first post-spawn poll');
+        clearstatcache(true, $socketPath);
+        $this->assertFileDoesNotExist($socketPath, 'orphan exit must remove the worker socket');
+    }
+
+    public function testWorkerParentPollArms(): void
+    {
+        // The comparison runs unseamed against a fed ppid. The three
+        // fail-open arms (unresolvable read, unrecorded start, spawned
+        // under init) must NEVER vote for self-exit — WorkerPool-style
+        // graceful no-op over speculation.
+        $died = new \ReflectionMethod(AnalysisWorker::class, 'parentHasDied');
+        $spawnProp = new \ReflectionProperty(AnalysisWorker::class, 'spawnParentPid');
+
+        // A pid the OS will not hand out before pid_max cycles — dead for
+        // all practical purposes (guarded below in case this box differs).
+        $deadPid = $this->unusedPid();
+
+        $worker = new AnalysisWorker(
+            sys_get_temp_dir() . '/phpdup-s03-arm-' . uniqid() . '.sock',
+            sys_get_temp_dir()
+        );
+
+        $spawnProp->setValue($worker, null);
+        $worker->parentPidProbe = static fn (): ?int => 4242;
+        $this->assertFalse($died->invoke($worker), 'unrecorded start must disable the check');
+
+        $spawnProp->setValue($worker, 100);
+        $worker->parentPidProbe = static fn (): ?int => null;
+        $this->assertFalse($died->invoke($worker), 'an unresolvable read must disable the check');
+
+        $spawnProp->setValue($worker, 1);
+        $worker->parentPidProbe = static fn (): ?int => 1;
+        $this->assertFalse($died->invoke($worker), 'a worker spawned under init cannot observe reparenting');
+
+        // And the live arm: same ppid → alive.
+        $spawnProp->setValue($worker, 100);
+        $worker->parentPidProbe = static fn (): ?int => 100;
+        $this->assertFalse($died->invoke($worker), 'an unchanged parent pid means the parent lives');
+
+        // Different ppid → reparented → the direct parent died.
+        $spawnProp->setValue($worker, 100);
+        $worker->parentPidProbe = static fn (): ?int => 1;
+        $this->assertTrue($died->invoke($worker), 'a changed parent pid is the orphan signal');
+
+        // The daemon-pid leg (the one that fires through the real
+        // sh-wrapped chain, where the wrapper keeps the worker's ppid
+        // stable): dead serve pid → death, even with ppid unchanged.
+        if ($deadPid !== null) {
+            $wrapped = new AnalysisWorker(
+                sys_get_temp_dir() . '/phpdup-s03-arm2-' . uniqid() . '.sock',
+                sys_get_temp_dir(),
+                null,
+                null,
+                $deadPid
+            );
+            $spawnProp->setValue($wrapped, 100);
+            $wrapped->parentPidProbe = static fn (): ?int => 100;
+            $this->assertTrue(
+                $died->invoke($wrapped),
+                'a vanished daemon pid must fire even when the wrapper parent is unchanged'
+            );
+
+            // No env token (manual spawn posture) → that leg is simply
+            // absent; the ppid arms above govern alone.
+            $plain = new AnalysisWorker(
+                sys_get_temp_dir() . '/phpdup-s03-arm3-' . uniqid() . '.sock',
+                sys_get_temp_dir(),
+                null,
+                null,
+                -5 // non-positive = absent
+            );
+            $spawnProp->setValue($plain, 100);
+            $plain->parentPidProbe = static fn (): ?int => 100;
+            $this->assertFalse($died->invoke($plain), 'a junk serve pid must disable the leg, never fire it');
+        }
+    }
+
+    /**
+     * A pid very unlikely to be alive/reused during the test, or null
+     * when this box offers no such candidate (then the leg is simply
+     * not pinned here — never a hang).
+     */
+    private function unusedPid(): ?int
+    {
+        if (!function_exists('posix_kill')) {
+            return null;
+        }
+        $max = (int)@file_get_contents('/proc/sys/kernel/pid_max');
+        if ($max <= 2) {
+            return null;
+        }
+        $candidate = $max - 1;
+        return @posix_kill($candidate, 0) ? null : $candidate;
+    }
+
+    public function testWorkerRunsThroughEnvTokenAndSelfExitsOnDaemonDeath(): void
+    {
+        // The full production signal for the -9 acceptance leg: a dead
+        // daemon pid (env token, real read — no ppid change) makes run()
+        // return on its first poll and unlink the socket. This is the
+        // chain shape the sh wrapper actually creates: the wrapper never
+        // dies from the daemon's death, only the pid check can see it.
+        $deadPid = $this->unusedPid();
+        if ($deadPid === null) {
+            $this->markTestSkipped('no unused pid available to simulate daemon death');
+        }
+
+        $socketPath = sys_get_temp_dir() . '/phpdup-s03-env-' . uniqid() . '.sock';
+        $calls = 0;
+        $worker = new AnalysisWorker($socketPath, sys_get_temp_dir(), null, null, $deadPid);
+        $worker->parentPidProbe = function () use (&$calls): int {
+            $calls++;
+            if ($calls > 3) {
+                $this->fail('run() ignored the dead daemon pid');
+            }
+            // ppid never changes — only the serve-pid leg can exit.
+            return 100;
+        };
+
+        $worker->run();
+
+        $this->assertSame(1, $calls, 'the dead daemon must stop run() before any ppid second read');
+        clearstatcache(true, $socketPath);
+        $this->assertFileDoesNotExist($socketPath, 'orphan exit must remove the worker socket');
+    }
+
+    public function testWorkerEnvironmentCarriesDaemonPidWithoutLosingTheParentEnv(): void
+    {
+        // proc_open REPLACES environments when given an array — a merge
+        // bug here would strip PATH and break the /usr/bin/env shebang
+        // of every spawn. Both halves pinned: token present, inheritance
+        // intact.
+        $env = ServeCommand::workerEnvironment();
+
+        $this->assertSame((string)getmypid(), $env[ServeCommand::WORKER_PID_ENV]);
+        $parent = getenv();
+        foreach (['PATH', 'HOME'] as $essential) {
+            if (isset($parent[$essential])) {
+                $this->assertArrayHasKey($essential, $env);
+                $this->assertSame((string)$parent[$essential], $env[$essential]);
+            }
+        }
+        $this->assertNotEmpty($env['PATH'] ?? null, 'the spawn must not run childless of PATH');
+    }
+
+    public function testReapIsBoundedEvenWhenTheWrapperIgnoresSIGINT(): void
+    {
+        // The hang the live probe caught: a shell that waits on a child
+        // survives SIGINT, and the old bare proc_close blocked forever —
+        // inside the signal handler. A stubborn direct child (trapped
+        // INT, exec'd sleep) must still be fully reaped, bounded by the
+        // two graces, with the handler completing and code 130 hit.
+        if (!function_exists('posix_kill')) {
+            $this->markTestSkipped('posix needed to observe the reaped pid');
+        }
+        $proc = proc_open('trap "" INT; exec sleep 30', [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        $this->assertIsResource($proc);
+        $pid = proc_get_status($proc)['pid'];
+
+        $command = new ServeCommand();
+        $captured = null;
+        $command->signalTerminator = static function (int $code) use (&$captured): void {
+            $captured = $code;
+        };
+        (new \ReflectionProperty(ServeCommand::class, 'workerProcess'))->setValue($command, $proc);
+
+        $start = microtime(true);
+        (new \ReflectionMethod(ServeCommand::class, 'terminateOnSignal'))->invoke($command, 2); // SIGINT number
+        $elapsed = microtime(true) - $start;
+
+        $this->assertSame(ServeCommand::SIGNAL_EXIT_CODE, $captured);
+        $this->assertLessThan(
+            4.0,
+            $elapsed,
+            'cleanup must escalate to SIGKILL instead of blocking proc_close forever'
+        );
+        $this->assertFalse(@posix_kill($pid, 0), 'the stubborn worker tree must be gone after cleanup');
     }
 }

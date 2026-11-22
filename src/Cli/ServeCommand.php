@@ -51,6 +51,20 @@ use Symfony\Component\Console\Output\OutputInterface;
  *   `serve` startup with exit 1 (runtime posture) instead of silently
  *   writing job results into an attacker-visible tree. The shutdown
  *   handler sweeps the directory so results never outlive the process.
+ * - SIGINT/SIGTERM terminate cleanly (shell-016): the installed handler
+ *   runs the same `cleanupWorker()` the shutdown function uses — reaping
+ *   the spawned worker, unlinking the worker socket and sweeping the
+ *   results directory — and then exits with code 130 (the 128+SIGINT
+ *   convention, kept for both signals; the 0/1/2/3 normal-completion
+ *   contract in docs/CLI.md is untouched). Queued signals are also
+ *   dispatched at the TOP of every accept-loop iteration, so the 30 s
+ *   accept timeout can never run past one. When ext-pcntl is unavailable
+ *   no handlers are installed — a graceful no-op, the same posture as
+ *   WorkerPool's serial fallback without pcntl_fork (the pre-existing
+ *   orphan-on-Ctrl-C behaviour is what a pcntl-less build keeps). The
+ *   worker likewise self-exits once its parent dies (reparent poll,
+ *   {@see \Phpdup\Server\AnalysisWorker}), so even `kill -9` on the
+ *   daemon cannot leave an orphan worker loop behind.
  */
 final class ServeCommand extends SymfonyCommand
 {
@@ -64,6 +78,38 @@ final class ServeCommand extends SymfonyCommand
         'GET /api/jobs/[0-9a-f]+',
         'GET /api/jobs/[0-9a-f]+/result',
     ];
+
+    /**
+     * Exit code `phpdup serve` terminates with when killed by SIGINT or
+     * SIGTERM (shell-016): the 128+signal convention for SIGINT (128+2),
+     * kept as one number for both signals so the documented signal
+     * posture speaks exactly one code. This is a signal-death code, not a
+     * normal-completion one — the docs-truth 0/1/2/3 contract stands
+     * untouched.
+     */
+    public const SIGNAL_EXIT_CODE = 130;
+
+    /**
+     * Env token handing the worker the daemon's own pid (shell-016): the
+     * spawn goes through an `sh -c` wrapper, so the worker's direct
+     * parent is the shell — reparenting alone cannot prove the DAEMON
+     * died. The pid is neither wire nor argv (the pinned spawn string is
+     * untouched); an env value the worker treats as advisory: manual
+     * spawns run without it and keep reparent-only detection.
+     */
+    public const WORKER_PID_ENV = 'PHPDUP_SERVE_PID';
+
+    /** SIGINT/SIGKILL as raw POSIX numbers: reaping must not depend on ext-pcntl constants. */
+    private const SIGNAL_INT = 2;
+    private const SIGNAL_KILL = 9;
+
+    /**
+     * Bounded reap windows (shell-016): cleanupWorker used to block on
+     * proc_close forever when the wrapper shell waited for a child that
+     * never died. Int grace → KILL grace → the reap is total, and a
+     * wedged worker can never wedge the daemon's shutdown with it.
+     */
+    private const REAP_GRACE_SECONDS = 1.0;
 
     /** Process resource for the background worker. */
     /** @var resource|null */
@@ -85,6 +131,16 @@ final class ServeCommand extends SymfonyCommand
      * @var (callable(string): int|false|null)|null
      */
     public $ownerProbe = null;
+
+    /**
+     * Test seam for how {@see terminateOnSignal()} ends the process (unit
+     * tests must never exit the phpunit runner). Null uses the real
+     * `exit(SIGNAL_EXIT_CODE)`; a probe captures the code instead while
+     * every cleanup step above it runs unseamed.
+     *
+     * @var (callable(int): void)|null
+     */
+    public $signalTerminator = null;
 
     /** Why the last {@see prepareResultsDir()} refused startup ('' = none). */
     private string $resultsDirRefusal = '';
@@ -190,6 +246,13 @@ final class ServeCommand extends SymfonyCommand
             $this->cleanupWorker();
         });
 
+        // shell-016: signal handlers ride the same cleanup as the shutdown
+        // function. Installed before the spawn so even a Ctrl-C during the
+        // worker-socket wait reaps what exists and exits 130 — the old code
+        // registered cleanup only as a shutdown function, which a
+        // default-disposition signal death skips, orphaning the worker.
+        $this->installSignalHandlers();
+
         // Spawn background worker for async job processing. The serve root is
         // handed to the worker as a spawn argument so it can independently
         // re-validate dispatched job paths (defence in depth).
@@ -223,11 +286,23 @@ final class ServeCommand extends SymfonyCommand
         }
         $output->writeln("<info>phpdup serve</info> listening on {$address}");
 
-        // Accept until the underlying socket goes away (SIGINT, fd
-        // close, …). Using `is_resource($server)` as the loop
-        // condition keeps PhpStan happy — the condition really can
-        // become false during the loop.
+        // Accept until the underlying socket goes away (the loop condition
+        // really can become false during iteration, which also keeps
+        // phpstan honest). Termination by SIGINT/SIGTERM does not run
+        // through here at all: the installed handler cleans up and exits
+        // 130 (shell-016).
         while (is_resource($server)) {
+            // shell-016: dispatch queued signals at the TOP of every
+            // iteration — the 30 s accept-timeout `continue` below cannot
+            // run past a signal any more (the old code dispatched only at
+            // the loop tail, after serving, which the timeout path skipped
+            // outright). Async delivery via pcntl_async_signals() set by
+            // installSignalHandlers() makes this the belt, not the only
+            // path: even where async signals are unavailable, the next
+            // wake-up actions the signal.
+            if (function_exists('pcntl_signal_dispatch')) {
+                pcntl_signal_dispatch();
+            }
             $client = @stream_socket_accept($server, 30);
             if ($client === false) {
                 continue;
@@ -240,9 +315,6 @@ final class ServeCommand extends SymfonyCommand
                 // the socket is closed and the loop accepts the next client.
             } finally {
                 @fclose($client);
-            }
-            if (function_exists('pcntl_signal_dispatch')) {
-                pcntl_signal_dispatch();
             }
         }
         return 0;
@@ -463,7 +535,18 @@ final class ServeCommand extends SymfonyCommand
             2 => ['pipe', 'w'],  // stderr
         ];
 
-        $this->workerProcess = proc_open($command, $descriptors, $pipes);
+        // Explicit env (shell-016): PHP's proc_open replaces — never
+        // merges — the environment when an array is given, so the parent
+        // environment is carried in verbatim and only the serve-pid token
+        // is added. That token is what lets the worker prove the DAEMON
+        // died even though the `sh -c` wrapper is its direct parent.
+        $this->workerProcess = proc_open(
+            $command,
+            $descriptors,
+            $pipes,
+            null,
+            self::workerEnvironment()
+        );
         if (!is_resource($this->workerProcess)) {
             $output->writeln('<comment>failed to spawn worker, running in sync mode</comment>');
             $this->workerSocket = '';
@@ -494,7 +577,10 @@ final class ServeCommand extends SymfonyCommand
     /**
      * Build the worker spawn command line.
      *
-     * Protocol: `bin/phpdup-worker <socket> <result-dir> [<serve-root>]`.
+     * Protocol: `bin/phpdup-worker <socket> <result-dir> [<serve-root>]`,
+     * plus the {@see self::WORKER_PID_ENV} env token carrying the daemon
+     * pid (shell-016 — the worker's daemon-liveness reference survives the
+     * `sh -c` wrapper that proc_open puts in front of every string spawn).
      * Every token is escapeshellarg'd, and the serve root travels as the
      * third argv token — never as serialized state — so the worker can
      * independently re-run path confinement on dispatched jobs.
@@ -509,12 +595,96 @@ final class ServeCommand extends SymfonyCommand
     }
 
     /**
+     * Install the SIGINT/SIGTERM handlers that turn a kill into a clean
+     * shutdown (shell-016).
+     *
+     * `pcntl_async_signals(true)` makes a blocked `stream_socket_accept()`
+     * return into the handler immediately, so the daemon reacts in
+     * milliseconds instead of after its 30 s accept timeout; the
+     * in-loop `pcntl_signal_dispatch()` stays as the belt for builds
+     * where the async call is disabled. When ext-pcntl is not loaded (or
+     * `pcntl_signal` is disabled) this is a deliberate graceful no-op —
+     * same posture as WorkerPool's serial fallback when pcntl_fork is
+     * missing — and the pre-fix default dispositions apply.
+     */
+    private function installSignalHandlers(): void
+    {
+        if (!function_exists('pcntl_signal') || !defined('SIGINT') || !defined('SIGTERM')) {
+            return;
+        }
+
+        if (function_exists('pcntl_async_signals')) {
+            pcntl_async_signals(true);
+        }
+
+        pcntl_signal(SIGINT, $this->terminateOnSignal(...));
+        pcntl_signal(SIGTERM, $this->terminateOnSignal(...));
+    }
+
+    /**
+     * One signal = full shutdown: reap the worker, unlink the socket and
+     * sweep the results directory (the unseamed {@see cleanupWorker()},
+     * idempotent against the registered shutdown function), then end the
+     * process with {@see self::SIGNAL_EXIT_CODE} — for both SIGINT and
+     * SIGTERM, one documented number.
+     */
+    private function terminateOnSignal(int $signal): void
+    {
+        $this->cleanupWorker();
+
+        $terminator = $this->signalTerminator;
+        if ($terminator !== null) {
+            $terminator(self::SIGNAL_EXIT_CODE);
+            return;
+        }
+
+        exit(self::SIGNAL_EXIT_CODE);
+    }
+
+    /**
+     * Build the worker environment: the daemon's full current env plus
+     * {@see self::WORKER_PID_ENV} (proc_open replaces environments, it
+     * does not merge — see the spawn call site).
+     *
+     * @return array<string,string>
+     */
+    public static function workerEnvironment(): array
+    {
+        $env = [];
+        foreach (getenv() as $key => $value) {
+            $env[(string)$key] = (string)$value;
+        }
+        $env[self::WORKER_PID_ENV] = (string)getmypid();
+        return $env;
+    }
+
+    /**
      * Clean up the worker process, socket and results directory.
+     *
+     * The spawn is `sh -c '<worker> ...'`, and a wrapper shell that
+     * waits for its child survives SIGINT — the old bare
+     * proc_terminate + proc_close therefore hung this method (and the
+     * whole signal shutdown) forever whenever the child did not die
+     * (shell-016 live probe). The reap is now total and bounded: signal
+     * the shell's own children first (through /proc where readable),
+     * SIGINT the wrapper, wait one grace, escalate to SIGKILL, wait
+     * again. Worst case the whole leg costs the two graces, never
+     * forever.
      */
     private function cleanupWorker(): void
     {
         if (is_resource($this->workerProcess)) {
-            @proc_terminate($this->workerProcess, 2);
+            $status = proc_get_status($this->workerProcess);
+            if ($status['running'] && function_exists('posix_kill')) {
+                foreach (self::workerTreePids($status['pid']) as $childPid) {
+                    @posix_kill($childPid, self::SIGNAL_INT);
+                }
+            }
+            @proc_terminate($this->workerProcess, self::SIGNAL_INT);
+            if (!self::reapedWithin($this->workerProcess, self::REAP_GRACE_SECONDS)) {
+                @proc_terminate($this->workerProcess, self::SIGNAL_KILL);
+                self::reapedWithin($this->workerProcess, self::REAP_GRACE_SECONDS);
+            }
             @proc_close($this->workerProcess);
             $this->workerProcess = null;
         }
@@ -525,6 +695,66 @@ final class ServeCommand extends SymfonyCommand
         }
 
         $this->sweepResultDir();
+    }
+
+    /**
+     * True once the direct spawn child (the wrapper shell) has stopped
+     * running within `$seconds`; false only after the full window — a
+     * bounded poll, never a blocking wait.
+     *
+     * @param resource $process
+     */
+    private static function reapedWithin($process, float $seconds): bool
+    {
+        $deadline = microtime(true) + $seconds;
+        do {
+            usleep(20000);
+            $stillRunning = proc_get_status($process)['running'];
+        } while ($stillRunning && microtime(true) < $deadline);
+
+        return !$stillRunning;
+    }
+
+    /**
+     * Direct children of `$ppid` — the php worker behind the `sh -c`
+     * wrapper. Cheap path: the Linux task-children file. Fallback: one
+     * /proc stat scan (shutdown-only work). No /proc (macOS): an empty
+     * list, and the bounded SIGKILL escalation plus the worker's own
+     * serve-pid poll carry the reap instead — graceful no-op posture.
+     *
+     * @return list<int>
+     */
+    private static function workerTreePids(int $ppid): array
+    {
+        $listed = @file_get_contents("/proc/{$ppid}/task/{$ppid}/children");
+        if ($listed !== false) {
+            $pids = [];
+            foreach (preg_split('/\s+/', trim($listed)) ?: [] as $token) {
+                if ($token !== '' && ctype_digit($token)) {
+                    $pids[] = (int)$token;
+                }
+            }
+            return $pids;
+        }
+
+        $pids = [];
+        foreach (glob('/proc/[0-9]*/stat') ?: [] as $statFile) {
+            $stat = @file_get_contents($statFile);
+            if ($stat === false) {
+                continue;
+            }
+            // comm is parenthesized and may contain spaces: fields after
+            // the LAST ')' are unambiguous — [0]=state, [1]=ppid.
+            $close = strrpos($stat, ')');
+            if ($close === false) {
+                continue;
+            }
+            $fields = preg_split('/\s+/', trim(substr($stat, $close + 1)));
+            if ($fields !== false && ($fields[1] ?? '') === (string)$ppid) {
+                $pids[] = (int)basename(dirname($statFile));
+            }
+        }
+        return $pids;
     }
 
     /**

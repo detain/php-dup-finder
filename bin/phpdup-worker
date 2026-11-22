@@ -20,6 +20,17 @@ declare(strict_types=1);
  * against it before the pipeline runs (defence in depth). Omitting it
  * disables worker-side confinement (manual/dev spawns only — ServeCommand
  * always passes it).
+ *
+ * Lifecycle: the worker terminates itself once the daemon that spawned
+ * it dies — ServeCommand hands its own pid down through the
+ * PHPDUP_SERVE_PID environment token, and the worker's per-iteration
+ * poll treats that pid vanishing (or this process being reparented) as
+ * daemon death, unlinking its socket on the way out (see AnalysisWorker).
+ * Without ext-posix, without the env token (manual/dev spawns), or when
+ * spawned directly under init, the poll degrades to a no-op (same
+ * graceful posture as WorkerPool's serial fallback without pcntl); the
+ * worker keeps SIGINT/SIGTERM default dispositions, and ServeCommand's
+ * bounded tree reap covers every path that has a live parent.
  */
 
 $autoloads = [
@@ -82,7 +93,17 @@ if ($serveRoot !== null && !is_dir($serveRoot)) {
 }
 
 try {
-    $worker = new \Phpdup\Server\AnalysisWorker($socketPath, $resultDir, $serveRoot);
+    // Spawn env token from ServeCommand (shell-016): the daemon's own
+    // pid, the worker's authoritative daemon-liveness reference. Absent
+    // or non-numeric on manual/dev spawns — the poll simply loses that
+    // leg and keeps the reparent belt.
+    $servePidRaw = getenv(\Phpdup\Cli\ServeCommand::WORKER_PID_ENV);
+    $worker = new \Phpdup\Server\AnalysisWorker(
+        $socketPath,
+        $resultDir,
+        $serveRoot,
+        servePid: is_numeric($servePidRaw) ? (int)$servePidRaw : null
+    );
     $worker->run();
 } catch (\Throwable $e) {
     fwrite(STDERR, "phpdup-worker: fatal error: {$e->getMessage()}\n");
