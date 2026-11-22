@@ -67,6 +67,23 @@ use Phpdup\Util\NodePath;
  *      rows, then observed values are remapped from the seed-first
  *      internal order back to the original cluster order so reporters
  *      see the per-member values in the order they expect.
+ *
+ * Member cap (output-S57, ENGINE-FUZZ-X01): a cluster fatter than
+ * {@see self::MAX_UNIFY_MEMBERS} is routed through a deterministic
+ * representative set — the walk stops being O(members) per trial and
+ * the lazy AST loader stops resolving a file-sized corpus per member
+ * (measured on the /tmp repro: refactor 10.4 s at N=1600 and growing
+ * ~3x per doubling). The COUNTED TAIL never vanishes: every hole still
+ * carries one row per cluster member, the unobserved tail slots hold
+ * {@see Hole::MISSING} rows, and every hole of a routed cluster is
+ * degraded — the same never-gathered semantics output-018 established.
+ * A routed cluster that produced no hole at all gets a synthetic
+ * whole-template sentinel hole ({@see self::CAP_SENTINEL}) so the
+ * invariant "capped ⇒ degraded ⇒ RefactorPatchReporter refuses --apply"
+ * holds: an unverified tail must never be mechanically rewritten.
+ * Representative selection is content-stable: top M by
+ * (AST size descending, member id ascending — ids are content-derived —
+ * then cluster position ascending), walked in cluster order.
  */
 final class AntiUnifier
 {
@@ -111,6 +128,31 @@ final class AntiUnifier
         return $this->lastWalkCount;
     }
 
+    /**
+     * Maximum cluster members fed to anti-unification. Beyond this the
+     * cluster is routed through {@see self::representativeCount()}
+     * representatives and the rest becomes a counted tail (output-S57).
+     * Sized far above every cluster in the golden corpora (max 3) so
+     * current corpora never bite; sized so the worst storm cluster walks
+     * ≤ SEED_CANDIDATES × MAX_UNIFY_MEMBERS member walks.
+     */
+    public const MAX_UNIFY_MEMBERS = 32;
+
+    /** Placeholder of the synthetic sentinel hole a routed zero-hole cluster carries (output-S57). */
+    public const CAP_SENTINEL = '__cap';
+
+    /**
+     * Members the walk may consume from a cluster of $memberCount — the
+     * routing law in one line, shared by unify() and by the honest tail
+     * narration in RefactorStage (and by its --stats surface). A cluster
+     * is routed through representatives exactly when this is smaller
+     * than the member count.
+     */
+    public static function representativeCount(int $memberCount): int
+    {
+        return min($memberCount, self::MAX_UNIFY_MEMBERS);
+    }
+
     public function unify(Cluster $cluster): void
     {
         $members = $cluster->members;
@@ -125,6 +167,20 @@ final class AntiUnifier
             return;
         }
 
+        // output-S57 member cap: giant clusters are anti-unified against
+        // a deterministic representative set only. Selection is content-
+        // stable (see class doc); the walked list keeps cluster order so
+        // the row-placement law below is a plain position map. When the
+        // cap does not bite $repPositions stays null and every later step
+        // is the byte-identical pre-cap path.
+        $repPositions = $count > self::MAX_UNIFY_MEMBERS
+            ? $this->pickRepresentatives($members)
+            : null;
+        $walked = $repPositions === null
+            ? $members
+            : array_map(static fn(int $p): Block => $members[$p], $repPositions);
+        $walkedCount = count($walked);
+
         // 1. Seed search. Multi-seed: try the top candidate seeds and pick
         //    the one whose walk yields the smallest hole set (the
         //    abstraction with the most agreement across members). When all
@@ -137,20 +193,23 @@ final class AntiUnifier
         //    not be walked a second time. The one legitimate clone is the
         //    generalizedAst below — the mutation-ready template handed to
         //    the refactor consumers.
-        [$seedIdx, $seedAst, $ctx] = $this->pickBestSeed($members);
+        [$seedIdx, $seedAst, $ctx] = $this->pickBestSeed($walked);
 
         $cluster->generalizedAst = Normalizer::deepClone($seedAst);
         $cluster->holes          = array_values($ctx->holes);
 
-        // 2. Pad every hole to the full member count. A hole born while
+        // 2. Pad every hole to the walked member count. A hole born while
         //    earlier subnodes were already recursed is never reached by
         //    members that stop at an ancestor divergence, and the old
         //    optional-only pad back-filled those gaps with the SEED's repr
         //    — a silent claim that the skipped member held seed content
         //    (output-018). Placeholder rows are now explicit structural
         //    gaps on holes of EVERY kind, and the hole degrades honestly.
+        //    Uncapped this is the full member count (byte-identical to
+        //    the pre-S56 pad); capped, rows first reach one-per-representative
+        //    and the step-3 position remap grows them to one-per-member.
         foreach ($cluster->holes as $hole) {
-            $this->fillGaps($hole, $count);
+            $this->fillGaps($hole, $walkedCount);
         }
 
         // 3. Remap observed values from internal (seed-first) to external
@@ -166,12 +225,99 @@ final class AntiUnifier
         //    placeholder-density belt are handled inside the remap; the old
         //    unconditional isset()-skipped pair-swap (output-018) survives
         //    only there, as the fallback.
-        $this->remapRowsByMemberId($cluster, $members, $ctx->localMemberIds, $seedIdx);
+        //    Routed clusters (output-S57) skip the id addressing entirely:
+        //    the position law below is exact because the walked list is a
+        //    position-tagged sub-list of the members, and the unobserved
+        //    tail slots become MISSING rows on EVERY hole — the counted
+        //    tail's one-row-per-member contract, honest and dense.
+        if ($repPositions === null) {
+            $this->remapRowsByMemberId($cluster, $members, $ctx->localMemberIds, $seedIdx);
+        } else {
+            $this->remapRowsToClusterPositions($cluster, $count, $repPositions, $seedIdx);
+        }
+
+        // 3b. A routed cluster with zero holes still owes the payload the
+        //     truth that its tail was never observed: the synthetic
+        //     whole-template sentinel degrades it, which is what the
+        //     RefactorPatchReporter refusal chain (HoleCoverage::isDegraded,
+        //     S26/S51) reads. One sentinel per cluster, path = root ([]),
+        //     rows = every member MISSING.
+        if ($repPositions !== null && $cluster->holes === []) {
+            $sentinel = new Hole(
+                self::CAP_SENTINEL,
+                'subtree',
+                array_fill(0, $count, Hole::MISSING),
+                degraded: true,
+            );
+            $cluster->holes = [$sentinel];
+            $ctx->holePaths[self::CAP_SENTINEL] = [];
+        }
 
         // 4. Persist hole paths for ApplyExtractor (paths are template-
         //    relative and unaffected by the row remap above).
         $cluster->holePaths = $ctx->holePaths;
         $this->lastHolePaths = $ctx->holePaths;
+    }
+
+    /**
+     * Representative positions for a routed cluster (output-S57), in
+     * CLUSTER order. Selection law (disclosed, content-stable): rank by
+     * AST size descending, then member id ascending (ids are content-
+     * derived, so equal ids mean equal content), then cluster position
+     * ascending as the final tie-break among byte-identical members.
+     * Largest members win because the seed search optimizes hole count
+     * on the same axis — a deep template keeps the abstraction tight.
+     *
+     * @param list<Block> $members count > MAX_UNIFY_MEMBERS
+     * @return list<int> positions into $members, ascending
+     */
+    private function pickRepresentatives(array $members): array
+    {
+        $positions = array_keys($members);
+        usort($positions, static function (int $a, int $b) use ($members): int {
+            $ma = $members[$a];
+            $mb = $members[$b];
+            return $mb->size <=> $ma->size
+                ?: strcmp($ma->id, $mb->id)
+                ?: $a <=> $b;
+        });
+        $chosen = array_slice($positions, 0, self::MAX_UNIFY_MEMBERS);
+        sort($chosen);
+        return $chosen;
+    }
+
+    /**
+     * Emit one row per cluster member for every hole of a routed cluster
+     * (output-S57). Walked slots land at their members' cluster positions
+     * (undoing trialUnify's 0↔seedIdx transposition by the same swap law);
+     * every other slot is {@see Hole::MISSING}, and each hole carries the
+     * degraded flag — the tail was never gathered, which is exactly what
+     * output-018's MISSING+degraded grammar states.
+     *
+     * @param list<Block> $clusterMembers
+     * @param list<int>   $repPositions representative positions, cluster order
+     */
+    private function remapRowsToClusterPositions(Cluster $cluster, int $count, array $repPositions, int $seedIdx): void
+    {
+        // slot k of the walk observed walked[k'] — the swap moved the seed
+        // into slot 0 and the former slot-0 member into slot $seedIdx.
+        $clusterOfSlot = $repPositions;
+        if ($seedIdx !== 0) {
+            [$clusterOfSlot[0], $clusterOfSlot[$seedIdx]]
+                = [$clusterOfSlot[$seedIdx], $clusterOfSlot[0]];
+        }
+        foreach ($cluster->holes as $hole) {
+            $rows = $hole->observedValues;
+            $out  = array_fill(0, $count, Hole::MISSING);
+            foreach ($clusterOfSlot as $slot => $position) {
+                $out[$position] = $rows[$slot] ?? Hole::MISSING;
+            }
+            $hole->observedValues = $out;
+            // belt: a routed cluster always has an unobserved tail, so
+            // every hole — even one whose representative rows are complete
+            // — states incomplete evidence.
+            $hole->markDegraded();
+        }
     }
 
     /**

@@ -11,6 +11,7 @@ use Phpdup\Extraction\BlockExtractor;
 use Phpdup\Parsing\AstParser;
 use Phpdup\Refactor\AntiUnifier;
 use Phpdup\Refactor\Hole;
+use Phpdup\Refactor\HoleCoverage;
 use Phpdup\Refactor\ParameterSynthesizer;
 use Phpdup\Refactor\PatternRecognizer;
 use Phpdup\Refactor\SignatureBuilder;
@@ -1190,6 +1191,216 @@ final class AntiUnifierTest extends TestCase
                 'walks' => 3,
             ],
         ];
+    }
+
+    // ── output-S57: member cap — representative routing + counted tail ──
+
+    public function testRepresentativeCountIsTheRoutingLawInOnePlace(): void
+    {
+        $this->assertSame(0, AntiUnifier::representativeCount(0));
+        $this->assertSame(3, AntiUnifier::representativeCount(3));
+        $this->assertSame(31, AntiUnifier::representativeCount(31));
+        $this->assertSame(32, AntiUnifier::representativeCount(32));
+        $this->assertSame(32, AntiUnifier::representativeCount(33));
+        $this->assertSame(32, AntiUnifier::representativeCount(100000));
+    }
+
+    public function testCappedClusterFeedsRepresentativesButRowsStayDense(): void
+    {
+        // 40 equal-shape members in a hand-built cluster: member ids are
+        // unstamped (''), so the selection law's final tie-break (cluster
+        // position) decides — representatives are positions 0..31 and the
+        // counted tail is positions 32..39.
+        $codes = [];
+        for ($i = 0; $i < 40; $i++) {
+            $codes[] = sprintf('function guard_%02d($x) { notify($x, %d); }', $i, $i);
+        }
+        $cluster = $this->clusterFor($codes);
+
+        (new AntiUnifier())->unify($cluster);
+
+        $this->assertNotEmpty($cluster->holes, 'differing int literals must form holes');
+        foreach ($cluster->holes as $hole) {
+            $this->assertCount(40, $hole->observedValues, 'one row per member — the cap never deletes rows');
+            for ($p = 32; $p < 40; $p++) {
+                $this->assertSame(Hole::MISSING, $hole->observedValues[$p], "counted-tail position {$p} carries an explicit gap row");
+            }
+            for ($p = 0; $p < 32; $p++) {
+                $this->assertNotSame(Hole::MISSING, $hole->observedValues[$p], "representative position {$p} keeps its observation");
+            }
+            $this->assertTrue($hole->isDegraded(), 'a routed cluster always carries incomplete evidence');
+        }
+
+        // The walked seed is the equal-size winner = walked[0] = cluster
+        // position 0, so the mutation template is a representative body.
+        $printed = trim((new Standard())->prettyPrint([$cluster->generalizedAst]));
+        $this->assertStringContainsString('guard_00', $printed, 'template must come from a representative');
+        $this->assertStringContainsString('notify($x, 0)', $printed);
+    }
+
+    public function testCappedHolePathsAndRowsStayCoherent(): void
+    {
+        $codes = [];
+        for ($i = 0; $i < 40; $i++) {
+            $codes[] = sprintf('function guard_%02d($x) { notify($x, %d); }', $i, $i);
+        }
+        $cluster = $this->clusterFor($codes);
+
+        (new AntiUnifier())->unify($cluster);
+
+        $this->assertSame(
+            array_map(static fn (Hole $h): string => $h->placeholder, $cluster->holes),
+            array_keys($cluster->holePaths),
+            'every hole has a path and vice versa, in creation order',
+        );
+        foreach ($cluster->holes as $hole) {
+            $this->assertCount(count($cluster->members), $hole->observedValues);
+        }
+    }
+
+    public function testRepresentativesAreContentRankedNotInsertionOrdered(): void
+    {
+        // 35 equal-size members carrying a permutation of distinct ids:
+        // the law is id-ascending among size ties, so the three DROPPED
+        // members are the three LARGEST ids — independent of their
+        // (ascending) cluster positions.
+        $codes = [];
+        $ids = [];
+        for ($i = 0; $i < 35; $i++) {
+            $codes[] = sprintf('function guard_%02d($x) { notify($x, %d); }', $i, $i);
+            $ids[] = sprintf('ID-%02d', (3 * $i) % 35);
+        }
+        $cluster = $this->clusterFor($codes);
+        foreach ($cluster->members as $i => $member) {
+            $member->id = $ids[$i];
+        }
+
+        (new AntiUnifier())->unify($cluster);
+
+        $ranked = $ids;
+        rsort($ranked);
+        $droppedIds = array_slice($ranked, 0, 3);
+        $droppedPositions = [];
+        foreach ($ids as $pos => $id) {
+            if (in_array($id, $droppedIds, true)) {
+                $droppedPositions[] = $pos;
+            }
+        }
+        $this->assertCount(3, $droppedPositions);
+        $this->assertNotEmpty($cluster->holes);
+        foreach ($cluster->holes as $hole) {
+            $this->assertCount(35, $hole->observedValues);
+            foreach ($droppedPositions as $p) {
+                $this->assertSame(Hole::MISSING, $hole->observedValues[$p], "member with id {$ids[$p]} is content-ranked out");
+            }
+            for ($p = 0; $p < 35; $p++) {
+                if (!in_array($p, $droppedPositions, true)) {
+                    $this->assertNotSame(Hole::MISSING, $hole->observedValues[$p]);
+                }
+            }
+        }
+    }
+
+    public function testRepresentativeSelectionIsStableUnderClusterReordering(): void
+    {
+        $codes = [];
+        $ids = [];
+        for ($i = 0; $i < 35; $i++) {
+            $codes[] = sprintf('function guard_%02d($x) { notify($x, %d); }', $i, $i);
+            $ids[] = sprintf('ID-%02d', (3 * $i) % 35);
+        }
+        $cluster = $this->clusterFor($codes);
+        $byId = [];
+        foreach ($cluster->members as $i => $member) {
+            $member->id = $ids[$i];
+            $byId[$ids[$i]] = $member;
+        }
+
+        (new AntiUnifier())->unify($cluster);
+        $forward = $cluster->holes[0]->observedValues;
+
+        // Same member set, reversed cluster order: routing is a function of
+        // content, so each member's ROW VALUE must be identical across runs
+        // even though positions moved.
+        $reversed = new Cluster('TEST', array_reverse($cluster->members), 1.0, false);
+        (new AntiUnifier())->unify($reversed);
+        $backward = $reversed->holes[0]->observedValues;
+
+        foreach ($ids as $pos => $id) {
+            $revPos = count($ids) - 1 - $pos;
+            $this->assertSame($forward[$pos], $backward[$revPos], "member {$id} keeps its row across reordering");
+        }
+    }
+
+    public function testRoutedClusterWithoutHolesCarriesDegradedCapSentinel(): void
+    {
+        // 33 byte-identical members: the walks are clean, so the pre-cap
+        // path would emit ZERO holes and HoleCoverage would call the
+        // cluster fully observed — while 1 member was never observed at all.
+        // The routed payload must instead carry the whole-template sentinel.
+        $cluster = $this->clusterFor(array_fill(0, 33, 'function twin() { notify(1); }'));
+
+        (new AntiUnifier())->unify($cluster);
+
+        $this->assertCount(1, $cluster->holes, 'exactly one sentinel for a routed zero-hole cluster');
+        $sentinel = $cluster->holes[0];
+        $this->assertSame(AntiUnifier::CAP_SENTINEL, $sentinel->placeholder);
+        $this->assertSame('subtree', $sentinel->kind);
+        $this->assertCount(33, $sentinel->observedValues);
+        $this->assertSame(array_fill(0, 33, Hole::MISSING), $sentinel->observedValues);
+        $this->assertTrue($sentinel->isDegraded());
+        $this->assertSame([AntiUnifier::CAP_SENTINEL => []], $cluster->holePaths, 'sentinel path is the template root');
+        $this->assertTrue(HoleCoverage::isDegraded($cluster), 'refusal chain must see the routed cluster as degraded');
+        $this->assertStringContainsString('notify(1)', trim((new Standard())->prettyPrint([$cluster->generalizedAst])));
+    }
+
+    public function testUncappedIdenticalClusterKeepsZeroHolesAndNoSentinel(): void
+    {
+        $cluster = $this->clusterFor(array_fill(0, 2, 'function twin() { notify(1); }'));
+
+        (new AntiUnifier())->unify($cluster);
+
+        $this->assertSame([], $cluster->holes, 'pre-cap zero-hole payload stays untouched when the cap does not bite');
+        $this->assertSame([], $cluster->holePaths);
+        $this->assertFalse(HoleCoverage::isDegraded($cluster));
+    }
+
+    public function testExactlyCapMembersIsNotRouted(): void
+    {
+        $codes = [];
+        for ($i = 0; $i < AntiUnifier::MAX_UNIFY_MEMBERS; $i++) {
+            $codes[] = sprintf('function guard_%02d($x) { notify($x, %d); }', $i, $i);
+        }
+        $cluster = $this->clusterFor($codes);
+
+        (new AntiUnifier())->unify($cluster);
+
+        $this->assertNotEmpty($cluster->holes);
+        foreach ($cluster->holes as $hole) {
+            $this->assertCount(32, $hole->observedValues);
+            $this->assertFalse($hole->isDegraded(), 'an unrouted dense hole must not claim degraded evidence');
+            foreach ($hole->observedValues as $row) {
+                $this->assertNotSame(Hole::MISSING, $row, 'no gap rows without routing');
+            }
+        }
+        $this->assertArrayNotHasKey(AntiUnifier::CAP_SENTINEL, $cluster->holePaths);
+    }
+
+    public function testRoutedClustersWalkBudgetStaysAtSeedCandidateTrials(): void
+    {
+        // The cap exists to bound work: routing must not multiply the
+        // seed trials (still ≤ SEED_CANDIDATES walks, whatever N is).
+        $codes = [];
+        for ($i = 0; $i < 100; $i++) {
+            $codes[] = sprintf('function guard_%02d($x) { notify($x, %d); }', $i, $i);
+        }
+        $cluster = $this->clusterFor($codes);
+
+        $antiUnifier = new AntiUnifier();
+        $antiUnifier->unify($cluster);
+
+        $this->assertLessThanOrEqual(3, $antiUnifier->getLastWalkCount());
+        $this->assertGreaterThan(0, $antiUnifier->getLastWalkCount());
     }
 
 }

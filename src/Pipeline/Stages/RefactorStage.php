@@ -29,6 +29,18 @@ final class RefactorStage implements CooperativeStageInterface
 
     private readonly ProgressListener $listener;
 
+    /**
+     * output-S57 honest tail narration. Cluster positions routed through
+     * representatives by the member-cap law (AntiUnifier::MAX_UNIFY_MEMBERS),
+     * collected during processing and emitted after the run — in cluster
+     * order, so serial and fork runs narrate byte-identically (the same
+     * parity posture as the enrichment merge). Positions, not ids: co-id
+     * twins are separate clusters and each narrates its own routing.
+     *
+     * @var array<int, true>
+     */
+    private array $routedPositions = [];
+
     public function __construct(
         private readonly bool $useCache,
         ?ProgressListener $listener = null,
@@ -65,7 +77,9 @@ final class RefactorStage implements CooperativeStageInterface
             : null;
 
         $total = count($state->clusters);
+        $this->routedPositions = [];
         $state->refactoredClusters = 0;
+
         $state->currentTask = sprintf('Anti-unifying %d clusters', $total);
         if ($state->cancelled) {
             return;
@@ -111,6 +125,12 @@ final class RefactorStage implements CooperativeStageInterface
             yield from $this->iterSerial($state, $loader, $total);
         }
 
+        // output-S57: honest tail narration for every cluster whose
+        // members were capped into representatives — emitted after the
+        // walk loop, in cluster order, from the positions recorded while
+        // processing. Cancelled runs narrate only what actually unified.
+        $this->narrateRoutedClusters($state, $output);
+
         $state->timings['refactor'] = microtime(true) - $tRefactor;
         $state->currentTask = sprintf('Refactored %d clusters', $total);
     }
@@ -131,6 +151,11 @@ final class RefactorStage implements CooperativeStageInterface
         $sinceYield = 0;
         foreach ($state->clusters as $i => $cluster) {
             $antiUnifier->unify($cluster);
+            // output-S57: the cap is a pure function of the member count,
+            // so the stage records routing without peeking at the walk.
+            if (count($cluster->members) > AntiUnifier::MAX_UNIFY_MEMBERS) {
+                $this->routedPositions[$i] = true;
+            }
             $synth->synthesize($cluster);
             $sigBuilder->buildSignature($cluster);
             $patterns->tag($cluster);
@@ -181,8 +206,13 @@ final class RefactorStage implements CooperativeStageInterface
         // real fork-vs-serial merge divergence; the parity tests in
         // tests/Unit/Parallel/RefactorWorkerTest.php pin the broadcast.
         $twinsById = [];
-        foreach ($state->clusters as $cluster) {
+        // output-S57: positions per id, so routing narration lands on the
+        // same broadcast set the enrichment merge applies to (co-id twins).
+        /** @var array<string, list<int>> */
+        $positionsById = [];
+        foreach ($state->clusters as $pos => $cluster) {
             $twinsById[$cluster->id][] = $cluster;
+            $positionsById[$cluster->id][] = $pos;
         }
 
         $worker = new RefactorWorker(
@@ -218,6 +248,14 @@ final class RefactorStage implements CooperativeStageInterface
                     $cluster->signature      = $enrichment['signature'];
                     $cluster->patternTags    = $enrichment['patternTags'];
                 }
+                // output-S57: the worker capped every co-id twin it
+                // enriched (the routing law is a pure function of member
+                // count, so all twins share it).
+                foreach ($positionsById[$cid] as $pos) {
+                    if (count($state->clusters[$pos]->members) > AntiUnifier::MAX_UNIFY_MEMBERS) {
+                        $this->routedPositions[$pos] = true;
+                    }
+                }
             }
 
             $state->refactoredClusters++;
@@ -243,5 +281,53 @@ final class RefactorStage implements CooperativeStageInterface
         // parent BEFORE forking (see iter()), so both children and parent
         // started from identical fresh ranges and the merged scalars need
         // no positional repair.
+    }
+
+    /**
+     * Honest tail narration for member-capped clusters (output-S57).
+     *
+     * The cap never bites at current corpus sizes (golden max cluster is
+     * 3 members against {@see AntiUnifier::MAX_UNIFY_MEMBERS}), so normal
+     * runs stay byte-identical; whenever a cluster IS routed through
+     * representatives the disclosure prints on the run's output, per
+     * cluster, in cluster order — serial and fork paths recorded the same
+     * positions, so the two narrate identically. Cancelled runs narrate
+     * only what actually unified. The narration is UNCONDITIONAL (like
+     * the --stats block's facts, and never hidden behind verbosity):
+     * a routed cluster changes what evidence backs the signature, every
+     * reader of the report gets to know. --stats therefore surfaces the
+     * cap, and so does every other run — the doctrine here is the
+     * engine-S10 one: caps fail visible, never laundered into quiet
+     * success.
+     */
+    private function narrateRoutedClusters(PipelineState $state, OutputInterface $output): void
+    {
+        if ($this->routedPositions === []) {
+            return;
+        }
+
+        $tailTotal = 0;
+        foreach ($state->clusters as $pos => $cluster) {
+            if (!isset($this->routedPositions[$pos])) {
+                continue;
+            }
+            $members = count($cluster->members);
+            $reps    = AntiUnifier::representativeCount($members);
+            $tail    = $members - $reps;
+            $tailTotal += $tail;
+            $output->writeln(sprintf(
+                '  refactor: cluster %s: %d members, %d used as representatives (%d counted tail — unobserved members carry gap rows; evidence degraded, --apply refuses)',
+                $cluster->id, $members, $reps, $tail,
+            ));
+        }
+
+        $output->writeln(sprintf(
+            '  refactor cap: %d members/cluster — %d cluster(s) routed through representatives (%d counted-tail members)',
+            AntiUnifier::MAX_UNIFY_MEMBERS,
+            count($this->routedPositions),
+            $tailTotal,
+        ));
+
+        $this->routedPositions = [];
     }
 }
