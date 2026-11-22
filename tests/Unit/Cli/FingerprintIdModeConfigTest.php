@@ -202,4 +202,107 @@ final class FingerprintIdModeConfigTest extends TestCase
         // And the knob axis stays separable from the roster axis:
         $this->assertNotContains(FingerprintIdMode::CACHE_IDENTITY, Config::FINGERPRINT_ID_MODES);
     }
+
+    // ------------------------------------------------------------------
+    // engine-S34b fix-round-1 (r1 F-1) — the era-fold tripwire. The
+    // α-law promises every future bump of a fingerprint-era store's
+    // version constant folds in the roster era word (once-S64 /
+    // shell-S39 riders: 'parser-v7-framing-nul' /
+    // 'cluster-cache-v5-framing-nul'). While CACHE_IDENTITY has zero
+    // read-side consumption in src/ and the collision belt above is
+    // inequality-only, that promise was prose-only; these pins make a
+    // forgotten fold RED. Store files are NOT this lane's locks — the
+    // live constants are read through reflection, never edited.
+    // ------------------------------------------------------------------
+
+    /**
+     * Historical pre-fold anchor: the stamps the two fingerprint-era
+     * stores carry while the riders are pending. This is the
+     * antecedent of the fold law below and stays frozen even after a
+     * rider lands — which is exactly what keeps the law live past the
+     * landing (the inventory test is the part that re-pins).
+     *
+     * @var array<string, string>
+     */
+    private const PRE_FOLD_STORE_TOKENS = [
+        'IndexStore'   => 'parser-v6-namesentinel',
+        'ClusterCache' => 'cluster-cache-v4',
+    ];
+
+    private function storeToken(string $class, string $const): string
+    {
+        $value = (new \ReflectionClassConstant($class, $const))->getValue();
+        if (!is_string($value)) {
+            $this->fail($class . '::$' . $const . ' must be a string version stamp');
+        }
+        return $value;
+    }
+
+    /** Era words of the current roster token: cachekey-v<gen>-<era>. */
+    private function currentRosterEra(): string
+    {
+        $matched = preg_match(
+            '/^cachekey-v\d+-(?<era>[a-z0-9-]+)$/',
+            FingerprintIdMode::CACHE_IDENTITY,
+            $m
+        );
+        if ($matched !== 1) {
+            $this->fail('CACHE_IDENTITY no longer spells cachekey-v<gen>-<era words>');
+        }
+        return $m['era'];
+    }
+
+    public function testStoreBumpsMustFoldTheRosterEra(): void
+    {
+        // Leg (ii) — the conditional law, live from the first deviation
+        // onwards: a store token that has left its pre-fold stamp rides
+        // this roster's fingerprint generation, so it must END WITH the
+        // current roster era word ("stores fold the roster INTO their
+        // own prefixed version strings", FingerprintIdMode docblock).
+        // Vacuous today — leg (iii) below carries the load — and the
+        // tripwire the moment a rider bumps without folding, while the
+        // goldens stay byte-frozen and reveal nothing.
+        $era = $this->currentRosterEra();
+        $this->assertNotSame('', $era);
+        $live = [
+            'IndexStore'   => $this->storeToken(IndexStore::class, 'PARSER_VERSION'),
+            'ClusterCache' => $this->storeToken(ClusterCache::class, 'PARSER_VERSION'),
+        ];
+        foreach ($live as $name => $token) {
+            if ($token === self::PRE_FOLD_STORE_TOKENS[$name]) {
+                continue; // still pre-fold: obligation dormant by design
+            }
+            $this->assertStringEndsWith(
+                $era,
+                $token,
+                "$name left its pre-fold stamp but does not fold the roster era '$era'"
+                . " — the store→roster era fold is missing; a stale-era blob would"
+                . " serve pre-framing hashes and no golden diff will ever reveal it"
+            );
+        }
+    }
+
+    public function testStoreInventoryStillCarriesPreFoldStamps(): void
+    {
+        // Leg (iii) — the current-state inventory, non-vacuous partner
+        // of the law above: both stores provably still ride their
+        // pre-fold stamps, so the rider bump has NOT silently landed
+        // un-noticed. When once-S64 / shell-S39 arrive this flips RED
+        // immediately: re-pin this expectation deliberately, and let
+        // testStoreBumpsMustFoldTheRosterEra() hold the folded era
+        // honest through the landing (PRE_FOLD_STORE_TOKENS is the
+        // frozen anchor — do not touch it here).
+        $this->assertSame(
+            'parser-v6-namesentinel',
+            $this->storeToken(IndexStore::class, 'PARSER_VERSION'),
+            'IndexStore::PARSER_VERSION moved — the once-S64 era-fold rider arrived;'
+            . ' re-pin this inventory and keep the fold law green'
+        );
+        $this->assertSame(
+            'cluster-cache-v4',
+            $this->storeToken(ClusterCache::class, 'PARSER_VERSION'),
+            'ClusterCache::PARSER_VERSION moved — the shell-S39 era-fold rider arrived;'
+            . ' re-pin this inventory and keep the fold law green'
+        );
+    }
 }
