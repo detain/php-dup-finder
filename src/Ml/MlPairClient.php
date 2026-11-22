@@ -80,6 +80,25 @@ use Phpdup\Extraction\Block;
  * {@see MlClient::curlPinEntries()} / {@see MlClient::pinnedStreamRequest()}
  * and MAX_RESPONSE_BYTES). Callers wanting tighter policy should
  * prefilter the URL.
+ *
+ * **Per-instance economics (engine-S21, php-dup-finder-engine-032)**
+ *
+ * The base URL is fixed at construction, so the two endpoints differ
+ * only by path — and the gate decision carries only host, port and the
+ * checked addresses. The client therefore computes the gate decision
+ * at most ONCE per instance ({@see self::endpointDecision()}), refusals
+ * included: the old per-`score()` `dns_get_record` walk is gone from
+ * the serial pair path. The curl transport additionally rides ONE
+ * reused handle ({@see self::sharedCurlHandle()}) per instance, so
+ * keep-alive folds the TCP(+TLS) handshake of later pairs into the
+ * first one while the sidecar holds the connection open. Consequences,
+ * stated honestly: a sidecar whose DNS moves mid-run stays pinned to
+ * the first gate-checked address until a fresh client is constructed
+ * (pre-S21 the per-call re-check could follow the move — but under the
+ * S19b pin it could never dial an *unchecked* record either way), and
+ * the handle is fork-guarded: a client inherited across
+ * `pcntl_fork()` re-initialises it in the child, so no curl handle is
+ * ever driven by two processes.
  */
 final class MlPairClient implements PairScorer
 {
@@ -88,6 +107,76 @@ final class MlPairClient implements PairScorer
         private readonly int $timeoutSec = 5,
         private readonly PairFeatures $features = new PairFeatures(),
     ) {
+    }
+
+    /**
+     * One gate decision per instance (engine-S21). `false` until the
+     * first dial resolves it lazily — a client that never scores stays
+     * free of any resolver work.
+     */
+    private bool $gateResolved = false;
+
+    /** @var null|array{host: string, port: int, addresses: list<string>} */
+    private ?array $gateDecision = null;
+
+    /**
+     * @internal test seam (engine-S21 counting): real MlClient::gateUrl()
+     *           runs so far; must stay 1 however many pairs score() and
+     *           scoreBatch() dial.
+     */
+    private int $urlGateCalls = 0;
+
+    /** @var \CurlHandle|null handle owned by the pid in $curlHandlePid */
+    private ?\CurlHandle $curlHandle = null;
+
+    private int $curlHandlePid = 0;
+
+    /**
+     * The memoized gate decision for this instance's authority.
+     *
+     * gateUrl() derives host/port/addresses from the URL string alone
+     * (the path never enters the decision), so gating the
+     * representative `/score-pair` URL decides identically for
+     * `/score-batch` — one resolver walk per client, verdict cached.
+     *
+     * @return null|array{host: string, port: int, addresses: list<string>}
+     */
+    private function endpointDecision(): ?array
+    {
+        if (!$this->gateResolved) {
+            $this->gateResolved = true;
+            $this->urlGateCalls++;
+            $this->gateDecision = MlClient::gateUrl(rtrim($this->baseUrl, '/') . '/score-pair');
+        }
+        return $this->gateDecision;
+    }
+
+    /**
+     * The instance's single curl handle, (re)initialised as needed.
+     *
+     * engine-S21: reuse is what turns "fresh TCP/TLS handshake per
+     * pair" into one handshake for the instance's lifetime. The fork
+     * guard makes the per-fork isolation the PairScoreWorker comment
+     * promises structural rather than call-order-dependent: a handle
+     * object inherited across pcntl_fork() is discarded here (its fd
+     * copy closes in this address space; the forker keeps its own) and
+     * the child re-initialises. No curl_close anywhere — GC closes the
+     * handle with the client (deprecated in 8.5, no-op since 8.0).
+     */
+    private function sharedCurlHandle(): ?\CurlHandle
+    {
+        $pid = (int)\getmypid();
+        if ($this->curlHandle !== null && $this->curlHandlePid === $pid) {
+            return $this->curlHandle;
+        }
+        $this->curlHandle = null;
+        $ch = curl_init();
+        if ($ch === false) {
+            return null;
+        }
+        $this->curlHandle = $ch;
+        $this->curlHandlePid = $pid;
+        return $ch;
     }
 
     /**
@@ -104,7 +193,7 @@ final class MlPairClient implements PairScorer
             return null;
         }
         $url = rtrim($this->baseUrl, '/') . '/score-pair';
-        $decision = MlClient::gateUrl($url);
+        $decision = $this->endpointDecision();
         if ($decision === null) {
             return null;
         }
@@ -199,7 +288,7 @@ final class MlPairClient implements PairScorer
             return null;
         }
         $url = rtrim($this->baseUrl, '/') . '/score-batch';
-        $decision = MlClient::gateUrl($url);
+        $decision = $this->endpointDecision();
         if ($decision === null) {
             return null;
         }
@@ -325,8 +414,17 @@ final class MlPairClient implements PairScorer
         if ($pins === null) {
             return null;
         }
-        $ch = curl_init();
-        if ($ch === false) {
+        // engine-S21 (php-dup-finder-engine-032): one handle per client
+        // instance — the second..Nth pair on the serial path rides the
+        // keep-alive connection the first one established. Every
+        // per-request option below is re-applied on every call, so no
+        // request state (URL, body, write-callback binding) bleeds
+        // forward; the only option that could persist is
+        // CURLOPT_RESOLVE, and the memoized decision pins the SAME
+        // host:port for the instance's whole life, so its entries
+        // cannot drift to a second authority.
+        $ch = $this->sharedCurlHandle();
+        if ($ch === null) {
             return null;
         }
         // engine-015 (write-callback cap): the callback owns response
@@ -361,7 +459,9 @@ final class MlPairClient implements PairScorer
         }
         // CI-85: no curl_close — deprecated in PHP 8.5 and a no-op
         // since 8.0 (the handle closes on GC), which is why the
-        // try/finally that carried only that call is gone too.
+        // try/finally that carried only that call is gone too. Since
+        // engine-S21 the handle outlives a single exec: GC closes it
+        // when the client instance is dropped.
         curl_setopt_array($ch, $opts);
         $ok       = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);

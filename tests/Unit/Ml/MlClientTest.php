@@ -664,6 +664,55 @@ final class MlClientTest extends TestCase
         }
     }
 
+    // =====================================================================
+    // engine-S21 (php-dup-finder-engine-032, MlClient leg): the
+    // per-score() isAllowedUrl re-check is gone — ONE memoized gate
+    // decision per client instance, refusals cached, lazily resolved
+    // (construction does no resolver work). Counting seam mirrors
+    // MlPairClientTest's engine-S21 section.
+    // =====================================================================
+
+    public function testClusterScoreGatesOncePerClientInstance(): void
+    {
+        $cluster = $this->makeCluster();
+        $client  = new MlClient('http://127.0.0.1:1', timeoutSec: 1);
+        $calls   = new \ReflectionProperty($client, 'urlGateCalls');
+        self::assertSame(0, $calls->getValue($client), 'construction performs no gate work');
+
+        self::assertNull($client->score($cluster));
+        self::assertNull($client->score($cluster));
+        self::assertNull($client->score($cluster));
+        self::assertSame(
+            1,
+            $calls->getValue($client),
+            'the refusal is cached — no per-score resolver walk (engine-032)',
+        );
+
+        $empty = new MlClient('', timeoutSec: 1);
+        self::assertNull($empty->score($cluster));
+        self::assertSame(
+            0,
+            (new \ReflectionProperty($empty, 'urlGateCalls'))->getValue($empty),
+            'a disabled client resolves no decision at all',
+        );
+    }
+
+    public function testAllowedClusterUrlGatesOnceAcrossClusters(): void
+    {
+        // TEST-NET-3 literal: accepted by the gate without DNS, dial to
+        // :1 fails within timeoutSec (1 s per call). Gate count is the
+        // assertion; the transport outcome stays the graceful null.
+        $cluster = $this->makeCluster();
+        $client  = new MlClient('http://203.0.113.10:1', timeoutSec: 1);
+        self::assertNull($client->score($cluster));
+        self::assertNull($client->score($cluster));
+        self::assertSame(
+            1,
+            (new \ReflectionProperty($client, 'urlGateCalls'))->getValue($client),
+            'two scored clusters, one memoized decision',
+        );
+    }
+
     /**
      * @param array{host: string, port: int, addresses: list<string>} $decision
      */

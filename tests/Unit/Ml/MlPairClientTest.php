@@ -556,6 +556,188 @@ final class MlPairClientTest extends TestCase
         }
     }
 
+    // =====================================================================
+    // engine-S21 — per-instance economics (php-dup-finder-engine-032).
+    //
+    // The serial pair path must stop paying a resolver walk and a fresh
+    // curl handle/TCP(+TLS) handshake per pair: ONE memoized gate
+    // decision per client (counting seam on $urlGateCalls) and ONE
+    // keep-alive handle per client (object-identity seam on
+    // $curlHandle), fork-guarded via $curlHandlePid. The public API and
+    // the engine-S20 null-slot semantics pinned above stay byte-
+    // untouched — these are the "counting seam" acceptance legs.
+    // =====================================================================
+
+    public function testUrlDecisionGatedOncePerClientInstanceIncludingRefusals(): void
+    {
+        $a = $this->makeBlock();
+        $b = $this->makeBlock();
+        // 127.0.0.1 is refused by the gate itself (engine-S19a) — the
+        // whole test stays hermetic: nothing ever dials.
+        $client = new MlPairClient('http://127.0.0.1:1', timeoutSec: 1);
+        self::assertSame(0, self::gateCalls($client), 'construction performs no gate work');
+
+        self::assertNull($client->score($a, $b));
+        self::assertNull($client->scoreBatch([[$a, $b]]));
+        self::assertNull($client->score($a, $b));
+        self::assertNull($client->scoreBatch([[$a, $b], [$b, $a]]));
+
+        self::assertSame(
+            1,
+            self::gateCalls($client),
+            'both endpoints share ONE memoized gate decision — refusals cached too (engine-032)',
+        );
+    }
+
+    public function testDisabledOrEmptyCallsNeverConsumeTheGate(): void
+    {
+        $client = new MlPairClient('http://127.0.0.1:1', timeoutSec: 1);
+        self::assertNull($client->scoreBatch([]));
+        self::assertSame(0, self::gateCalls($client), 'an empty batch returns before the gate');
+
+        $empty = new MlPairClient('', timeoutSec: 1);
+        self::assertNull($empty->score($this->makeBlock(), $this->makeBlock()));
+        self::assertNull($empty->scoreBatch([[$this->makeBlock(), $this->makeBlock()]]));
+        self::assertSame(0, self::gateCalls($empty), 'a disabled client resolves no decision at all');
+    }
+
+    public function testAllowedAuthorityGatesOnceAcrossEndpointsAndRetries(): void
+    {
+        // 203.0.113.10 is TEST-NET-3: public space the gate ACCEPTS
+        // (no DNS — canonical literal), while the dial to port :1 fails
+        // within timeoutSec. The assertion is about the gate count, and
+        // each of the three bounded connects costs at most 1 s.
+        $a = $this->makeBlock();
+        $b = $this->makeBlock();
+        $client = new MlPairClient('http://203.0.113.10:1', timeoutSec: 1);
+        self::assertNull($client->score($a, $b));
+        self::assertNull($client->scoreBatch([[$a, $b]]));
+        self::assertNull($client->score($a, $b));
+        self::assertSame(
+            1,
+            self::gateCalls($client),
+            'positive-side memo: /score-pair AND /score-batch ride one decision, retries included',
+        );
+    }
+
+    public function testCurlHandleReusedAcrossCallsOneInitNoLeak(): void
+    {
+        [$pid, $port, $server] = $this->forkHttpServer(
+            static fn(string $request): string => self::echoResponseFor($request),
+            5,
+            2
+        );
+        try {
+            $client   = new MlPairClient('http://ml.invalid', timeoutSec: 3);
+            $decision = ['host' => 'ml.invalid', 'port' => $port, 'addresses' => ['127.0.0.1']];
+            $method   = new \ReflectionMethod($client, 'postJsonCurl');
+            $first    = $method->invoke($client, "http://ml.invalid:$port/score-pair", '{}', $decision);
+            $handleA  = self::curlHandle($client);
+            $second   = $method->invoke($client, "http://ml.invalid:$port/score-batch", '{}', $decision);
+            $handleB  = self::curlHandle($client);
+
+            // The mirror-seam posture from engine-S19b stays: this
+            // drives the same private transport score()/scoreBatch()
+            // use, with a forged gate decision (the loopback listener
+            // the pin dials is refused by the real gate by design).
+            self::assertIsString($first);
+            self::assertIsString($second);
+            self::assertStringContainsString('POST /score-pair', $first);
+            self::assertStringContainsString('POST /score-batch', $second);
+            self::assertSame(
+                spl_object_id($handleA),
+                spl_object_id($handleB),
+                'multiple scores ride ONE handle — no per-call curl_init accumulation (engine-032)',
+            );
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    public function testKeepAliveHandleFoldsPerPairHandshakes(): void
+    {
+        // The crux of engine-032: while the sidecar holds the
+        // connection open, the SECOND transfer on the same handle must
+        // create ZERO new connections (CURLINFO_NUM_CONNECTS) — the
+        // fresh TCP handshake-per-pair is gone, and with it the TLS one
+        // on https sidecars (same handle-cache mechanism).
+        [$pid, $port, $server] = $this->forkKeepAliveServer(2);
+        try {
+            $client   = new MlPairClient('http://ml.invalid', timeoutSec: 3);
+            $decision = ['host' => 'ml.invalid', 'port' => $port, 'addresses' => ['127.0.0.1']];
+            $method   = new \ReflectionMethod($client, 'postJsonCurl');
+
+            $first = $method->invoke($client, "http://ml.invalid:$port/score-pair", '{}', $decision);
+            self::assertIsString($first);
+            self::assertStringContainsString('req=1', $first);
+
+            $second = $method->invoke($client, "http://ml.invalid:$port/score-batch", '{}', $decision);
+            self::assertIsString($second, 'second dial on the reused handle failed');
+            self::assertStringContainsString('req=2', $second, 'sidecar must see request 2 on the SAME connection');
+
+            self::assertSame(
+                0,
+                (int) curl_getinfo(self::curlHandle($client), CURLINFO_NUM_CONNECTS),
+                'curl created no new connection for the second transfer — keep-alive reused the first',
+            );
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    public function testInheritedHandleIsNeverDrivenAcrossProcessBoundary(): void
+    {
+        [$pid, $port, $server] = $this->forkHttpServer(
+            static fn(string $request): string => self::echoResponseFor($request),
+            5,
+            2
+        );
+        try {
+            $client   = new MlPairClient('http://ml.invalid', timeoutSec: 3);
+            $decision = ['host' => 'ml.invalid', 'port' => $port, 'addresses' => ['127.0.0.1']];
+            $method   = new \ReflectionMethod($client, 'postJsonCurl');
+            self::assertIsString($method->invoke($client, "http://ml.invalid:$port/score-pair", '{}', $decision));
+            $born     = self::curlHandle($client);
+            $pidProp  = new \ReflectionProperty($client, 'curlHandlePid');
+
+            // Simulate the post-fork state deterministically (a real
+            // fork here would only add scheduling noise): an inherited
+            // client carries the FORKER's pid; no live pid is ever -1.
+            $pidProp->setValue($client, -1);
+
+            self::assertIsString($method->invoke($client, "http://ml.invalid:$port/score-batch", '{}', $decision));
+            $reborn = self::curlHandle($client);
+
+            self::assertNotSame(
+                spl_object_id($born),
+                spl_object_id($reborn),
+                'a handle created in another process is discarded, never driven here',
+            );
+            self::assertSame(
+                (int) getmypid(),
+                (int) $pidProp->getValue($client),
+                'the new process re-initialised the handle and re-stamped ownership',
+            );
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    private static function gateCalls(MlPairClient $client): int
+    {
+        return (new \ReflectionProperty($client, 'urlGateCalls'))->getValue($client);
+    }
+
+    private static function curlHandle(MlPairClient $client): \CurlHandle
+    {
+        $handle = (new \ReflectionProperty($client, 'curlHandle'))->getValue($client);
+        self::assertInstanceOf(\CurlHandle::class, $handle);
+        return $handle;
+    }
+
     /**
      * Response that reflects the first request line and the Host header:
      * bytes visible only to a client that actually talked to the listener.
@@ -633,6 +815,79 @@ final class MlPairClientTest extends TestCase
             }
             fclose($server);
             exit($served > 0 ? 0 : 1);
+        }
+        return [$pid, $port, $server];
+    }
+
+    /**
+     * Keep-alive variant of forkHttpServer (engine-S21): ONE accepted
+     * connection serves $requestsToServe requests sequentially — the
+     * per-connection read loop never closes it between responses, and
+     * each body is exactly Content-Length framed, so a client that
+     * reuses its curl handle is answered req=2 on the SAME socket. A
+     * client that dials a fresh connection instead is never accepted
+     * at all (the child does not loop back to accept).
+     *
+     * @return array{0: int, 1: int, 2: resource} [pid, port, listener]
+     */
+    private function forkKeepAliveServer(int $requestsToServe, int $ioTimeoutSec = 5): array
+    {
+        if (!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid')) {
+            self::markTestSkipped('forked HTTP server requires pcntl_fork/pcntl_waitpid');
+        }
+        if (!function_exists('posix_kill')) {
+            self::markTestSkipped('forked HTTP server reaper requires posix_kill');
+        }
+        $server = @stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
+        if ($server === false) {
+            self::markTestSkipped("loopback bind unavailable: $errstr");
+        }
+        $name = (string)stream_socket_get_name($server, false);
+        $port = (int)substr($name, (int)strrpos($name, ':') + 1);
+        self::assertGreaterThan(0, $port);
+
+        $pid = pcntl_fork();
+        if ($pid === -1) {
+            fclose($server);
+            self::markTestSkipped('pcntl_fork failed');
+        }
+        if ($pid === 0) {
+            while (ob_get_level() > 0) {
+                ob_end_clean();
+            }
+            $conn = @stream_socket_accept($server, $ioTimeoutSec);
+            $served = 0;
+            if ($conn !== false) {
+                stream_set_timeout($conn, $ioTimeoutSec);
+                for ($i = 1; $i <= $requestsToServe; $i++) {
+                    $request = '';
+                    while (!str_contains($request, "\r\n\r\n")) {
+                        $chunk = fread($conn, 8192);
+                        if ($chunk === false || $chunk === '' || (stream_get_meta_data($conn)['timed_out'] ?? false)) {
+                            break 2;
+                        }
+                        $request .= $chunk;
+                    }
+                    if (preg_match('/^Content-Length: (\d+)$/mi', $request, $m) === 1) {
+                        $remaining = (int)$m[1];
+                        while ($remaining > 0) {
+                            $chunk = fread($conn, min(8192, $remaining));
+                            if ($chunk === false || $chunk === '' || (stream_get_meta_data($conn)['timed_out'] ?? false)) {
+                                break 2;
+                            }
+                            $remaining -= strlen($chunk);
+                        }
+                    }
+                    $line  = strtok($request, "\r\n");
+                    $body  = "req=$i\n" . ($line === false ? '' : $line);
+                    @fwrite($conn, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: "
+                        . strlen($body) . "\r\n\r\n" . $body);
+                    $served++;
+                }
+                fclose($conn);
+            }
+            fclose($server);
+            exit($served === $requestsToServe ? 0 : 1);
         }
         return [$pid, $port, $server];
     }

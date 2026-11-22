@@ -52,7 +52,14 @@ final class PairScoreWorker
         // ML pair-tier (option 6). Pass an empty string to disable.
         // The client itself is constructed lazily inside the worker
         // process so each fork gets its own curl handle without the
-        // master serialising one.
+        // master serialising one. engine-S21 (php-dup-finder-engine-032)
+        // makes that isolation hold by construction: the client memoizes
+        // one gate decision per instance and rides one keep-alive curl
+        // handle whose pid guard re-initialises it in any process that
+        // inherited the client across pcntl_fork — so even the
+        // individual-retry-after-batch-miss path below pays no per-pair
+        // resolver walk, no per-pair curl_init, and no per-pair
+        // TCP/TLS handshake (while the sidecar keeps the connection up).
         private readonly string $mlPairUrl = '',
         private readonly float $mlPairThreshold = 0.80,
         private readonly int $mlPairTimeoutSec = 5,
@@ -97,9 +104,13 @@ final class PairScoreWorker
     public function score(array $pairs): array
     {
         $jaccard     = new JaccardSimilarity();
-        // Pre-warm ML client in the child process before entering the scoring loop.
-        // This avoids the curl-init cost on the first ML pair while preserving
-        // per-fork handle isolation (runs after pcntl_fork in WorkerPool).
+        // Pre-warm ML client in the child process before entering the
+        // scoring loop. The ??= memo makes this ONE client per worker
+        // run — batch AND the per-pair retries below share it, so the
+        // engine-S21 instance economics (single gate decision, single
+        // pid-guarded keep-alive handle) cover the retry path too.
+        // (Runs after pcntl_fork in WorkerPool; per-fork isolation is
+        // additionally enforced inside the client's handle guard.)
         $client = $this->mlPairUrl !== '' ? ($this->mlPairClient ??= new MlPairClient(
             baseUrl: $this->mlPairUrl,
             timeoutSec: $this->mlPairTimeoutSec,

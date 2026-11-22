@@ -58,6 +58,18 @@ use Phpdup\Clustering\Cluster;
  * (curl write-callback abort; stream bounded read). Callers that need a
  * tighter policy (e.g. only specific hostnames) can still prefilter the
  * URL before constructing the client.
+ *
+ * Per-instance economics (engine-S21, php-dup-finder-engine-032): the
+ * base URL is fixed at construction, so the gate decision (host, port,
+ * checked addresses — the path never enters it) is computed at most
+ * ONCE per client and reused, refusals included. The old per-call
+ * re-check walked the resolver on every score(); a sidecar whose DNS
+ * moves mid-run now stays pinned to the first checked address until a
+ * fresh client is constructed — under the S19b pin the per-call
+ * re-check could never have dialed an unchecked record anyway, so the
+ * only thing the memo gives up is following a legitimate relocation.
+ * (The pair client additionally reuses one curl handle for keep-alive;
+ * the cluster path dials once per cluster and gains nothing from it.)
  */
 final class MlClient
 {
@@ -78,6 +90,38 @@ final class MlClient
         private readonly string $baseUrl,
         private readonly int $timeoutSec = 5,
     ) {
+    }
+
+    /**
+     * One gate decision per instance (engine-S21, removing the per-call
+     * isAllowedUrl re-check of php-dup-finder-engine-032). `false` until
+     * the first score() resolves it lazily — a client that never scores
+     * performs no resolver work at all.
+     */
+    private bool $gateResolved = false;
+
+    /** @var null|array{host: string, port: int, addresses: list<string>} */
+    private ?array $gateDecision = null;
+
+    /**
+     * @internal test seam (engine-S21 counting): real gateUrl() runs so
+     *           far; must stay 1 however many clusters score() dials.
+     */
+    private int $urlGateCalls = 0;
+
+    /**
+     * The memoized gate decision for this instance's single endpoint.
+     *
+     * @return null|array{host: string, port: int, addresses: list<string>}
+     */
+    private function endpointDecision(): ?array
+    {
+        if (!$this->gateResolved) {
+            $this->gateResolved = true;
+            $this->urlGateCalls++;
+            $this->gateDecision = self::gateUrl(rtrim($this->baseUrl, '/') . '/score');
+        }
+        return $this->gateDecision;
     }
 
     /**
@@ -130,7 +174,7 @@ final class MlClient
             return null;
         }
         $url = rtrim($this->baseUrl, '/') . '/score';
-        $decision = self::gateUrl($url);
+        $decision = $this->endpointDecision();
         if ($decision === null) {
             return null;
         }
