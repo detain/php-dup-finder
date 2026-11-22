@@ -1683,6 +1683,71 @@ final class BlockAstLoaderTest extends TestCase
     }
 
     /**
+     * once-S87 fix-round-1 [r1 MEDIUM-1]: the representative-SELECTION arm
+     * the r1 battery proved load-bearing but unpinned (mutant m4 — drop
+     * `sort($spellings)` in ScanningStage — survived the whole suite).
+     * The existing fence pins collapse root ORDER, and their duplicate
+     * spellings (`$tree.'/'` vs `$tree`) normalize to one literal at emit,
+     * so first-seen and lex-smallest pick the same survivor there — order
+     * is NOT selection. The arm only bites for two DISTINGUISHABLE
+     * spellings of one disk location, i.e. a symlink beside its target.
+     * Pin: both argument orders through the REAL ScanningStage yield the
+     * IDENTICAL file list, riding the lex-smallest spelling — with the
+     * direction itself tested twice (pair A the link sorts smallest, pair
+     * B the real dir does), so first-seen, last-seen and always-symlink
+     * representatives all die here while order-collapse-only neuters
+     * cannot masquerade as coverage.
+     */
+    public function testSymlinkVersusRealRootSpellingsCollapseToLexSmallestRepresentative(): void
+    {
+        $treeA = $this->dir . '/s87m1a-real';
+        $linkA = $this->dir . '/s87m1a-alink';
+        $treeB = $this->dir . '/s87m1b-breal';
+        $linkB = $this->dir . '/s87m1b-zlink';
+        foreach ([$treeA, $treeB] as $tree) {
+            self::assertTrue(mkdir($tree . '/Nested', 0o777, true));
+            file_put_contents($tree . '/alpha.php', "<?php\n\nfunction s87m1_alpha(int \$x): int\n{\n    return \$x;\n}\n");
+            file_put_contents($tree . '/Nested/beta.php', "<?php\n\nfunction s87m1_beta(int \$x): int\n{\n    return \$x + 1;\n}\n");
+        }
+        if (!@symlink($treeA, $linkA)) {
+            // Filesystem without symlink support (same guard as the S87
+            // diskKey arm in AstSerializerTest): the selection arm is
+            // unrepresentable here; skip loud, never silently pass.
+            self::markTestSkipped('symlink() unavailable on this filesystem');
+        }
+        self::assertTrue(@symlink($treeB, $linkB), 'second symlink creation on the same fs');
+
+        $scan = function (array $paths): array {
+            $config = new Config(
+                paths: $paths, exclude: [], minBlockSize: 1,
+                cacheDir: $this->dir . '/s87m1-cache',
+            );
+            $state = new PipelineState($config);
+            $out = new BufferedOutput();
+            (new ScanningStage())->run($state, $out);
+            return [$state->files, $out->fetch()];
+        };
+
+        // 's87m1a-alink' sorts BELOW 's87m1a-real': the link must be the
+        // surviving spelling whatever the argument order.
+        $expA = [$linkA . '/Nested/beta.php', $linkA . '/alpha.php'];
+        [$linkFirstA, $outLinkFirstA] = $scan([$linkA, $treeA]);
+        [$realFirstA, $outRealFirstA] = $scan([$treeA, $linkA]);
+        self::assertSame($expA, $linkFirstA, 'lex-smallest (link) spelling rides the survivors');
+        self::assertSame($linkFirstA, $realFirstA, 'link/real argument order cannot move the representative');
+        self::assertStringContainsString('1 duplicate root path(s) collapsed', $outLinkFirstA);
+        self::assertStringContainsString('1 duplicate root path(s) collapsed', $outRealFirstA);
+
+        // 's87m1b-breal' sorts BELOW 's87m1b-zlink': the REAL dir survives —
+        // selection follows the spelling, never the link-ness.
+        $expB = [$treeB . '/Nested/beta.php', $treeB . '/alpha.php'];
+        [$linkFirstB] = $scan([$linkB, $treeB]);
+        [$realFirstB] = $scan([$treeB, $linkB]);
+        self::assertSame($expB, $realFirstB, 'lex-smallest (real) spelling rides the survivors');
+        self::assertSame($linkFirstB, $realFirstB, 'real/link argument order cannot move the representative');
+    }
+
+    /**
      * Every kind-'if' block in the file's CURRENT bytes, sorted by start,
      * built exactly like decoyMembers() so they share one positional
      * group key with the hand-built members.
