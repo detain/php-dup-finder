@@ -842,6 +842,8 @@ final class FileScanner
      * shell-S23's substrings intact ('--diff-base git diff failed in') so
      * command-level assertions about the refusal class stay stable across
      * the move; the concrete git verb distinguishes the two stages.
+     *
+     * @return array{error: string, paths: list<string>, unmatched: list<string>}
      */
     private static function diffProbeError(string $probeDir, string $stderr, int $code, string $verb): array
     {
