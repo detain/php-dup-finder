@@ -61,9 +61,35 @@ use Phpdup\Util\AstSerializer;
  * terminator and fails `php -l`). Body extraction failures refuse the
  * cluster rather than printing comment stubs into production files, and
  * no planned buffer reaches the write window until it has re-parsed.
+ *
+ * output-003: the redirect the member gets is FULLY QUALIFIED —
+ * `\Refactored\{fn}()` — never the qualified-relative `Refactored\{fn}`
+ * the old node emitted, which PHP resolved against the CALLING file's
+ * namespace (a namespaced member fatalled on <MemberNs>\Refactored\fn,
+ * and the emitted hint already said `\Refactored\`, so hint and applied
+ * bytes disagreed). One static builder, qualifiedCallName(), is the
+ * single source both hint and call node pass through. And an extracted
+ * abstraction required by nobody is dead weight: the write window now
+ * also lands a deterministic bootstrap stub (BOOTSTRAP_FILE beside the
+ * artifacts) that requires every generated abstraction file, so the
+ * tree has a documented load story the rewritten members actually
+ * resolve through.
  */
 final class ApplyExtractor
 {
+    /**
+     * The one home of the generated abstraction namespace. The artifact's
+     * `namespace` line, the members' fully qualified call, the reporter's
+     * hint, and the bootstrap stub's directory all derive from this.
+     */
+    public const ARTIFACT_NAMESPACE = 'Refactored';
+
+    /**
+     * Deterministic bootstrap stub the write window lands beside the
+     * artifacts; requiring it loads every generated abstraction.
+     */
+    public const BOOTSTRAP_FILE = '_autoload.php';
+
     private readonly Standard $printer;
 
     public function __construct()
@@ -104,8 +130,10 @@ final class ApplyExtractor
         // 1. Build modified AST with hole nodes replaced by Variable references.
         $modifiedAst = $this->replaceHolesWithParams($cluster);
 
-        // 2. Extract function name from signature.
-        $funcName = $this->extractFunctionName($cluster->signature);
+        // 2. Extract function name from signature (output-003: the
+        //    unparseable-signature fallback is now the cluster-scoped
+        //    `f_{id}` the reporter's hint names too — one identity).
+        $funcName = $this->extractFunctionName($cluster->signature, $cluster->id);
 
         // 3. output-004 (half A): plan every member rewrite — group members
         //    by file, one read + one parse per file, node-identity
@@ -116,13 +144,16 @@ final class ApplyExtractor
         $planned = $this->planRewrites($cluster, $funcName);
 
         // 4. Build the function file and compose the window's full landing
-        //    set (function artifact first, then each member file exactly
-        //    once — every sibling member of a file landed inside the
-        //    single prettyPrinted tree planned above).
+        //    set (function artifact first, then the bootstrap stub, then
+        //    each member file exactly once — every sibling member of a
+        //    file landed inside the single prettyPrinted tree planned
+        //    above). output-003: the stub is part of the window, so a
+        //    failed apply rolls it back exactly like every other landing.
         $functionFile = $this->buildFunctionFile($funcName, $modifiedAst, $cluster);
-        $refactoredDir = $outDir . '/Refactored';
+        $refactoredDir = $outDir . '/' . self::ARTIFACT_NAMESPACE;
         $safeId = Slug::safe($cluster->id);
         $functionPath = $refactoredDir . "/{$safeId}.php";
+        $bootstrapPath = $refactoredDir . '/' . self::BOOTSTRAP_FILE;
         if (array_key_exists($functionPath, $planned)) {
             // Snapshot/restore keys one path by one — a member file that
             // doubles as the artifact destination would silently overwrite
@@ -133,9 +164,20 @@ final class ApplyExtractor
                 $functionPath,
             ));
         }
+        if (array_key_exists($bootstrapPath, $planned)) {
+            // Same one-path-one-snapshot law for the bootstrap stub.
+            throw new \RuntimeException(sprintf(
+                'ApplyExtractor: refusing cluster %s — the bootstrap stub path %s is also a member file path; no files were written.',
+                $cluster->id,
+                $bootstrapPath,
+            ));
+        }
 
         /** @var array<string, string> $landings path => planned bytes, window order */
-        $landings = [$functionPath => $functionFile];
+        $landings = [
+            $functionPath => $functionFile,
+            $bootstrapPath => $this->buildBootstrapStub(),
+        ];
         foreach ($planned as $file => $pair) {
             $landings[$file] = $pair['rewritten'];
         }
@@ -146,7 +188,7 @@ final class ApplyExtractor
         //     abstraction, not a rewrite: refused HERE, before any
         //     snapshot, mkdir or first byte, so "no files were written"
         //     remains honest.
-        $this->assertBuffersReparse($cluster, $landings);
+        $this->assertBuffersReparse($cluster, $landings, $bootstrapPath);
 
         // 5. output-004 (half B): open the write window as a TRANSACTION.
         //    The snapshots are the bytes the plan read (member files carry
@@ -156,7 +198,7 @@ final class ApplyExtractor
         //    "no files were written" true (half-A posture), and $outCreated
         //    / $dirCreated mark the trees the window itself added.
         $outPreExisted = is_dir($outDir);
-        $snapshot = $this->captureSnapshots($cluster, $planned, $functionPath);
+        $snapshot = $this->captureSnapshots($cluster, $planned, $functionPath, $bootstrapPath);
         $dirCreated = false;
         if (!is_dir($refactoredDir)) {
             // Sibling arms run error_clear_last() immediately before their
@@ -206,6 +248,80 @@ final class ApplyExtractor
     }
 
     /**
+     * The name of a generated abstraction INSIDE its artifact directory:
+     * `Refactored\{fn}` — no leading backslash (the FullyQualified call
+     * node and the printer add it back, byte-for-byte the hint's text).
+     * output-003: the single builder both apply's call sites and the
+     * reporter's member hints pass through.
+     */
+    public static function artifactName(string $funcName): string
+    {
+        return self::ARTIFACT_NAMESPACE . '\\' . $funcName;
+    }
+
+    /**
+     * The resolved call text a rewritten member emits — `\Refactored\{fn}`
+     * — identical to what the printer renders for the call node and to
+     * the reporter's `replace body with:` hint.
+     */
+    public static function qualifiedCallName(string $funcName): string
+    {
+        return '\\' . self::artifactName($funcName);
+    }
+
+    /**
+     * Path of the bootstrap stub a window opening on $outDir lands. Built
+     * exactly like apply() builds it, so the reporter's summary names the
+     * very file the transaction verified.
+     */
+    public static function bootstrapStubPath(string $outDir): string
+    {
+        return $outDir . '/' . self::ARTIFACT_NAMESPACE . '/' . self::BOOTSTRAP_FILE;
+    }
+
+    /**
+     * The deterministic bootstrap stub (output-003). A generated
+     * abstraction required by nothing is dead weight: PHP only resolves
+     * the rewritten `\Refactored\fn()` calls once a file declaring them
+     * is loaded. This stub requires every sibling abstraction file —
+     * sorted glob, self-excluded, no side effects beyond the requires —
+     * and carries NO path-dependent bytes, so re-applying the same
+     * cluster lands the identical stub and the transaction stays
+     * byte-stable across runs.
+     */
+    private function buildBootstrapStub(): string
+    {
+        $stub = self::BOOTSTRAP_FILE;
+        $lines = [
+            '<?php',
+            'declare(strict_types=1);',
+            '',
+            '/**',
+            ' * phpdup bootstrap stub for generated abstractions (output-003).',
+            ' *',
+            ' * Rewritten call sites invoke ' . self::qualifiedCallName('{fn}') . ' — fully',
+            ' * qualified and namespace-independent — but those names resolve',
+            ' * only once the files declaring them are LOADED. This stub',
+            ' * requires every sibling abstraction file exactly once; load',
+            " * individual files by hand instead if you prefer. Add",
+            " *   require_once '<this directory>/" . $stub . "';",
+            ' * to your entry point.',
+            ' */',
+            '',
+            '$phpdupAbstractions = glob(__DIR__ . \'/*.php\');',
+            'foreach ($phpdupAbstractions === false ? [] : $phpdupAbstractions as $phpdupFile) {',
+            '    if ($phpdupFile === __FILE__ || !is_file($phpdupFile)) {',
+            '        continue; // this stub, or a non-file glob match',
+            '    }',
+            '    require_once $phpdupFile;',
+            '}',
+            'unset($phpdupAbstractions, $phpdupFile);',
+        ];
+
+        return implode("\n", $lines) . "\n";
+    }
+
+    /**
      * Parse every planned buffer and demand that it reads back.
      *
      * output-005: the extractor's promise to a user is that --apply emits
@@ -214,13 +330,14 @@ final class ApplyExtractor
      * the composition as a whole — no landing reaches the write window
      * unless php-parser accepts it. Runs after planning and before the
      * window opens, so the refusal keeps the half-A posture: zero bytes
-     * touched. The first landing is the generated function artifact; the
-     * rest are member rewrites, named by path.
+     * touched. The first landing is the generated function artifact, the
+     * second the generated bootstrap stub (output-003); the rest are
+     * member rewrites, named by path.
      *
      * @param array<string, string> $landings path => planned bytes
      * @throws \RuntimeException naming the first buffer that does not re-parse
      */
-    private function assertBuffersReparse(Cluster $cluster, array $landings): void
+    private function assertBuffersReparse(Cluster $cluster, array $landings, string $bootstrapPath): void
     {
         $artifactPath = array_key_first($landings);
         foreach ($landings as $path => $bytes) {
@@ -228,9 +345,11 @@ final class ApplyExtractor
             if ($parser->parseCode($bytes) !== null) {
                 continue;
             }
-            $subject = $path === $artifactPath
-                ? 'the generated function file'
-                : 'the rewrite of ' . $path;
+            $subject = match (true) {
+                $path === $artifactPath => 'the generated function file',
+                $path === $bootstrapPath => 'the generated bootstrap stub',
+                default => 'the rewrite of ' . $path,
+            };
             throw new \RuntimeException(sprintf(
                 'ApplyExtractor: refusing cluster %s — %s does not re-parse after planning (%s); no files were written.',
                 $cluster->id,
@@ -243,14 +362,17 @@ final class ApplyExtractor
     /**
      * Snapshot every path the write window is about to touch, BEFORE its
      * first byte. Member files carry the exact bytes the plan read (one
-     * read per file, half-A law preserved); the function artifact's prior
-     * state is read here, and an existing-but-unreadable artifact refuses
-     * the cluster while nothing has been written yet.
+     * read per file, half-A law preserved); the function artifact's and
+     * the bootstrap stub's prior states are read here (output-003: the
+     * stub is a window landing like any other), and an existing-but
+     * unreadable generated file refuses the cluster while nothing has
+     * been written yet. The artifact check runs first — its refusal
+     * message is a pinned diagnostic.
      *
      * @param array<string, array{original: string, rewritten: string}> $planned
      * @return array<string, string|false> path => pre-write bytes, false = absent
      */
-    private function captureSnapshots(Cluster $cluster, array $planned, string $functionPath): array
+    private function captureSnapshots(Cluster $cluster, array $planned, string $functionPath, string $bootstrapPath): array
     {
         $snapshot = [];
         if (is_file($functionPath)) {
@@ -267,6 +389,21 @@ final class ApplyExtractor
             $snapshot[$functionPath] = $prior;
         } else {
             $snapshot[$functionPath] = false;
+        }
+        if (is_file($bootstrapPath)) {
+            error_clear_last();
+            $prior = @file_get_contents($bootstrapPath);
+            if ($prior === false) {
+                throw new \RuntimeException(sprintf(
+                    'ApplyExtractor: refusing cluster %s — the existing bootstrap stub %s could not be read (%s); no files were written.',
+                    $cluster->id,
+                    $bootstrapPath,
+                    self::describeLastFailure($bootstrapPath),
+                ));
+            }
+            $snapshot[$bootstrapPath] = $prior;
+        } else {
+            $snapshot[$bootstrapPath] = false;
         }
         foreach ($planned as $file => $pair) {
             $snapshot[$file] = $pair['original'];
@@ -854,13 +991,18 @@ final class ApplyExtractor
         return implode('/', array_map('strval', $path));
     }
 
-    private function extractFunctionName(string $signature): string
+    /**
+     * The name the extraction declares. output-003: one builder with the
+     * reporter's hint — the name is FunctionNameRegistry::nameOf() when
+     * the signature parses, and a CLUSTER-SCOPED fallback otherwise, so
+     * an unparseable signature can never emit a call to a name that
+     * silently collides across clusters (the old fixed
+     * 'extractedFunction' was one such collision waiting to happen).
+     */
+    private function extractFunctionName(string $signature, string $clusterId = ''): string
     {
         // signature is like "function notifyByThreshold(\n    mixed $threshold,\n): mixed"
-        if (preg_match('/^function\s+([a-zA-Z_][a-zA-Z0-9_]*)/', $signature, $m)) {
-            return $m[1];
-        }
-        return 'extractedFunction';
+        return FunctionNameRegistry::nameOf($signature) ?? 'f_' . $clusterId;
     }
 
     private function buildFunctionFile(string $funcName, Node $modifiedAst, Cluster $cluster): string
@@ -888,7 +1030,7 @@ final class ApplyExtractor
             '<?php',
             'declare(strict_types=1);',
             '',
-            'namespace Refactored;',
+            'namespace ' . self::ARTIFACT_NAMESPACE . ';',
             '',
             '/**',
             " * Auto-generated abstraction for phpdup cluster {$cluster->id}.",
@@ -1051,7 +1193,14 @@ final class ApplyExtractor
         }
 
         $call = new Node\Expr\FuncCall(
-            new Node\Name('Refactored\\' . $funcName),
+            // output-003: FullyQualified, not the old qualified-relative
+            // Name — a bare `Refactored\fn` written into a NAMESPACED
+            // member resolved as <MemberNs>\Refactored\fn and fatalled at
+            // runtime. The printer emits FullyQualified as
+            // '\Refactored\fn', the exact text memberHint shows: hint and
+            // applied call share one name builder (artifactName), so they
+            // can no longer disagree.
+            new Node\Name\FullyQualified(self::artifactName($funcName)),
             $args,
         );
 

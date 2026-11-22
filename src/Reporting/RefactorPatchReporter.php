@@ -176,6 +176,14 @@ final class RefactorPatchReporter
                     . " files (each read back byte-for-byte after the transaction)\n";
                 if ($applied !== []) {
                     $summary .= "# Files: " . implode(', ', $applied) . "\n";
+                    // output-003: applied members call \Refactored\fn()
+                    // fully qualified — they RESOLVE only once the
+                    // generated files are loaded. apply() lands a
+                    // bootstrap stub beside the artifacts inside its
+                    // write window; the summary names the exact path so
+                    // the load story is told, not silently skipped.
+                    $summary .= '# Bootstrap: ' . str_replace('\\', '/', ApplyExtractor::bootstrapStubPath($dir))
+                        . " — require_once it (or the listed files) to load the generated abstractions\n";
                 }
                 if ($skipped !== []) {
                     $summary .= "# Skipped:\n" . implode("\n", $skipped) . "\n";
@@ -246,7 +254,7 @@ final class RefactorPatchReporter
             '+<?php',
             '+declare(strict_types=1);',
             '+',
-            '+namespace Refactored;',
+            '+namespace ' . ApplyExtractor::ARTIFACT_NAMESPACE . ';',
             '+',
             '+/**',
             "+ * Auto-generated abstraction for phpdup cluster {$cluster->id}.",
@@ -270,12 +278,14 @@ final class RefactorPatchReporter
         // Per-member edit hints — replace body with a single call comment.
         // M4 fix: hint names the function the patch ACTUALLY declares (the
         // registry-resolved signature name), never a `f_{clusterId}` ghost
-        // a human could not call. Fallback keeps the old text for
-        // unparseable signatures, where ApplyExtractor has no real name
-        // either — nothing to point at.
-        $declName = FunctionNameRegistry::nameOf((string) $cluster->signature);
+        // a human could not call. output-003 tightened the fallback: it is
+        // now the SAME `f_{clusterId}` identity ApplyExtractor::apply()
+        // declares for an unparseable signature (one name builder shared
+        // by hint and extraction), so hint and applied bytes can never
+        // point at different names.
+        $declName = FunctionNameRegistry::nameOf((string) $cluster->signature) ?? ('f_' . $cluster->id);
         foreach ($cluster->members as $i => $member) {
-            $patch .= $this->memberHint($member, $declName ?? ('f_' . $cluster->id), $i);
+            $patch .= $this->memberHint($member, $declName, $i);
         }
         return $patch;
     }
@@ -344,7 +354,10 @@ final class RefactorPatchReporter
         // defused; the range digits are structural.
         $loc = CsvReporter::defuseFormula($member->file) . ":{$member->range->start}-{$member->range->end}";
         return "\n# member[{$idx}] @ {$loc}\n"
-             . "#   replace body with: return \\Refactored\\{$funcName}(...);\n";
+             // output-003: emitted through the SAME name builder the
+             // applied call node is built from — the hint text and the
+             // rewritten call site are byte-identical by construction.
+             . "#   replace body with: return " . ApplyExtractor::qualifiedCallName($funcName) . "(...);\n";
     }
 
     /**
