@@ -17,14 +17,25 @@ use SebastianBergmann\Diff\Output\StrictUnifiedDiffOutputBuilder;
  * Index is interactive — column-sort via data-* attributes + a search
  * filter + a copy-signature clipboard button — but the JS is all
  * inlined and there's no build step. Pure PHP templates.
+ *
+ * output-038: member source arrives through the shared per-run
+ * {@see SourceTextStore} — one read per file per run, symlink-confinement
+ * refusals included. A member whose source could not be read renders an
+ * explicit `[source not read: reason]` marker, never an empty cell that
+ * reads like a real (empty) source, and the pairwise diff section states
+ * the same posture instead of diffing placeholder bytes.
  */
 final class HtmlReporter
 {
+    public function __construct(private readonly ?SourceTextStore $sourceText = null) {}
+
     public function writeTo(Report $report, string $dir): void
     {
         if (!is_dir($dir)) {
             @mkdir($dir, 0o775, true);
         }
+
+        $store = $this->sourceText ?? new SourceTextStore($report->config->paths);
 
         file_put_contents($dir . '/style.css', $this->css());
         file_put_contents($dir . '/app.js', $this->js());
@@ -32,7 +43,7 @@ final class HtmlReporter
 
         foreach ($report->clusters as $i => $cluster) {
             $name = sprintf('cluster-%03d.html', $i + 1);
-            file_put_contents($dir . '/' . $name, $this->renderCluster($i + 1, $cluster, $report));
+            file_put_contents($dir . '/' . $name, $this->renderCluster($i + 1, $cluster, $report, $store));
         }
     }
 
@@ -130,9 +141,9 @@ final class HtmlReporter
         return strtolower(implode(' ', $bits));
     }
 
-    private function renderCluster(int $num, Cluster $c, Report $report): string
+    private function renderCluster(int $num, Cluster $c, Report $report, SourceTextStore $store): string
     {
-        $sources = $this->loadSources($c);
+        $sources = $this->loadSources($c, $store);
         ob_start();
         ?><!doctype html>
 <html lang="en"><head>
@@ -217,19 +228,24 @@ final class HtmlReporter
 
 <section><h2>Members</h2>
 <div class="members">
-<?php foreach ($c->members as $idx => $m): $src = $sources[$idx] ?? ''; ?>
+<?php foreach ($c->members as $idx => $m): $src = $sources[$idx] ?? null; ?>
 <div class="member">
   <h3><?= htmlspecialchars($m->location()) ?></h3>
   <p class="meta"><?= htmlspecialchars($m->qualifiedName()) ?> · <?= htmlspecialchars($m->kind) ?> · <?= $m->size ?> nodes</p>
-  <pre class="src"><?= $this->highlightPhp($src) ?></pre>
+  <pre class="src"><?= $src === null ? $this->unfetched($store, $m->file) : $this->highlightPhp($src) ?></pre>
 </div>
 <?php endforeach; ?>
 </div>
 </section>
 
 <?php if (count($c->members) >= 2): ?>
+<?php $d0 = $sources[0] ?? null; $d1 = $sources[1] ?? null; ?>
 <section><h2>Diff: member 1 vs member 2</h2>
-<pre class="diff"><?= $this->renderDiff($sources[0] ?? '', $sources[1] ?? '') ?></pre>
+<?php if ($d0 !== null && $d1 !== null): ?>
+<pre class="diff"><?= $this->renderDiff($d0, $d1) ?></pre>
+<?php else: ?>
+<pre class="diff"><?= $this->diffSkipped($store, $c, $d0, $d1) ?></pre>
+<?php endif; ?>
 </section>
 <?php endif; ?>
 
@@ -240,18 +256,58 @@ final class HtmlReporter
         return (string)ob_get_clean();
     }
 
-    /** @return list<string> */
-    private function loadSources(Cluster $c): array
+    /**
+     * @return list<string|null> one entry per member; null = the store
+     *                           refused the read (explicit unfetched posture,
+     *                           never an empty string masquerading as source)
+     */
+    private function loadSources(Cluster $c, SourceTextStore $store): array
     {
         $out = [];
         foreach ($c->members as $m) {
-            $contents = @file_get_contents($m->file);
-            if ($contents === false) { $out[] = ''; continue; }
-            $lines = preg_split("/\r?\n/", $contents) ?: [];
+            $lines = $store->lines($m->file);
+            if ($lines === null) {
+                $out[] = null;
+                continue;
+            }
             $slice = array_slice($lines, $m->range->start - 1, $m->range->lines());
             $out[] = implode("\n", $slice);
         }
         return $out;
+    }
+
+    /**
+     * The explicit unfetched marker for one member whose source the store
+     * refused. The reason string is store-controlled vocabulary; the path
+     * itself is already rendered by the member header above, so no scanned
+     * text rides this line unescaped (the label passes htmlspecialchars like
+     * every other bit of text in the page).
+     */
+    private function unfetched(SourceTextStore $store, string $file): string
+    {
+        return '<span class="unfetched">'
+             . htmlspecialchars('[' . SourceTextStore::UNFETCHED . ': ' . ($store->reason($file) ?? 'unavailable') . ']', ENT_QUOTES, 'UTF-8')
+             . '</span>';
+    }
+
+    /**
+     * The diff section's honest statement when either side was never
+     * fetched: name which member(s) could not be read and why, instead of
+     * rendering a diff of placeholder bytes that would read as real data.
+     */
+    private function diffSkipped(SourceTextStore $store, Cluster $c, ?string $d0, ?string $d1): string
+    {
+        $sides = [];
+        if ($d0 === null) {
+            $sides[] = 'member 1: ' . ($store->reason($c->members[0]->file) ?? 'unavailable');
+        }
+        if ($d1 === null) {
+            $sides[] = 'member 2: ' . ($store->reason($c->members[1]->file) ?? 'unavailable');
+        }
+        return '<span class="unfetched">' . htmlspecialchars(
+            '[diff skipped: ' . SourceTextStore::UNFETCHED . ' (' . implode('; ', $sides) . ')]',
+            ENT_QUOTES, 'UTF-8',
+        ) . '</span>';
     }
 
     private function renderDiff(string $a, string $b): string
@@ -536,6 +592,7 @@ th.sorted-desc::after { content: ' ▼'; font-size: 10px; }
 .hole-optional_block { background: #fffbeb; }
 .hole-optional_block td { border-bottom-color: #fde68a; }
 .absent { color: #d97706; font-style: italic; }
+.unfetched { color: var(--muted); font-style: italic; }
 .gap { color: #9ca3af; font-style: italic; }
 .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; margin-left: 6px; }
 .badge.optional { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }

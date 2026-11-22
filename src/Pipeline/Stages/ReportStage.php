@@ -31,6 +31,7 @@ use Phpdup\Reporting\RefactorTestReporter;
 use Phpdup\Reporting\Report;
 use Phpdup\Reporting\SarifReporter;
 use Phpdup\Reporting\ScanWindow;
+use Phpdup\Reporting\SourceTextStore;
 use Phpdup\Reporting\TimeseriesReporter;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -227,6 +228,18 @@ final class ReportStage implements StageInterface
         // per-run rewrite (shell-S40).
         $this->writeClusterIdCache($config->cacheDir, $clusters);
 
+        // output-038: one SourceTextStore per report run. Every source-
+        // reading surface (HTML member panes, .diff/.patch streams, the
+        // JSON evidence keys, the refactor-patch verdict reads) shares it,
+        // so each scanned file is read at most once per run, reads are
+        // mtime/size-revalidated, and a symlink planted toward an
+        // out-of-root target is refused AT THE READ with a FileScanner-
+        // style skip note instead of having its content embedded in a
+        // shareable artifact (SEC-06 read-side half). Constructed here —
+        // after the report payload exists and before any surface writes
+        // — and never reused across runs (Watch/Server re-enter run()).
+        $sourceText = new \Phpdup\Reporting\SourceTextStore($config->paths);
+
         if ($this->pagerMode !== Pager::MODE_NEVER) {
             $buf = new \Symfony\Component\Console\Output\BufferedOutput(
                 $output->getVerbosity(),
@@ -246,11 +259,11 @@ final class ReportStage implements StageInterface
         }
 
         if ($config->jsonReportFile !== null) {
-            (new JsonReporter())->writeTo($report, $config->jsonReportFile);
+            (new JsonReporter($sourceText))->writeTo($report, $config->jsonReportFile);
             $output->writeln("<info>phpdup</info> json report → {$config->jsonReportFile}");
         }
         if ($config->htmlReportDir !== null) {
-            (new HtmlReporter())->writeTo($report, $config->htmlReportDir);
+            (new HtmlReporter($sourceText))->writeTo($report, $config->htmlReportDir);
             $output->writeln("<info>phpdup</info> html report → {$config->htmlReportDir}/index.html");
         }
         if ($this->sarifFile !== null) {
@@ -262,11 +275,11 @@ final class ReportStage implements StageInterface
             $output->writeln("<info>phpdup</info> gitlab-sast report → {$this->gitlabSastFile}");
         }
         if ($this->diffDir !== null) {
-            (new DiffReporter())->writeDir($report, $this->diffDir);
+            (new DiffReporter($sourceText))->writeDir($report, $this->diffDir);
             $output->writeln("<info>phpdup</info> diff reports → {$this->diffDir}/");
         }
         if ($this->patchFile !== null) {
-            (new DiffReporter())->writePatch($report, $this->patchFile);
+            (new DiffReporter($sourceText))->writePatch($report, $this->patchFile);
             $output->writeln("<info>phpdup</info> cumulative patch → {$this->patchFile}");
         }
         if ($this->checkstyleFile !== null) {
@@ -294,11 +307,11 @@ final class ReportStage implements StageInterface
             $output->writeln("<info>phpdup</info> plantuml file → {$this->plantumlFile}");
         }
         if ($this->refactorPatchDir !== null) {
-            (new RefactorPatchReporter())->writeTo($report, $this->refactorPatchDir);
+            (new RefactorPatchReporter($sourceText))->writeTo($report, $this->refactorPatchDir);
             $output->writeln("<info>phpdup</info> refactor patches → {$this->refactorPatchDir}/");
         }
         if ($this->applyDir !== null) {
-            (new RefactorPatchReporter())->writeTo($report, $this->applyDir, apply: true, dryRun: $this->applyDryRun);
+            (new RefactorPatchReporter($sourceText))->writeTo($report, $this->applyDir, apply: true, dryRun: $this->applyDryRun);
             $output->writeln("<info>phpdup</info> apply diff → {$this->applyDir}/apply.diff");
         }
         if ($this->refactorTestsDir !== null) {

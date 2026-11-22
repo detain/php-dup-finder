@@ -26,9 +26,24 @@ use Phpdup\Util\ControlText;
  *
  * The reporter is intentionally conservative — its goal is to give
  * reviewers a starting point, not to ship working refactors.
+ *
+ * output-038/-043: member sources read through the shared per-run
+ * {@see SourceTextStore} (single read path, symlink confinement), and the
+ * unsafe verdict is memoized per cluster — the F1b branch used to run
+ * detectUnsafe twice for every flagged cluster (once at the gate, once
+ * again inside the fallback `buildPatch`), each run re-reading every
+ * member's file uncached.
  */
 final class RefactorPatchReporter
 {
+    /** output-038 memo: one detectUnsafe verdict per Cluster object. */
+    /** @var array<int,string|null> spl_object_id => verdict */
+    private array $unsafeVerdicts = [];
+
+    /** output-043 pin surface: verdicts actually computed (memo hits excluded). */
+    private int $unsafeComputations = 0;
+
+    public function __construct(private readonly ?SourceTextStore $sourceText = null) {}
     /**
      * Write one `.patch` file per cluster under `$dir`.
      *
@@ -70,6 +85,8 @@ final class RefactorPatchReporter
             @mkdir($dir, 0o775, true);
         }
 
+        $store = $this->sourceText ?? new SourceTextStore($report->config->paths);
+
         if ($apply) {
             if ($dryRun) {
                 // F1a / preview mode: write apply.diff containing scaffold patches
@@ -79,7 +96,7 @@ final class RefactorPatchReporter
                         continue;
                     }
                     $safeId = Slug::safe($cluster->id);
-                    $parts[] = $this->buildPatch($cluster, $safeId);
+                    $parts[] = $this->buildPatch($cluster, $safeId, $store);
                 }
                 file_put_contents($dir . DIRECTORY_SEPARATOR . 'apply.diff', implode("\n", $parts));
             } else {
@@ -92,11 +109,14 @@ final class RefactorPatchReporter
                         continue;
                     }
                     $safeId = Slug::safe($cluster->id);
-                    $unsafe = $this->detectUnsafe($cluster);
+                    $unsafe = $this->detectUnsafe($cluster, $store);
                     if ($unsafe !== null) {
-                        // Unsafe cluster: fall back to preview patch.
+                        // Unsafe cluster: fall back to preview patch. The
+                        // verdict is memoized, so buildPatch reuses this
+                        // computation instead of re-reading every member
+                        // (output-043).
                         $skipped[] = "# cluster " . CsvReporter::defuseFormula($cluster->id) . ": {$unsafe}";
-                        $skipped[] = $this->buildPatch($cluster, $safeId);
+                        $skipped[] = $this->buildPatch($cluster, $safeId, $store);
                         continue;
                     }
                     if ($cluster->generalizedAst === null || $cluster->signature === null) {
@@ -130,7 +150,7 @@ final class RefactorPatchReporter
             }
             $safeId = Slug::safe($cluster->id);
             $file = $dir . DIRECTORY_SEPARATOR . $safeId . '.patch';
-            file_put_contents($file, $this->buildPatch($cluster, $safeId));
+            file_put_contents($file, $this->buildPatch($cluster, $safeId, $store));
         }
     }
 
@@ -140,8 +160,12 @@ final class RefactorPatchReporter
      * The patch is intentionally non-applicable: it adds an
      * abstraction skeleton plus per-member hint comments so a human
      * reviewer can wire up the call sites themselves.
+     *
+     * @param SourceTextStore|null $store shared per-run source store; a direct
+     *                                    caller that omits it gets a transient
+     *                                    one (no confinement roots, no reuse)
      */
-    public function buildPatch(Cluster $cluster, ?string $safeId = null): string
+    public function buildPatch(Cluster $cluster, ?string $safeId = null, ?SourceTextStore $store = null): string
     {
         // Boundary guard for direct callers (writeTo pre-scans the whole
         // report, but buildPatch is public and embeds every member path in
@@ -151,7 +175,8 @@ final class RefactorPatchReporter
         }
 
         $safeId ??= Slug::safe($cluster->id);
-        $unsafe = $this->detectUnsafe($cluster);
+        $store    ??= new SourceTextStore();
+        $unsafe   = $this->detectUnsafe($cluster, $store);
         // output-035 (S6): the `#`-comment rows are metadata and their text
         // values go through CsvReporter::defuseFormula; the `+`/`-` hunk
         // payload below (including prefixLines of the signature) is raw
@@ -208,28 +233,52 @@ final class RefactorPatchReporter
     /**
      * @return string|null A short reason why the cluster cannot be
      *         auto-patched, or null when mechanical replacement is OK.
+     *
+     * output-043: the verdict is memoized per cluster object, so the F1b
+     * gate and the fallback buildPatch share one computation (and one set
+     * of member reads) instead of paying twice per flagged cluster.
      */
-    private function detectUnsafe(Cluster $cluster): ?string
+    private function detectUnsafe(Cluster $cluster, SourceTextStore $store): ?string
     {
+        $key = spl_object_id($cluster);
+        if (array_key_exists($key, $this->unsafeVerdicts)) {
+            return $this->unsafeVerdicts[$key];
+        }
+        $this->unsafeComputations++;
+
+        $verdict = null;
         foreach ($cluster->members as $m) {
-            $src = $this->memberSource($m);
+            $src = $this->memberSource($m, $store);
             if ($src === null) {
                 continue;
             }
             if (str_contains($src, '$this->')) {
-                return 'member uses $this — needs context-aware extraction';
+                $verdict = 'member uses $this — needs context-aware extraction';
+                break;
             }
             if (preg_match('/\b(self|static|parent)::/', $src) === 1) {
-                return 'member uses self::/static::/parent:: — class-bound';
+                $verdict = 'member uses self::/static::/parent:: — class-bound';
+                break;
             }
             if (str_contains($src, 'yield')) {
-                return 'member is a generator (yield)';
+                $verdict = 'member is a generator (yield)';
+                break;
             }
             if (preg_match('/\bfunction\s*\(/', $src) === 1) {
-                return 'member declares a closure (capture analysis required)';
+                $verdict = 'member declares a closure (capture analysis required)';
+                break;
             }
         }
-        return null;
+        return $this->unsafeVerdicts[$key] = $verdict;
+    }
+
+    /**
+     * Number of detectUnsafe verdicts actually computed (memo hits do not
+     * count). Public as the pin surface for the output-043 counter test.
+     */
+    public function detectUnsafeComputations(): int
+    {
+        return $this->unsafeComputations;
     }
 
     /**
@@ -249,16 +298,15 @@ final class RefactorPatchReporter
     }
 
     /**
-     * Read the source bytes for a member's range, returning null when
-     * the file is unreadable or no longer exists.
+     * Read the source bytes for a member's range through the shared store,
+     * returning null when the file is unreadable, gone, or refused by
+     * symlink confinement. output-016: this used to be a third independent
+     * uncached whole-file reader.
      */
-    private function memberSource(Block $member): ?string
+    private function memberSource(Block $member, SourceTextStore $store): ?string
     {
-        if (!is_file($member->file)) {
-            return null;
-        }
-        $lines = @file($member->file, FILE_IGNORE_NEW_LINES);
-        if ($lines === false) {
+        $lines = $store->lines($member->file);
+        if ($lines === null) {
             return null;
         }
         $start = max(0, $member->range->start - 1);

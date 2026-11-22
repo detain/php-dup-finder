@@ -27,6 +27,15 @@ use PhpParser\PrettyPrinter\Standard as PrettyPrinter;
  * `re_expressed` mark plus the longest hole-free `hole_fragment`. Hole
  * objects additionally carry `degraded`, and structural gaps in `observed`
  * are JSON null, never the old `<missing>` string.
+ *
+ * output-038: source bytes arrive through the same per-run
+ * {@see SourceTextStore} every other read surface uses (injected by
+ * ReportStage; a standalone `build()` on a hand-built Report creates its
+ * own confined store from the report's scan roots). The unfetchable case
+ * is the payload's own `text: null` / `evidence_diff: null` posture — the
+ * `<source unavailable: …>` placeholder string that used to ride inside
+ * these values is gone. Schema shape untouched: both keys already declare
+ * null, and no golden member sits in a previously-placeholdered case.
  */
 final class JsonReporter
 {
@@ -42,6 +51,8 @@ final class JsonReporter
 
     private ?PrettyPrinter $printer = null;
 
+    public function __construct(private readonly ?SourceTextStore $sourceText = null) {}
+
     public function writeTo(Report $report, string $file): void
     {
         $this->writeFile($file, Json::encode($this->build($report), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
@@ -51,6 +62,7 @@ final class JsonReporter
     public function build(Report $report): array
     {
         $advisor = new PlacementAdvisor($report->config->paths);
+        $store   = $this->sourceText ?? new SourceTextStore($report->config->paths);
         return [
             'phpdup_version' => Version::STRING,
             'schema_version' => JsonSchemaSpec::SCHEMA_VERSION,
@@ -86,7 +98,7 @@ final class JsonReporter
             // Item 5.3: one advisor per build() so composer manifests are
             // read once per run; it evaluates post-RefactorStage state
             // (holes + labels) only — never reloads unloaded member ASTs.
-            'clusters' => array_map(fn(Cluster $c) => $this->clusterPayload($c, $report->config, $advisor), $report->clusters),
+            'clusters' => array_map(fn(Cluster $c) => $this->clusterPayload($c, $report->config, $advisor, $store), $report->clusters),
             // Item 4.3: the declared-twin claim-vs-reality table —
             // trailing-additive key, schema '1.2' → '1.3'. Producers
             // without the analyzer pass emit [] (the key is always
@@ -96,7 +108,7 @@ final class JsonReporter
     }
 
     /** @return array<string, mixed> */
-    private function clusterPayload(Cluster $c, Config $config, PlacementAdvisor $advisor): array
+    private function clusterPayload(Cluster $c, Config $config, PlacementAdvisor $advisor, SourceTextStore $store): array
     {
         // One coverage measurement per cluster, reused by the three keys
         // that depend on it (item 5.4 walking an AST twice would only
@@ -182,8 +194,8 @@ final class JsonReporter
             'scope' => ClusterScope::of($c),
             // ── Item 5.4 trailing-additive extraction evidence ─────────────
             'template'      => self::templatePayload($c),
-            'source'        => self::sourcePayload($c),
-            'evidence_diff' => self::evidencePayload($c),
+            'source'        => self::sourcePayload($c, $store),
+            'evidence_diff' => self::evidencePayload($c, $store),
             'hole_coverage' => $coverage === null ? null : Num::json($coverage),
             're_expressed'  => $reExpressed,
             'hole_fragment' => $reExpressed ? $this->fragmentPayload($c) : null,
@@ -217,17 +229,24 @@ final class JsonReporter
 
     /**
      * Template source text, size-capped with an explicit truncation marker
-     * line (caps: SOURCE_MAX_LINES / SOURCE_MAX_BYTES).
+     * line (caps: SOURCE_MAX_LINES / SOURCE_MAX_BYTES). Unfetchable sources
+     * (missing/unreadable, or refused by the store's symlink confinement)
+     * answer `text: null` — the shape's own "no source" value — never the
+     * old `<source unavailable: …>` placeholder string (output-016/-048).
      *
      * @return array{text:string|null,truncated:bool}
      */
-    private function sourcePayload(Cluster $c): array
+    private function sourcePayload(Cluster $c, SourceTextStore $store): array
     {
         $t = HoleCoverage::canonicalTemplate($c);
         if ($t === null) {
             return ['text' => null, 'truncated' => false];
         }
-        [$text, $truncated] = self::cap(DiffReporter::sourceOf($t), self::SOURCE_MAX_LINES, self::SOURCE_MAX_BYTES);
+        $source = DiffReporter::sourceOf($t, $store);
+        if ($source === null) {
+            return ['text' => null, 'truncated' => false];
+        }
+        [$text, $truncated] = self::cap($source, self::SOURCE_MAX_LINES, self::SOURCE_MAX_BYTES);
         return ['text' => $text, 'truncated' => $truncated];
     }
 
@@ -240,7 +259,7 @@ final class JsonReporter
      *
      * @return null|array{member:string,file:string,start:int,end:int,diff:string,truncated:bool}
      */
-    private function evidencePayload(Cluster $c): ?array
+    private function evidencePayload(Cluster $c, SourceTextStore $store): ?array
     {
         $t = HoleCoverage::canonicalTemplate($c);
         if ($t === null || count($c->members) < 2) {
@@ -250,8 +269,14 @@ final class JsonReporter
         if ($rep === null) {
             return null;
         }
-        $srcT = DiffReporter::sourceOf($t);
-        $srcR = DiffReporter::sourceOf($rep);
+        $srcT = DiffReporter::sourceOf($t, $store);
+        $srcR = DiffReporter::sourceOf($rep, $store);
+        if ($srcT === null || $srcR === null) {
+            // output-016: a side that was never fetched leaves no evidence
+            // to compare — null posture, not a diff against placeholder
+            // bytes (the placeholder used to ride into this field as text).
+            return null;
+        }
         if ($srcT === $srcR) {
             // Byte-identical sources: an empty diff is noise masquerading
             // as proof — say "no evidence" instead of showing a header.
