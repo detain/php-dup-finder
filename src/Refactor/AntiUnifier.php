@@ -819,7 +819,16 @@ final class AntiUnifier
     {
         if ($node instanceof Node\Scalar\String_)     return var_export($node->value, true);
         if ($node instanceof Node\Scalar\Int_)        return (string)$node->value;
-        if ($node instanceof Node\Scalar\Float_)      return (string)$node->value;
+        // output-025: the ini-driven `(string)` cast of a float lies twice —
+        // an integral-valued float loses its decimal part (1.0 renders as
+        // "1", indistinguishable from the int hole row), and large/small
+        // magnitudes pick up precision-boundary noise ("1.0E+25" becomes
+        // "1.0000000000000001E+25" under precision=17). var_export uses
+        // serialize_precision (shortest round-trip, default -1): "1.0"
+        // stays float-honest, "1.0E+25" is stable under any `precision`
+        // setting, and non-finite floats surface as the INF/NAN words
+        // the ParameterSynthesizer cascade recognises.
+        if ($node instanceof Node\Scalar\Float_)      return var_export($node->value, true);
         if ($node instanceof Node\Expr\Variable && is_string($node->name)) return '$' . $node->name;
         // Identifier covers VarLikeIdentifier (its subclass); they're rendered without the $ prefix in this branch.
         if ($node instanceof Node\Identifier)         return $node->name;

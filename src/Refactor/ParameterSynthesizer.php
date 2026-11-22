@@ -14,6 +14,8 @@ use Phpdup\Clustering\Cluster;
  *   - inferredType
  *       all observed values look like ints   → 'int'
  *       all look like floats                  → 'float'
+ *           (float covers the full repr() vocabulary of output-025:
+ *            decimal '1.0', exponent '1.0E+25', non-finite 'INF'/'NAN')
  *       all look like bools                   → 'bool'
  *       all look like nulls                   → 'null'
  *       all are PHP string literals           → 'string'
@@ -37,6 +39,27 @@ use Phpdup\Clustering\Cluster;
  */
 final class ParameterSynthesizer
 {
+    /**
+     * Numeric literal shapes as they arrive in a hole's observed values —
+     * i.e. exactly what AntiUnifier::repr() emits (output-025):
+     *
+     *   int    — signed digits ('1', '-3'); ints are precision-immune.
+     *   float  — the var_export family: decimal ('1.0', '-0.5'),
+     *            exponent magnitude ('1.0E+25', '1.0E-5'), plus the
+     *            legacy `(string)`-cast spellings a pre-025 cached
+     *            payload may still carry ('1.5e-3', '.5',
+     *            '1.0000000000000001E+25'), and the non-finite words
+     *            'INF' / '-INF' / 'NAN' (var_export of INF/NAN, the
+     *            shape a 1e309-style literal takes after the lexer's
+     *            (float) conversion).
+     *
+     * Without the exponent/non-finite arms an integral-magnitude float
+     * hole fell through the whole cascade to 'mixed' — typing honesty
+     * demanded 'float'.
+     */
+    private const INT_LITERAL_REGEX = '/^-?\d+$/';
+    private const FLOAT_LITERAL_REGEX = '/^(?:-?(?:\d+\.\d*|\.\d+|\d+(?:\.\d*)?[eE][+-]?\d+)|-?INF|NAN)$/';
+
     public function synthesize(Cluster $cluster): void
     {
         $usedNames = [];
@@ -55,8 +78,8 @@ final class ParameterSynthesizer
         $values = $hole->observedValues;
         if (!$values) return 'mixed';
 
-        if ($this->allMatch($values, '/^-?\d+$/'))                              return 'int';
-        if ($this->allMatch($values, '/^-?\d+\.\d+$/'))                         return 'float';
+        if ($this->allMatch($values, self::INT_LITERAL_REGEX))                  return 'int';
+        if ($this->allMatch($values, self::FLOAT_LITERAL_REGEX))                return 'float';
         if ($this->allMatchSet($values, ['true', 'false', 'TRUE', 'FALSE']))    return 'bool';
         if ($this->allMatchSet($values, ['null', 'NULL']))                      return 'null';
         if ($this->allMatch($values, '/^([\'"]).*\1$/s'))                       return 'string';
@@ -126,8 +149,8 @@ final class ParameterSynthesizer
 
     private function classifyValue(string $v): ?string
     {
-        if (preg_match('/^-?\d+$/', $v)) return 'int';
-        if (preg_match('/^-?\d+\.\d+$/', $v)) return 'float';
+        if (preg_match(self::INT_LITERAL_REGEX, $v)) return 'int';
+        if (preg_match(self::FLOAT_LITERAL_REGEX, $v)) return 'float';
         if (in_array($v, ['true', 'false', 'TRUE', 'FALSE'], true)) return 'bool';
         if (in_array($v, ['null', 'NULL'], true)) return 'null';
         if (preg_match('/^([\'"]).*\1$/s', $v)) return 'string';

@@ -38,6 +38,85 @@ final class ParameterSynthesizerTest extends TestCase
         $this->assertSame('$threshold', $cluster->holes[0]->suggestedName);
     }
 
+    // ---- output-S28: float repr via var_export (int/float typing honesty) ----
+
+    public function testIntegralFloatRowsClassifyFloatNotInt(): void
+    {
+        // The shapes AntiUnifier::repr() now emits for Float_ nodes that
+        // the old (string) cast rendered as bare ints.
+        $cluster = $this->clusterWithHoles([new Hole('__P0', 'literal', ['1.0', '2.0'])]);
+        (new ParameterSynthesizer())->synthesize($cluster);
+
+        $hole = $cluster->holes[0];
+        $this->assertSame('float', $hole->inferredType);
+        $this->assertSame('$threshold', $hole->suggestedName);
+    }
+
+    public function testIntAndFloatHolesClassifyDistinctly(): void
+    {
+        // '1' vs '1.0' is the typing-honesty pair: identical VALUE,
+        // distinct type. The cascade must not merge them.
+        $cluster = $this->clusterWithHoles([
+            new Hole('__P0', 'literal', ['1', '2']),
+            new Hole('__P1', 'literal', ['1.0', '2.0']),
+        ]);
+        (new ParameterSynthesizer())->synthesize($cluster);
+
+        $this->assertSame('int',   $cluster->holes[0]->inferredType);
+        $this->assertSame('float', $cluster->holes[1]->inferredType);
+    }
+
+    public function testExponentFloatHoleTypesFloatNotMixed(): void
+    {
+        // '1.0E+25' is the acceptance shape: the old cascade matched
+        // neither ^-?\d+$ nor ^-?\d+\.\d+$ and fell through to 'mixed'.
+        $cluster = $this->clusterWithHoles([new Hole('__P0', 'literal', ['1.0E+25', '2.0E+25'])]);
+        (new ParameterSynthesizer())->synthesize($cluster);
+
+        $hole = $cluster->holes[0];
+        $this->assertSame('float', $hole->inferredType);
+        $this->assertSame('$threshold', $hole->suggestedName);
+    }
+
+    public function testExponentSpellingsAcrossFormsAllFloat(): void
+    {
+        // Lowercase-e and negative-magnitude var_export spellings, plus
+        // the legacy (string)-cast shapes a pre-025 cached payload may
+        // still carry (long precision=17 mantissa, leading-dot form).
+        $cluster = $this->clusterWithHoles([
+            new Hole('__P0', 'literal', ['1.0E-5', '2.5E+13']),
+            new Hole('__P1', 'literal', ['1.0000000000000001E+25', '1.5e-3']),
+            new Hole('__P2', 'literal', ['.5', '-.25']),
+        ]);
+        (new ParameterSynthesizer())->synthesize($cluster);
+
+        $this->assertSame('float', $cluster->holes[0]->inferredType);
+        $this->assertSame('float', $cluster->holes[1]->inferredType);
+        $this->assertSame('float', $cluster->holes[2]->inferredType);
+    }
+
+    public function testNonFiniteFloatSpellingsTypeFloat(): void
+    {
+        // var_export(INF) === 'INF', var_export(NAN) === 'NAN'; a 1e309-style
+        // literal surfaces in that shape, never as a digit form.
+        $cluster = $this->clusterWithHoles([
+            new Hole('__P0', 'literal', ['INF', '-INF']),
+            new Hole('__P1', 'literal', ['1.0', 'NAN']),
+        ]);
+        (new ParameterSynthesizer())->synthesize($cluster);
+
+        $this->assertSame('float', $cluster->holes[0]->inferredType);
+        $this->assertSame('float', $cluster->holes[1]->inferredType);
+    }
+
+    public function testIntegralFloatVsIntRowsProduceHonestUnion(): void
+    {
+        $cluster = $this->clusterWithHoles([new Hole('__P0', 'subtree', ['1', '1.0'])]);
+        (new ParameterSynthesizer())->synthesize($cluster);
+
+        $this->assertSame('int|float', $cluster->holes[0]->inferredType);
+    }
+
     public function testBoolLiteralsBecomeBool(): void
     {
         $cluster = $this->clusterWithHoles([new Hole('__P0', 'literal', ['true', 'false'])]);

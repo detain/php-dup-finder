@@ -67,6 +67,122 @@ final class AntiUnifierTest extends TestCase
         }
     }
 
+    // ---- output-S28: float repr via var_export (int/float typing honesty) ----
+
+    public function testIntegralFloatLiteralHoleReprsFloatHonestly(): void
+    {
+        // The old (string) cast rendered these Float_ members as ['1','2']
+        // — identical rows to int literals, so the synthesizer typed the
+        // float hole 'int'. var_export keeps the decimal point.
+        $cluster = $this->clusterFor([
+            'function f($x) { return finish(1.0, $x); }',
+            'function f($x) { return finish(2.0, $x); }',
+        ]);
+
+        (new AntiUnifier())->unify($cluster);
+        (new ParameterSynthesizer())->synthesize($cluster);
+
+        $rows = $this->floatRows($cluster);
+        sort($rows);
+        $this->assertSame(['1.0', '2.0'], $rows);
+
+        $hole = $this->holeCarrying($cluster, '1.0');
+        $this->assertSame('float', $hole->inferredType);
+    }
+
+    public function testFloatVsIntLiteralHoleCarriesBothSpellings(): void
+    {
+        // 1.0 vs 1 diverge at class level → 'subtree' hole; the rows must
+        // show both spellings so union typing sees int AND float.
+        $cluster = $this->clusterFor([
+            'function f($x) { return $x * 1.0; }',
+            'function f($x) { return $x * 1; }',
+        ]);
+
+        (new AntiUnifier())->unify($cluster);
+        (new ParameterSynthesizer())->synthesize($cluster);
+
+        $rows = $this->floatRows($cluster);
+        sort($rows);
+        $this->assertSame(['1', '1.0'], $rows);
+
+        $hole = $this->holeCarrying($cluster, '1.0');
+        $this->assertSame('subtree', $hole->kind);
+        $this->assertSame('int|float', $hole->inferredType);
+    }
+
+    public function testLargeFloatReprIsExponentShapedAndTypesFloat(): void
+    {
+        $cluster = $this->clusterFor([
+            'function f($x) { return finish(1.0e25, $x); }',
+            'function f($x) { return finish(2.0e25, $x); }',
+        ]);
+
+        (new AntiUnifier())->unify($cluster);
+        (new ParameterSynthesizer())->synthesize($cluster);
+
+        $rows = $this->floatRows($cluster);
+        sort($rows);
+        $this->assertSame(['1.0E+25', '2.0E+25'], $rows);
+
+        $hole = $this->holeCarrying($cluster, '1.0E+25');
+        $this->assertSame('float', $hole->inferredType);
+    }
+
+    public function testFloatReprStableUnderPrecision14And17(): void
+    {
+        // The acceptance inis: (string)-cast repr drifted between the two
+        // (0.1 → '0.1' vs '0.10000000000000001'); var_export rides
+        // serialize_precision (-1, shortest round-trip) instead and must
+        // produce byte-equal hole rows under both settings.
+        $codes = [
+            'function f($x) { return finish(0.1, $x); }',
+            'function f($x) { return finish(1.0e25, $x); }',
+        ];
+
+        $rowsByPrecision = [];
+        $old = (string)ini_get('precision');
+        try {
+            foreach (['14', '17'] as $p) {
+                ini_set('precision', $p);
+                $cluster = $this->clusterFor($codes);
+                (new AntiUnifier())->unify($cluster);
+                $rows = $this->floatRows($cluster);
+                sort($rows);
+                $rowsByPrecision[$p] = $rows;
+            }
+        } finally {
+            ini_set('precision', $old);
+        }
+
+        $this->assertSame(['0.1', '1.0E+25'], $rowsByPrecision['14']);
+        $this->assertSame($rowsByPrecision['14'], $rowsByPrecision['17']);
+    }
+
+    /** @return list<string> every observed row across all holes */
+    private function floatRows(Cluster $cluster): array
+    {
+        $rows = [];
+        foreach ($cluster->holes as $h) {
+            foreach ($h->observedValues as $v) {
+                if ($v !== Hole::MISSING) {
+                    $rows[] = $v;
+                }
+            }
+        }
+        return $rows;
+    }
+
+    private function holeCarrying(Cluster $cluster, string $row): Hole
+    {
+        foreach ($cluster->holes as $h) {
+            if (in_array($row, $h->observedValues, true)) {
+                return $h;
+            }
+        }
+        $this->fail("no hole carries observed row '{$row}'");
+    }
+
     public function testStrategyPatternIsTagged(): void
     {
         $cluster = $this->clusterFor([
