@@ -825,8 +825,9 @@ final class Clusterer
                 // tests, not prose: PairScoreWorkerTedParityTest pins the
                 // forked stage against this path, and ClustererTest's
                 // weights-specific serial arms pin cost-model
-                // discrimination here plus raw serial-vs-fork byte identity
-                // under non-default weights.
+                // discrimination here plus raw serial-vs-fork-zone byte
+                // identity up to the in-process twin (fork transport parity
+                // stays normalised per shell-S14) under non-default weights.
                 if (max($a->size, $b->size) > $this->maxTedSize) {
                     $edges[] = [$aId, $bId, $jac, MatchTier::JaccardUnverified->value];
                     continue;
