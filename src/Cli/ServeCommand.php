@@ -56,6 +56,17 @@ use Symfony\Component\Console\Output\OutputInterface;
  *   piped LF-only client (`printf 'GET /x HTTP/1.1\n\n' | nc …`) is
  *   served immediately instead of hanging until it closes.
  * - When a token is set, all requests require `Authorization: Bearer <token>`.
+ * - A loopback bind wires the Application with the bound Host authorities
+ *   (once-046): {@see Application::requestTrustViolation()} refuses a Host
+ *   outside them (400 — the DNS-rebinding defence), a cross-site `Origin`
+ *   (403 — only same-origin fetch semantics exist, the daemon never sends
+ *   CORS), and a POST whose Content-Type is not exactly `application/json`
+ *   (415 — the `text/plain` simple-form CSRF defence), all from the header
+ *   section alone, before a body byte is awaited; `Application::handle()`
+ *   re-runs the same verdict as the authoritative second gate. A public
+ *   bind mandates `--token` and keeps the gate unenforced: the bearer
+ *   header is a custom shape no cross-site form can set, and behind a
+ *   reverse proxy the visible Host is the proxy's, not the daemon's.
  * - Scanned paths are confined to `--serve-root` via realpath canonicalization
  *   on BOTH `/analyze` and `/jobs`: absolute paths, `..` sequences and
  *   non-string elements are rejected with 400 before any job is minted. The
@@ -261,9 +272,11 @@ final class ServeCommand extends SymfonyCommand
         202 => 'Accepted',
         400 => 'Bad Request',
         401 => 'Unauthorized',
+        403 => 'Forbidden',
         404 => 'Not Found',
         408 => 'Request Timeout',
         413 => 'Payload Too Large',
+        415 => 'Unsupported Media Type',
         431 => 'Request Header Fields Too Large',
         500 => 'Internal Server Error',
     ];
@@ -407,6 +420,16 @@ final class ServeCommand extends SymfonyCommand
         // default-disposition signal death skips, orphaning the worker.
         $this->installSignalHandlers();
 
+        // once-046: a loopback bind carries the request-trust gate — the
+        // daemon answers ONLY its own bound authorities, so a DNS-rebound
+        // Host (evil.test resolving to 127.0.0.1) and cross-site Origin
+        // never reach a route, and POSTs are application/json-only. A
+        // public bind always mandates --token (validateConfig above): the
+        // bearer header is exactly the custom shape browsers cannot forge,
+        // so the gate stays unenforced there rather than guessing which
+        // Host names a reverse proxy in front of it presents.
+        $trusted = $this->isLoopback($host) ? Application::loopbackAuthorities($host, $port) : [];
+
         // Spawn background worker for async job processing. The serve root is
         // handed to the worker as a spawn argument so it can independently
         // re-validate dispatched job paths (defence in depth). From a phar
@@ -423,7 +446,8 @@ final class ServeCommand extends SymfonyCommand
                 null,
                 null,
                 $useCache,
-                $serveWorkers
+                $serveWorkers,
+                $trusted
             );
         } else {
             $output->writeln("<info>phpdup serve</info> worker spawned (pid {$workerPid})");
@@ -434,7 +458,8 @@ final class ServeCommand extends SymfonyCommand
                 $this->workerSocket,
                 $this->resultDir,
                 $useCache,
-                $serveWorkers
+                $serveWorkers,
+                $trusted
             );
         }
 
@@ -596,6 +621,31 @@ final class ServeCommand extends SymfonyCommand
         }
         $expected = $lengths === [] ? null : $lengths[0];
 
+        // Extract request headers into a lowercase-keyed array for
+        // case-insensitive lookup (required for Authorization) — done on
+        // the header section alone, before any body byte is awaited.
+        $headers = $this->extractHeaders($headerBlock);
+
+        // once-046: the request-trust verdict runs PRE-BODY here — a DNS-
+        // rebound or cross-site POST is refused without buffering a byte
+        // of its (potentially 16 MiB) payload — using the exact same
+        // shared verdict Application::handle() re-runs, so an embedded
+        // host that never passes through this HTTP layer keeps the gate.
+        // extractHeaders keys every field by its exact lowercased name —
+        // an `X-Host:`/`X-Origin:` decoy rides a different key and never
+        // stands in for the real authority line (same anchoring law
+        // contentLengths() enforces for Content-Length).
+        $trust = Application::requestTrustViolation($app->trustedAuthorities(), $method, $headers);
+        if ($trust !== null) {
+            $this->writeStatus(
+                $client,
+                $trust['status'],
+                self::HTTP_REASON[$trust['status']] ?? 'Unknown',
+                '{"error":"' . $trust['error'] . '"}'
+            );
+            return;
+        }
+
         $body = $end === null ? '' : substr($raw, $end[0] + $end[1]);
         // Read the claimed body, still capped by MAX_BODY_BYTES at the
         // stream level so a lying header can never buffer unbounded.
@@ -625,10 +675,6 @@ final class ServeCommand extends SymfonyCommand
                 $body = substr($body, 0, $expected);
             }
         }
-
-        // Extract request headers into a lowercase-keyed array for
-        // case-insensitive lookup (required for Authorization).
-        $headers = $this->extractHeaders($headerBlock);
 
         // respond() is crash-proof by contract (see its docblock): a throw
         // inside the application fails this request with 500 only.

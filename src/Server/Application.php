@@ -75,6 +75,25 @@ use Symfony\Component\Console\Output\NullOutput;
  * - When a token is configured, all requests must present a matching
  *   `Authorization: Bearer <token>` header. Missing or mismatched
  *   tokens result in a 401 response.
+ * - When {@see $trustedAuthorities} is non-empty — the loopback `serve`
+ *   posture once-S42 wires — every request passes the
+ *   Host/Origin/Content-Type trust gate ({@see self::requestTrustViolation()}):
+ *   a `Host` outside the allow-list (including a missing one, which
+ *   HTTP/1.1 forbids a browser to omit) answers 400, an `Origin` that is
+ *   not a trusted `http` authority answers 403, and a `POST` whose
+ *   `Content-Type` media type is not exactly `application/json`
+ *   (including an absent one) answers 415. This is the
+ *   php-dup-finder-once-046 fix: a cross-site page can neither ride a
+ *   DNS-rebound `Host` into the loopback daemon nor smuggle a
+ *   `text/plain` simple-form POST past a JSON endpoint. `ServeCommand`
+ *   runs the identical verdict at the HTTP layer before any body byte is
+ *   awaited; this class re-runs it as the authoritative gate an embedded
+ *   host cannot skip. An Application built without trusted authorities
+ *   defers trust to its hosting layer — the {@see $serveRoot} `null`
+ *   no-confinement precedent — which is also why a public bind (token
+ *   mandated by `--bind-public`) keeps the gate unenforced: no
+ *   cross-site form can set the bearer header, and the daemon never
+ *   sends CORS, so no foreign origin can read a response body.
  * - Scanned paths are confined to within {@see $serveRoot} via
  *   realpath canonicalization, for BOTH `POST /analyze` and
  *   `POST /jobs`: payload paths that are non-strings, contain NUL bytes,
@@ -172,6 +191,13 @@ final class Application
      * @param int            $serveWorkers  Sync-pipeline worker count (shell-032); default
      *                                      {@see self::SERVE_WORKERS_SERIAL} (serial), opt up
      *                                      with `--serve-workers`.
+     * @param list<string>   $trustedAuthorities
+     *                                      Lowercase Host authorities accepted by the
+     *                                      request-trust gate (once-046); empty (default)
+     *                                      means trust is deferred to the caller's HTTP
+     *                                      layer — the `serve` command fills this in for
+     *                                      every loopback bind via
+     *                                      {@see self::loopbackAuthorities()}.
      */
     public function __construct(
         private readonly JobQueue $queue = new JobQueue(),
@@ -181,6 +207,7 @@ final class Application
         private readonly ?string $resultDir = null,
         private readonly bool $useCache = false,
         private readonly int $serveWorkers = self::SERVE_WORKERS_SERIAL,
+        private readonly array $trustedAuthorities = [],
     ) {
     }
 
@@ -282,6 +309,18 @@ final class Application
             }
         }
 
+        // once-046: request trust. With trusted authorities wired (the
+        // loopback `serve` posture), a hostile Host — DNS-rebound or
+        // otherwise — or a cross-site Origin never reaches a route, and a
+        // POST is admitted only as application/json. ServeCommand applies
+        // the same verdict pre-body at the HTTP layer; this leg is the
+        // authoritative one an embedded host (no ServeCommand in sight)
+        // cannot skip.
+        $trust = self::requestTrustViolation($this->trustedAuthorities, $method, $headers);
+        if ($trust !== null) {
+            return $this->json($trust['status'], ['error' => $trust['error']]);
+        }
+
         if ($method === 'GET' && $path === '/healthz') {
             return $this->plain(200, 'ok');
         }
@@ -327,6 +366,112 @@ final class Application
             return $this->getJobResult($m[1]);
         }
         return $this->json(404, ['error' => 'unknown route']);
+    }
+
+    /**
+     * The request-trust authorities wired at construction (once-046).
+     * `ServeCommand` consults this for its pre-body HTTP-layer gate so
+     * both layers refuse on one verdict list.
+     *
+     * @return list<string>
+     */
+    public function trustedAuthorities(): array
+    {
+        return $this->trustedAuthorities;
+    }
+
+    /**
+     * The Host authorities a loopback `serve` bind answers to (once-046).
+     *
+     * Browsers send the port for every non-default one and write IPv6
+     * literals bracketed, so each spelling is offered bare and with the
+     * bound port, lowercased and deduplicated. Called by ServeCommand only
+     * for a loopback bind; a public bind keeps the trust gate unenforced
+     * behind its mandatory bearer token.
+     *
+     * @return list<string>
+     */
+    public static function loopbackAuthorities(string $bindHost, int $bindPort): array
+    {
+        $authorities = [];
+        foreach (['localhost', '127.0.0.1', '::1', '[::1]', strtolower($bindHost)] as $name) {
+            $authorities[$name] = true;
+            $authorities[$name . ':' . $bindPort] = true;
+        }
+
+        return array_keys($authorities);
+    }
+
+    /**
+     * Host/Origin/Content-Type trust verdict (once-046), shared by
+     * {@see self::handle()} and ServeCommand's pre-body HTTP layer so the
+     * two gates refuse identically.
+     *
+     * The browser threat this closes: the loopback daemon answers ANY
+     * Host, and browsers do not isolate 127.0.0.1 — a page at evil.test
+     * can (a) DNS-rebind its name to 127.0.0.1, presenting a self-
+     * consistent Host and Origin so its fetch both posts and READS the
+     * reply, or (b) submit a `text/plain` simple request (form enctype,
+     * fetch body) which never triggers a preflight. The Host allow-list
+     * rejects (a) at the transport identity itself — after a rebind the
+     * request still carries evil.test, never the loopback name; the JSON-
+     * only Content-Type shape rejects (b), since the simplest cross-site
+     * shapes are form/urlencoded/text-plain. A JSON POST from a cross-
+     * origin fetch carries the custom shape a preflight must approve —
+     * and the daemon never grants CORS, so no ACAO line exists to
+     * approve it.
+     *
+     * Verdict order is Host (400) → Origin (403) → Content-Type (415).
+     * An empty authority list means the hosting layer owns trust (the
+     * `serveRoot === null` precedent); with `serve` it is populated only
+     * for loopback binds, where the bearer gate is optional and these
+     * checks carry the whole defence.
+     *
+     * @param list<string>         $trustedAuthorities Lowercase Host authorities.
+     * @param array<string,string> $headers            Request headers (lowercase keys).
+     * @return array{status:int, error:string}|null null when the request is trusted
+     */
+    public static function requestTrustViolation(array $trustedAuthorities, string $method, array $headers): ?array
+    {
+        if ($trustedAuthorities === []) {
+            return null;
+        }
+
+        // HTTP/1.1 requires Host on every request; a browser never omits
+        // it, so a missing one is as untrusted as a foreign one.
+        $host = isset($headers['host']) ? strtolower(trim($headers['host'])) : '';
+        if ($host === '' || !in_array($host, $trustedAuthorities, true)) {
+            return ['status' => 400, 'error' => 'Host is not the address this server is bound to'];
+        }
+
+        // Origin rides cross-site requests (and every non-GET); it must
+        // name a trusted http authority of this very server, which is the
+        // same-origin semantics the daemon offers — no CORS line is ever
+        // sent, so nothing wider exists. 'null', https (terminating
+        // proxies ride the token bind) and foreign names all refuse.
+        if (isset($headers['origin'])) {
+            $origin = strtolower(trim($headers['origin']));
+            if (preg_match('#^http://(.+)$#', $origin, $m) !== 1
+                || !in_array($m[1], $trustedAuthorities, true)) {
+                return ['status' => 403, 'error' => 'Origin is not the origin this server answers'];
+            }
+        }
+
+        // application/json is the only accepted body shape: it is not a
+        // simple Content-Type, so a foreign page cannot even deliver it
+        // without a preflight the daemon never grants. Absent or any
+        // other media type (text/plain form encodings, urlencoded) is
+        // refused before the body is read.
+        if ($method === 'POST') {
+            $contentType = isset($headers['content-type'])
+                ? strtolower(trim(explode(';', $headers['content-type'])[0]))
+                : '';
+            if ($contentType !== 'application/json') {
+                return ['status' => 415, 'error' => 'Content-Type must be application/json'];
+            }
+        }
+
+        return null;
     }
 
     /**

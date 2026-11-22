@@ -166,6 +166,64 @@ Authorization: Bearer YOUR_SECRET_TOKEN
 Requests without a valid bearer token receive a `401 Unauthorized`
 response before any other processing occurs.
 
+### Request trust: Host, Origin and JSON shape
+
+A loopback bind (the default, with no token in play) is not a
+private network for a browser: any page a user opens can aim a
+request at `127.0.0.1`, and the daemon historically answered every
+`Host` it was given. `serve` therefore closes that surface
+(once-046) with a request-trust gate that runs at the HTTP layer
+before any body byte is awaited, and again inside the application —
+one shared verdict (`Application::requestTrustViolation()`), two
+doors. Three checks, in this order:
+
+1. **Host allow-list.** The `Host` header must name the bound
+   loopback authority — one of `localhost`, `127.0.0.1`, `::1`
+   (`[::1]` bracketed), or the literal `--host` value, each bare or
+   with the bound port. A missing `Host` is refused the same way
+   (HTTP/1.1 requires it; a browser never omits it). The violation
+   answers `400 Bad Request` with a JSON error body. This is the
+   DNS-rebinding defence: a page that resolves `evil.test` to
+   `127.0.0.1` still sends `Host: evil.test`, which is not the
+   address this server was bound to.
+2. **Same-origin `Origin`.** When a request carries an `Origin`
+   header it must be an `http://` URL whose authority is itself on
+   the Host allow-list — that is, the page holding the request must
+   have been served by this very daemon, same origin, same port.
+   Anything else (`Origin: null`, a foreign name, `https` behind a
+   proxy) answers `403 Forbidden`. The daemon never sends CORS
+   (`Access-Control-Allow-Origin`) on any response, so a same-
+   machine page on a different port, and any remote page, has no
+   fetch semantics to abuse here.
+3. **JSON-only POSTs.** `application/json` is the only accepted
+   `Content-Type` for `POST` routes. `text/plain` — the trick that
+   turns an HTML form with `enctype="text/plain"` into a
+   preflight-free cross-site POST, and `application/x-www-form-urlencoded`
+   (curl `--data`'s default) are answered `415 Unsupported Media
+   Type` *pre-body*: the refusal is made from the header section
+   alone, so a hostile client cannot even park a 16 MiB claim on the
+   reader. A POST without a `Content-Type` is refused the same way.
+   `curl --data` examples in the wild need
+   `-H 'Content-Type: application/json'` — every example in this
+   document already carries it.
+
+Public binds (`--bind-public`, which mandates `--token`) run this
+gate unenforced, by design. A browser's cross-site form can never
+set the bearer header, so the token already carries the whole
+defence there, and behind a reverse proxy the visible `Host` is the
+proxy's own — refusing it would refuse the deployment, so the
+operator's proxy layer owns host trust exactly as it owns TLS. An
+embedded host that constructs `Application` without authorities
+keeps that same posture: the hosting runtime supplies its own trust
+layer, and `Application::handle()` will refuse nothing that a
+confident front-end did not already vet.
+
+Verified live at this document's commit (loopback bind, scratch
+port): cross-site Origin → `403`, foreign Host and rebinding-shaped
+Host → `400`, `text/plain` form POST → `415` before the body is
+read, same-origin JSON POST → `200`, and the playground-style
+in-page fetch (same origin) → `200`.
+
 ### Path confinement
 
 When `--serve-root` is set (default: the working directory), every
