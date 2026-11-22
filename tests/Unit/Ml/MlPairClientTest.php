@@ -578,6 +578,15 @@ final class MlPairClientTest extends TestCase
         self::assertSame(0, self::gateCalls($client), 'construction performs no gate work');
 
         self::assertNull($client->score($a, $b));
+        // engine-S21 r1 MEDIUM-1: read the seam after a score()-only
+        // prefix so the SERIAL path itself must mint the count here.
+        // The final assertion alone could be satisfied by a drift where
+        // score() re-gates inline (the F-6 duplication class this step
+        // exists to prevent) while scoreBatch's memo still lands the
+        // total at 1 — the serial path would silently pay its own
+        // resolver walk per pair, undetected.
+        self::assertSame(1, self::gateCalls($client), 'the serial /score-pair path itself rides the counting seam');
+
         self::assertNull($client->scoreBatch([[$a, $b]]));
         self::assertNull($client->score($a, $b));
         self::assertNull($client->scoreBatch([[$a, $b], [$b, $a]]));
@@ -585,7 +594,7 @@ final class MlPairClientTest extends TestCase
         self::assertSame(
             1,
             self::gateCalls($client),
-            'both endpoints share ONE memoized gate decision — refusals cached too (engine-032)',
+            'with the serial decision minted (assertion above), every /score-batch leg rides that same memo — still ONE gate call across both endpoints, refusals cached too (engine-032)',
         );
     }
 
@@ -611,12 +620,16 @@ final class MlPairClientTest extends TestCase
         $b = $this->makeBlock();
         $client = new MlPairClient('http://203.0.113.10:1', timeoutSec: 1);
         self::assertNull($client->score($a, $b));
+        // engine-S21 r1 MEDIUM-1: same score()-only-prefix read as the
+        // refusal pin — the serial path alone must mint the seam count
+        // before the batch leg rides it.
+        self::assertSame(1, self::gateCalls($client), 'the serial /score-pair path itself rides the counting seam');
         self::assertNull($client->scoreBatch([[$a, $b]]));
         self::assertNull($client->score($a, $b));
         self::assertSame(
             1,
             self::gateCalls($client),
-            'positive-side memo: /score-pair AND /score-batch ride one decision, retries included',
+            'positive-side memo: the batch leg and the retry ride the serial decision minted above — no extra gate calls, retries included',
         );
     }
 
