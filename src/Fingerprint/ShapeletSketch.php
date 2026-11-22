@@ -5,6 +5,7 @@ namespace Phpdup\Fingerprint;
 
 use PhpParser\Node;
 use Phpdup\Util\AstSerializer;
+use Phpdup\Util\Popcount;
 
 /**
  * Constant-time structural-similarity sketch: a 64-bit fingerprint that
@@ -73,43 +74,18 @@ final class ShapeletSketch
     }
 
     /**
-     * Hamming weight: count of set bits in $x.
+     * Hamming weight: count of set bits in $x, read as the unsigned 64-bit
+     * pattern of the raw bits (so -1 weighs 64 and PHP_INT_MIN weighs 1).
      *
-     * Uses GMP extension when available for optimal performance; falls back to
-     * a pure-PHP SWAR (SIMD Within A Register) algorithm that is O(1) with
-     * constant-time characteristics and avoids PHP's arithmetic right-shift
-     * issues on negative values.
+     * Delegates to the shared {@see Popcount} helper used by the Bloom
+     * filter as well: GMP when the extension is loaded (checked once per
+     * process, not per call), otherwise the always-correct byte-table
+     * path. The former ext-bcmath division-loop fallback is gone — it
+     * duplicated the table logic behind an undocumented extension
+     * dependency and its docblock described a SWAR that never existed.
      */
     public static function popcount(int $x): int
     {
-        if (extension_loaded('gmp')) {
-            // Convert signed int to unsigned 64-bit GMP integer for correct popcount.
-            // sprintf('%u', $x) gives the unsigned 64-bit string representation.
-            return gmp_popcount(gmp_init(sprintf('%u', $x), 10));
-        }
-        return self::fallbackPopcount($x);
-    }
-
-    /**
-     * Fallback popcount when GMP is not available.
-     *
-     * Uses repeated division by 2 to count bits in the unsigned 64-bit
-     * representation of $x. This correctly handles negative values by
-     * converting them via sprintf('%u', $x) to their unsigned decimal form.
-     */
-    private static function fallbackPopcount(int $x): int
-    {
-        // Convert signed PHP int to unsigned 64-bit decimal string.
-        // sprintf('%u', $x) gives the correct decimal string for the
-        // unsigned interpretation of the bit pattern.
-        $unsignedStr = sprintf('%u', $x);
-
-        $count = 0;
-        while ($unsignedStr !== '0') {
-            $count += (int) bcmod($unsignedStr, '2');
-            $unsignedStr = bcdiv($unsignedStr, '2', 0);
-        }
-
-        return $count;
+        return Popcount::of($x);
     }
 }

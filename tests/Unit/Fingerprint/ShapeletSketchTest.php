@@ -6,6 +6,7 @@ namespace Phpdup\Tests\Unit\Fingerprint;
 use PHPUnit\Framework\TestCase;
 use Phpdup\Fingerprint\ShapeletSketch;
 use Phpdup\Parsing\AstParser;
+use Phpdup\Util\Popcount;
 
 final class ShapeletSketchTest extends TestCase
 {
@@ -58,45 +59,99 @@ final class ShapeletSketchTest extends TestCase
     }
 
     /**
-     * Verify that when GMP is available, the fallback and GMP produce identical results.
-     * This test is only meaningful when ext-gmp is loaded.
+     * Edge vectors pinned to hand-computed weights: the zero word, the
+     * 63-bit case, the 64-bit high-bit-set (negative) cases, and the
+     * mixed low-byte cases. Counted over the raw unsigned 64-bit pattern.
+     *
+     * @return array<string, array{int, int}>
      */
-    public function testFallbackMatchesGmpWhenAvailable(): void
+    public static function edgeVectorCases(): array
+    {
+        return [
+            'zero' => [0, 0],
+            'one' => [1, 1],
+            'bit 63 (63rd bit, sign bit clear)' => [1 << 62, 1],
+            'bit 63 plus low bit' => [(1 << 62) | 1, 2],
+            'high bit set (64-bit sign bit, PHP_INT_MIN)' => [PHP_INT_MIN, 1],
+            'high bit set plus full low byte' => [PHP_INT_MIN | 0xFF, 9],
+            'all bits set (-1)' => [-1, 64],
+            'all bits set bar low bit (-2)' => [-2, 63],
+            'max positive (63 bits)' => [PHP_INT_MAX, 63],
+            'low byte full' => [0xFF, 8],
+            'low halfword full' => [0xFFFF, 16],
+            'low word full' => [0xFFFFFFFF, 32],
+        ];
+    }
+
+    /**
+     * The shared-path popcount (GMP-backed on gmp hosts) and the forced
+     * byte-table fallback must both return the pinned weights — the old
+     * bcmath division loop is gone and the table path is now exercised
+     * directly, so hosts without gmp (or without bcmath) count too.
+     *
+     * @dataProvider edgeVectorCases
+     */
+    public function testEdgeVectorsPinBothPopcountPaths(int $value, int $expected): void
+    {
+        $this->assertSame($expected, ShapeletSketch::popcount($value), 'shared popcount path');
+        $this->assertSame($expected, Popcount::table($value), 'forced table fallback');
+    }
+
+    /**
+     * Table path == GMP path on edge vectors plus a random sweep, checked
+     * against an explicit local gmp_popcount reference (not the class's own
+     * dispatch), so the two paths can never silently diverge again.
+     *
+     * @dataProvider edgeVectorCases
+     */
+    public function testTableMatchesGmpReference(int $value, int $expected): void
     {
         if (!extension_loaded('gmp')) {
             $this->markTestSkipped('GMP extension not available');
         }
 
+        $gmpReference = gmp_popcount(gmp_init(sprintf('%u', $value), 10));
+        $this->assertSame($expected, $gmpReference, 'gmp reference agrees with the pin');
+        $this->assertSame($gmpReference, Popcount::table($value), 'table matches gmp');
+        $this->assertSame($gmpReference, Popcount::of($value), 'dispatch matches gmp');
+    }
+
+    public function testTableMatchesGmpAcrossRandomSweep(): void
+    {
+        if (!extension_loaded('gmp')) {
+            $this->markTestSkipped('GMP extension not available');
+        }
+
+        $values = [];
         for ($i = 0; $i < 100; $i++) {
-            // Generate random values including edge cases
-            $value = mt_rand(0, PHP_INT_MAX);
-
-            $gmpResult = gmp_popcount(gmp_init(sprintf('%u', $value), 10));
-
-            // Access fallback directly via reflection for testing
-            $reflection = new \ReflectionMethod(ShapeletSketch::class, 'fallbackPopcount');
-            $fallbackResult = $reflection->invoke(null, $value);
-
-            $this->assertSame(
-                $gmpResult,
-                $fallbackResult,
-                sprintf('Fallback popcount(%d) = %d, GMP popcount = %d', $value, $fallbackResult, $gmpResult),
-            );
+            $values[] = mt_rand(0, PHP_INT_MAX);
+            $values[] = mt_rand(PHP_INT_MIN, PHP_INT_MAX); // negatives exercise the sign-extended bytes
         }
 
-        // Also test negative values (two's complement 64-bit representation)
-        $negativeValues = [-1, -2, -127, -128, PHP_INT_MIN];
-        foreach ($negativeValues as $value) {
-            $gmpResult = gmp_popcount(gmp_init(sprintf('%u', $value), 10));
-
-            $reflection = new \ReflectionMethod(ShapeletSketch::class, 'fallbackPopcount');
-            $fallbackResult = $reflection->invoke(null, $value);
-
+        foreach ($values as $value) {
+            $gmpReference = gmp_popcount(gmp_init(sprintf('%u', $value), 10));
             $this->assertSame(
-                $gmpResult,
-                $fallbackResult,
-                sprintf('Fallback popcount(%d) = %d, GMP popcount = %d', $value, $fallbackResult, $gmpResult),
+                $gmpReference,
+                Popcount::table($value),
+                sprintf('table popcount(%d) diverged from gmp popcount', $value),
+            );
+            $this->assertSame(
+                $gmpReference,
+                ShapeletSketch::popcount($value),
+                sprintf('shared popcount(%d) diverged from gmp popcount', $value),
             );
         }
+    }
+
+    public function testOverlapUsesPinnedWeightsOnHandCraftedSketches(): void
+    {
+        // 0xFF & 0xF0 = 0xF0 (4 bits); union = 0xFF (8 bits) → 0.5 exactly.
+        $this->assertSame(0.5, ShapeletSketch::overlap(0xFF, 0xF0));
+        // Disjoint halves of the 64-bit word: ~0xFFFFFFFF is the negative
+        // int whose raw pattern is the high 32 bits (0xFFFFFFFF00000000);
+        // writing that hex literal directly would overflow to float.
+        $this->assertSame(0.0, ShapeletSketch::overlap(0xFFFFFFFF, ~0xFFFFFFFF));
+        // Full word against itself: 64/64.
+        $this->assertSame(1.0, ShapeletSketch::overlap(-1, -1));
     }
 }

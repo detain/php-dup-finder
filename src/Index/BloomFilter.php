@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace Phpdup\Index;
 
+use Phpdup\Util\Popcount;
+
 /**
  * Fixed-size Bloom filter over arbitrary string elements.
  *
@@ -98,35 +100,17 @@ final class BloomFilter
     }
 
     /**
-     * Per-byte iterative popcount.
+     * Hamming weight of the unsigned 64-bit reading of $x.
      *
-     * The classic SWAR popcount overflows to float on PHP for some
-     * sign-bit-heavy 64-bit inputs (the `$x - (($x >> 1) & 0x55…)`
-     * step underflows when $x is negative). PHP's signed-only ints
-     * mean the saturating bit tricks don't translate, so we sum the
-     * eight bytes of $x using a 256-entry lookup. Cost is one shift
-     * + one AND + one table lookup per byte — fast enough for the
-     * filter-overlap inner loop and immune to overflow.
+     * Delegates to the shared {@see Popcount} helper so this class and
+     * {@see \Phpdup\Fingerprint\ShapeletSketch} keep one popcount truth.
+     * Note {@see overlap()} sums the per-word byte tables directly: it
+     * walks up to 2048-bit filters word by word, and routing every word
+     * through GMP's decimal-string conversion would be a hot-loop cost
+     * regression for numbers the table already returns exactly.
      */
     public static function popcount(int $x): int
     {
-        static $table = null;
-        if ($table === null) {
-            $table = [];
-            for ($i = 0; $i < 256; $i++) {
-                $c = 0;
-                $v = $i;
-                while ($v) { $c += $v & 1; $v >>= 1; }
-                $table[$i] = $c;
-            }
-        }
-        return $table[$x & 0xFF]
-             + $table[($x >> 8)  & 0xFF]
-             + $table[($x >> 16) & 0xFF]
-             + $table[($x >> 24) & 0xFF]
-             + $table[($x >> 32) & 0xFF]
-             + $table[($x >> 40) & 0xFF]
-             + $table[($x >> 48) & 0xFF]
-             + $table[($x >> 56) & 0xFF];
+        return Popcount::table($x);
     }
 }
