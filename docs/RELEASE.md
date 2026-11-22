@@ -110,6 +110,60 @@ Offline mode skips the tag-vs-release-metadata binding (there is no live
 release to bind against); the signature, schema, artifact-name and sha256
 checks all run.
 
+## Transport and install-check truth (once-S91)
+
+`self:update` reads the release API and writes binaries, so a lie can enter in
+two places: the **reply** and the **swap**. Both are pinned at the transport
+level — `tests/Unit/Cli/UpdateCommandTest.php` drives the real code against a
+forked loopback HTTP server on an ephemeral port (hermetic, no network group,
+no external dial).
+
+- **The HTTP status is part of the reply.** A body is decoded as release data
+  only for an HTTP 2xx. GitHub answers rate limits (403), bad credentials
+  (401), an unpublished repository (404) and its own outages (5xx) with JSON
+  *error* bodies; those used to flow into the release logic and surface as a
+  misleading `Asset phpdup.phar not found in release unknown`. Each status now
+  refuses with its own honest message. A `Retry-After` header (either form) is
+  reported back as guidance — the command is one-shot and never re-dials on
+  its own — and a 2xx reply with no usable JSON body (e.g. 204) says exactly
+  that instead of blaming the network.
+- **The metadata request does not follow redirects.** It is the one request
+  that can carry `Authorization`, and a credential must never be replayed onto
+  a host the caller did not choose; a 3xx surfaces as a refusal. Asset
+  downloads *do* follow redirects (GitHub serves them through a CDN hop) and
+  carry no credentials at all — see the token note below.
+- **A download counts as complete only when the received bytes agree with the
+  declared `Content-Length`,** and a `206` / `Content-Range` reply is refused
+  outright: this client never sends a `Range` request, so a range reply
+  describes a slice, not the artifact, and a length that matches the *range*
+  is a lie the old leg would have accepted as a finished download.
+- **The previous phar is kept until the new one proves itself.** The swap
+  renames the running phar to a `.backup.*` sibling, renames the downloaded
+  artifact into place, then runs a post-install check **at the final path** —
+  present, readable, non-empty, and on a verified install still hashing to the
+  signed manifest's pin. Only then is the backup deleted. If the check fails,
+  the backup is restored automatically and exit 1 carries the reason; if the
+  restore itself fails, the manual recovery command is printed. The older
+  order deleted the good binary on the strength of a rename alone, so
+  "rollback is automatic" was true for only half the failure shapes
+  (php-dup-finder-once-114). On a `--dev-allow-unsigned` install there is no
+  signed pin to re-check, so the post-install check is deliberately weaker
+  (readable and non-empty) — as loud as the mode that allows it.
+
+### Tokens and private repositories (once-S91: documented, deliberately absent)
+
+- `GITHUB_TOKEN` (environment only — never a CLI option) is sent as a bearer
+  token on the `api.github.com` metadata request, and is the one request the
+  client refuses to redirect. Refusals name the variable, never its contents;
+  no output path prints a token value.
+- **Release asset downloads carry no authentication, so `self:update` does not
+  support private releases.** That is documented-absent behavior, not an
+  oversight: asset URLs redirect to a CDN host this client will not hand a
+  credential to, and there is no `--token` flag to imply otherwise. For a
+  private release, download with an authenticated client (`gh release
+  download`) and check the bytes locally with the offline `--verify-*` mode
+  above.
+
 ## Setting Up HMAC_SECRET_KEY
 
 > **Status (once-S05 era):** the `VERIFICATION_KEY` constant in

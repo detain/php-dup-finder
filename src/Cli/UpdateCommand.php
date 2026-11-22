@@ -9,6 +9,7 @@ use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
+use Phpdup\Util\Http;
 use Phar;
 
 /**
@@ -16,10 +17,17 @@ use Phar;
  *
  * Integrity model (once-S05, php-dup-finder-once-005 — fail closed):
  *
- *   1. Fetch the GitHub Releases JSON API for the latest tag.
+ *   1. Fetch the GitHub Releases JSON API for the latest tag. The HTTP
+ *      status is part of the reply (once-S91): only a 2xx response body
+ *      is ever decoded as a release payload — a 401/403/404/5xx error
+ *      reply is surfaced as the transport failure it is, with any
+ *      Retry-After guidance reported.
  *   2. Download `phpdup.phar`, then the signed release manifest
  *      (`phpdup.release.json`) and its HMAC-SHA256 signature
- *      (`phpdup.release.json.sig`).
+ *      (`phpdup.release.json.sig`). A download counts as complete only
+ *      when the byte count agrees with the declared Content-Length, and
+ *      a partial-content (206/Content-Range) reply is refused outright
+ *      (once-S91, php-dup-finder-shell-017).
  *   3. Verify the HMAC over the MANIFEST bytes against the pinned
  *      verification key (raw-string form — identical on both sides).
  *   4. Validate the manifest: schema 1, artifact name, tag binding
@@ -31,7 +39,13 @@ use Phar;
  *      coreutils checksum format (`<hash>  phpdup.phar`, two spaces)
  *      so manual installs can verify it with `sha256sum --check`
  *      verbatim (once-S12); this command still ignores it.
- *   6. Only then replace the running phar atomically (temp rename).
+ *   6. Replace the running phar atomically (temp rename), keeping the
+ *      previous phar as a backup.
+ *   7. Run the post-install check over the file at its FINAL path and
+ *      only then discard the backup (once-S91). A failed check restores
+ *      the previous phar automatically — rollback is honest because it
+ *      is sequenced: the good binary outlives the check, not the other
+ *      way around.
  *
  * A placeholder/unset verification key REFUSES verification with an
  * explicit error on every non-dry path. Unsigned installs are possible
@@ -113,18 +127,33 @@ Downloads the latest tagged release from
 running phar with it.
 
 Steps performed:
-  1. Fetch the GitHub Releases JSON API for the latest tag.
+  1. Fetch the GitHub Releases JSON API for the latest tag. The HTTP
+     status is checked: a 401/403/404/5xx reply is reported as itself
+     (with any Retry-After guidance) and never parsed as release data.
   2. Download <fg=yellow>phpdup.phar</>, the signed release manifest
      <fg=yellow>phpdup.release.json</> and its HMAC-SHA256 signature
-     <fg=yellow>phpdup.release.json.sig</>.
+     <fg=yellow>phpdup.release.json.sig</>. A download is complete only
+     when the bytes received agree with the declared Content-Length; a
+     partial-content reply is refused on sight.
   3. Verify the HMAC over the manifest bytes against the pinned
      verification key, then pin the artifact's SHA-256 to the value the
      verified manifest declares. The plain <fg=yellow>phpdup.phar.sha256</>
      asset is never trusted for verification (same-response checksums
      prove nothing). It ships in <fg=yellow>sha256sum --check</> format
      ("<hash>  phpdup.phar", two spaces) for manual spot-checks only.
-  4. Replace the running phar atomically (temp rename).
-  5. On any error after the old phar is removed, print recovery steps.
+  4. Replace the running phar atomically (temp rename), keeping the
+     previous phar as a backup.
+  5. Check the installed file at its final path (readable, non-empty,
+     and on a verified install still hashing to the manifest pin) —
+     only then is the backup removed. If the check fails, the previous
+     phar is restored automatically; if that restore fails too, manual
+     recovery steps are printed.
+
+Private repositories: the <fg=yellow>GITHUB_TOKEN</> environment
+variable, when set, is sent on the release-API request only. Release
+asset downloads carry no authentication of any kind, so self:update
+does NOT support private releases — download through an authenticated
+client instead (see docs/RELEASE.md).
 
 A placeholder/unset verification key refuses to verify (exit 1) instead
 of passing. There is no flag that turns that "pass" back on: the only
@@ -248,14 +277,36 @@ HELP
             $headers['Authorization'] = 'Bearer ' . $token;
         }
 
-        $release = $this->fetchJson(self::GITHUB_RELEASES_API, $headers);
+        // once-S91 (php-dup-finder-once-114): the transport reports the HTTP
+        // status next to the body, and only a TRUSTED reply — an HTTP 2xx,
+        // or a seam transport with no HTTP layer at all — is ever handed to
+        // the release logic as a payload. The status-blind leg used to feed
+        // an api.github.com error body (rate limit, 404, 5xx) straight into
+        // the release shape, so a rate-limited caller saw the misleading
+        // "Asset phpdup.phar not found in release unknown" instead of the
+        // honest refusal the live once-S12 r1 probe recorded.
+        $response = $this->fetchJson($this->releasesApiUrl(), $headers);
+        $release  = $response['json'];
+
         if ($release === null) {
-            return $this->failed($io, 'Could not fetch release info from GitHub. Check your network / API rate limits.');
+            $status = $response['status'];
+            if ($status === null) {
+                return $this->failed($io, 'Could not fetch release info from GitHub: the API request did not complete (no HTTP reply from api.github.com).');
+            }
+            if ($status === 404) {
+                return $this->noReleaseYet($io, $dryRun);
+            }
+            if ($status >= 200 && $status < 300) {
+                return $this->failed($io, "GitHub release API replied HTTP {$status} without a usable JSON release body." . $this->retryHint($response['retryAfter']));
+            }
+            return $this->failed($io, $this->apiStatusMessage($status, $response['retryAfter']));
         }
 
-        // Detect a "no releases yet" / 404 response. The GitHub API returns
-        // {"message":"Not Found","status":"404",...} as a 200-shaped JSON body
-        // when ignore_errors is on, so we have to inspect the body.
+        // A 2xx reply that nevertheless carries GitHub's "Not Found" error
+        // shape ({"message":"Not Found","status":"404"}) — a proxy or mirror
+        // rewriting the status — stays refused: the body itself says there
+        // is no release, the same check once-S05 shipped, now as the second
+        // line of defence behind the honest status.
         if (
             !isset($release['tag_name'])
             && (
@@ -263,19 +314,7 @@ HELP
                 || ($release['message'] ?? '') === 'Not Found'
             )
         ) {
-            $io->warning([
-                'No releases have been published for this repository yet.',
-                '  Repository: https://github.com/detain/php-dup-finder',
-                '  Once a tag is pushed and the release workflow publishes',
-                '  phpdup.phar + phpdup.release.json + phpdup.release.json.sig',
-                '  as assets, this command will be able to update.',
-            ]);
-            // Dry-run treats this as informational, not an error.
-            if ($dryRun) {
-                $io->success('Dry-run complete — no release available yet, nothing to do.');
-                return 0;
-            }
-            return $this->failed($io, 'No release available to install.');
+            return $this->noReleaseYet($io, $dryRun);
         }
 
         $tagName   = $release['tag_name']    ?? 'unknown';
@@ -378,6 +417,12 @@ HELP
         // 4. Integrity verification: HMAC over the signed manifest, then
         //    the artifact hash pinned by that manifest (once-S05).
         // -----------------------------------------------------------------
+        // The pin the post-install check (step 5, once-S91) re-verifies at
+        // the FINAL path. It stays null on the --dev-allow-unsigned leg,
+        // where there is no signed pin to check — the weaker smoke there is
+        // disclosed in the help text and docs/RELEASE.md.
+        $pinnedSha256 = null;
+
         if (!$devAllowUnsigned) {
             $io->section('Verifying signed release manifest…');
 
@@ -435,6 +480,7 @@ HELP
                 ));
             }
             $io->text("  SHA-256: <fg=green>{$actualSha256}</>  ✓  (pinned to the signed manifest)");
+            $pinnedSha256 = $expectedSha256;
         } else {
             $this->devUnsignedBanner($io, $output);
             $actualSha256 = hash_file('sha256', $tmpFile);
@@ -482,6 +528,35 @@ HELP
         }
 
         chmod($pharPath, 0755 & ~umask());
+
+        // once-S91 (php-dup-finder-once-114): the previous phar is STILL on
+        // disk at $backupPath and stays there until the freshly installed
+        // one passes a post-install check at its final path. The old order
+        // deleted the backup the instant the rename succeeded — whatever the
+        // result — so the "old phar has been restored" promise held only for
+        // the rename failure above, never for a bad-but-installed artifact
+        // (the finding's inverted-rollback complaint). Now the sequence makes
+        // the promise true: check first, then discard or restore.
+        $smokeFailure = $this->smokeInstalledPhar($pharPath, $pinnedSha256);
+        if ($smokeFailure !== null) {
+            @unlink($pharPath);
+            $restored = rename($backupPath, $pharPath);
+            @unlink($tmpFile);
+            $io->error([
+                "The installed phar failed its post-install check ({$smokeFailure}).",
+                $restored
+                    ? '  The previous phar was restored from the backup — nothing was lost.'
+                    : '  Automatic restore FAILED.',
+            ]);
+            if (!$restored) {
+                $io->error([
+                    "Could not restore old phar either.",
+                    "  Manual recovery: move {$backupPath} → {$pharPath}",
+                ]);
+            }
+            return 1;
+        }
+
         @unlink($backupPath);
 
         $io->success([
@@ -489,6 +564,7 @@ HELP
             "  New version:  <fg=yellow>{$tagName}</>",
             '  Run: <fg=yellow>phpdup --version</>  to verify.',
         ]);
+        $io->text('  Post-install check passed — the previous-phar backup was removed.');
 
         return 0;
     }
@@ -573,13 +649,47 @@ HELP
     // ------------------------------------------------------------------
 
     /**
-     * Fetch and decode a JSON URL. Returns null on failure.
+     * Endpoint the release metadata is read from. Seam for tests (once-S91):
+     * the status-honesty pins point it at a forked loopback HTTP server and
+     * drive the REAL transport — no network group, no substituted fetch.
+     */
+    protected function releasesApiUrl(): string
+    {
+        return self::GITHUB_RELEASES_API;
+    }
+
+    /**
+     * Fetch and decode a JSON URL, honest about the HTTP status layer
+     * (once-S91, php-dup-finder-once-114).
+     *
+     * The old leg ran with ignore_errors and handed back whatever decoded,
+     * so api.github.com's error replies — which ARE JSON bodies — reached the
+     * release logic as plausible payloads: a rate-limited caller watched a
+     * 403 error object flow into asset resolution and surface as
+     * "Asset phpdup.phar not found in release unknown" (recorded live by the
+     * once-S12 r1 probe). A transport must never launder a failure into a
+     * plausible success (once-S46 doctrine). The contract now:
+     *
+     *   - `json` is non-null ONLY for a trusted reply: an HTTP 2xx, or a
+     *     seam transport with no HTTP layer at all (file://; `status` stays
+     *     null there);
+     *   - `status` is the reply's HTTP status (0 when an http(s) reply
+     *     carried no parsable status line — refused), null when no HTTP
+     *     reply arrived at all (connect/timeout/TLS) or the scheme has none;
+     *   - `retryAfter` carries the Retry-After guidance in whole seconds
+     *     (delta-seconds or HTTP-date form); honored by REPORTING it —
+     *     self:update is a one-shot command and never re-dials on its own;
+     *   - the request never follows redirects: an `Authorization` header
+     *     (GITHUB_TOKEN) must not be replayed onto a host the caller did not
+     *     choose, so a 3xx surfaces as a refusal instead (once-S91).
      *
      * @param array<string, string> $headers
-     * @return array<string, mixed>|null
+     * @return array{status: int|null, json: array<string, mixed>|null, retryAfter: int|null}
      */
-    protected function fetchJson(string $url, array $headers): ?array
+    protected function fetchJson(string $url, array $headers): array
     {
+        $refused = ['status' => null, 'json' => null, 'retryAfter' => null];
+
         $context = stream_context_create([
             'http' => [
                 'method'           => 'GET',
@@ -590,15 +700,125 @@ HELP
                 )),
                 'timeout'          => 30,
                 'ignore_errors'    => true,
+                'follow_location'  => 0,
             ],
         ]);
         $body = @file_get_contents($url, false, $context);
         if ($body === false) {
-            return null;
+            return $refused; // no reply at all — there is nothing to be honest about
         }
+
+        // CI-85 dual read, same posture as downloadFile(): the magic
+        // variable belongs to the scope that performed the wrapper call, so
+        // it is read HERE — and only when the wrapper could have set it.
+        $isHttp      = preg_match('#^https?://#i', $url) === 1;
+        $respHeaders = $isHttp
+            ? (function_exists('http_get_last_response_headers')
+                ? (array) http_get_last_response_headers()
+                : $http_response_header)
+            : [];
+        $status = $isHttp ? Http::parseStatusCode($respHeaders) : null;
+
         $decoded = json_decode($body, true);
-        return is_array($decoded) ? $decoded : null;
+        $trusted = $status === null || ($status >= 200 && $status < 300);
+
+        return [
+            'status'     => $status,
+            // A non-2xx (or a reply with no parsable status line) never
+            // yields a body the caller may treat as data.
+            'json'       => $trusted && is_array($decoded) ? $decoded : null,
+            'retryAfter' => self::parseRetryAfter($respHeaders),
+        ];
     }
+
+    /**
+     * Retry-After in whole seconds, either form of the header. Unparseable
+     * guidance is no guidance: null, never a fabricated number.
+     *
+     * @param array<array-key, mixed> $headers
+     */
+    private static function parseRetryAfter(array $headers): ?int
+    {
+        foreach ($headers as $header) {
+            if (!is_string($header) || preg_match('/^Retry-After:\s*(.+)$/i', trim($header), $m) !== 1) {
+                continue;
+            }
+            $value = trim($m[1]);
+            if (preg_match('/^\d+$/', $value) === 1) {
+                return (int)$value;
+            }
+            $when = strtotime($value);
+
+            return $when === false ? null : max(0, $when - time());
+        }
+        return null;
+    }
+
+    /**
+     * The repository has no published, installable release yet — either a
+     * genuine HTTP 404 from the API (once-S91) or a success reply carrying
+     * GitHub's "Not Found" error shape. Dry-run treats it as informational;
+     * an install refuses.
+     */
+    private function noReleaseYet(SymfonyStyle $io, bool $dryRun): int
+    {
+        $io->warning([
+            'No releases have been published for this repository yet.',
+            '  Repository: https://github.com/detain/php-dup-finder',
+            '  Once a tag is pushed and the release workflow publishes',
+            '  phpdup.phar + phpdup.release.json + phpdup.release.json.sig',
+            '  as assets, this command will be able to update.',
+        ]);
+        // Dry-run treats this as informational, not an error.
+        if ($dryRun) {
+            $io->success('Dry-run complete — no release available yet, nothing to do.');
+            return 0;
+        }
+        return $this->failed($io, 'No release available to install.');
+    }
+
+    /**
+     * Honest wording for a non-2xx API reply (once-S91). The reply body is
+     * never interpreted — the status is the whole story, plus whatever
+     * Retry-After guidance the service sent.
+     */
+    private function apiStatusMessage(int $status, ?int $retryAfter): string
+    {
+        if ($status === 401) {
+            return 'GitHub release API refused the request with HTTP 401 (bad or missing credentials).'
+                . $this->retryHint($retryAfter)
+                . ' The error reply was not read as release data. GITHUB_TOKEN, when set, is sent on'
+                . ' this API request only; release asset downloads are never authenticated'
+                . ' (see docs/RELEASE.md).';
+        }
+        if ($status === 403) {
+            return 'GitHub release API refused the request with HTTP 403 (rate limit or permission).'
+                . $this->retryHint($retryAfter)
+                . ' The error reply was not read as release data.';
+        }
+        if ($status >= 500) {
+            return "GitHub release API is unavailable (HTTP {$status}); try again later."
+                . $this->retryHint($retryAfter)
+                . ' The error reply was not read as release data.';
+        }
+        if ($status >= 300 && $status < 400) {
+            return "GitHub release API replied HTTP {$status}; this transport does not follow redirects"
+                . ' on a token-bearing request.' . $this->retryHint($retryAfter)
+                . ' The reply was not read as release data.';
+        }
+        return "GitHub release API replied an unexpected HTTP {$status}."
+            . $this->retryHint($retryAfter)
+            . ' The reply was not read as release data.';
+    }
+
+    /**
+     * Retry-After guidance phrased as a trailing sentence ('' when absent).
+     */
+    private function retryHint(?int $retryAfter): string
+    {
+        return $retryAfter === null ? '' : " Retry after {$retryAfter}s as the API asked.";
+    }
+
 
     /**
      * Download a file with progress reporting.
@@ -649,6 +869,26 @@ HELP
             $expectedBytes = (int)$m[1];
         }
 
+        // once-S91 (php-dup-finder-once-114): a 206/Content-Range reply is a
+        // lie about completeness — this client never sends a Range request,
+        // and a range's Content-Length describes the RANGE, not the
+        // artifact, so the honest-looking length check above would "complete"
+        // a torn download. Refuse the partial reply on sight. (A non-2xx
+        // reply needs no arm here: without ignore_errors the wrapper fails
+        // the open itself — the transport cannot launder it either way.)
+        $finalStatus = self::parseFinalStatusCode($respHeaders);
+        if (
+            $finalStatus === 206
+            || preg_match('/^Content-Range:/im', implode("\n", $respHeaders)) === 1
+        ) {
+            fclose($handle);
+            $io->error(sprintf(
+                'Download refused: the server answered %s (partial content); this client never requests ranges.',
+                $finalStatus === 206 ? 'HTTP 206' : 'a Content-Range header',
+            ));
+            return false;
+        }
+
         $outHandle = fopen($dest, 'wb');
         if ($outHandle === false) {
             fclose($handle);
@@ -660,6 +900,26 @@ HELP
         fclose($handle);
 
         return $ok;
+    }
+
+    /**
+     * The LAST HTTP status line in a wrapper reply list (once-S91). A
+     * followed redirect chain carries one status line per hop — the final
+     * reply is the one that describes the bytes, unlike the metadata GET
+     * (which follows nothing and reads the single status line via
+     * {@see Http::parseStatusCode()}). null when no HTTP layer replied.
+     *
+     * @param array<array-key, mixed> $headers
+     */
+    private static function parseFinalStatusCode(array $headers): ?int
+    {
+        $status = null;
+        foreach ($headers as $header) {
+            if (is_string($header) && preg_match('#^HTTP/[\d.]+\s+(\d{3})#', $header, $m) === 1) {
+                $status = (int)$m[1];
+            }
+        }
+        return $status;
     }
 
     /**
@@ -756,6 +1016,42 @@ HELP
         }
 
         return true;
+    }
+
+    /**
+     * Post-install check on the path the new phar now lives at (once-S91,
+     * php-dup-finder-once-114).
+     *
+     * Returns null when the install looks sound, or a short reason naming
+     * what failed. On a verified install the bar is the strongest cheap one
+     * available: the bytes AT THE FINAL PATH must still hash to what the
+     * signed manifest pinned — a torn copy across a filesystem boundary, or
+     * anything that disturbs the file between the rename and its use, is
+     * caught HERE, while the previous phar still exists to fall back to. On
+     * a --dev-allow-unsigned install no pin exists, so the bar is
+     * deliberately weaker (present, readable, non-empty) — exactly as loud
+     * as the mode itself.
+     *
+     * Override in tests to steer the outcome (the seam mirrors
+     * downloadFile()/verifySignature()).
+     */
+    protected function smokeInstalledPhar(string $pharPath, ?string $pinnedSha256): ?string
+    {
+        if (!is_file($pharPath) || !is_readable($pharPath)) {
+            return 'the installed file is not readable';
+        }
+        $size = @filesize($pharPath);
+        if ($size === false || $size === 0) {
+            return 'the installed file is empty';
+        }
+        if ($pinnedSha256 === null) {
+            return null;
+        }
+        $hash = hash_file('sha256', $pharPath);
+        if ($hash === false || !hash_equals($pinnedSha256, $hash)) {
+            return 'its SHA-256 no longer matches the signed manifest';
+        }
+        return null;
     }
 
     /**

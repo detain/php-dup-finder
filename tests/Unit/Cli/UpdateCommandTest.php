@@ -17,6 +17,14 @@ use Symfony\Component\Console\Style\SymfonyStyle;
  * shell-S36 legs: honest download completion over stream seams + the real
  * execute() download-caller leg (mock file:// transport only).
  *
+ * once-S91 legs (php-dup-finder-once-114): the metadata transport is honest
+ * about HTTP status (401/403/404/5xx/204/301 surfaced, never decoded as a
+ * release payload, Retry-After reported) — driven end to end through the
+ * REAL fetchJson against a forked loopback HTTP server; the declared-length
+ * enforcement is pinned over a real reply, not just a hand-passed bound; the
+ * missing-asset arm carries its positive pin (once-S12 r1 LOW-1); and the
+ * previous phar is kept as a backup until the post-install check passes.
+ *
  * once-S05 legs (php-dup-finder-once-005, fail-closed integrity rebuild):
  * signed release manifest + tag binding + artifact hash pinned to the
  * manifest (never to the same-response sha256 sidecar), placeholder-key
@@ -717,6 +725,422 @@ final class UpdateCommandTest extends TestCase
         $this->assertSame([], $this->scratchGlob('*.backup.*'));
     }
 
+    // ------------------------------------------------------------------
+    // once-S91 — status-honest metadata transport (php-dup-finder-once-114)
+    // ------------------------------------------------------------------
+
+    /**
+     * The whole finding in one table: api.github.com answers EVERY failure
+     * with a JSON *error body*, and the old status-blind leg handed those
+     * bodies to the release logic — the once-S12 r1 probe watched a live
+     * rate-limit reply surface as "Asset phpdup.phar not found in release
+     * unknown". Each case drives the REAL fetchJson + REAL execute() against
+     * a forked loopback HTTP server on an ephemeral port (house harness
+     * mirrored from tests/Unit/Util/HttpTest.php): no seam substitutes the
+     * fetch, no external network, no network group.
+     *
+     * @return array<string, array{0: string, 1: array<string, mixed>, 2: int, 3: list<string>, 4: list<string>}>
+     */
+    public static function apiReplyCases(): array
+    {
+        $rateLimitBody = '{"message":"API rate limit exceeded for 203.0.113.7.'
+            . ' (But here\'s the good news: Authenticated requests get a higher rate limit.'
+            . ' Check out the documentation for more details.)",'
+            . '"documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#rate-limiting"}';
+        $notFoundBody = '{"message":"Not Found","documentation_url":"https://docs.github.com/'
+            . 'rest/releases/releases#get-the-latest-release","status":"404"}';
+
+        return [
+            'rate limit 403' => [
+                self::httpReply('403 Forbidden', ['Retry-After' => '61', 'Content-Type' => 'application/json'], $rateLimitBody),
+                [],
+                1,
+                ['HTTP 403', 'rate limit', 'Retry after 61s', 'not read as release data'],
+                ['not found in release', 'unknown'],
+            ],
+            'unauthorized 401' => [
+                self::httpReply('401 Unauthorized', ['Content-Type' => 'application/json'], '{"message":"Bad credentials","status":"401"}'),
+                [],
+                1,
+                ['HTTP 401', 'GITHUB_TOKEN', 'not read'],
+                ['not found in release'],
+            ],
+            'not found 404' => [
+                self::httpReply('404 Not Found', ['Content-Type' => 'application/json'], $notFoundBody),
+                [],
+                1,
+                ['No releases have been published', 'No release available to install'],
+                ['did not complete', 'not found in release'],
+            ],
+            'not found 404 under --dry-run' => [
+                self::httpReply('404 Not Found', ['Content-Type' => 'application/json'], $notFoundBody),
+                ['--dry-run' => true],
+                0,
+                ['No releases have been published', 'no release available yet'],
+                ['No release available to install'],
+            ],
+            'bad gateway 502' => [
+                self::httpReply('502 Bad Gateway', ['Retry-After' => '3', 'Content-Type' => 'application/json'], '{"message":"Bad gateway"}'),
+                [],
+                1,
+                ['HTTP 502', 'unavailable', 'Retry after 3s'],
+                ['not found in release'],
+            ],
+            'no content 204' => [
+                self::httpReply('204 No Content', [], ''),
+                [],
+                1,
+                ['HTTP 204', 'without a usable JSON release body'],
+                ['did not complete', 'not found in release'],
+            ],
+            'redirect 301 refused not followed' => [
+                self::httpReply('301 Moved Permanently', ['Location' => 'https://api.github.com/repositories/1/releases/latest'], ''),
+                [],
+                1,
+                ['HTTP 301', 'does not follow redirects'],
+                ['not found in release'],
+            ],
+            'not-found error body behind a rewritten 200' => [
+                self::httpReply('200 OK', ['Content-Type' => 'application/json'], $notFoundBody),
+                [],
+                1,
+                ['No releases have been published'],
+                ['not found in release'],
+            ],
+            'malformed success body' => [
+                self::httpReply('200 OK', ['Content-Type' => 'application/json'], "not json at all {\n"),
+                [],
+                1,
+                ['HTTP 200', 'without a usable JSON release body'],
+                ['not found in release'],
+            ],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('apiReplyCases')]
+    public function testApiErrorRepliesAreSurfacedNeverParsedAsRelease(
+        string $reply,
+        array $input,
+        int $expectedExit,
+        array $expectedSubstrings,
+        array $forbiddenSubstrings,
+    ): void {
+        [$pid, $port, $server] = $this->forkHttpServer(static fn(string $request): string => $reply);
+        try {
+            $command = $this->s91Command(
+                "http://127.0.0.1:$port/repos/detain/php-dup-finder/releases/latest"
+            );
+
+            $output = new BufferedOutput();
+            $exit = $command->run(new ArrayInput($input), $output);
+            $flat = self::flatten($output->fetch());
+
+            $this->assertSame($expectedExit, $exit);
+            foreach ($expectedSubstrings as $needle) {
+                $this->assertStringContainsString($needle, $flat, 'the transport must surface: ' . $needle);
+            }
+            foreach ($forbiddenSubstrings as $banned) {
+                $this->assertStringNotContainsString($banned, $flat, 'an error reply may never talk like release data: ' . $banned);
+            }
+            $this->assertStringEqualsFile($this->fakePharPath(), 'OLD-PHAR-CONTENT', 'a refused metadata reply installs nothing');
+            $this->assertSame([], $this->scratchGlob('*.tmp.*'));
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    public function testNoReplyAtAllIsTheNetworkStoryNotAnInventedReleaseFailure(): void
+    {
+        // Bind, take the port, close the listener: a connect now is refused,
+        // so the transport gets NO reply at all. The old leg's single generic
+        // message blamed "API rate limits" for a dead socket; the honest
+        // posture is the network story — and never a release-shaped failure
+        // conjured out of nothing.
+        $server = @stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
+        if ($server === false) {
+            $this->markTestSkipped("loopback bind unavailable: $errstr");
+        }
+        $name = (string)stream_socket_get_name($server, false);
+        $port = (int)substr($name, (int)strrpos($name, ':') + 1);
+        fclose($server);
+
+        $command = $this->s91Command("http://127.0.0.1:$port/repos/detain/php-dup-finder/releases/latest");
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput([]), $output);
+        $flat = self::flatten($output->fetch());
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('did not complete', $flat);
+        $this->assertStringNotContainsString('rate limit', $flat, 'a dead socket is not a rate limit');
+        $this->assertStringNotContainsString('not found in release', $flat);
+        $this->assertStringEqualsFile($this->fakePharPath(), 'OLD-PHAR-CONTENT');
+    }
+
+    public function testReleaseJsonServedOverLoopbackDrivesARealVerifiedInstall(): void
+    {
+        // The other half of status honesty: a genuine 2xx must still run the
+        // whole flow — REAL transport for the metadata, real HMAC over the
+        // manifest, real swap — from a served payload. Without this, the
+        // refusal arms could "pass" behind a transport that accepts nothing.
+        $artifact = $this->makeArtifact();
+        [$manifest, $sig] = $this->makeSignedManifestPair($artifact, self::TAG, self::RAW_KEY);
+        $payload = self::releasePayloadJson('file://' . $artifact, $manifest, $sig);
+        $reply = self::httpReply('200 OK', ['Content-Type' => 'application/json'], $payload);
+
+        [$pid, $port, $server] = $this->forkHttpServer(static fn(string $request): string => $reply);
+        try {
+            $command = $this->s91Command(
+                "http://127.0.0.1:$port/repos/detain/php-dup-finder/releases/latest"
+            );
+            $command->keyOverride = self::RAW_KEY;
+
+            $output = new BufferedOutput();
+            $exit = $command->run(new ArrayInput([]), $output);
+
+            $this->assertSame(0, $exit, 'a served 2xx release must install through the real path');
+            $this->assertStringContainsString('pinned to the signed manifest', $output->fetch());
+            $this->assertStringEqualsFile($this->fakePharPath(), (string)file_get_contents($artifact));
+            $this->assertSame([], $this->scratchGlob('*.tmp.*'));
+            $this->assertSame([], $this->scratchGlob('*.backup.*'), 'the backup is removed only after the post-install check passed');
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    public function testGithubTokenRidesTheApiRequestOnlyAndItsValueIsNeverEchoed(): void
+    {
+        // once-S91 documented-or-absent leg, pinned at the half that IS
+        // shipped: GITHUB_TOKEN goes on the metadata request. The server
+        // plays the release JSON only when the Authorization header arrived,
+        // so a transport that dropped the token fails the install case. The
+        // asset legs are file:// and carry no auth at all — private-repo
+        // downloads stay documented-ABSSENT (docs/RELEASE.md); nothing here
+        // ever prints the secret's value.
+        $secret = 's91-secret-never-print';
+        $artifact = $this->makeArtifact();
+        [$manifest, $sig] = $this->makeSignedManifestPair($artifact, self::TAG, self::RAW_KEY);
+        $payload = self::releasePayloadJson('file://' . $artifact, $manifest, $sig);
+
+        $responder = static function (string $request) use ($secret, $payload): string {
+            if (str_contains($request, 'Authorization: Bearer ' . $secret)) {
+                return self::httpReply('200 OK', ['Content-Type' => 'application/json'], $payload);
+            }
+            return self::httpReply(
+                '401 Unauthorized',
+                ['Content-Type' => 'application/json'],
+                '{"message":"Bad credentials","status":"401"}'
+            );
+        };
+        [$pid, $port, $server] = $this->forkHttpServer($responder, 5, 2);
+        $url = "http://127.0.0.1:$port/repos/detain/php-dup-finder/releases/latest";
+        try {
+            $withToken = $this->s91Command($url);
+            $withToken->keyOverride = self::RAW_KEY;
+            $withToken->tokenValue  = $secret;
+
+            $out1 = new BufferedOutput();
+            $this->assertSame(0, $withToken->run(new ArrayInput([]), $out1), 'GITHUB_TOKEN must ride the metadata request');
+            $this->assertStringNotContainsString($secret, $out1->fetch(), 'names printed, never values');
+
+            $noToken = $this->s91Command($url);
+            $out2 = new BufferedOutput();
+            $this->assertSame(1, $noToken->run(new ArrayInput([]), $out2), 'an unauthenticated dial of an auth-gated API must refuse');
+            $this->assertStringContainsString('HTTP 401', self::flatten($out2->fetch()));
+            $this->assertStringNotContainsString($secret, $out2->fetch());
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // once-S91 — declared length enforced over a REAL reply (fake server)
+    // ------------------------------------------------------------------
+
+    public function testShortBodyUnderDeclaredContentLengthFailsOverTheWire(): void
+    {
+        // shell-S36's pipeStream legs pass the bound by hand; the once-S91
+        // acceptance asks for the truncation failure path against a fake
+        // server — proof that downloadFile PARSES the declared Content-Length
+        // from an HTTP reply and ENFORCES it end to end (stream-socket
+        // harness, no network group).
+        $raw = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n"
+            . "Content-Length: 5000\r\n\r\n" . str_repeat('p', 1200);
+
+        [$pid, $port, $server] = $this->forkHttpServer(static fn(string $request): string => $raw);
+        $command = $this->s91Command('http://127.0.0.1:' . $port . '/phpdup.phar');
+        $dest = $this->scratchFile('torn-over-the-wire.bin');
+        $io = $this->style($buffer);
+        try {
+            $ok = $command->download('http://127.0.0.1:' . $port . '/phpdup.phar', $dest, $io);
+            $messages = self::flatten($buffer->fetch());
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+
+        $this->assertFalse($ok, 'a body shorter than its declared Content-Length is never a completed download');
+        $this->assertStringContainsString('Download incomplete', $messages);
+        $this->assertStringContainsString('expected 5,000 bytes, received 1,200', $messages);
+        $this->assertSame(1200, strlen((string)file_get_contents($dest)), 'torn residue exists for the caller to unlink — success was not claimed');
+    }
+
+    public function testPartialContentReplyIsRefusedEvenWithAHonestLength(): void
+    {
+        // The declared-length trap in its lying form: a 206 whose
+        // Content-Length matches the served RANGE completes a slice of the
+        // artifact. This client never sends a Range request, so the partial
+        // reply is refused on sight — before the destination file is even
+        // opened (asserted by the file never existing).
+        $raw = "HTTP/1.1 206 Partial Content\r\nContent-Type: application/octet-stream\r\n"
+            . "Content-Length: 1200\r\nContent-Range: bytes 0-1199/5000\r\n\r\n" . str_repeat('r', 1200);
+
+        [$pid, $port, $server] = $this->forkHttpServer(static fn(string $request): string => $raw);
+        try {
+            $command = $this->s91Command('http://127.0.0.1:' . $port . '/phpdup.phar');
+            $dest = $this->scratchFile('partial-over-the-wire.bin');
+            $io = $this->style($buffer);
+
+            $ok = $command->download('http://127.0.0.1:' . $port . '/phpdup.phar', $dest, $io);
+            $messages = self::flatten($buffer->fetch());
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+
+        $this->assertFalse($ok, 'a partial-content reply must never count as the whole artifact');
+        $this->assertStringContainsString('Download refused', $messages);
+        $this->assertStringContainsString('HTTP 206', $messages);
+        $this->assertStringContainsString('partial content', $messages);
+        $this->assertFileDoesNotExist($dest, 'refusal happens before any bytes are written to the destination');
+    }
+
+    public function testCompleteTransferOverTheWireMatchesDeclaredLength(): void
+    {
+        // Positive control for the same leg: an honest reply transfers whole.
+        $body = str_repeat('q', 3000);
+        $raw = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n"
+            . 'Content-Length: ' . strlen($body) . "\r\n\r\n" . $body;
+
+        [$pid, $port, $server] = $this->forkHttpServer(static fn(string $request): string => $raw);
+        try {
+            $command = $this->s91Command('http://127.0.0.1:' . $port . '/phpdup.phar');
+            $dest = $this->scratchFile('whole-over-the-wire.bin');
+            $io = $this->style($buffer);
+
+            $ok = $command->download('http://127.0.0.1:' . $port . '/phpdup.phar', $dest, $io);
+            $messages = $buffer->fetch();
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+
+        $this->assertTrue($ok);
+        $this->assertSame($body, (string)file_get_contents($dest));
+        $this->assertStringNotContainsString('Download incomplete', $messages);
+        $this->assertStringNotContainsString('Download refused', $messages);
+    }
+
+    // ------------------------------------------------------------------
+    // once-S91 — the previous phar outlives the post-install check
+    // ------------------------------------------------------------------
+
+    public function testMissingPharAssetNamesTheTagAndRefuses(): void
+    {
+        // once-S12 r1 LOW-1 (delivered to this step as a banked leg): the
+        // $pharUrl === null arm had no positive pin anywhere. A release
+        // payload WITHOUT a phpdup.phar asset must exit 1 and name the tag
+        // it looked in — the interpolation is the promise, so it is locked.
+        $artifact = $this->makeArtifact();
+        $command = $this->s05Command($artifact, null, null);
+        $command->releasePayload['assets'] = [];   // tag present, phar absent
+
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput([]), $output);
+        $flat = self::flatten($output->fetch());
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('not found in release ' . self::TAG, $flat, 'the refusal must interpolate the real tag');
+        $this->assertStringContainsString('phpdup.phar', $flat);
+        $this->assertStringContainsString('A tag published outside that workflow carries no assets.', $flat, 'the once-S12 workflow-truth sentence is part of the promise');
+        $this->assertStringNotContainsString('phpdup release', $flat, 'the purged phantom command must never come back');
+        $this->assertStringEqualsFile($this->fakePharPath(), 'OLD-PHAR-CONTENT', 'a missing asset refuses before any transfer');
+        $this->assertSame([], $this->scratchGlob('*.tmp.*'));
+    }
+
+    public function testPostInstallCheckFailureRestoresThePreviousPhar(): void
+    {
+        // The finding's inverted order: the swap used to delete the backup
+        // the instant the rename succeeded — whatever the installed bytes
+        // were, which made "rollback is automatic" a promise the code only
+        // kept for half the failure shapes. Now a failed post-install check
+        // puts the previous binary back, and the reason is on the output.
+        $artifact = $this->makeArtifact();
+        [$manifest, $sig] = $this->makeSignedManifestPair($artifact, self::TAG, self::RAW_KEY);
+        $command = $this->s05Command($artifact, $manifest, $sig);
+        $command->keyOverride = self::RAW_KEY;
+        $command->smokeFailure = 'simulated post-install failure (once-S91 pin)';
+
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput([]), $output);
+        $flat = self::flatten($output->fetch());
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('failed its post-install check', $flat);
+        $this->assertStringContainsString('simulated post-install failure (once-S91 pin)', $flat, 'the reason must reach the user, not only the exit code');
+        $this->assertStringContainsString('previous phar was restored', $flat);
+        $this->assertStringEqualsFile($this->fakePharPath(), 'OLD-PHAR-CONTENT', 'a bad install must not replace the working binary');
+        $this->assertSame([], $this->scratchGlob('*.backup.*'), 'the backup is consumed by the restore, not left behind');
+        $this->assertSame([], $this->scratchGlob('*.tmp.*'));
+    }
+
+    public function testGoodInstallDiscardsTheBackupOnlyAfterTheCheckPasses(): void
+    {
+        // Positive control on the same ordering: the REAL smoke (a re-hash at
+        // the final path against the manifest pin) passes, so the backup is
+        // gone and the new bytes stand. A smokeInstalledPhar() that always
+        // refused would fail this and pass the test above only by luck of
+        // steering — see the primitive pin below for the other direction.
+        $artifact = $this->makeArtifact();
+        [$manifest, $sig] = $this->makeSignedManifestPair($artifact, self::TAG, self::RAW_KEY);
+        $command = $this->s05Command($artifact, $manifest, $sig);
+        $command->keyOverride = self::RAW_KEY;
+
+        $output = new BufferedOutput();
+        $exit = $command->run(new ArrayInput([]), $output);
+
+        $this->assertSame(0, $exit);
+        $this->assertStringContainsString('Post-install check passed', self::flatten($output->fetch()));
+        $this->assertStringEqualsFile($this->fakePharPath(), (string)file_get_contents($artifact));
+        $this->assertSame([], $this->scratchGlob('*.backup.*'));
+        $this->assertSame([], $this->scratchGlob('*.tmp.*'));
+    }
+
+    public function testSmokeArmRefusesBytesThatDriftedAtTheFinalPath(): void
+    {
+        // The primitive itself (no steering): sound bytes pass; bytes that no
+        // longer hash to the manifest pin, an empty file, and a missing file
+        // each refuse with their own reason. Vacuity guard for the ordering
+        // legs above — a smokeInstalledPhar() that only ever returned null
+        // would pass them all.
+        $path = $this->scratchFile('smoke.phar');
+        file_put_contents($path, 'SMOKE-BYTES');
+        $hash = hash_file('sha256', $path);
+        $this->assertIsString($hash);
+
+        $command = new S91UpdateCommand();
+        $this->assertNull($command->smokePublic($path, $hash), 'sound bytes at the final path must pass their own check');
+        $this->assertStringContainsString('SHA-256', (string)$command->smokePublic($path, str_repeat('0', 64)), 'a drifted pin must refuse');
+
+        $empty = $this->scratchFile('smoke-empty.phar');
+        file_put_contents($empty, '');
+        $this->assertStringContainsString('empty', (string)$command->smokePublic($empty, null), 'a zero-byte install must refuse even without a pin (dev-unsigned leg)');
+
+        $this->assertStringContainsString('not readable', (string)$command->smokePublic($this->scratchFile('never-created.phar'), null));
+    }
+
     // -- helpers ---------------------------------------------------------
 
     private function scratchDir(): string
@@ -919,6 +1343,220 @@ final class UpdateCommandTest extends TestCase
         }
         return $h;
     }
+
+    // -- once-S91 harness -------------------------------------------------
+
+    /**
+     * A well-formed release payload pointing every asset at a local path —
+     * served over the fake server so the REAL transport reads it off a
+     * socket instead of a substituted seam.
+     */
+    private static function releasePayloadJson(string $pharUrl, string $manifestPath, string $sigPath): string
+    {
+        return (string)json_encode([
+            'tag_name'     => self::TAG,
+            'prerelease'   => false,
+            'draft'        => false,
+            'published_at' => '2026-01-01T00:00:00Z',
+            'assets'       => [
+                ['name' => 'phpdup.phar', 'browser_download_url' => $pharUrl],
+                ['name' => 'phpdup.release.json', 'browser_download_url' => 'file://' . $manifestPath],
+                ['name' => 'phpdup.release.json.sig', 'browser_download_url' => 'file://' . $sigPath],
+            ],
+        ], JSON_UNESCAPED_SLASHES);
+    }
+
+    /**
+     * Build a wire reply with an honest Content-Length for the given body
+     * (pass the raw string yourself when the case needs a LYING length —
+     * that is the truncation pin's whole point).
+     *
+     * @param array<string, string> $headers
+     */
+    private static function httpReply(string $statusLine, array $headers, string $body): string
+    {
+        $lines = ['HTTP/1.1 ' . $statusLine];
+        $headers['Content-Length'] = (string)strlen($body);
+        foreach ($headers as $name => $value) {
+            $lines[] = $name . ': ' . $value;
+        }
+        return implode("\r\n", $lines) . "\r\n\r\n" . $body;
+    }
+
+    /**
+     * SymfonyStyle wraps error blocks at the terminal width; flatten the
+     * whitespace so a promise can be pinned as a whole sentence (the words
+     * are the contract, the line breaks are decoration).
+     */
+    private static function flatten(string $messages): string
+    {
+        return (string)preg_replace('/\s+/', ' ', $messages);
+    }
+
+    /** @param string $apiUrl loopback fake-server URL the REAL transport dials */
+    private function s91Command(string $apiUrl): S91UpdateCommand
+    {
+        file_put_contents($this->fakePharPath(), 'OLD-PHAR-CONTENT');
+
+        $command = new S91UpdateCommand();
+        $command->fakePharPath = $this->fakePharPath();
+        $command->apiUrl       = $apiUrl;
+
+        $app = new Application('phpdup', '0.0.0');
+        $app->add($command);
+        return $command;
+    }
+
+    /**
+     * Forked one-shot loopback HTTP server — the house harness, mirrored
+     * from tests/Unit/Util/HttpTest.php (ephemeral port, poll-until-deadline
+     * reaping, no fixed sleeps, no resolver traffic, no external network).
+     *
+     * @param callable(string): string $responseFor
+     * @return array{0: int, 1: int, 2: resource} [pid, port, listener]
+     */
+    private function forkHttpServer(callable $responseFor, int $acceptTimeoutSec = 5, int $serveCount = 1): array
+    {
+        if (!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid')) {
+            $this->markTestSkipped('forked HTTP server requires pcntl_fork/pcntl_waitpid');
+        }
+        if (!function_exists('posix_kill')) {
+            $this->markTestSkipped('forked HTTP server reaper requires posix_kill');
+        }
+        $server = @stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
+        if ($server === false) {
+            $this->markTestSkipped("loopback bind unavailable: $errstr");
+        }
+        $name = (string)stream_socket_get_name($server, false);
+        $port = (int)substr($name, (int)strrpos($name, ':') + 1);
+        $this->assertGreaterThan(0, $port);
+
+        $pid = pcntl_fork();
+        if ($pid === -1) {
+            fclose($server);
+            $this->markTestSkipped('pcntl_fork failed');
+        }
+        if ($pid === 0) {
+            while (ob_get_level() > 0) {
+                ob_end_clean();
+            }
+            $served = 0;
+            for ($i = 0; $i < $serveCount; $i++) {
+                $conn = @stream_socket_accept($server, $acceptTimeoutSec);
+                if ($conn === false) {
+                    break;
+                }
+                $served++;
+                stream_set_timeout($conn, $acceptTimeoutSec);
+                $request = '';
+                while (!str_contains($request, "\r\n\r\n")) {
+                    $chunk = fread($conn, 8192);
+                    if ($chunk === false || $chunk === '') {
+                        break;
+                    }
+                    $request .= $chunk;
+                }
+                if (preg_match('/^Content-Length: (\d+)$/mi', $request, $m) === 1) {
+                    $remaining = (int)$m[1];
+                    while ($remaining > 0) {
+                        $chunk = fread($conn, min(8192, $remaining));
+                        if ($chunk === false || $chunk === '') {
+                            break;
+                        }
+                        $remaining -= strlen($chunk);
+                    }
+                }
+                @fwrite($conn, $responseFor($request));
+                fclose($conn);
+            }
+            fclose($server);
+            exit($served > 0 ? 0 : 1);
+        }
+        return [$pid, $port, $server];
+    }
+
+    /**
+     * Bounded reap (poll-until-deadline, house discipline): the child
+     * finishes by serving or by accept-timeout. Anything else is a hung
+     * transport — kill and fail loudly.
+     */
+    private function reapForkedHttpServer(int $pid): void
+    {
+        $status   = 0;
+        $deadline = microtime(true) + 20.0;
+        while (microtime(true) < $deadline) {
+            $reaped = pcntl_waitpid($pid, $status, WNOHANG);
+            if ($reaped === $pid) {
+                return;
+            }
+            if ($reaped === -1) {
+                $this->fail("pcntl_waitpid failed for forked server $pid");
+            }
+            usleep(20_000);
+        }
+        posix_kill($pid, SIGKILL);
+        pcntl_waitpid($pid, $status);
+        $this->fail("forked HTTP server $pid never finished — client stalled or never connected");
+    }
+}
+
+/**
+ * once-S91 harness: drives the REAL metadata transport (fetchJson) and the
+ * REAL download leg against the forked loopback server above. Only the
+ * environment seams are steered — phar path, API URL, verification key,
+ * GITHUB_TOKEN. Nothing here dials anything but 127.0.0.1.
+ */
+class S91UpdateCommand extends UpdateCommand
+{
+    public string $fakePharPath = '';
+
+    public string $apiUrl = '';
+
+    public ?string $keyOverride = null;
+
+    public string $tokenValue = '';
+
+    /** Public pass-through so the wire legs can drive the real downloadFile. */
+    public function download(string $url, string $dest, SymfonyStyle $io): bool
+    {
+        return $this->downloadFile($url, $dest, $io);
+    }
+
+    /** Public pass-through for the post-install check primitive. */
+    public function smokePublic(string $pharPath, ?string $pinnedSha256): ?string
+    {
+        return $this->smokeInstalledPhar($pharPath, $pinnedSha256);
+    }
+
+    #[\Override]
+    protected function releasesApiUrl(): string
+    {
+        return $this->apiUrl;
+    }
+
+    #[\Override]
+    protected function runningPharPath(): string
+    {
+        return $this->fakePharPath;
+    }
+
+    #[\Override]
+    protected function runningVersion(): string
+    {
+        return '0.0.0';
+    }
+
+    #[\Override]
+    protected function githubToken(): string
+    {
+        return $this->tokenValue;
+    }
+
+    #[\Override]
+    protected function resolveVerificationKey(): string
+    {
+        return $this->keyOverride ?? parent::resolveVerificationKey();
+    }
 }
 
 /**
@@ -940,6 +1578,12 @@ class S05UpdateCommand extends UpdateCommand
     public bool $failManifestDownload = false;
 
     public int $realVerifyCalls = 0;
+
+    /**
+     * once-S91: steer the post-install check's outcome without faking the
+     * swap itself (the reason string flows into the honest refusal text).
+     */
+    public ?string $smokeFailure = null;
 
     public function keyIsPlaceholder(): bool
     {
@@ -970,9 +1614,18 @@ class S05UpdateCommand extends UpdateCommand
     }
 
     #[\Override]
-    protected function fetchJson(string $url, array $headers): ?array
+    protected function fetchJson(string $url, array $headers): array
     {
-        return $this->releasePayload;
+        // once-S91 struct contract: a mocked payload is a trusted HTTP 2xx
+        // reply (the honest-status legs drive the REAL transport instead —
+        // see S91UpdateCommand).
+        return ['status' => 200, 'json' => $this->releasePayload, 'retryAfter' => null];
+    }
+
+    #[\Override]
+    protected function smokeInstalledPhar(string $pharPath, ?string $pinnedSha256): ?string
+    {
+        return $this->smokeFailure ?? parent::smokeInstalledPhar($pharPath, $pinnedSha256);
     }
 
     #[\Override]
@@ -1096,10 +1749,11 @@ class TestUpdateCommand extends UpdateCommand
         return $this->mode === self::MODE_S36 ? (string)$this->fakePharPath : parent::runningPharPath();
     }
 
-    protected function fetchJson(string $url, array $headers): ?array
+    protected function fetchJson(string $url, array $headers): array
     {
         if ($this->mode === self::MODE_S36 && $this->releasePayload !== null) {
-            return $this->releasePayload;
+            // once-S91 struct contract: the S36 mock is a trusted 2xx reply.
+            return ['status' => 200, 'json' => $this->releasePayload, 'retryAfter' => null];
         }
         return parent::fetchJson($url, $headers);
     }
