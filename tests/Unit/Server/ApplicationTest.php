@@ -1252,4 +1252,329 @@ final class ApplicationTest extends TestCase
             rtrim(AnalysisWorker::REQUEST_TOO_LONG_ACK, "\n")
         );
     }
+
+    // ------------------------------------------------------------------
+    // once-S02 (php-dup-finder-once-002): buffered admission (alive busy
+    // worker never false-500s), held-channel terminal events (the full
+    // pending→running→done lifecycle and honest worker-death reports),
+    // the deadline kept only as the wedge backstop, and the visible-note
+    // capacity eviction through the HTTP surface.
+    // ------------------------------------------------------------------
+
+    public function testBufferedDispatchIsAdmittedPendingAndCompletesThroughChannelAckAndFile(): void
+    {
+        // The alive-busy-worker leg: the frame is written, nothing answers
+        // inside the ack window (the worker is behind an earlier job). That
+        // is an ADMISSION — a 202 with an honestly PENDING row, never a
+        // false 500. The late accept-ack flips it to running; the result
+        // file flips it to completed. Full lifecycle, observed via
+        // GET /jobs/<id>.
+        $now = 6_000_000.0;
+        $app = $this->makeAsyncApp($now);
+        $resultDir = (new \ReflectionProperty(Application::class, 'resultDir'))->getValue($app);
+
+        $app->workerAckProbe = static function (string $socketPath, string $message): string {
+            return ''; // frame written; busy worker answered nothing
+        };
+        /** @var list<array{kind:string, reason?:string}> $events */
+        $events = [];
+        $app->workerChannelProbe = static function () use (&$events): ?array {
+            return array_shift($events);
+        };
+
+        $response = $app->handle('POST', '/jobs', '{"paths":["src"]}', []);
+        $this->assertSame(202, $response['status'], 'a live worker cannot answer yet is an admission, not a failure');
+        $id = json_decode($response['body'], true)['job_id'];
+
+        $poll = json_decode($app->handle('GET', '/jobs/' . $id, '', [])['body'], true);
+        $this->assertSame(JobQueue::STATUS_PENDING, $poll['status']);
+
+        // Channel says the worker has now read and accepted the frame.
+        $events[] = ['kind' => 'ack'];
+        $poll = json_decode($app->handle('GET', '/jobs/' . $id, '', [])['body'], true);
+        $this->assertSame(JobQueue::STATUS_RUNNING, $poll['status']);
+
+        // …runs… and publishes.
+        file_put_contents($resultDir . '/' . $id . '.json', json_encode([
+            'files' => 5, 'blocks' => 6, 'clusters' => 1, 'config' => [],
+        ]));
+        $poll = json_decode($app->handle('GET', '/jobs/' . $id, '', [])['body'], true);
+        $this->assertSame(JobQueue::STATUS_COMPLETED, $poll['status']);
+        $this->assertSame(5, $poll['result']['files']);
+    }
+
+    public function testChannelGoneFailsTheJobAsObservedDeathNotTimeoutLie(): void
+    {
+        // The worker died: the held channel closed and no result file
+        // landed. The very next poll must report the death as an observed
+        // fact — not wait out, or blame, the absence-deadline.
+        $now = 7_000_000.0;
+        $app = $this->makeAsyncApp($now);
+        $app->asyncResultDeadlineSeconds = 300;
+        $app->workerAckProbe = $this->ackProbe('OK');
+        $app->workerChannelProbe = static function (): ?array {
+            return ['kind' => 'gone'];
+        };
+
+        $id = json_decode($app->handle('POST', '/jobs', '{"paths":["src"]}', [])['body'], true)['job_id'];
+
+        $poll = json_decode($app->handle('GET', '/jobs/' . $id, '', [])['body'], true);
+        $this->assertSame(JobQueue::STATUS_FAILED, $poll['status']);
+        $this->assertStringContainsString('ended without publishing', $poll['error']);
+        $this->assertStringNotContainsString('did not produce a result', $poll['error']);
+
+        // Terminal rows are settled: even advancing past the deadline
+        // leaves the honest death message untouched.
+        $now += 400.0;
+        $poll = json_decode($app->handle('GET', '/jobs/' . $id, '', [])['body'], true);
+        $this->assertStringContainsString('ended without publishing', $poll['error']);
+    }
+
+    public function testChannelErrFrameFailsWithTheWorkersOwnReason(): void
+    {
+        // A worker that accepts, then fails the pipeline, publishes no file
+        // and sends `ERR <id> <reason>`. The reconcile surfaces the frame's
+        // reason on the row instead of leaving it running-until-deadline.
+        $now = 8_000_000.0;
+        $app = $this->makeAsyncApp($now);
+        $app->workerAckProbe = $this->ackProbe('OK');
+        $app->workerChannelProbe = static function (): ?array {
+            return ['kind' => 'fail', 'reason' => 'worker reported failure: extraction blew up'];
+        };
+
+        $id = json_decode($app->handle('POST', '/jobs', '{"paths":["src"]}', [])['body'], true)['job_id'];
+
+        $poll = json_decode($app->handle('GET', '/jobs/' . $id, '', [])['body'], true);
+        $this->assertSame(JobQueue::STATUS_FAILED, $poll['status']);
+        $this->assertStringContainsString('extraction blew up', $poll['error']);
+    }
+
+    public function testWedgedChannelStillFallsBackToTheAbsenceDeadline(): void
+    {
+        // The deadline is the backstop, not the headline: a channel that
+        // stays open yet silent (a wedged worker) still settles honestly
+        // past the window. Before it, "still" must not change anything.
+        $now = 9_000_000.0;
+        $app = $this->makeAsyncApp($now);
+        $app->asyncResultDeadlineSeconds = 300;
+        $app->workerAckProbe = $this->ackProbe('OK');
+        $app->workerChannelProbe = static function (): array {
+            return ['kind' => 'still'];
+        };
+
+        $id = json_decode($app->handle('POST', '/jobs', '{"paths":["src"]}', [])['body'], true)['job_id'];
+
+        $now += 100.0;
+        $this->assertSame(
+            JobQueue::STATUS_RUNNING,
+            json_decode($app->handle('GET', '/jobs/' . $id, '', [])['body'], true)['status']
+        );
+
+        $now += 400.0;
+        $poll = json_decode($app->handle('GET', '/jobs/' . $id, '', [])['body'], true);
+        $this->assertSame(JobQueue::STATUS_FAILED, $poll['status']);
+        $this->assertStringContainsString('did not produce a result', $poll['error']);
+    }
+
+    public function testRealHeldChannelObservesLateAckThenCompletionOverASocket(): void
+    {
+        // Seam-free transport leg: a real unix listener accepts our
+        // dispatch, does not answer inside the (seamed, 1 s) ack window —
+        // buffered admission — and the KEPT-OPEN channel then delivers the
+        // late `OK` line and, after the file lands, is closed and forgotten.
+        $sockPath = sys_get_temp_dir() . '/phpdup-once-s02-' . uniqid('', true) . '.sock';
+        $listener = @stream_socket_server('unix://' . $sockPath, $errno, $errstr);
+        $this->assertIsResource($listener, "listener needed for the real-channel leg: {$errstr}");
+        $resultDir = sys_get_temp_dir() . '/phpdup-once-s02-results-' . uniqid('', true);
+        mkdir($resultDir, 0700);
+
+        try {
+            $app = new Application(new JobQueue(), null, null, $sockPath, $resultDir);
+            $app->dispatchAckTimeoutSeconds = 1;
+
+            $start = microtime(true);
+            $response = $app->handle('POST', '/jobs', '{"paths":["src"]}', []);
+            $elapsed = microtime(true) - $start;
+
+            $this->assertSame(202, $response['status'], 'a busy live worker must not produce a false 500');
+            $this->assertLessThan(4.0, $elapsed, 'the seamed 1 s ack window governs, not the 5 s default');
+            $id = json_decode($response['body'], true)['job_id'];
+
+            $poll = json_decode($app->handle('GET', '/jobs/' . $id, '', [])['body'], true);
+            $this->assertSame(JobQueue::STATUS_PENDING, $poll['status']);
+
+            // Play the worker: accept, read the RUN frame, answer late.
+            $client = @stream_socket_accept($listener, 5);
+            $this->assertIsResource($client);
+            $frame = @stream_get_line($client, 65536, "\n");
+            $this->assertIsString($frame);
+            $this->assertStringStartsWith("RUN {$id} ", $frame);
+            $this->assertStringEndsWith('{"paths":["src"]}', $frame);
+
+            @fwrite($client, "OK {$id}\n");
+            $poll = json_decode($app->handle('GET', '/jobs/' . $id, '', [])['body'], true);
+            $this->assertSame(JobQueue::STATUS_RUNNING, $poll['status'], 'the late ack on the held channel flips pending→running');
+
+            file_put_contents($resultDir . '/' . $id . '.json', json_encode([
+                'files' => 3, 'blocks' => 4, 'clusters' => 2, 'config' => [],
+            ]));
+            @fclose($client);
+
+            // File-first: a success-close must never read as worker death.
+            $poll = json_decode($app->handle('GET', '/jobs/' . $id, '', [])['body'], true);
+            $this->assertSame(JobQueue::STATUS_COMPLETED, $poll['status']);
+            $this->assertStringNotContainsString('ended without publishing', (string) $poll['error']);
+
+            // Settling forgets the channel and the deadline anchor.
+            $this->assertSame([], (new \ReflectionProperty(Application::class, 'asyncChannels'))->getValue($app));
+            $this->assertSame([], (new \ReflectionProperty(Application::class, 'asyncDispatchedAt'))->getValue($app));
+        } finally {
+            if (is_resource($client ?? null)) {
+                @fclose($client);
+            }
+            @fclose($listener);
+            @unlink($sockPath);
+            foreach (glob($resultDir . '/*') ?: [] as $f) {
+                @unlink($f);
+            }
+            @rmdir($resultDir);
+        }
+    }
+
+    public function testRealHeldChannelReportsDeathWhenWorkerHangsUpMidJob(): void
+    {
+        // Seam-free death leg: the real channel answers `OK`, then the
+        // worker dies with no result file. The first poll drains the late
+        // ack line (pending→running); the second observes the hang-up and
+        // fails the row with the observed-death wording — the clock is
+        // nowhere near the absence-deadline, so this is a fact, not a
+        // timeout story.
+        $sockPath = sys_get_temp_dir() . '/phpdup-once-s02-' . uniqid('', true) . '.sock';
+        $listener = @stream_socket_server('unix://' . $sockPath, $errno, $errstr);
+        $this->assertIsResource($listener, "listener needed for the real-death leg: {$errstr}");
+        $resultDir = sys_get_temp_dir() . '/phpdup-once-s02-results-' . uniqid('', true);
+        mkdir($resultDir, 0700);
+
+        try {
+            $app = new Application(new JobQueue(), null, null, $sockPath, $resultDir);
+            $app->dispatchAckTimeoutSeconds = 1;
+
+            $response = $app->handle('POST', '/jobs', '{"paths":["src"]}', []);
+            $this->assertSame(202, $response['status']);
+            $id = json_decode($response['body'], true)['job_id'];
+
+            $client = @stream_socket_accept($listener, 5);
+            $this->assertIsResource($client);
+            $frame = @stream_get_line($client, 65536, "\n");
+            $this->assertIsString($frame);
+            $this->assertStringStartsWith("RUN {$id} ", $frame);
+            @fwrite($client, "OK {$id}\n");
+            @fclose($client); // crash after the ack, before publishing
+
+            $first = json_decode($app->handle('GET', '/jobs/' . $id, '', [])['body'], true);
+            $this->assertSame(JobQueue::STATUS_RUNNING, $first['status'], 'the held channel still had the OK line to drain');
+
+            $second = json_decode($app->handle('GET', '/jobs/' . $id, '', [])['body'], true);
+            $this->assertSame(JobQueue::STATUS_FAILED, $second['status']);
+            $this->assertStringContainsString('ended without publishing', (string) $second['error']);
+            $this->assertStringNotContainsString('did not produce a result', (string) $second['error']);
+
+            $this->assertSame([], (new \ReflectionProperty(Application::class, 'asyncChannels'))->getValue($app));
+        } finally {
+            if (is_resource($client ?? null)) {
+                @fclose($client);
+            }
+            @fclose($listener);
+            @unlink($sockPath);
+            foreach (glob($resultDir . '/*') ?: [] as $f) {
+                @unlink($f);
+            }
+            @rmdir($resultDir);
+        }
+    }
+
+    public function testCapEvictionIsVisibleInSubmitBodyAndOnPollingTheVictim(): void
+    {
+        // The queue is at cap with 100 pending rows; this submission pays
+        // for its admission with the oldest row — and says so. Polling the
+        // victim returns a 404 that names the eviction, not a bare "not
+        // found".
+        $queue = new JobQueue();
+        $victims = [];
+        for ($i = 0; $i < JobQueue::MAX_JOBS; $i++) {
+            $victims[$i] = $queue->enqueue(['index' => $i]);
+        }
+
+        $resultDir = sys_get_temp_dir() . '/phpdup-once-s02-cap-' . uniqid('', true);
+        mkdir($resultDir, 0700);
+        try {
+            $app = new Application($queue, null, null, '/tmp/phpdup-once-s02-unused.sock', $resultDir);
+            $app->workerAckProbe = $this->ackProbe('OK');
+
+            $response = $app->handle('POST', '/jobs', '{"paths":["src"]}', []);
+            $this->assertSame(202, $response['status']);
+            $decoded = json_decode($response['body'], true);
+            $this->assertArrayHasKey('job_id', $decoded);
+            $this->assertArrayHasKey('evicted', $decoded, 'the submitter sees what its admission displaced');
+            $this->assertCount(1, $decoded['evicted']);
+            $this->assertSame($victims[0], $decoded['evicted'][0]['job_id']);
+            $this->assertSame(JobQueue::STATUS_PENDING, $decoded['evicted'][0]['status']);
+            $this->assertStringContainsString('at capacity', $decoded['evicted'][0]['reason']);
+
+            $poll = $app->handle('GET', '/jobs/' . $victims[0], '', []);
+            $this->assertSame(404, $poll['status']);
+            $this->assertStringContainsString('capacity', json_decode($poll['body'], true)['error']);
+
+            $api = $app->handle('GET', '/api/jobs/' . $victims[0], '', []);
+            $this->assertSame(404, $api['status']);
+            $this->assertStringContainsString('capacity', json_decode($api['body'], true)['error']);
+
+            // An id the queue never evicted keeps the plain story.
+            $plain = $app->handle('GET', '/jobs/deadbeefdeadbeef', '', []);
+            $this->assertSame(404, $plain['status']);
+            $this->assertSame('job not found', json_decode($plain['body'], true)['error']);
+        } finally {
+            @rmdir($resultDir);
+        }
+    }
+
+    public function testRejectedDispatchStillReportsTheEvictionsItCaused(): void
+    {
+        // Even the honest 500 tells the whole truth: the room the rejected
+        // submission displaced is in the body too (the failed row itself
+        // stays queued, per shell-S08 fix1).
+        $queue = new JobQueue();
+        $victims = [];
+        for ($i = 0; $i < JobQueue::MAX_JOBS; $i++) {
+            $victims[$i] = $queue->enqueue(['index' => $i]);
+        }
+
+        $resultDir = sys_get_temp_dir() . '/phpdup-once-s02-rej-' . uniqid('', true);
+        mkdir($resultDir, 0700);
+        try {
+            $app = new Application($queue, null, null, '/tmp/phpdup-once-s02-unused.sock', $resultDir);
+            $app->workerAckProbe = $this->ackProbe('none');
+
+            $response = $app->handle('POST', '/jobs', '{"paths":["src"]}', []);
+            $this->assertSame(500, $response['status']);
+            $decoded = json_decode($response['body'], true);
+            $this->assertArrayNotHasKey('job_id', $decoded);
+            $this->assertSame($victims[0], $decoded['evicted'][0]['job_id']);
+        } finally {
+            @rmdir($resultDir);
+        }
+    }
+
+    public function testOrdinaryTwentyTwoCarriesNoEvictionKey(): void
+    {
+        // Additive shape: under no cap pressure the 202 body stays byte-
+        // identical to the pre-once-S02 contract.
+        $now = 10_000_000.0;
+        $app = $this->makeAsyncApp($now);
+        $app->workerAckProbe = $this->ackProbe('OK');
+
+        $response = $app->handle('POST', '/jobs', '{"paths":["src"]}', []);
+        $this->assertSame(202, $response['status']);
+        $this->assertSame(['job_id'], array_keys(json_decode($response['body'], true)));
+    }
 }

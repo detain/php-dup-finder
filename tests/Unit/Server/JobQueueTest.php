@@ -115,31 +115,137 @@ final class JobQueueTest extends TestCase
         $this->assertNotNull($queue->get($newId));
     }
 
-    public function testPendingAndRunningJobsAreNotEvicted(): void
+    /**
+     * once-S02 (php-dup-finder-once-002) deliberately re-cuts the shell-S06
+     * "pending/running are never auto-evicted" posture: the plan row books
+     * this ("MAX_JOBS eviction policy touches shell-S06 semantics") because
+     * that posture was the cap bypass — a flood grew the queue unbounded.
+     * The eviction CLASS PREFERENCE survives: live work is only displaced
+     * when nothing terminal exists, pending before running, oldest first,
+     * and every displacement is recorded with a visible note.
+     */
+    public function testCapEvictsOldestPendingBeforeRunningWithVisibleNote(): void
     {
         $queue = new JobQueue();
 
+        $ids = [];
         for ($i = 0; $i < JobQueue::MAX_JOBS; $i++) {
-            $id = $queue->enqueue(['index' => $i]);
+            $ids[$i] = $queue->enqueue(['index' => $i]);
             if ($i % 2 === 0) {
-                $queue->markRunning($id);
+                $queue->markRunning($ids[$i]);
             }
         }
 
         $this->assertCount(JobQueue::MAX_JOBS, $this->getJobs($queue));
 
         $overflowId = $queue->enqueue(['index' => 999]);
-        $queue->markCompleted($overflowId, ['files' => 999, 'blocks' => 0, 'clusters' => 0]);
 
-        $this->assertCount(JobQueue::MAX_JOBS + 1, $this->getJobs($queue));
+        // Hard ceiling: the queue never grew past MAX_JOBS.
+        $this->assertCount(JobQueue::MAX_JOBS, $this->getJobs($queue));
 
-        $pendingOrRunning = 0;
-        foreach ($this->getJobs($queue) as $job) {
-            if ($job['status'] === JobQueue::STATUS_PENDING || $job['status'] === JobQueue::STATUS_RUNNING) {
-                $pendingOrRunning++;
-            }
+        // The oldest PENDING (index 1 — evens went running) was displaced;
+        // every RUNNING row survived the pressure.
+        $this->assertNull($queue->get($ids[1]));
+        $this->assertSame(JobQueue::STATUS_RUNNING, $queue->get($ids[0])['status']);
+        $this->assertNotNull($queue->get($ids[3]));
+        $this->assertNotNull($queue->get($overflowId));
+
+        // Visible note: status at eviction, capacity reason, and a lookup
+        // that explains the id instead of letting it vanish silently.
+        $this->assertCount(1, $queue->lastEvictions());
+        $note = $queue->lastEvictions()[0];
+        $this->assertSame($ids[1], $note['job_id']);
+        $this->assertSame(JobQueue::STATUS_PENDING, $note['status']);
+        $this->assertStringContainsString('at capacity', $note['reason']);
+        $this->assertSame($note['reason'], $queue->evictionNote($ids[1]));
+    }
+
+    public function testCapDisplacesOldestRunningWhenEveryRowIsRunning(): void
+    {
+        $queue = new JobQueue();
+        $ids = [];
+        for ($i = 0; $i < JobQueue::MAX_JOBS; $i++) {
+            $ids[$i] = $queue->enqueue(['index' => $i]);
+            $queue->markRunning($ids[$i]);
         }
-        $this->assertSame(JobQueue::MAX_JOBS, $pendingOrRunning);
+
+        $queue->enqueue(['index' => 999]);
+
+        $this->assertCount(JobQueue::MAX_JOBS, $this->getJobs($queue));
+        $this->assertNull($queue->get($ids[0]), 'the oldest running row is the last-resort victim');
+        $this->assertNotNull($queue->get($ids[1]));
+
+        $note = $queue->lastEvictions()[0];
+        $this->assertSame($ids[0], $note['job_id']);
+        $this->assertSame(JobQueue::STATUS_RUNNING, $note['status']);
+        $this->assertStringContainsString('capacity', (string) $queue->evictionNote($ids[0]));
+    }
+
+    public function testCapPrefersTerminalEvictionAndNotesItToo(): void
+    {
+        $queue = new JobQueue();
+        $pendingIds = [];
+        for ($i = 0; $i < JobQueue::MAX_JOBS - 1; $i++) {
+            $pendingIds[$i] = $queue->enqueue(['index' => $i]);
+        }
+        $terminalId = $queue->enqueue(['index' => 'terminal']);
+        $queue->markCompleted($terminalId, ['files' => 1, 'blocks' => 0, 'clusters' => 0]);
+
+        $queue->enqueue(['index' => 999]);
+
+        // The terminal row paid for the new one; pending work untouched.
+        $this->assertCount(JobQueue::MAX_JOBS, $this->getJobs($queue));
+        $this->assertNull($queue->get($terminalId));
+        foreach ($pendingIds as $id) {
+            $this->assertNotNull($queue->get($id));
+        }
+        $this->assertSame([$terminalId], array_column($queue->lastEvictions(), 'job_id'));
+        $this->assertSame(JobQueue::STATUS_COMPLETED, $queue->lastEvictions()[0]['status']);
+    }
+
+    public function testEvictionLedgerIsBoundedAndTtlPurgesAreNotNotes(): void
+    {
+        $queue = new JobQueue();
+
+        // All-pending queue at cap: each further enqueue displaces exactly
+        // the oldest pending row (terminal class always empty).
+        for ($i = 0; $i < JobQueue::MAX_JOBS; $i++) {
+            $queue->enqueue(['index' => $i]);
+        }
+        $extra = JobQueue::MAX_EVICTION_NOTES + 5;
+        $lastVictim = '';
+        for ($i = 0; $i < $extra; $i++) {
+            $queue->enqueue(['index' => 'x' . $i]);
+            $lastVictim = $queue->lastEvictions()[0]['job_id'];
+        }
+
+        $this->assertCount(JobQueue::MAX_JOBS, $this->getJobs($queue));
+        $this->assertLessThanOrEqual(JobQueue::MAX_EVICTION_NOTES, count($queue->evictions()));
+        $this->assertNotNull($queue->evictionNote($lastVictim), 'the newest note is retained');
+
+        // TTL expiry is not a capacity displacement: no note appears.
+        $purgeId = $queue->enqueue(['index' => 'ttl']);
+        $queue->markCompleted($purgeId, ['files' => 0, 'blocks' => 0, 'clusters' => 0]);
+        $reflection = new \ReflectionClass($queue);
+        $prop = $reflection->getProperty('jobs');
+        /** @var array<string, array<string,mixed>> $jobs */
+        $jobs = $prop->getValue($queue);
+        $jobs[$purgeId]['completed_at'] = ($jobs[$purgeId]['completed_at'] ?? 0) - JobQueue::JOB_TTL_SECONDS - 1;
+        $prop->setValue($queue, $jobs);
+        $queue->evictStale();
+
+        $this->assertNull($queue->get($purgeId));
+        $this->assertNull($queue->evictionNote($purgeId), 'a TTL purge keeps the plain not-found story');
+    }
+
+    public function testEvictionNoteAndLastEvictionsStayEmptyWithoutPressure(): void
+    {
+        $queue = new JobQueue();
+        $queue->enqueue(['paths' => ['a']]);
+
+        $this->assertSame([], $queue->lastEvictions());
+        $this->assertSame([], $queue->evictions());
+        $this->assertNull($queue->evictionNote('does-not-exist'));
     }
 
     public function testCleanupRemovesAllTerminalJobs(): void

@@ -13,14 +13,22 @@ namespace Phpdup\Server;
  *
  * Bounded + TTL behaviour
  * -----------------------
- * The queue is capped at {@see MAX_JOBS} entries. When a new job is
- * added and the cap is reached, the oldest completed/failed job is
- * evicted first (pending/running jobs are never auto-evicted).
+ * The queue is capped at {@see MAX_JOBS} entries and the cap is a hard
+ * ceiling (once-002): when a new job is added at capacity, room is made
+ * by class preference — the oldest completed/failed job first, then the
+ * oldest pending job, and only when every row is live work the oldest
+ * running job. The historic posture (never auto-evict pending/running,
+ * append anyway) let a flood grow the queue unboundedly past the cap;
+ * the ceiling closes that, and every capacity eviction is recorded as a
+ * visible note: the dispatching request's response carries the displaced
+ * ids, and a poll of an evicted id explains the eviction (the HTTP layer
+ * surfaces {@see evictionNote()} in its 404 body).
  *
  * Completed and failed jobs are also subject to a TTL
  * ({@see JOB_TTL_SECONDS}). On every mutating operation the oldest
  * TTL-expired completed/failed entry is purged so memory is reclaimed
- * even when the queue is below capacity.
+ * even when the queue is below capacity. TTL purges are time-based
+ * expiry, not capacity displacement, so they are not ledger events.
  *
  * Results are stored as summaries — only `files`, `blocks`, `clusters`,
  * and the config are retained — never the full JsonReporter output.
@@ -54,14 +62,27 @@ final class JobQueue
     public const STATUS_COMPLETED = 'completed';
     public const STATUS_FAILED    = 'failed';
 
-    /** Maximum number of jobs to retain. */
+    /** Maximum number of jobs to retain (hard ceiling; see class docblock). */
     public const MAX_JOBS = 100;
 
     /** TTL for completed/failed jobs in seconds (1 hour). */
     public const JOB_TTL_SECONDS = 3600;
 
+    /**
+     * Upper bound on retained capacity-eviction notes (ring buffer — the
+     * oldest note is dropped first). Bounded by design: the ledger exists
+     * to make recent displacements visible, not to archive history.
+     */
+    public const MAX_EVICTION_NOTES = 64;
+
     /** @var array<string, array{status:string, payload:array{digest:string, bytes:int}, result:?array<string, mixed>, error:?string, created_at:float, completed_at:?float}> */
     private array $jobs = [];
+
+    /** @var array<string, array{status:string, reason:string, at:float}> capacity evictions, oldest note first */
+    private array $evictions = [];
+
+    /** @var list<array{job_id:string, status:string, reason:string}> capacity evictions caused by the most recent enqueue() */
+    private array $lastEvictions = [];
 
     /**
      * Injectable clock for testing.
@@ -81,8 +102,10 @@ final class JobQueue
      * against trivial enumeration even though the queue itself is
      * single-process.
      *
-     * When the queue is at {@see MAX_JOBS} capacity, the oldest
-     * completed/failed entry is evicted before the new one is added.
+     * When the queue is at {@see MAX_JOBS} capacity, room is made by
+     * {@see makeRoomAtCap()}: oldest terminal row first, then oldest
+     * pending, then oldest running — each displacement recorded as a
+     * visible note (see class docblock).
      *
      * The retained `payload` is a bounded `{digest, bytes}` descriptor
      * of the wire frame, not the raw array (see class docblock).
@@ -93,10 +116,8 @@ final class JobQueue
     public function enqueue(array $payload): string
     {
         $this->evictStale();
-
-        if (count($this->jobs) >= self::MAX_JOBS) {
-            $this->evictOldestCompletedOrFailed();
-        }
+        $this->lastEvictions = [];
+        $this->makeRoomAtCap();
 
         $id = bin2hex(random_bytes(8));
         $this->jobs[$id] = [
@@ -368,30 +389,111 @@ final class JobQueue
     }
 
     /**
-     * Remove the oldest completed or failed job from the queue.
+     * Make room at the cap, honouring the class preference documented on
+     * the class: terminal rows first, then the oldest pending job, and
+     * only when every row is live work the oldest running job. Each
+     * displacement is recorded in the bounded visible-note ledger and in
+     * {@see lastEvictions()} for the request that caused it.
      *
-     * If no completed/failed jobs exist this is a no-op (the new job
-     * will still be added, potentially exceeding MAX_JOBS until the
-     * next eviction pass).
+     * The while-loop terminates by construction: every round removes one
+     * row, so it stops the instant the queue drops below the cap (and a
+     * queue empty below the cap exits through the null-victim guard).
      */
-    private function evictOldestCompletedOrFailed(): void
+    private function makeRoomAtCap(): void
     {
-        $oldestId  = null;
-        $oldestAge = PHP_FLOAT_MAX;
+        while (count($this->jobs) >= self::MAX_JOBS) {
+            $victim = $this->oldestEvictable();
+            if ($victim === null) {
+                return; // unreachable while count >= MAX_JOBS; fail-safe exit
+            }
 
-        foreach ($this->jobs as $id => $job) {
-            if ($job['status'] === self::STATUS_COMPLETED || $job['status'] === self::STATUS_FAILED) {
-                $completedAt = $job['completed_at'] ?? $job['created_at'];
-                if ($completedAt < $oldestAge) {
-                    $oldestAge = $completedAt;
-                    $oldestId  = $id;
+            [$id, $status] = $victim;
+            unset($this->jobs[$id]);
+
+            $reason = 'evicted from queue at capacity (' . self::MAX_JOBS . ' jobs) to admit a newer job';
+            $this->evictions[$id] = ['status' => $status, 'reason' => $reason, 'at' => $this->now()];
+            if (count($this->evictions) > self::MAX_EVICTION_NOTES) {
+                unset($this->evictions[array_key_first($this->evictions)]);
+            }
+            $this->lastEvictions[] = ['job_id' => $id, 'status' => $status, 'reason' => $reason];
+        }
+    }
+
+    /**
+     * The row the cap should displace: first non-empty class (in
+     * preference order) contributes its oldest member. Within the terminal
+     * class the age is the completion instant (falling back to creation,
+     * exactly as the historic single-eviction leg measured); within the
+     * live classes it is the creation instant. Ties resolve by insertion
+     * order — the strict `<` comparison keeps the earlier-created row.
+     *
+     * @return array{0:string, 1:string}|null [job id, status at eviction]
+     */
+    private function oldestEvictable(): ?array
+    {
+        /** @var list<list<string>> $classes */
+        $classes = [
+            [self::STATUS_COMPLETED, self::STATUS_FAILED],
+            [self::STATUS_PENDING],
+            [self::STATUS_RUNNING],
+        ];
+
+        foreach ($classes as $statuses) {
+            $terminal = $statuses[0] !== self::STATUS_PENDING && $statuses[0] !== self::STATUS_RUNNING;
+            $bestId   = null;
+            $bestAge  = PHP_FLOAT_MAX;
+            foreach ($this->jobs as $id => $job) {
+                if (!in_array($job['status'], $statuses, true)) {
+                    continue;
                 }
+                $age = $terminal
+                    ? ($job['completed_at'] ?? $job['created_at'])
+                    : $job['created_at'];
+                if ($age < $bestAge) {
+                    $bestAge = $age;
+                    $bestId  = $id;
+                }
+            }
+            if ($bestId !== null) {
+                return [$bestId, $this->jobs[$bestId]['status']];
             }
         }
 
-        if ($oldestId !== null) {
-            unset($this->jobs[$oldestId]);
-        }
+        return null;
+    }
+
+    /**
+     * Visible note for a job the cap evicted, or null for ids the queue
+     * never recorded a displacement against (unknown ids and TTL purges
+     * keep the plain not-found story).
+     */
+    public function evictionNote(string $id): ?string
+    {
+        return isset($this->evictions[$id]) ? $this->evictions[$id]['reason'] : null;
+    }
+
+    /**
+     * Capacity evictions caused by the most recent {@see enqueue()}
+     * (empty when admission needed no room). The HTTP layer surfaces
+     * these on the dispatch response so the submitting client sees exactly
+     * what its job displaced.
+     *
+     * @return list<array{job_id:string, status:string, reason:string}>
+     */
+    public function lastEvictions(): array
+    {
+        return $this->lastEvictions;
+    }
+
+    /**
+     * The bounded capacity-eviction ledger (oldest note first), keyed by
+     * evicted job id.
+     *
+     * @return array<string, array{status:string, reason:string, at:float}>
+     */
+    public function evictions(): array
+    {
+        return $this->evictions;
     }
 
     /**

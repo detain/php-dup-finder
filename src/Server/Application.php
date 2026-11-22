@@ -36,14 +36,30 @@ use Symfony\Component\Console\Output\NullOutput;
  * waits for the worker's ACCEPT-ack (shell-032: the worker answers `OK
  * <jobId>` the instant it admits the frame, before running the job), never
  * for the analysis itself — so a job that takes longer than any socket
- * timeout is no longer mistaken for a dispatch failure. Completion is
- * signalled by the result file appearing: every status/result read first
- * reconciles the queue row against the results directory, transitioning the
- * job to completed the moment its result file is present, and to failed once
- * the {@see self::ASYNC_RESULT_DEADLINE_SECONDS} absence-deadline lapses
- * without one (a crashed worker leaves no file — the lane-pinned choice for
- * the mid-job failure signal, over an explicit ERR frame). Without a worker
- * socket, analysis runs synchronously (sync mode for dev/demo).
+ * timeout is no longer mistaken for a dispatch failure. A frame that is
+ * fully written to a live-but-busy worker (it answers nothing within
+ * {@see self::DISPATCH_ACK_TIMEOUT_SECONDS} because it is still running an
+ * earlier job) is likewise an admission, not a failure: the request
+ * returns 202 and the row honestly stays `pending` (once-002: no false
+ * 500 while the worker is alive). The dispatch connection is held open
+ * after the exchange, and every status/result read asks it for the
+ * worker's terminal event — a late `OK` (buffered admission now running),
+ * an `ERR`/`FAIL` frame (failed with the worker's own reason), or the
+ * close itself ("the worker ended without publishing a result") — so
+ * worker death is an observed fact reported immediately, not a timeout
+ * inference. Completion is still primarily the result file appearing:
+ * every read first reconciles the queue row against the results
+ * directory, transitioning the job to completed the moment its result
+ * file is present. The {@see self::ASYNC_RESULT_DEADLINE_SECONDS}
+ * absence-deadline remains the backstop for channels that stay open yet
+ * silent (a wedged worker). Without a worker socket, analysis runs
+ * synchronously (sync mode for dev/demo).
+ *
+ * Queue-capacity admissions (once-002): at {@see JobQueue::MAX_JOBS}
+ * the queue evicts the oldest row (terminal first, then pending, then
+ * running) to admit the new job; the dispatch response body carries an
+ * `evicted` list naming the displaced ids, and polling an evicted id
+ * answers 404 with the eviction note instead of a bare "job not found".
  *
  * Security notes
  * --------------
@@ -103,17 +119,22 @@ final class Application
     public const SERVE_WORKERS_SERIAL = 1;
 
     /**
-     * Absence-deadline for an async job's result file (shell-032, lane
-     * choice pinned: deadline over an explicit ERR frame).
+     * Absence-deadline backstop for an async job's result file (shell-032,
+     * lane choice pinned: deadline over relying solely on an ERR frame).
      *
-     * After the worker's accept-ack the server never blocks on the analysis;
-     * completion is the result file appearing. A worker that crashes
-     * mid-job leaves no file, so a still-pending/running job whose result
-     * has not shown up within this window is honestly failed on the next
-     * status read. 300 s is generous enough that a slow-but-successful
-     * analysis on a large fixture corpus is never mistaken for a dead
-     * worker, yet bounded so a crashed one does not linger as "running"
-     * forever. Tests shrink it via {@see self::$asyncResultDeadlineSeconds}.
+     * After the worker's accept-ack the server never blocks on the
+     * analysis; completion is the result file appearing. A worker that
+     * crashes mid-job leaves no file — its held dispatch channel reports
+     * the death (EOF) or failure (ERR frame) on the very next status read,
+     * so a dead worker is no longer a timeout story. This window only
+     * backstops channels that stay open yet silent (a wedged worker) and
+     * rows whose channel was never observable (e.g. dispatched before the
+     * app could keep it): a still-live row whose result has not shown up
+     * within it is honestly failed. 300 s is generous enough that a
+     * slow-but-successful analysis on a large fixture corpus is never
+     * mistaken for a dead worker, yet bounded so a wedged one does not
+     * linger as "running" forever. Tests shrink it via
+     * {@see self::$asyncResultDeadlineSeconds}.
      */
     public const ASYNC_RESULT_DEADLINE_SECONDS = 300;
 
@@ -122,7 +143,13 @@ final class Application
      * (shell-032). The ack is written the instant the frame is admitted, so
      * this bounds a wedged socket — not the analysis. A second or two is
      * ample; the whole point of the change is that this number no longer
-     * caps how long a job may run.
+     * caps how long a job may run. As of once-002 it does not decide
+     * failure either: a frame fully written to a live listener that has not
+     * answered inside this window is a BUFFERED admission (the worker is
+     * busy behind an earlier job), not a dispatch failure — only the
+     * exchange itself being unable to complete (connect refused, short
+     * write, hang-up without any reply) rejects. Tests shrink it via
+     * {@see self::$dispatchAckTimeoutSeconds}.
      */
     public const DISPATCH_ACK_TIMEOUT_SECONDS = 5;
 
@@ -183,8 +210,50 @@ final class Application
      */
     public $asyncClock = null;
 
+    /**
+     * Test seam for the accept-ack window in seconds (once-002, mirrors
+     * {@see $asyncResultDeadlineSeconds}): null uses
+     * {@see self::DISPATCH_ACK_TIMEOUT_SECONDS}. Only the number is seamed;
+     * the buffered-vs-rejected verdict it feeds runs unseamed, so units can
+     * drive the real socket legs (held channel, EOF observation) without a
+     * wall-clock penalty.
+     */
+    public ?int $dispatchAckTimeoutSeconds = null;
+
+    /**
+     * Test seam for the held dispatch channel's follow-up event (once-002):
+     * null reads the real channel registered by {@see exchangeAck()}; a
+     * probe feeds the verdict (`['kind' => 'ack'|'still'|'fail'|'gone',
+     * 'reason' => string]`, null = no event source) so the buffered→running
+     * transition, the ERR/gone failure legs and their queue writes run
+     * unseamed — only which event the kernel socket would show is replaced.
+     *
+     * @var (callable(string, string): (?array{kind:string, reason?:string}))|null
+     */
+    public $workerChannelProbe = null;
+
     /** @var array<string, float> dispatch timestamp per async job id, for the absence-deadline. */
     private array $asyncDispatchedAt = [];
+
+    /**
+     * @var array<string, resource> kept-open dispatch channels per live
+     *      async job (once-002): after the frame is fully written the
+     *      connection stays registered non-blocking, so status reads can
+     *      observe the worker's terminal frames (OK/ERR/FAIL) or its close.
+     */
+    private array $asyncChannels = [];
+
+    /** Three-way dispatch verdict for {@see dispatchToWorker()}. */
+    private const DISPATCH_ACCEPTED = 'accepted';
+    private const DISPATCH_BUFFERED = 'buffered';
+    private const DISPATCH_REJECTED = 'rejected';
+
+    /** Channel event kinds for {@see asyncChannelEvent()}. */
+    private const CHANNEL_ACK   = 'ack';   // a late accept-ack: buffered admission now running
+    private const CHANNEL_STILL = 'still'; // open, nothing readable: the worker is on it
+    private const CHANNEL_FAIL  = 'fail';  // ERR/FAIL frame: failed with the worker's reason
+    private const CHANNEL_GONE  = 'gone';  // closed without a frame or a result: worker died
+    private const CHANNEL_NONE  = 'none';  // no channel for this job (seamed/dev posture)
 
     /**
      * Dispatch a single HTTP request to the appropriate route handler.
@@ -229,7 +298,7 @@ final class Application
             $this->reconcileAsyncResult($m[1]);
             $job = $this->queue->get($m[1]);
             if ($job === null) {
-                return $this->json(404, ['error' => 'job not found']);
+                return $this->json(404, ['error' => $this->jobGoneReason($m[1])]);
             }
             return $this->json(200, $job);
         }
@@ -242,7 +311,7 @@ final class Application
             $this->reconcileAsyncResult($m[1]);
             $status = $this->queue->status($m[1]);
             if ($status === null) {
-                return $this->json(404, ['error' => 'job not found']);
+                return $this->json(404, ['error' => $this->jobGoneReason($m[1])]);
             }
             return $this->json(200, $status);
         }
@@ -353,24 +422,38 @@ final class Application
             }
 
             $id = $this->queue->enqueue($payload);
-            if (!$this->dispatchToWorker($id, $configJson)) {
+            $evicted = $this->absorbQueueEvictions();
+
+            $verdict = $this->dispatchToWorker($id, $configJson);
+            if ($verdict === self::DISPATCH_REJECTED) {
                 $this->queue->markFailed($id, 'failed to dispatch to worker');
-                return $this->json(500, ['error' => 'failed to dispatch job to worker']);
+                return $this->json(500, $this->withEvictions(
+                    ['error' => 'failed to dispatch job to worker'],
+                    $evicted
+                ));
             }
-            // shell-032: the worker's ACCEPT-ack (`OK <id>` written before it
-            // runs the pipeline) proves the frame was admitted — it does NOT
-            // mean the analysis finished. The job is now running in the
-            // background process; its terminal state is reconciled from the
-            // result file on later status reads, so this request returns 202
-            // without ever blocking on the work. Record the dispatch instant
-            // that anchors the crashed-worker absence-deadline.
-            $this->queue->markRunning($id);
+            if ($verdict === self::DISPATCH_ACCEPTED) {
+                // shell-032: the worker's ACCEPT-ack (`OK <id>` written before
+                // it runs the pipeline) proves the frame was admitted — it
+                // does NOT mean the analysis finished. The job is now running
+                // in the background process; its terminal state arrives on
+                // later reads via the held channel or the result file, so
+                // this request returns 202 without ever blocking on the work.
+                $this->queue->markRunning($id);
+            }
+            // DISPATCH_BUFFERED (once-002): the frame is fully written into a
+            // live listener the worker has not reached yet (it is busy behind
+            // an earlier job). That is an admission, not a failure — the row
+            // honestly stays pending, and the channel reports the worker's
+            // OK/FAIL verdict once it reads the frame. Either way record the
+            // dispatch instant that anchors the absence-deadline backstop.
             $this->asyncDispatchedAt[$id] = $this->asyncNow();
-            return $this->json(202, ['job_id' => $id]);
+            return $this->json(202, $this->withEvictions(['job_id' => $id], $evicted));
         }
 
         // Sync mode (no worker): run analysis inline
         $id = $this->queue->enqueue($payload);
+        $evicted = $this->absorbQueueEvictions();
         $this->queue->markRunning($id);
         $result = $this->runAnalyze($payload);
         if ($result['status'] === 200) {
@@ -384,7 +467,7 @@ final class Application
         } else {
             $this->queue->markFailed($id, $result['body']);
         }
-        return $this->json(202, ['job_id' => $id]);
+        return $this->json(202, $this->withEvictions(['job_id' => $id], $evicted));
     }
 
     /**
@@ -393,36 +476,47 @@ final class Application
      * Wire protocol: `RUN <jobId> <configJson>\n` in; the worker answers
      * `OK <jobId>\n` as an ACCEPT-ack the instant it admits the frame
      * (shell-032) — before running the pipeline. This method therefore
-     * returns as soon as the frame is accepted: it never waits for (or
-     * false-fails) a job that simply takes a while. A `FAIL` reply or no
-     * reply (unreachable/wedged socket) is a genuine dispatch failure.
+     * resolves as soon as the frame's fate is decided: it never waits for
+     * (or false-fails) a job that simply takes a while. As of once-002 the
+     * verdict is three-way: an immediate accept, a BUFFERED admission
+     * (frame fully written to a live listener too busy to answer inside the
+     * ack window — an honest 202, row stays pending, the held channel
+     * carries the late verdict), or a genuine dispatch rejection (connect
+     * refused, short write, hang-up without any reply).
      *
-     * @param string               $jobId
-     * @param string               $configJson Pre-encoded payload frame (JSON string).
-     * @return bool True if the worker accepted the job.
+     * @return self::DISPATCH_ACCEPTED|self::DISPATCH_BUFFERED|self::DISPATCH_REJECTED
      */
-    private function dispatchToWorker(string $jobId, string $configJson): bool
+    private function dispatchToWorker(string $jobId, string $configJson): string
     {
         if ($this->workerSocket === null) {
-            return false;
+            return self::DISPATCH_REJECTED;
         }
 
-        $message = "RUN {$jobId} {$configJson}\n";
-        $ack = $this->exchangeAck($message);
+        $ack = $this->exchangeAck($jobId, "RUN {$jobId} {$configJson}\n");
+        if ($ack === '') {
+            return self::DISPATCH_BUFFERED;
+        }
 
-        return is_string($ack) && str_starts_with($ack, 'OK ' . $jobId);
+        return is_string($ack) && str_starts_with($ack, 'OK ' . $jobId)
+            ? self::DISPATCH_ACCEPTED
+            : self::DISPATCH_REJECTED;
     }
 
     /**
-     * Write a RUN frame and read the worker's single accept-ack line.
+     * Write a RUN frame and read the worker's single first reply line,
+     * KEEPING THE CONNECTION OPEN afterwards (once-002): the held channel
+     * is the live job's terminal-event source — the worker's ERR frame,
+     * the late OK/FAIL for a buffered admission, or the close itself once
+     * the worker is gone (see {@see asyncChannelEvent()}).
      *
-     * The worker answers `OK <jobId>` the instant it admits the frame —
-     * before running the pipeline — so this exchange is bounded by
-     * {@see self::DISPATCH_ACK_TIMEOUT_SECONDS} for a wedged socket only,
-     * never for the analysis itself. Returns the trimmed first line, or null
-     * when the socket is unreachable, the write is short, or no line arrives.
+     * Returns the trimmed first line; `''` when the frame was fully written
+     * to a live listener that answered nothing inside
+     * {@see self::DISPATCH_ACK_TIMEOUT_SECONDS} (the worker is busy behind
+     * an earlier job — an admission, not a failure); and null only when the
+     * exchange itself failed: unreachable socket, short write, or the peer
+     * hung up without answering a byte.
      */
-    private function exchangeAck(string $message): ?string
+    private function exchangeAck(string $jobId, string $message): ?string
     {
         $probe = $this->workerAckProbe;
         if ($probe !== null) {
@@ -436,21 +530,29 @@ final class Application
             return null;
         }
 
-        try {
-            $written = @fwrite($socket, $message);
-            if ($written === false || $written !== strlen($message)) {
-                return null;
-            }
-            stream_set_timeout($socket, self::DISPATCH_ACK_TIMEOUT_SECONDS);
-            $response = @fgets($socket);
-            if ($response === false || $response === '') {
-                return null;
-            }
-
-            return trim($response);
-        } finally {
+        $written = @fwrite($socket, $message);
+        if ($written === false || $written !== strlen($message)) {
             @fclose($socket);
+            return null;
         }
+
+        stream_set_timeout($socket, $this->dispatchAckTimeoutSeconds ?? self::DISPATCH_ACK_TIMEOUT_SECONDS);
+        $response = @fgets($socket);
+        $noLine   = $response === false || $response === '';
+        if ($noLine && stream_get_meta_data($socket)['timed_out'] !== true) {
+            // EOF (or stream error) without a reply: the worker hung up
+            // before admitting anything — a genuine dispatch failure.
+            @fclose($socket);
+            return null;
+        }
+
+        // The frame is fully written into a live socket — answered now or
+        // queued at a busy worker. Keep the channel, non-blocking, for the
+        // terminal-event reads on later status requests.
+        @stream_set_blocking($socket, false);
+        $this->asyncChannels[$jobId] = $socket;
+
+        return $noLine ? '' : trim($response);
     }
 
     /**
@@ -486,15 +588,22 @@ final class Application
 
     /**
      * Reconcile one async job's queue row against the results directory
-     * (shell-032: completion is the result file appearing).
+     * (shell-032: completion is the result file appearing) and its held
+     * dispatch channel (once-002: the worker's own terminal report — a late
+     * accept-ack, an ERR/FAIL frame, or the close of a dead worker — is an
+     * observed fact, not a timeout inference).
      *
      * A pending/running job whose result file has landed is acked completed
-     * (reduced to the retained summary, exactly as the sync path does); one
-     * whose absence has outlived {@see self::ASYNC_RESULT_DEADLINE_SECONDS}
-     * is honestly failed — the pinned signal for a worker that died mid-job
-     * (a crashed worker never writes the file, and there is no post-work ack
-     * left to read). Already-terminal rows are never touched, and the
-     * method is a no-op in sync mode (the inline run settled the row).
+     * (reduced to the retained summary, exactly as the sync path does); the
+     * file is checked FIRST so a worker that published and then closed its
+     * channel never mis-reports as "gone". Otherwise the channel event
+     * transitions the row: a late `OK` moves pending→running, an `ERR`/
+     * `FAIL` frame fails it with the worker's reason, and a hang-up without
+     * either fails it honestly as worker death. A row this process never
+     * dispatched and whose channel says nothing falls back to the
+     * ASYNC_RESULT_DEADLINE_SECONDS absence-deadline (the wedge backstop).
+     * Already-terminal rows are never touched, and the method is a no-op in
+     * sync mode (the inline run settled the row).
      */
     private function reconcileAsyncResult(string $jobId): void
     {
@@ -504,16 +613,20 @@ final class Application
 
         $job = $this->queue->get($jobId);
         if ($job === null) {
+            // Row gone (capacity-evicted or TTL-purged): drop its local
+            // async state so channels and timestamps never leak.
+            $this->forgetAsyncJob($jobId);
             return;
         }
         $status = $job['status'];
         if ($status !== JobQueue::STATUS_PENDING && $status !== JobQueue::STATUS_RUNNING) {
+            $this->forgetAsyncJob($jobId);
             return;
         }
 
         $resultFile = $this->resultDir . '/' . $jobId . '.json';
         if (is_file($resultFile)) {
-            unset($this->asyncDispatchedAt[$jobId]);
+            $this->forgetAsyncJob($jobId);
             $content = @file_get_contents($resultFile);
             if ($content === false) {
                 $this->queue->markFailed($jobId, 'failed to read result file');
@@ -531,15 +644,147 @@ final class Application
             return;
         }
 
+        // No file yet: ask the held dispatch channel what the worker said.
+        $event = $this->asyncChannelEvent($jobId);
+        if ($event['kind'] === self::CHANNEL_ACK) {
+            // A buffered admission the worker has now read and accepted.
+            if ($status === JobQueue::STATUS_PENDING) {
+                $this->queue->markRunning($jobId);
+            }
+        } elseif ($event['kind'] === self::CHANNEL_FAIL) {
+            $this->forgetAsyncJob($jobId);
+            $this->queue->markFailed($jobId, $event['reason'] ?? 'worker reported a failure');
+            return;
+        } elseif ($event['kind'] === self::CHANNEL_GONE) {
+            // Observed fact: the worker closed the channel and left no
+            // result — it died (or hung up) with this job unsettled.
+            $this->forgetAsyncJob($jobId);
+            $this->queue->markFailed($jobId, 'worker ended without publishing a result for this job');
+            return;
+        }
+
         $dispatchedAt = $this->asyncDispatchedAt[$jobId] ?? null;
         if ($dispatchedAt === null) {
             return; // not dispatched by this process — the worker owns it
         }
         $deadline = $this->asyncResultDeadlineSeconds ?? self::ASYNC_RESULT_DEADLINE_SECONDS;
         if ($this->asyncNow() - $dispatchedAt > $deadline) {
-            unset($this->asyncDispatchedAt[$jobId]);
+            $this->forgetAsyncJob($jobId);
             $this->queue->markFailed($jobId, 'worker did not produce a result within ' . $deadline . 's');
         }
+    }
+
+    /**
+     * The held dispatch channel's verdict for one live async job
+     * (once-002): non-blocking read of the connection kept open by
+     * {@see exchangeAck()}. `still` means the channel is open with nothing
+     * readable (the worker is on the job), `gone` that the peer hung up
+     * without publishing (checked after the result-file leg, so a
+     * success-close never reads as death), `ack` a late accept-ack, and
+     * `fail` an ERR/FAIL frame carrying the worker's own reason. `none` is
+     * the no-channel posture (seamed units, rows predating this process).
+     *
+     * @return array{kind:string, reason?:string}
+     */
+    private function asyncChannelEvent(string $jobId): array
+    {
+        $probe = $this->workerChannelProbe;
+        if ($probe !== null) {
+            return $probe($jobId, $this->workerSocket ?? '') ?? ['kind' => self::CHANNEL_NONE];
+        }
+
+        $channel = $this->asyncChannels[$jobId] ?? null;
+        if ($channel === null || !is_resource($channel)) {
+            return ['kind' => self::CHANNEL_NONE];
+        }
+
+        $line = @fgets($channel); // non-blocking: false on EAGAIN
+        if (!is_string($line) || $line === '') {
+            return feof($channel) ? ['kind' => self::CHANNEL_GONE] : ['kind' => self::CHANNEL_STILL];
+        }
+
+        $line = rtrim($line, "\r\n");
+        if (str_starts_with($line, 'OK ' . $jobId)) {
+            return ['kind' => self::CHANNEL_ACK];
+        }
+        $prefixLen = 0;
+        if (str_starts_with($line, 'ERR ')) {
+            $prefixLen = 4;
+        } elseif (str_starts_with($line, 'FAIL ')) {
+            $prefixLen = 5;
+        }
+        if ($prefixLen !== 0) {
+            $rest      = substr($line, $prefixLen);
+            $nextSpace = strpos($rest, ' ');
+            $frameId   = $nextSpace === false ? $rest : substr($rest, 0, $nextSpace);
+            if ($frameId !== $jobId) {
+                // Protocol breach: a terminal frame naming a different job —
+                // this row's channel is untrustworthy; fail it, don't trust it.
+                return ['kind' => self::CHANNEL_FAIL, 'reason' => 'worker sent a terminal frame naming a different job'];
+            }
+            $prefix  = $prefixLen === 4 ? 'worker reported failure: ' : 'worker refused frame: ';
+            $message = $nextSpace === false ? '' : trim(substr($rest, $nextSpace + 1));
+            return ['kind' => self::CHANNEL_FAIL, 'reason' => $prefix . ($message === '' ? 'no reason given' : $message)];
+        }
+
+        return ['kind' => self::CHANNEL_STILL];
+    }
+
+    /**
+     * Consume the capacity evictions the queue just recorded during an
+     * enqueue (once-002): their rows are gone, so the process-local async
+     * bookkeeping (dispatch timestamp + held channel) must not linger
+     * behind them, and the submitting client gets the visible notes.
+     *
+     * @return list<array{job_id:string, status:string, reason:string}>
+     */
+    private function absorbQueueEvictions(): array
+    {
+        $evicted = $this->queue->lastEvictions();
+        foreach ($evicted as $note) {
+            $this->forgetAsyncJob($note['job_id']);
+        }
+        return $evicted;
+    }
+
+    /**
+     * Drop every piece of process-local async state for one job id
+     * (idempotent): the dispatch timestamp and the held channel.
+     */
+    private function forgetAsyncJob(string $jobId): void
+    {
+        unset($this->asyncDispatchedAt[$jobId]);
+        $channel = $this->asyncChannels[$jobId] ?? null;
+        unset($this->asyncChannels[$jobId]);
+        if (is_resource($channel)) {
+            @fclose($channel);
+        }
+    }
+
+    /**
+     * Explain a missing job row (once-002): a capacity eviction names
+     * itself; anything else keeps the plain not-found story.
+     */
+    private function jobGoneReason(string $jobId): string
+    {
+        return $this->queue->evictionNote($jobId) ?? 'job not found';
+    }
+
+    /**
+     * Attach the visible cap-eviction notes to a /jobs dispatch body: the
+     * ids this submission displaced, with the status each held when it was
+     * dropped. Key absent (byte-identical body) when nothing was evicted.
+     *
+     * @param array<string,mixed>                                     $body
+     * @param list<array{job_id:string, status:string, reason:string}> $evicted
+     * @return array<string,mixed>
+     */
+    private function withEvictions(array $body, array $evicted): array
+    {
+        if ($evicted !== []) {
+            $body['evicted'] = $evicted;
+        }
+        return $body;
     }
 
     /**
