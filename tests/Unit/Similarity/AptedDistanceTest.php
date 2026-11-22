@@ -9,6 +9,7 @@ use Phpdup\Normalization\Normalizer;
 use Phpdup\Fingerprint\SubtreeHasher;
 use Phpdup\Parsing\AstParser;
 use Phpdup\Similarity\AptedDistance;
+use Phpdup\Similarity\EditCostModel;
 
 final class AptedDistanceTest extends TestCase
 {
@@ -243,5 +244,174 @@ final class AptedDistanceTest extends TestCase
         $this->assertNotEmpty($blocks);
         (new Normalizer($mode))->normalize($blocks[0]);
         return $blocks[0]->canonical;
+    }
+
+    // ------------------------------------------------------------------
+    // engine-009 — per-pair input memoisation + budget-banded DP
+    // ------------------------------------------------------------------
+
+    /**
+     * Fixture roster for the engine-009 property pins: pairs chosen so the
+     * band actually prunes (size-skewed near-dupes at production-like
+     * thresholds) and so the memo actually gets shared (node `A` recurs in
+     * three pairs).
+     *
+     * @return array<string, array{0: string, 1: string}> code-pair keyed by label
+     */
+    private static function engine009Pairs(): array
+    {
+        $a = '<?php function f($x) { if ($x > 10) { return "a"; } return "b"; }';
+        return [
+            // Pure near-dupe: renamed vars, equal shape → sim 1.0.
+            'renamed-dupe' => [
+                '<?php function f($items) { $sum = 0; foreach ($items as $i) { $sum += $i; } return $sum; }',
+                '<?php function g($entries) { $total = 0; foreach ($entries as $e) { $total += $e; } return $total; }',
+            ],
+            // Statement permutation (engine-007 shape): real edit distance.
+            'permuted' => [
+                '<?php function f() { $u = 1; if ($u) { g(); } }',
+                '<?php function f() { if ($u) { g(); } $u = 1; }',
+            ],
+            // Size-skewed pair: forces the |r − c| band to bound real work.
+            'size-skew' => [
+                '<?php function f($a, $b, $c, $d, $e) { if ($a) { return 1; } if ($b) { return 2; } if ($c) { return 3; } if ($d) { return 4; } if ($e) { return 5; } return 6; }',
+                '<?php function g($w, $x, $y) { if ($w) { return 10; } if ($x) { return 20; } return 30; }',
+            ],
+            // Same trunk, unrelated tails: the DP must saturate, never mis-report.
+            'shared-prefix' => [$a, '<?php function g($y) { return $y * 3; }'],
+            // Structurally unrelated: budget abort path.
+            'unrelated' => [
+                '<?php function f($x) { return $x * 2; }',
+                '<?php function g($items) { foreach ($items as $i) { for ($j = 0; $j < 10; $j++) { echo $i + $j; } } }',
+            ],
+        ];
+    }
+
+    /**
+     * engine-009 acceptance: memoised vs unmemoised results identical,
+     * property-tested across the fixture roster at four thresholds. A
+     * fresh instance per measurement is the unmemoised baseline (cold
+     * flatten/worstCost); the shared instance's second call is fully
+     * memo-warm.
+     */
+    public function testMemoisedResultsMatchUnmemoisedAcrossFixturePairs(): void
+    {
+        $shared = new AptedDistance();
+        foreach (self::engine009Pairs() as $name => [$codeA, $codeB]) {
+            $a = $this->canonical($codeA);
+            $b = $this->canonical($codeB);
+            foreach ([0.0, 0.5, 0.85, 0.99] as $threshold) {
+                $cold = (new AptedDistance())->similarity($a, $b, $threshold);
+                // Prime the shared memo on this pair, then read it warm.
+                $shared->similarity($a, $b, $threshold);
+                $warm = $shared->similarity($a, $b, $threshold);
+                $this->assertSame(
+                    $cold,
+                    $warm,
+                    "memoised similarity must be bit-identical to cold for pair '$name' at threshold $threshold"
+                );
+            }
+        }
+    }
+
+    /**
+     * engine-009 acceptance: the object-identity probe. Inputs are
+     * computed once per distinct node object for the instance's life, and
+     * a node shared across different pairs rides the same entry.
+     */
+    public function testRepeatedCallsReuseMemoisedInputs(): void
+    {
+        $a = $this->canonical('<?php function f($x) { if ($x > 10) { return "a"; } return "b"; }');
+        $b = $this->canonical('<?php function g($y) { return $y * 3; }');
+
+        $d = new AptedDistance();
+        $this->assertFalse($d->hasMemoisedInputs($a), 'fresh instance must not claim cached inputs');
+        $this->assertFalse($d->hasMemoisedInputs($b));
+
+        $d->similarity($a, $b);
+
+        $this->assertTrue($d->hasMemoisedInputs($a), 'similarity() must memoise both trees (object identity)');
+        $this->assertTrue($d->hasMemoisedInputs($b));
+
+        // A third tree seen with the SAME `a` reuses a's entry — proven by
+        // result equality against the cold path plus the warm flag.
+        $c = $this->canonical('<?php function h($z) { foreach ($z as $q) { echo $q; } }');
+        $warm = $d->similarity($a, $c);
+        $cold = (new AptedDistance())->similarity($a, $c);
+        $this->assertSame($cold, $warm, 'cross-pair memo reuse must not perturb results');
+        $this->assertTrue($d->hasMemoisedInputs($c));
+
+        // The memo is per-run instance state, never a shared table: a new
+        // instance must not inherit another instance's cached tuple
+        // (different cost model / unnumbered mode would otherwise leak).
+        $this->assertFalse((new AptedDistance())->hasMemoisedInputs($a));
+    }
+
+    /**
+     * engine-009 (banded DP): an accepted pair reports the EXACT distance
+     * the full DP would have computed; a rejected pair must have an exact
+     * score below its threshold (every gate — size delta, sketch bound,
+     * budgeted DP — rejects only pairs whose true score cannot clear it).
+     * The threshold-0.0 run is the no-pruning oracle: budget = worstCost
+     * ≥ every positional bound, so its band covers the whole matrix.
+     */
+    public function testBandPruneKeepsAcceptedDistancesExact(): void
+    {
+        foreach (self::engine009Pairs() as $name => [$codeA, $codeB]) {
+            $a = $this->canonical($codeA);
+            $b = $this->canonical($codeB);
+            $exact = (new AptedDistance())->similarity($a, $b, 0.0);
+            foreach ([0.5, 0.85, 0.99] as $threshold) {
+                $gated = (new AptedDistance())->similarity($a, $b, $threshold);
+                if ($gated > 0.0) {
+                    $this->assertSame(
+                        $exact,
+                        $gated,
+                        "banded pair '$name' at $threshold accepted a distance the exact DP disagrees with"
+                    );
+                } else {
+                    $this->assertLessThan(
+                        $threshold,
+                        $exact,
+                        "banded pair '$name' at $threshold rejected a pair the exact DP scores at or above it"
+                    );
+                }
+            }
+        }
+    }
+
+    /**
+     * engine-009: the memo must never cross cost-model or unnumbered-mode
+     * boundaries — each configuration keeps its own tuples, and cold and
+     * warm agree per instance. The pair below scores 1.0 under the
+     * default/semantic cost models but saturates differently under them
+     * at tighter thresholds, so the isolation pins carry real signal.
+     */
+    public function testMemoRespectsInstanceConfiguration(): void
+    {
+        $a = $this->canonical('<?php function f($x) { if ($x > 10) { return "a"; } return "b"; }');
+        $b = $this->canonical('<?php function g($y) { if ($y > 20) { return "x"; } return "y"; }');
+
+        $semantic = new EditCostModel(EditCostModel::MODEL_SEMANTIC);
+        $configs = [
+            'default'    => [null, false],
+            'semantic'   => [$semantic, false],
+            'unnumbered' => [null, true],
+        ];
+        $gated = [];
+        foreach ($configs as $label => [$model, $unnumbered]) {
+            $cold = (new AptedDistance($model, $unnumbered))->similarity($a, $b, 0.0);
+            $warm = new AptedDistance($model, $unnumbered);
+            $warm->similarity($a, $b, 0.0);
+            $this->assertSame($cold, $warm->similarity($a, $b, 0.0), "memo must be consistent for '$label'");
+            $this->assertGreaterThan(0.0, $cold, "fixture pair must score above zero for '$label'");
+            $gated[$label] = (new AptedDistance($model, $unnumbered))->similarity($a, $b, 0.99);
+        }
+        // Cost-model discrimination survives per-instance memoisation:
+        // at the tight threshold the semantic model saturates this
+        // literal-heavy pair where the default model still accepts it, so
+        // an entry written by one configuration must never be read back
+        // by another.
+        $this->assertNotSame($gated['default'], $gated['semantic']);
     }
 }
