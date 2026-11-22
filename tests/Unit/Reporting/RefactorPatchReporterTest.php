@@ -4,10 +4,13 @@ declare(strict_types=1);
 namespace Phpdup\Tests\Unit\Reporting;
 
 use PHPUnit\Framework\TestCase;
+use PhpParser\Node;
+use PhpParser\NodeFinder;
 use Phpdup\Cli\Config;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
 use Phpdup\Parsing\AstParser;
+use Phpdup\Refactor\ApplyExtractor;
 use Phpdup\Refactor\Hole;
 use Phpdup\Reporting\RefactorPatchReporter;
 use Phpdup\Reporting\RefactorTestReporter;
@@ -244,7 +247,12 @@ final class RefactorPatchReporterTest extends TestCase
         symlink($secret, $link);
         $out = $dir . '/patches';
         try {
-            $report = $this->reportWith([$this->realBlk($a), $this->realBlk($link)], 'ESCP');
+            // output-008: the escape victim's verdict is forced through the
+            // confined store (AST unloaded) — a refusal there must fail the
+            // cluster CLOSED, not merely note a skip and pass the gate.
+            $members = [$this->realBlk($a), $this->realBlk($link)];
+            $members[1]->ast = null;
+            $report = $this->reportWith($members, 'ESCP');
             $store  = new SourceTextStore([$dir], warnOnSkip: false);
             (new RefactorPatchReporter($store))->writeTo($report, $out);
 
@@ -593,5 +601,369 @@ final class RefactorPatchReporterTest extends TestCase
             chmod($x, 0o644);
             $this->rrmdir($dir);
         }
+    }
+
+    // ── output-008 (S50): AST-verified unsafe gate — fail CLOSED, never silently safe ──
+
+    public function testBareThisUnderClosureBindIsRefusedWhereTheOldRegexPassed(): void
+    {
+        // PDREF repro: `bind($this, $x, 'p1')` contains no `$this->` byte,
+        // so the old str_contains gate waved the member through; the hoisted
+        // function then fatals "Using $this when not in object context".
+        $patch = $this->s50PatchFor(
+            "<?php\nclass L1 { public function leaky(\$x) { return \\Closure::bind(\$this, \$x, 'p1'); } }",
+            ['method' => 2],
+        );
+        $this->assertStringContainsString('*** MANUAL REVIEW REQUIRED ***', $patch);
+        $this->assertStringContainsString('member uses $this — needs context-aware extraction', $patch);
+    }
+
+    public function testThisArrowFunctionMemberIsRefused(): void
+    {
+        $patch = $this->s50PatchFor(
+            "<?php\nclass A2 { public function ar(): \\Closure { return fn() => \$this->x; } }",
+            ['method' => 2],
+        );
+        $this->assertStringContainsString('member uses $this', $patch);
+    }
+
+    public function testNestedArrowWithoutThisStillRefusedAsCaptureRisk(): void
+    {
+        // The finding's `fn() =>` hole independent of $this: a nested arrow
+        // captures by value at definition — hoisting rewires what it sees.
+        $patch = $this->s50PatchFor(
+            "<?php\nfunction a3() { return fn() => 5; }",
+            ['function' => 2],
+        );
+        $this->assertStringContainsString('member declares a closure (capture analysis required)', $patch);
+    }
+
+    public function testThisInsideACommentIsNotFlagged(): void
+    {
+        // The false-positive the regex could not express: `$this->` in a
+        // comment is not a $this use.
+        $patch = $this->s50PatchFor(
+            "<?php\nclass A4 { public function doc(\$x) { /* was \$this->dep() */ return \$x + 1; } }",
+            ['method' => 2],
+        );
+        $this->assertStringNotContainsString('MANUAL REVIEW', $patch);
+    }
+
+    public function testHazardsMentionedInStringsAreNotFlagged(): void
+    {
+        // Every byte the retired text heuristics tripped on, riding inside
+        // string literals and comments: `self::`, `function (`, `yield`.
+        $patch = $this->s50PatchFor(
+            "<?php\nfunction a5(\$k) {\$s = 'self::x and function () { and yield'; return \$s . \$k;}",
+            ['function' => 2],
+        );
+        $this->assertStringNotContainsString('MANUAL REVIEW', $patch);
+    }
+
+    public function testByRefBindingIsRefused(): void
+    {
+        // foreach value-by-ref mutates the iterated array in place — the
+        // reference semantics die on hoist.
+        $patch = $this->s50PatchFor(
+            "<?php\nfunction b1(array \$xs) { foreach (\$xs as &\$v) { \$v = 1; } return \$xs; }",
+            ['function' => 2],
+        );
+        $this->assertStringContainsString('member uses by-ref binding', $patch);
+    }
+
+    public function testStaticLocalStateIsRefused(): void
+    {
+        $patch = $this->s50PatchFor(
+            "<?php\nfunction b2() { static \$cache = []; return count(\$cache); }",
+            ['function' => 2],
+        );
+        $this->assertStringContainsString('member declares static local state', $patch);
+    }
+
+    public function testGlobalTouchIsRefused(): void
+    {
+        $patch = $this->s50PatchFor(
+            "<?php\nfunction b3() { global \$g; return \$g; }",
+            ['function' => 2],
+        );
+        $this->assertStringContainsString('member touches global state', $patch);
+    }
+
+    public function testByRefReturnIsRefused(): void
+    {
+        $patch = $this->s50PatchFor(
+            "<?php\nfunction &b4(\$x) { return \$x; }",
+            ['function' => 2],
+        );
+        $this->assertStringContainsString('member uses by-ref binding', $patch);
+    }
+
+    public function testBreakEscapingTheMemberIsRefused(): void
+    {
+        // An if-rooted member living inside a host loop: its bare `break`
+        // targeted that host loop — extraction retargets or breaks compile.
+        $patch = $this->s50PatchFor(
+            "<?php\nif (\$c) { break; }",
+            ['if' => 2],
+        );
+        $this->assertStringContainsString('member jumps out of the hoisted block', $patch);
+    }
+
+    public function testBreakContainedInsideMemberLoopIsNotFlagged(): void
+    {
+        // The control: a foreach-rooted member owning its break survives
+        // hoisting untouched — the extraction is safe.
+        $patch = $this->s50PatchFor(
+            "<?php\nforeach (\$xs as \$v) { if (\$v) { break; } }",
+            ['foreach' => 2],
+        );
+        $this->assertStringNotContainsString('MANUAL REVIEW', $patch);
+    }
+
+    public function testBreakLevelBeyondMemberLoopIsRefused(): void
+    {
+        $patch = $this->s50PatchFor(
+            "<?php\nforeach (\$xs as \$v) { break 2; }",
+            ['foreach' => 2],
+        );
+        $this->assertStringContainsString('member jumps out of the hoisted block', $patch);
+    }
+
+    public function testUnreadableMemberFailsClosedOnBothSurfaces(): void
+    {
+        // Plan acceptance: unreadable-member file ⇒ cluster UNSAFE + reason,
+        // never silently safe. The old gate `continue`d past it.
+        $missing = sys_get_temp_dir() . '/phpdup-s50-gone-' . uniqid('', true) . '/ghost.php';
+        $cluster = new Cluster('GONE', [
+            $this->s50Block($missing, 2, 2, 'function'),
+            $this->blk('s50-present.php'),
+        ], 1.0, false);
+        $report = new Report(
+            files: 1, blocks: 1, parseErrors: 0, clusters: [$cluster], config: Config::defaults([]),
+        );
+        $dir = sys_get_temp_dir() . '/phpdup-s50-gone-out-' . uniqid('', true);
+        try {
+            $patch = (new RefactorPatchReporter())->buildPatch($cluster, null, new SourceTextStore([dirname($missing)]));
+            $this->assertStringContainsString('*** MANUAL REVIEW REQUIRED ***', $patch);
+            $this->assertStringContainsString('member source unreadable — unverified, fail closed', $patch);
+
+            $r = new RefactorPatchReporter(new SourceTextStore([dirname($missing)]));
+            $r->writeTo($report, $dir, apply: true, dryRun: false);
+            $summary = (string) file_get_contents($dir . '/' . RefactorPatchReporter::APPLY_SUMMARY_FILE);
+            $this->assertStringContainsString('# cluster GONE: member source unreadable', $summary);
+            $this->assertStringNotContainsString('# cluster GONE: error -', $summary,
+                'fail-closed rides Skipped as a verdict, not as a swallowed exception');
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
+    public function testStaleSpanFailsClosed(): void
+    {
+        // The recorded range matches no node: verification is impossible,
+        // so the cluster is refused — the old gate just skipped it.
+        [$dir, $file] = $this->s50Write('c1.php', "<?php\nfunction c1() { return 1; }");
+        try {
+            $patch = $this->s50PatchForFile($file, 9, 9, 'function', $dir);
+            $this->assertStringContainsString('member not found at its recorded span — unverified, fail closed', $patch);
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
+    public function testUnparseableSourceFailsClosedNamingTextSuspects(): void
+    {
+        // Bytes that do not parse can never clear the gate; the demoted
+        // text heuristics survive ONLY as this suspect annotation.
+        [$dir, $file] = $this->s50Write(
+            'c2.php',
+            "<?php\nfunction broken( { return \$this->x; }",
+        );
+        try {
+            $patch = $this->s50PatchForFile($file, 2, 2, 'function', $dir);
+            $this->assertStringContainsString('member source unparseable — unverified, fail closed', $patch);
+            $this->assertStringContainsString('(text scan names $this-> — heuristic, unverified)', $patch);
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
+    public function testStoreReParseVerdictsMatchTheLoadedAstOnRealBytes(): void
+    {
+        // Same member, two verification paths: loaded AST vs re-parsed
+        // confined bytes must agree byte-for-byte (PDREF through both).
+        [$dir, $file] = $this->s50Write(
+            'd1.php',
+            "<?php\nclass D1 { public function leaky(\$x) { return \\Closure::bind(\$this, \$x, 'p1'); } }",
+        );
+        try {
+            $loaded = $this->s50PatchForFile($file, 2, 2, 'method', $dir, loadAst: true);
+            $reParsed = $this->s50PatchForFile($file, 2, 2, 'method', $dir, loadAst: false);
+            $this->assertStringContainsString('member uses $this', $loaded);
+            $this->assertSame($loaded, $reParsed, 'both verification paths reach the same patch');
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
+    // ── S47 owed pins (r1 LOW-1, reporter halves; apply halves owed onward) ──
+
+    public function testApplySummaryCarriesBootstrapRowRightAfterFilesRow(): void
+    {
+        // S47 r1 P3.summary_bootstrap_row_exact + summary_row_after_files_line
+        $dir = sys_get_temp_dir() . '/phpdup-patch-s50-boot-' . uniqid('', true);
+        mkdir($dir, 0o775, true);
+        $a = $dir . '/alpha.php';
+        $b = $dir . '/beta.php';
+        file_put_contents($a, "<?php\nfunction tallyAlpha(\$u, \$s) { return \$s + 1; }\n");
+        file_put_contents($b, "<?php\nfunction tallyBeta(\$u, \$s) { return \$s + 2; }\n");
+        $out = $dir . '/apply';
+        try {
+            $members = [$this->s44bBlock($a, 'tallyAlpha'), $this->s44bBlock($b, 'tallyBeta')];
+            $report = $this->s44bReport($dir, [$this->s44bCluster('BOOT', $members, true)]);
+            (new RefactorPatchReporter(new SourceTextStore([$dir])))->writeTo($report, $out, apply: true, dryRun: false);
+
+            $lines = explode("\n", (string) file_get_contents($out . '/' . RefactorPatchReporter::APPLY_SUMMARY_FILE));
+            $filesIdx = array_search('# Files: BOOT.php', $lines, true);
+            $this->assertIsInt($filesIdx, 'the Files row must exist');
+            $this->assertSame(
+                '# Bootstrap: ' . str_replace('\\', '/', ApplyExtractor::bootstrapStubPath($out))
+                . " — require_once it (or the listed files) to load the generated abstractions",
+                $lines[$filesIdx + 1] ?? '',
+                'the Bootstrap row names the exact stub path and rides directly after Files',
+            );
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
+    public function testZeroAppliedSummaryCarriesNoBootstrapRow(): void
+    {
+        $dir = sys_get_temp_dir() . '/phpdup-patch-s50-noboot-' . uniqid('', true);
+        mkdir($dir, 0o775, true);
+        $a = $dir . '/alpha.php';
+        $b = $dir . '/beta.php';
+        file_put_contents($a, "<?php\nfunction tallyAlpha(\$u, \$s) { return \$s + 1; }\n");
+        file_put_contents($b, "<?php\nfunction tallyBeta(\$u, \$s) { return \$s + 2; }\n");
+        $out = $dir . '/apply';
+        try {
+            $members = [$this->s44bBlock($a, 'tallyAlpha'), $this->s44bBlock($b, 'tallyBeta')];
+            $report = $this->s44bReport($dir, [$this->s44bCluster('NOHOLE', $members, false)]);
+            (new RefactorPatchReporter(new SourceTextStore([$dir])))->writeTo($report, $out, apply: true, dryRun: false);
+
+            $summary = (string) file_get_contents($out . '/' . RefactorPatchReporter::APPLY_SUMMARY_FILE);
+            $this->assertStringNotContainsString('# Bootstrap:', $summary,
+                'nothing landed — no stub exists, so no stub row may be promised');
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
+    public function testFallbackHintNamesTheSameGhostThePatchDeclares(): void
+    {
+        // S47 r1 P2.fallback pins, reporter half: an unparseable signature
+        // falls back to `f_{clusterId}` — the hint and the declaration must
+        // name the SAME identity (output-003's shared name builder), and
+        // reverting the fallback to a flat name goes RED on this pin.
+        $cluster = $this->namedCluster('FB');
+        $cluster->signature = 'function (): mixed';
+        $patch = (new RefactorPatchReporter())->buildPatch($cluster);
+        $this->assertSame(
+            ['f_' . $cluster->id, 'f_' . $cluster->id],
+            $this->guidanceNames($patch),
+        );
+    }
+
+    /**
+     * One-member cluster over generated source, verdict reached through the
+     * member's LOADED AST — the shape the extractor hands the apply chain.
+     *
+     * @param array<string,int> $kindAt kind => the line the member spans
+     */
+    private function s50PatchFor(string $code, array $kindAt): string
+    {
+        [$dir, $file] = $this->s50Write('s50-' . substr(md5($code), 0, 8) . '.php', $code);
+        try {
+            [$kind, $line] = [array_key_first($kindAt), reset($kindAt)];
+            $ast = $this->s50NodeAt($code, $line, $kind);
+            $cluster = new Cluster('S50', [new Block(
+                file: $file, range: new LineRange($line, $line), kind: $kind,
+                namespace: null, class: null, name: null, ast: $ast,
+            )], 1.0, false);
+            return (new RefactorPatchReporter())->buildPatch($cluster, null, new SourceTextStore([$dir]));
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
+    /** @return array{0: string, 1: string} */
+    private function s50Write(string $name, string $code): array
+    {
+        $dir = sys_get_temp_dir() . '/phpdup-s50-' . uniqid('', true);
+        mkdir($dir, 0o775, true);
+        $file = $dir . '/' . $name;
+        file_put_contents($file, $code);
+        return [$dir, $file];
+    }
+
+    /** Pull the AST node a fixture spans, by line + kind (mirrors the gate). */
+    private function s50NodeAt(string $code, int $line, string $kind): Node
+    {
+        $node = (new NodeFinder())->findFirst(
+            (new AstParser())->parseCode($code) ?? [],
+            static fn (Node $n): bool => $n->getStartLine() === $line && $n->getEndLine() === $line
+                && self::s50KindOf($n) === $kind,
+        );
+        $this->assertInstanceOf(Node::class, $node, "fixture: no {$kind} node on line {$line}");
+        return $node;
+    }
+
+    private static function s50KindOf(Node $n): string
+    {
+        return match (true) {
+            $n instanceof Node\Stmt\Function_ => 'function',
+            $n instanceof Node\Stmt\ClassMethod => 'method',
+            $n instanceof Node\Stmt\If_ => 'if',
+            $n instanceof Node\Stmt\Foreach_ => 'foreach',
+            default => '?',
+        };
+    }
+
+    /**
+     * Patch for a member bound to a REAL file; loadAst: false leaves the
+     * AST unloaded, forcing verification through the confined store re-parse.
+     */
+    private function s50PatchForFile(string $file, int $start, int $end, string $kind, string $root, bool $loadAst = false): string
+    {
+        $block = new Block(
+            file: $file, range: new LineRange($start, $end), kind: $kind,
+            namespace: null, class: null, name: null, ast: $this->s50Dummy(),
+        );
+        if ($loadAst) {
+            $block->ast = $this->s50NodeAt((string) file_get_contents($file), $start, $kind);
+        } else {
+            $block->ast = null;
+        }
+        $cluster = new Cluster('S50', [$block], 1.0, false);
+        return (new RefactorPatchReporter())->buildPatch($cluster, null, new SourceTextStore([$root]));
+    }
+
+    private function s50Block(string $file, int $start, int $end, string $kind): Block
+    {
+        // The constructor takes a Node; the public-mutable property is then
+        // nulled — the state BlockAstLoader leaves members in, forcing the
+        // output-008 verification through the confined store.
+        $block = new Block(
+            file: $file, range: new LineRange($start, $end), kind: $kind,
+            namespace: null, class: null, name: null, ast: $this->s50Dummy(),
+        );
+        $block->ast = null;
+        return $block;
+    }
+
+    private function s50Dummy(): Node
+    {
+        $stmts = (new AstParser())->parseCode('<?php $x;');
+        return $stmts[0];
     }
 }
