@@ -33,12 +33,22 @@ use Phpdup\Clustering\Cluster;
  * remote-controlled. {@see MlClient::isAllowedUrl()} enforces:
  *
  * - http(s) scheme only (no `file://`, `gopher://`, `ftp://`, …);
- * - well-formed URL with an explicit host;
- * - host not literally `0.0.0.0` (which Linux interprets as "every
- *   interface" and is a common SSRF target).
+ * - a well-formed URL with an explicit host;
+ * - the host is either a CANONICAL IP literal (inet_pton syntax only —
+ *   the `inet_aton` shorthands `0x7f000001`, `2130706433`, `127.1`,
+ *   `0177.0.0.1` are refused, php-dup-finder-engine-012) or a name
+ *   that resolves to at least one A/AAAA record — unresolvable names
+ *   are refused fail-closed;
+ * - every candidate address (literal or resolved) clears the refused-
+ *   address-space bit checks listed on {@see MlClient::isAllowedUrl()}.
  *
- * Callers that need an even tighter policy (e.g. only allow specific
- * hostnames) can prefilter the URL before constructing the client.
+ * Known remaining limit, disclosed honestly: the gate resolves the
+ * name at check time and the transport resolves again at connect
+ * time; without CURLOPT_RESOLVE/bindto pinning (sibling hardening of
+ * this finding) a DNS-rebinding zone can still pass the gate and
+ * connect elsewhere. Callers that need a tighter policy (e.g. only
+ * specific hostnames) can prefilter the URL before constructing the
+ * client.
  */
 final class MlClient
 {
@@ -105,20 +115,42 @@ final class MlClient
     /**
      * Is `$url` something we are willing to fetch?
      *
-     * Public so test code can validate URLs without having to
-     * exercise the full HTTP path.
+     * Public so CLI admission (`Config`, `Command`, `ConfigLoader`) and
+     * test code can validate URLs without exercising the full HTTP path.
      *
-     * SSRF policy
-     * -----------
+     * SSRF policy (rebuilt per php-dup-finder-engine-012)
+     * ----------------------------------------------------
      * - http(s) scheme only (no `file://`, `gopher://`, `ftp://`, …)
      * - well-formed URL with an explicit host
-     * - host not literally `0.0.0.0`
-     * - host not `localhost`, `::1`, or in the `169.254.0.0/16` link-local range
-     * - after DNS resolution: no private (RFC 1918: 10.x, 172.16-31.x, 192.168.x),
-     *   loopback (127.x), link-local (169.254.x), reserved, or broadcast IPs
+     * - `localhost` and `*.localhost` (RFC 6761 special-use) refused
+     *   without resolution
+     * - canonical literals only: `inet_pton` accepts strict dotted-quad
+     *   and RFC 5952-style IPv6 text, so every `inet_aton` shorthand
+     *   (hex `0x7f000001`, decimal `2130706433`, abbreviated `127.1`,
+     *   octal `0177.0.0.1`, partial forms like `192.168.1`) is refused
+     *   as an invalid literal BEFORE name resolution — the gate and the
+     *   transports must never disagree about what the host bytes mean
+     * - bracketed host text must parse as IPv6; an IPv4 literal inside
+     *   brackets is invalid URL syntax and refused
+     * - a bare name must resolve (dns_get_record A+AAAA, falling back to
+     *   gethostbynamel for hosts-file names) to at least one record;
+     *   zero records REFUSE the URL (fail-closed flip: the old gate
+     *   allowed names whose DNS was down at check time)
+     * - every candidate address is bit-checked over its inet_pton wire
+     *   form against the refused space — IPv4: 0.0.0.0/8, RFC 1918,
+     *   CGNAT 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 192.0.0.0/24,
+     *   198.18.0.0/15, 224.0.0.0/4 and 240.0.0.0/4 (multicast,
+     *   reserved, broadcast); IPv6: ::/128 (unspecified), ::1/128
+     *   (loopback), fc00::/7 (ULA), fe80::/10 (link-local), ff00::/8
+     *   (multicast), and the IPv4-compatible ::/96 plus IPv4-mapped
+     *   ::ffff:0:0/96 spaces recurse into the IPv4 checks — so
+     *   `::ffff:127.0.0.1`, `0:0:0:0:0:0:0:1` and `fc00::/7` metadata
+     *   targets all refuse; an address string that inet_pton cannot
+     *   parse is refused too (cannot classify → cannot connect)
      *
-     * DNS resolution is performed so that rebinding-attack hostnames that resolve
-     * to private IPs are caught even when the literal host looks public.
+     * Not yet closed by this gate (sibling hardening owns the transport
+     * legs): connect-time IP pinning against DNS rebinding, and response
+     * size caps on the two postJson transports.
      */
     public static function isAllowedUrl(string $url): bool
     {
@@ -131,71 +163,175 @@ final class MlClient
             return false;
         }
         $host = (string)($parts['host'] ?? '');
-        // Strip IPv6 brackets — parse_url keeps them (e.g. '[::1]').
-        if (str_starts_with($host, '[')) {
+        if ($host === '') {
+            return false;
+        }
+        $bracketed = str_starts_with($host, '[');
+        if ($bracketed) {
+            // Strip IPv6 brackets — parse_url keeps them (e.g. '[::1]').
             $host = trim($host, '[]');
         }
-        if ($host === '' || $host === '0.0.0.0') {
+        if ($host === '') {
+            return false;
+        }
+        $host = strtolower($host);
+
+        // RFC 6761 special-use names: refuse without touching the resolver.
+        if ($host === 'localhost' || str_ends_with($host, '.localhost')) {
             return false;
         }
 
-        // Explicit deny-list for known SSRF targets (checked before DNS resolution).
-        $lcHost = strtolower($host);
-        if ($lcHost === 'localhost') {
-            return false;
+        $bytes = inet_pton($host);
+        if ($bytes !== false) {
+            // Canonical literal. URL syntax pairs brackets with IPv6 and
+            // bare text with IPv4; a mismatch is a malformed literal.
+            if ((strlen($bytes) === 16) !== $bracketed) {
+                return false;
+            }
+            return !self::isBlockedBytes($bytes);
         }
-        if (self::isBlockedIp($host)) {
+        if ($bracketed) {
+            return false; // bracketed text that is not valid IPv6
+        }
+        if (self::looksLikeNumericShorthand($host)) {
+            // inet_aton family (hex/decimal/octal/partial dotted forms).
+            // Left as a "name" it would fail resolution on some boxes and
+            // be numeric-parsed by the transport on others — the exact
+            // gate-vs-transport divergence engine-012's PoC exploited.
             return false;
         }
 
-        // Resolve the host and reject private/loopback/link-local/reserved IPs.
-        $resolvedIp = gethostbyname($host);
-        if ($resolvedIp === $host) {
-            // Hostname could not be resolved, or was already an IP literal.
-            // If the host is a valid IP, check if it's private/reserved and block.
-            // Non-IP hostnames that fail resolution are allowed — HTTP will fail naturally.
-            if (filter_var($host, FILTER_VALIDATE_IP) !== false) {
-                $flags = FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE;
-                if (filter_var($host, FILTER_VALIDATE_IP, $flags) === false) {
-                    return false;
+        // Bare name: fail closed on zero records, refuse on any refused
+        // record among everything the resolvers returned.
+        $candidates = [];
+        $records = @dns_get_record($host, DNS_A | DNS_AAAA);
+        if (is_array($records)) {
+            foreach ($records as $record) {
+                foreach (['ip', 'ipv6'] as $key) {
+                    $address = $record[$key] ?? null;
+                    if (is_string($address)) {
+                        $candidates[] = $address;
+                    }
                 }
             }
-            return true;
         }
-
-        // DNS resolved to a different IP — check the resolved address.
-        if (self::isBlockedIp($resolvedIp)) {
+        if ($candidates === []) {
+            // Resolver backends differ on /etc/hosts visibility through
+            // dns_get_record; gethostbynamel covers hosts-file names.
+            // Everything it yields is still bit-checked below.
+            $hostsFile = @gethostbynamel($host);
+            if (is_array($hostsFile)) {
+                $candidates = $hostsFile;
+            }
+        }
+        if ($candidates === []) {
             return false;
         }
-        $flags = FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE;
-        if (filter_var($resolvedIp, FILTER_VALIDATE_IP, $flags) === false) {
-            return false;
+        foreach ($candidates as $address) {
+            if (self::isBlockedAddress($address)) {
+                return false;
+            }
         }
-
         return true;
     }
 
     /**
-     * Returns true if $ipOrHost is a known SSRF target IP or hostname.
+     * Does $host consist purely of decimal/hex components — i.e. an
+     * inet_aton numeric form that failed canonical parsing? Legitimate
+     * hostnames that merely contain hex-ish labels ("db1", "cafe") are
+     * NOT matched unless every component is digits or a 0x-prefixed
+     * number.
      */
-    private static function isBlockedIp(string $ipOrHost): bool
+    private static function looksLikeNumericShorthand(string $host): bool
     {
-        // IPv6 loopback.
-        if ($ipOrHost === '::1') {
+        return preg_match('/^(?:[0-9]+|0x[0-9a-f]+)(?:\.(?:[0-9]+|0x[0-9a-f]+))*$/', $host) === 1;
+    }
+
+    /**
+     * Classify a textual IP address against the refused address space.
+     *
+     * Unparsable strings are refused: an address we cannot classify is
+     * an address we must not connect to (fail-closed).
+     */
+    private static function isBlockedAddress(string $address): bool
+    {
+        $bytes = inet_pton($address);
+        if ($bytes === false) {
             return true;
         }
-        // IPv4 loopback 127.0.0.0/8 and AWS / cloud metadata link-local 169.254.0.0/16.
-        if (filter_var($ipOrHost, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
-            $parts = explode('.', $ipOrHost);
-            if (count($parts) === 4) {
-                $first = (int)$parts[0];
-                if ($first === 127) {
-                    return true; // IPv4 loopback
-                }
-                if ($first === 169 && (int)$parts[1] === 254) {
-                    return true; // AWS metadata / cloud link-local
-                }
+        return self::isBlockedBytes($bytes);
+    }
+
+    /**
+     * Bit checks over the inet_pton wire form (4-byte IPv4 / 16-byte
+     * IPv6), replacing the old filter_var(NO_PRIV_RANGE|NO_RES_RANGE)
+     * posture which missed CGNAT, ULA, fe80::/10 and the IPv4 embedded
+     * in ::ffff:/96 mapped addresses (engine-012 hole b).
+     */
+    private static function isBlockedBytes(string $bytes): bool
+    {
+        if (strlen($bytes) === 4) {
+            return self::isBlockedIPv4Bytes($bytes);
+        }
+        $b0 = ord($bytes[0]);
+        if ($b0 === 0xFF) {
+            return true; // ff00::/8 multicast
+        }
+        if (($b0 & 0xFE) === 0xFC) {
+            return true; // fc00::/7 unique-local
+        }
+        if ($b0 === 0xFE && (ord($bytes[1]) & 0xC0) === 0x80) {
+            return true; // fe80::/10 link-local
+        }
+        if (substr($bytes, 0, 10) === str_repeat("\x00", 10)) {
+            $b10 = ord($bytes[10]);
+            $b11 = ord($bytes[11]);
+            if ($b10 === 0x00 && $b11 === 0x00) {
+                // Deprecated IPv4-compatible ::/96 — the v4 address hides
+                // in the last four bytes (:: and ::1 both land here).
+                return self::isBlockedIPv4Bytes(substr($bytes, 12, 4));
             }
+            if ($b10 === 0xFF && $b11 === 0xFF) {
+                // IPv4-mapped ::ffff:0:0/96 — classify the embedded v4.
+                return self::isBlockedIPv4Bytes(substr($bytes, 12, 4));
+            }
+        }
+        return false;
+    }
+
+    private static function isBlockedIPv4Bytes(string $bytes): bool
+    {
+        $a0 = ord($bytes[0]);
+        $a1 = ord($bytes[1]);
+        if ($a0 === 0) {
+            return true; // 0.0.0.0/8 "this host on this network"
+        }
+        if ($a0 === 10) {
+            return true; // RFC 1918
+        }
+        if ($a0 === 100 && $a1 >= 64 && $a1 <= 127) {
+            return true; // CGNAT RFC 6598
+        }
+        if ($a0 === 127) {
+            return true; // loopback
+        }
+        if ($a0 === 169 && $a1 === 254) {
+            return true; // link-local (cloud metadata endpoints)
+        }
+        if ($a0 === 172 && $a1 >= 16 && $a1 <= 31) {
+            return true; // RFC 1918
+        }
+        if ($a0 === 192 && $a1 === 0 && ord($bytes[2]) === 0) {
+            return true; // 192.0.0.0/24 IETF protocol assignments
+        }
+        if ($a0 === 192 && $a1 === 168) {
+            return true; // RFC 1918
+        }
+        if ($a0 === 198 && ($a1 === 18 || $a1 === 19)) {
+            return true; // 198.18.0.0/15 benchmarking
+        }
+        if ($a0 >= 224) {
+            return true; // 224.0.0.0/4 multicast, 240.0.0.0/4 reserved + broadcast
         }
         return false;
     }

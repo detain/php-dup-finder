@@ -245,7 +245,10 @@ final class ClusterCacheVersionTest extends TestCase
             'ted_weights' => [$base, new \Phpdup\Cli\Config(paths: ['/x'], exclude: [], tedWeights: 'semantic')],
             'scorer' => [$base, new \Phpdup\Cli\Config(paths: ['/x'], exclude: [], scorer: 'ir')],
             'ir_threshold' => [$base, new \Phpdup\Cli\Config(paths: ['/x'], exclude: [], irThreshold: 0.70)],
-            'ml_pair_url' => [$base, new \Phpdup\Cli\Config(paths: ['/x'], exclude: [], mlPairUrl: 'https://ml.example.com/api')],
+            // Canonical public literal (TEST-NET-3): the gate is
+            // fail-closed on unresolvable names since engine-S19a, and
+            // a literal keeps this provider hermetic (no DNS).
+            'ml_pair_url' => [$base, new \Phpdup\Cli\Config(paths: ['/x'], exclude: [], mlPairUrl: 'https://203.0.113.7/api')],
             'ml_pair_threshold' => [$base, new \Phpdup\Cli\Config(paths: ['/x'], exclude: [], mlPairThreshold: 0.90)],
         ];
     }

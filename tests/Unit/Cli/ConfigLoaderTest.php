@@ -321,9 +321,13 @@ final class ConfigLoaderTest extends TestCase
         $config = (new ConfigLoader())->load(
             paths: ['src'],
             configFile: null,
-            overrides: ['ml_pair_url' => 'https://ml.example.com/api'],
+            // Canonical public literal: engine-S19a flipped the gate to
+            // fail-closed on unresolvable names (ml.example.com never
+            // resolved; it only ever passed through the old fail-open
+            // hole). A TEST-NET-3 literal keeps this hermetic.
+            overrides: ['ml_pair_url' => 'https://203.0.113.7/api'],
         );
-        $this->assertSame('https://ml.example.com/api', $config->mlPairUrl);
+        $this->assertSame('https://203.0.113.7/api', $config->mlPairUrl);
     }
 
     public function testMlPairUrlValidationRejectsFileScheme(): void

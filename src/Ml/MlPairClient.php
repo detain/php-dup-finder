@@ -50,10 +50,16 @@ use Phpdup\Extraction\Block;
  *
  * **Security**
  *
- * Reuses the same SSRF-hardened URL allow-list as
- * {@see MlClient::isAllowedUrl()} — http(s) only, well-formed
- * host, no `0.0.0.0`. Callers wanting tighter policy should
- * prefilter the URL.
+ * Every endpoint URL passes {@see MlClient::isAllowedUrl()}, the
+ * shared gate rebuilt per php-dup-finder-engine-012: http(s) only,
+ * host must be a canonical IP literal or resolve to at least one
+ * A/AAAA record (fail-closed), and every candidate address must
+ * clear the refused-space bit checks (loopback, RFC 1918, CGNAT,
+ * link-local, ULA, IPv4-mapped, multicast/reserved/broadcast, plus
+ * the localhost deny-list) documented there. Connect-time rebinding
+ * and response-size caps are open transport limits tracked with the
+ * sibling hardening of that finding. Callers wanting tighter policy
+ * should prefilter the URL.
  */
 final class MlPairClient implements PairScorer
 {
