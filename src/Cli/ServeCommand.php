@@ -28,10 +28,12 @@ use Symfony\Component\Console\Output\OutputInterface;
  *   POST /analyze               → run phpdup synchronously on a posted
  *                                 paths[] payload, return JSON report
  *   POST /jobs                  → enqueue an analysis, return job id
- *                                 (async via the worker when it spawned,
- *                                 else synchronous mode; a phar build
- *                                 never spawns — sync-only posture, see
- *                                 docs/SERVER.md "Async job posture")
+ *                                 (async via the worker when it spawned;
+ *                                 a deployment whose worker never came
+ *                                 up — phar included — refuses 503
+ *                                 'async unavailable' instead of running
+ *                                 inline, once-S73; see docs/SERVER.md
+ *                                 "Async job posture")
  *   GET  /jobs/{id}             → fetch job status / result
  *   GET  /api/jobs              → list all jobs
  *   GET  /api/jobs/{id}         → fetch job status (status-only)
@@ -175,6 +177,17 @@ use Symfony\Component\Console\Output\OutputInterface;
  *   readiness accepts only a socket-type inode owned by this uid whose
  *   spawned child is still alive — a dead child or an uncleared foreign
  *   path ends the spawn attempt honestly in sync mode.
+ * - A worker-less deployment refuses async jobs loudly (once-S73,
+ *   php-dup-finder-once-088): no startup path that ends without a live
+ *   worker ever runs a posted job's full pipeline inline on the serial
+ *   request loop. Every worker-less `Application` is built with
+ *   `refuseJobsWithoutWorker`, so `POST /jobs` answers 503 with
+ *   {@see \Phpdup\Server\Application::asyncUnavailableError()} before a
+ *   row is minted, and {@see self::asyncJobsRefusedNotice()} says the
+ *   same at startup, once, next to the per-cause sync-mode line. The
+ *   worker-probe decision itself is startup-once (spawn + bounded
+ *   readiness poll in {@see self::spawnWorker()}): no request re-probes
+ *   the socket to pick a mode.
  */
 final class ServeCommand extends SymfonyCommand
 {
@@ -391,6 +404,10 @@ final class ServeCommand extends SymfonyCommand
         415 => 'Unsupported Media Type',
         431 => 'Request Header Fields Too Large',
         500 => 'Internal Server Error',
+        // once-S73 (php-dup-finder-once-088): the worker-less deployment's
+        // loud 503 refusal needs its reason phrase here, or the wire
+        // would say 'Unknown'.
+        503 => 'Service Unavailable',
     ];
 
     /**
@@ -577,11 +594,15 @@ final class ServeCommand extends SymfonyCommand
         // handed to the worker as a spawn argument so it can independently
         // re-validate dispatched job paths (defence in depth). From a phar
         // build the spawn is refused up front (shell-S35): the worker cannot
-        // be exec'd from inside a phar, so the operator gets the warning
-        // line here and the same sync-mode Application serves the request.
+        // be exec'd from inside a phar. Whichever leg ends the attempt, the
+        // resulting Application refuses POST /jobs loudly (once-S73,
+        // php-dup-finder-once-088) — the full pipeline is never run inline
+        // on the serial request loop; POST /analyze stays synchronous by
+        // design. The startup notice below says exactly that, once.
         $workerPid = $this->spawnWorker($output, $serveRoot);
         if ($workerPid === null) {
             $output->writeln('<info>phpdup serve</info> running in sync mode (no worker)');
+            $output->writeln('<comment>phpdup serve:</comment> ' . self::asyncJobsRefusedNotice());
             $app = new Application(
                 new \Phpdup\Server\JobQueue(),
                 $serveRoot !== '' ? $serveRoot : null,
@@ -590,7 +611,8 @@ final class ServeCommand extends SymfonyCommand
                 null,
                 $useCache,
                 $serveWorkers,
-                $trusted
+                $trusted,
+                true
             );
         } else {
             $output->writeln("<info>phpdup serve</info> worker spawned (pid {$workerPid})");
@@ -956,6 +978,24 @@ final class ServeCommand extends SymfonyCommand
         return $asked . ' requested but ext-pcntl/pcntl_fork is unavailable — the '
             . 'synchronous analysis falls back to SERIAL in-process scanning; '
             . 'see docs/SERVER.md, "Concurrency posture".';
+    }
+
+    /**
+     * The startup twin of {@see \Phpdup\Server\Application::asyncUnavailableError()}
+     * (once-S73, php-dup-finder-once-088): a worker-less deployment must
+     * say, at DEFAULT verbosity and once, what its `/jobs` route will now
+     * do — refuse 503, never run the full pipeline inline on the serial
+     * request loop. The per-cause sync-mode lines from
+     * {@see self::spawnWorker()} name WHY there is no worker; this line
+     * names the CONSEQUENCE on the wire and the still-synchronous door
+     * (`POST /analyze`). Byte-stable and path-free; docs quote it verbatim.
+     */
+    public static function asyncJobsRefusedNotice(): string
+    {
+        return 'POST /jobs will answer 503 "async unavailable" instead of running '
+            . 'the analysis inline on the request loop; POST /analyze still answers '
+            . 'synchronously — see docs/SERVER.md, "Async job posture", for what it '
+            . 'takes to bring the background worker up.';
     }
 
     /**

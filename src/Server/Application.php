@@ -52,10 +52,16 @@ use Symfony\Component\Console\Output\NullOutput;
  * directory, transitioning the job to completed the moment its result
  * file is present. The {@see self::ASYNC_RESULT_DEADLINE_SECONDS}
  * absence-deadline remains the backstop for channels that stay open yet
- * silent (a wedged worker). Without a worker socket — a shipped phar
- * never has one, and a checkout's startup spawn can fail — analysis
- * runs synchronously as the no-worker fallback (the answer is the same
- * contract either way), not a demo-mode special case.
+ * silent (a wedged worker). Without a worker socket there are two
+ * honest shapes (once-S73, php-dup-finder-once-088): an embedded host
+ * that constructs this class sync-only by choice runs each `POST /jobs`
+ * inline before answering (the library contract, unchanged), while a
+ * `serve` DEPLOYMENT whose worker could not come up REFUSES the route —
+ * with {@see self::$refuseJobsWithoutWorker} wired, every job request
+ * answers 503 with {@see self::asyncUnavailableError()} before any row
+ * is minted. The secret full-pipeline-on-the-request-loop fallback is
+ * gone: a shipped phar and a failed startup spawn both land in the
+ * loud-refusal shape, never a stall-then-maybe inline run.
  *
  * Queue-capacity admissions (once-002): at {@see JobQueue::MAX_JOBS}
  * the queue evicts the oldest row (terminal first, then pending, then
@@ -216,6 +222,17 @@ final class Application
      *                                      layer — the `serve` command fills this in for
      *                                      every loopback bind via
      *                                      {@see self::loopbackAuthorities()}.
+     * @param bool           $refuseJobsWithoutWorker
+     *                                      once-S73 (php-dup-finder-once-088): when
+     *                                      true and no worker socket is configured,
+     *                                      `POST /jobs` answers the loud 503 refusal
+     *                                      ({@see self::asyncUnavailableError()})
+     *                                      instead of running the full pipeline
+     *                                      inline on the request loop. `ServeCommand`
+     *                                      sets it for every worker-less deployment;
+     *                                      the default false keeps an embedded host
+     *                                      that deliberately builds a sync-only
+     *                                      Application in charge of its own choice.
      */
     public function __construct(
         private readonly JobQueue $queue = new JobQueue(),
@@ -226,6 +243,7 @@ final class Application
         private readonly bool $useCache = false,
         private readonly int $serveWorkers = self::SERVE_WORKERS_SERIAL,
         private readonly array $trustedAuthorities = [],
+        private readonly bool $refuseJobsWithoutWorker = false,
     ) {
     }
 
@@ -657,15 +675,31 @@ final class Application
      *
      * When a worker socket is configured, the job is dispatched to the
      * background worker and this returns immediately (202 Accepted).
-     * When no worker is configured — a shipped phar never has one, and a
-     * checkout's startup spawn can fail — the analysis runs synchronously
-     * before the 202 answer: the no-worker fallback, not a demo mode.
+     * When no worker is configured there are two shapes (once-S73,
+     * php-dup-finder-once-088): with {@see self::$refuseJobsWithoutWorker}
+     * wired — every `serve` deployment whose startup spawn failed, phar
+     * included — the route answers 503 with {@see self::asyncUnavailableError()}
+     * before any row is minted, never running the pipeline inline on the
+     * request loop; an embedded host that left the flag false chose its
+     * own sync-inline contract and still gets the 202-after-answer.
      *
      * @param array<string,mixed> $payload
      * @return array{status:int, headers:array<string,string>, body:string}
      */
     private function enqueueJob(array $payload): array
     {
+        // once-S73 (php-dup-finder-once-088): the loud refusal door, first
+        // thing in the route — before validation, before minting, before
+        // any pipeline byte. A worker-less deployment that would otherwise
+        // "secretly" run the full analysis inline says so on the wire
+        // instead. No queue row, no eviction accounting, no terminal-state
+        // claim: this is an admission refusal, the same pre-mint shape the
+        // 400 gates above already use, so the S46/S44 job-state taxonomy
+        // gains nothing new here.
+        if ($this->refuseJobsWithoutWorker && $this->workerSocket === null) {
+            return $this->json(503, ['error' => self::asyncUnavailableError()]);
+        }
+
         if (($violation = $this->pathViolation($payload['paths'] ?? null)) !== null) {
             return $violation;
         }
@@ -727,7 +761,9 @@ final class Application
             return $this->json(202, $this->withEvictions(['job_id' => $id], $evicted));
         }
 
-        // Sync mode (no worker): run analysis inline
+        // Explicit-sync library posture (flag left false): run analysis
+        // inline. The `serve` deployment never reaches this line without a
+        // worker — the refusal door above answers it first (once-S73).
         $id = $this->queue->enqueue($payload);
         $evicted = $this->absorbQueueEvictions();
         $this->queue->markRunning($id);
@@ -744,6 +780,19 @@ final class Application
             $this->queue->markFailed($id, $result['body']);
         }
         return $this->json(202, $this->withEvictions(['job_id' => $id], $evicted));
+    }
+
+    /**
+     * The one 503 sentence a worker-less `serve` deployment answers every
+     * `POST /jobs` with (once-S73, php-dup-finder-once-088). A pure,
+     * path-free, byte-stable constant sentence: it names the condition,
+     * the consequence (no inline run), and the synchronous way to still
+     * get an answer — {@see ServeCommand::asyncJobsRefusedNotice()} is its
+     * startup-side twin, and both are quoted verbatim by the docs.
+     */
+    public static function asyncUnavailableError(): string
+    {
+        return 'async unavailable: this phpdup serve deployment has no background worker, so POST /jobs is refused instead of running inline; POST /analyze still answers synchronously';
     }
 
     /**

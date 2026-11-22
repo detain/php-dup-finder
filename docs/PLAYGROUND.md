@@ -15,6 +15,18 @@ PHP" story this doc once told in the present tense is unimplementable
 through the current routes; the paste/upload route (finding once-088)
 is an open design decision that has not been built or finalised.
 
+What *has* since shipped (once-S73) is the other half of that
+finding's honesty demand: a `serve` deployment whose background worker
+never came up — a phar build, or any startup where the worker could
+not be spawned — no longer "secretly" runs the full pipeline inline
+on the request loop. `POST /jobs` there answers
+`503 {"error":"async unavailable: …"}` before any job is minted,
+beside a startup notice saying the same, while `POST /analyze` keeps
+answering synchronously. That refusal is the degraded-mode contract,
+not a paste door: it closes the stall risk, it does not build the
+upload route above, and no part of this file should be read as
+promising one.
+
 ## Intended architecture (not built)
 
 ```
@@ -31,8 +43,10 @@ is an open design decision that has not been built or finalised.
   `HtmlReporter`.
 - **Back-end** (shipped, but path-only): any deployment of
   `phpdup serve` reachable from the front-end's origin can analyse
-  files inside its serve-root today; the missing piece is purely the
-  input route.
+  files inside its serve-root today (`POST /analyze` synchronously;
+  the async `POST /jobs` family needs the background worker and
+  answers the honest 503 without one, above); the missing piece is
+  purely the input route.
 - **Sharable links** (not built): base64-url-encoding the pasted input
   into a query parameter inherits the same missing-input problem and
   would need a size story under the 16 MiB body cap.
