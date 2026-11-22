@@ -5,7 +5,7 @@
 
 [![CI](https://github.com/detain/php-dup-finder/actions/workflows/ci.yml/badge.svg)](https://github.com/detain/php-dup-finder/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/detain/php-dup-finder/branch/master/graph/badge.svg)](https://app.codecov.io/gh/detain/php-dup-finder)
-[![PHP Version](https://img.shields.io/badge/php-%5E8.1-blue.svg)](https://www.php.net)
+[![PHP Version](https://img.shields.io/badge/php-%5E8.3-blue.svg)](https://www.php.net)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 `phpdup` parses every file in a PHP codebase into an Abstract Syntax

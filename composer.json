@@ -17,10 +17,12 @@
   "require": {
     "php": "^8.3",
     "ext-hash": "*",
-    "ext-gmp": "*",
+    "ext-mbstring": "*",
     "nikic/php-parser": "^5.0",
     "symfony/console": "^6.4 || ^7.0",
     "sebastian/diff": "^5.1 || ^6.0",
+    "psr/log": "^3.0",
+    "react/event-loop": "^1.6",
     "sugarcraft/sugar-core": "dev-master",
     "sugarcraft/sugar-mouse": "dev-master",
     "sugarcraft/sugar-quickpick": "dev-master",
@@ -44,6 +46,7 @@
     "vimeo/psalm": "6.20.9"
   },
   "suggest": {
+    "ext-gmp": "Accelerates the n-gram similarity popcount fast path; a byte-table fallback runs automatically when gmp is absent.",
     "sugarcraft/candy-scriptui": "spin/choose/filter/confirm CLI helpers for shell-script integration",
     "sugarcraft/candy-ssh-launcher": "Example SSH endpoint picker app illustrating SugarCraft component usage"
   },

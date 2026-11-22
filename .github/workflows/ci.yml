@@ -29,7 +29,7 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
-          extensions: hash, mbstring
+          extensions: hash, mbstring, gmp
           coverage: ${{ matrix.primary && 'pcov' || 'none' }}
           tools: composer:v2
 
@@ -115,7 +115,7 @@ jobs:
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'
-          extensions: hash, mbstring
+          extensions: hash, mbstring, gmp
           coverage: none
           tools: composer:v2
       - run: composer install --no-interaction --no-progress --prefer-dist
