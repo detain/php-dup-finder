@@ -15,12 +15,24 @@ and reuse `Phpdup\Server\Application` directly.
 
 ## Routes
 
-| Method | Path           | Body                              | Returns |
-|--------|----------------|-----------------------------------|---------|
-| GET    | `/healthz`     | —                                 | `text/plain` `"ok"` |
-| POST   | `/analyze`     | JSON: `{"paths":["src","lib"]}`   | `application/json` (full report) |
-| POST   | `/jobs`        | JSON: same as `/analyze`          | `202` + `{"job_id":"…"}` |
-| GET    | `/jobs/{id}`   | —                                 | `application/json` (status + result) |
+| Method | Path                    | Body                              | Returns |
+|--------|-------------------------|-----------------------------------|---------|
+| GET    | `/healthz`              | —                                 | `text/plain` `"ok"` |
+| POST   | `/analyze`              | JSON: `{"paths":["src","lib"]}`   | `application/json` (full report) |
+| POST   | `/jobs`                 | JSON: same as `/analyze`          | `202` + `{"job_id":"…"}` |
+| GET    | `/jobs/{id}`            | —                                 | `application/json` (status + result) |
+| GET    | `/api/jobs`             | —                                 | `application/json` (all jobs, status list) |
+| GET    | `/api/jobs/{id}`        | —                                 | `application/json` (status only) |
+| GET    | `/api/jobs/{id}/result` | —                                 | `application/json` (result file bytes) |
+
+These seven method+path pairs are the **fixed allow-list** enforced at
+the HTTP layer (`ServeCommand::ROUTE_ALLOW_LIST`); `{id}` is a hex job
+id (`[0-9a-f]+`). Anything outside the table answers 404 *before* the
+body is read, so unknown routes never consume request bytes. The three
+`/api/*` legs are the async polling surface: `GET /api/jobs`
+reconciles and lists every retained job, `GET /api/jobs/{id}` returns
+one job's status row, and `GET /api/jobs/{id}/result` serves the
+worker's full result file for a completed job.
 
 The `/jobs` endpoint runs synchronously in the demo build but its
 contract is async — `POST /jobs` returns 202 with an id, then the
@@ -93,11 +105,15 @@ the HTTP API, even if a client bypasses the above checks.
 The in-memory job queue (`JobQueue`) is bounded to prevent unbounded
 memory growth during sustained use:
 
-- **Capacity cap** — a maximum of `MAX_JOBS` (100) entries are retained.
-  When a new job is enqueued at capacity, the oldest completed or failed
-  entry is evicted to make room. Pending and running jobs are **never**
-  auto-evicted — they count toward the capacity limit but are preserved
-  until they reach a terminal state.
+- **Capacity cap** — a maximum of `MAX_JOBS` (100) entries are retained,
+  and the cap is a hard ceiling: at capacity an `enqueue` makes room by
+  displacing the oldest displaceable row — terminal (completed/failed)
+  first, then pending, then running. Every capacity displacement is
+  recorded as a visible note: the admitting request's `202` body carries
+  an `evicted` list naming the displaced ids and the status each held
+  when dropped (key absent when nothing was evicted), and polling an
+  evicted id afterwards answers `404` with that eviction note rather
+  than a bare "job not found".
 
 - **TTL eviction** — completed and failed jobs older than
   `JOB_TTL_SECONDS` (default: 1 hour) are automatically purged on every
@@ -105,9 +121,11 @@ memory growth during sustained use:
   `markFailed`). This reclaims memory even when the queue is well below
   capacity.
 
-- **Administrative cleanup** — `POST /jobs/cleanup` (or calling
-  `JobQueue::cleanup()`) force-evicts all terminal-state jobs regardless
-  of TTL, useful for manual intervention.
+- **Administrative cleanup** — `JobQueue::cleanup()` force-evicts all
+  terminal-state jobs regardless of TTL, for programmatic manual
+  intervention. It is method-only: there is **no** `/jobs/cleanup` HTTP
+  route — the table under "Routes" above is the complete, fixed
+  allow-list.
 
 - **Result summaries only** — job results stored are `{files, blocks,
   clusters, config}` summaries extracted from the full report. The raw
@@ -118,6 +136,45 @@ These guarantees apply to the built-in single-process server. If you
 swap `JobQueue` for a persistent backend (e.g. Redis) you retain the
 same interface but the capacity/TTL semantics depend on your storage
 choice.
+
+### Async job posture
+
+`POST /jobs` always answers `202` with a `job_id`. What happens next
+depends on whether the background worker was spawned at startup — the
+serve command prints `worker spawned (pid …)` when it has, or falls
+back to `running in sync mode` when it has not.
+
+- **Ack at accept, not at completion.** The daemon writes a `RUN` frame
+  to the worker and waits only for the worker's `OK <job_id>` accept-ack
+  — written the instant the frame is admitted, before the analysis
+  starts. A job that runs longer than any socket timeout is therefore
+  never mistaken for a dispatch failure.
+- **Buffered admission is still admission.** A frame fully written to a
+  live worker that is busy behind an earlier job answers nothing inside
+  the ack window (`Application::DISPATCH_ACK_TIMEOUT_SECONDS`, 5 s). The
+  request still returns `202` and the row honestly stays `pending` until
+  the worker's late `OK` flips it to `running`.
+- **Terminal events are observed, not inferred.** The dispatch
+  connection is held open after the exchange, and every status/result
+  read asks it for the worker's terminal event: a late `OK`, an
+  `ERR`/`FAIL` frame (the row fails with the worker's own reason), or
+  the close itself — a worker that hangs up without publishing is
+  reported as dead on the very next read. Completion is primarily the
+  result file landing in the private results directory; every read
+  reconciles the queue row against that file first.
+- **The absence deadline is a wedge backstop.**
+  `Application::ASYNC_RESULT_DEADLINE_SECONDS` (300 s) fails a still-live
+  row whose result has not appeared while its channel stays *open yet
+  silent* (a wedged worker). It is not the normal completion path, and
+  it does not fire when the worker's death or verdict was already
+  observed.
+- **Dispatch failures stay honest.** A frame the socket layer cannot
+  admit at all (connect refused, short write, hang-up without any
+  reply) fails that job's row and answers `500` — no silently lost job.
+
+In sync mode (no worker) the `POST` runs the analysis inline and
+settles the row before answering `202`; the async legs above simply do
+not apply.
 
 ## Concurrency posture
 

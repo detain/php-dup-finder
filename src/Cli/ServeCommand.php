@@ -18,13 +18,20 @@ use Symfony\Component\Console\Output\OutputInterface;
  * the Application class can be lifted into a more capable runtime
  * (Roadrunner, FrankenPHP, FPM behind nginx, etc.).
  *
- * Routes mirror docs/SERVER.md:
+ * Routes mirror docs/SERVER.md — exactly the seven method+path pairs of
+ * {@see self::ROUTE_ALLOW_LIST}; anything else is 404 before the body
+ * is read:
  *
- *   GET  /healthz       → liveness check
- *   POST /analyze       → synchronous analysis, JSON report response
- *   POST /jobs          → enqueue an analysis (async via the worker when it
- *                         spawned, else synchronous demo mode)
- *   GET  /jobs/{id}     → poll job status / result
+ *   GET  /healthz               → 200, plain "ok"
+ *   POST /analyze               → run phpdup synchronously on a posted
+ *                                 paths[] payload, return JSON report
+ *   POST /jobs                  → enqueue an analysis, return job id
+ *                                 (async via the worker when it spawned,
+ *                                 else synchronous mode)
+ *   GET  /jobs/{id}             → fetch job status / result
+ *   GET  /api/jobs              → list all jobs
+ *   GET  /api/jobs/{id}         → fetch job status (status-only)
+ *   GET  /api/jobs/{id}/result  → fetch job result file
  *
  * Security notes
  * --------------
