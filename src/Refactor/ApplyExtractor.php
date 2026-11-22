@@ -74,6 +74,29 @@ use Phpdup\Util\AstSerializer;
  * artifacts) that requires every generated abstraction file, so the
  * tree has a documented load story the rewritten members actually
  * resolve through.
+ *
+ * output-002 (S46): the member rewrite now KEEPS the declaration and
+ * replaces only its BODY. A Function_/ClassMethod member is cloned
+ * (name, parameters, return type, visibility all ride through), and its
+ * statement list becomes the single delegating call — `return
+ * \Refactored\{fn}(...)` normally, a bare `Stmt\Expression` when the
+ * member declares `: void` (a void contract may not return the
+ * abstraction's value). The old shape returned a bare `Stmt\Return_` to
+ * stand in for the WHOLE declaration node, so replaceNodesInStmts
+ * deleted it: class bodies gained an illegal top-level `return` (php
+ * -l: unexpected token "return"), and a file-scope function's
+ * include-time top-level return erased the function external callers
+ * still addressed plus every declaration behind it in the same file —
+ * delete-and-orphan, not extract-and-redirect. The dry-run hint always
+ * said "replace body with: return \Refactored\fn(...)" (the
+ * RefactorPatchReporter memberHint); the applied bytes now honour it.
+ * A Closure/arrow member has no declaration to keep — the only node-
+ * local rewrite for it swaps the callable value for the result of an
+ * immediate call at the definition site — so such clusters are refused
+ * up front, in the same loud zero-write posture as the script
+ * refusal; a method whose declaration carries no body at all
+ * (abstract/interface) is refused at collection, before any member
+ * replacement is built.
  */
 final class ApplyExtractor
 {
@@ -115,6 +138,22 @@ final class ApplyExtractor
         foreach ($cluster->members as $member) {
             if ($member->kind === 'script') {
                 throw ScriptKindApplyRefusal::forCluster($cluster, 'ApplyExtractor::apply()');
+            }
+            // output-002 (S46): a Closure/arrow member has no declaration
+            // to keep. The only node-local rewrite would replace the
+            // callable ITSELF with an immediate call — running the
+            // abstraction at definition time and binding its result where
+            // a callable value lived (silent semantic change). Refused in
+            // the same loud, zero-write posture as the script kind.
+            if ($member->kind === 'closure' || $member->kind === 'arrow') {
+                throw new \RuntimeException(sprintf(
+                    'ApplyExtractor: refusing cluster %s — %s member %s has no declaration to delegate through; applying '
+                    . 'would run the extracted function where the callable is defined and replace the callable with its '
+                    . 'result. Wrap a named abstraction and point the callable at it by hand; no files were written.',
+                    $cluster->id,
+                    $member->kind,
+                    self::describeMember($member),
+                ));
             }
         }
         if ($cluster->generalizedAst === null || $cluster->signature === null) {
@@ -669,6 +708,22 @@ final class ApplyExtractor
                 ));
             }
             $claimants[$targetId] = $member;
+            // output-002 (S46): a ClassMethod whose declaration carries no
+            // body (abstract, or an interface member) cannot receive a
+            // delegating one — printing `abstract public function x() {
+            // return ...; }` is text php -l refuses while php-parser
+            // accepts it, so the re-parse guard could not catch the lie.
+            // Refused at collection, before any replacement is built.
+            if ($targetNode instanceof Node\Stmt\ClassMethod && $targetNode->stmts === null) {
+                throw new \RuntimeException(sprintf(
+                    'ApplyExtractor: refusing cluster %s — method member %s in %s is abstract or interface-typed; it has '
+                    . 'no body to replace with a delegating one, so the cluster cannot be applied without breaking the '
+                    . 'declaration; no files were written.',
+                    $cluster->id,
+                    self::describeMember($member),
+                    $file,
+                ));
+            }
             $replacements[$targetId] = $this->buildCallReplacement($funcName, $cluster, $targetNode);
         }
 
@@ -1169,7 +1224,13 @@ final class ApplyExtractor
         return $found;
     }
 
-    /** @return Node */
+    /**
+     * Build the node that takes a member's place: for Function_/ClassMethod
+     * members a CLONE of the declaration whose body is the single delegating
+     * call (output-002/S46), otherwise the bare call expression.
+     *
+     * @return Node
+     */
     private function buildCallReplacement(string $funcName, Cluster $cluster, Node $targetNode): Node
     {
         // Build argument list from holes.
@@ -1204,12 +1265,43 @@ final class ApplyExtractor
             $args,
         );
 
-        // For function/method declarations, wrap in Return.
+        // output-002 (S46): declarations are KEPT, bodies delegate. The
+        // old shape returned a bare Stmt\Return_ to replace the WHOLE
+        // Function_/ClassMethod node — so a class body ended up with an
+        // illegal top-level `return` (php -l: unexpected token "return")
+        // and a file-scope function's include-time return erased the
+        // declaration its external callers still addressed, plus every
+        // declaration after it in the file. Cloning keeps name, params,
+        // return type and visibility exactly as the member had them
+        // (the dry-run hint's "replace body with: return \Refactored\
+        // fn(...)" is now what actually lands); only the statement list
+        // becomes the delegation. `: void` members get a bare
+        // Stmt\Expression — returning the abstraction's value through a
+        // void contract is a runtime TypeError class. S44a's atomicity
+        // law survives: NodeAbstract's deep clone shares NO object with
+        // the live tree, the discarded original body never rides into
+        // the replacement, and any target the pass cannot reach is
+        // still caught by replaceNodesInStmts' count-verify (the S44N
+        // nested class refuses exactly as before).
         if ($targetNode instanceof Node\Stmt\Function_ || $targetNode instanceof Node\Stmt\ClassMethod) {
-            return new Node\Stmt\Return_($call);
+            $delegating = clone $targetNode;
+            $delegating->stmts = self::returnsVoid($targetNode->returnType)
+                ? [new Node\Stmt\Expression($call)]
+                : [new Node\Stmt\Return_($call)];
+            return $delegating;
         }
 
+        // Non-declaration members (if/for/… regions) carry no signature to
+        // keep — the bare call is the whole rewrite for them. Closure/arrow
+        // kinds never reach here: apply() refuses them up front (S46).
         return $call;
+    }
+
+    /** A `: void` declaration must delegate without returning a value. */
+    private static function returnsVoid(?Node $returnType): bool
+    {
+        return $returnType instanceof Node\Identifier
+            && 0 === strcasecmp($returnType->name, 'void');
     }
 
     /**

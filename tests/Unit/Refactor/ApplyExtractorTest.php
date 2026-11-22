@@ -317,13 +317,18 @@ final class ApplyExtractorTest extends TestCase
         $extractor->apply($this->applyReadyCluster('S44A', $blocks), $dir);
 
         $rewritten = (string) file_get_contents($file);
-        $this->assertStringNotContainsString('function notifyA', $rewritten);
-        $this->assertStringNotContainsString('function notifyB', $rewritten);
+        // S46-era update (output-002 fix): the two name assertions here
+        // pinned the DEFECT — whole declarations deleted and replaced by
+        // bare top-level returns. Declarations now stay; the single-pass
+        // law this test exists for is carried by the body-gone and
+        // call-count assertions, unchanged.
+        $this->assertStringContainsString('function notifyA', $rewritten);
+        $this->assertStringContainsString('function notifyB', $rewritten);
         $this->assertStringNotContainsString('send("admin"', $rewritten);
         $this->assertStringNotContainsString('send("moderator"', $rewritten,
             'the stale-range miss class: member 2 must not survive unrewritten');
         $this->assertSame(2, substr_count($rewritten, 'Refactored\\notifyByThreshold('),
-            'both declarations became calls to the extracted function');
+            'both member bodies now delegate to the extracted function');
 
         $recheck = (new AstParser())->parseCode($rewritten);
         $this->assertNotNull($recheck, 'the rewritten file is still parseable PHP');
@@ -1017,41 +1022,48 @@ final class ApplyExtractorTest extends TestCase
 
     public function testMemberRewriteThatDoesNotReParseRefusesBeforeTheWindowOpens(): void
     {
-        // The re-parse guard earns its keep on the class-body rewrite: a
-        // ClassMethod replaced by a bare `return ...;` statement leaves
-        // `class A { return ...; }` — text php-parser refuses. The old
-        // pipeline wrote that lie to disk anyway (and S44b's read-back
-        // verified the LIE landed byte-for-byte). Now the cluster is
-        // refused before a byte is touched, naming the member file.
+        // S46-era update (output-002 fix): this pin's ORIGINAL corruption
+        // witness WAS the defect — a ClassMethod replaced by a bare
+        // `return ...;` statement inside a class body (text php-parser
+        // refuses). The declaration-keeping fix makes that composition
+        // legal, so the witness retired by design. The guard arm and its
+        // named diagnostic keep the pin name and get a direct reflection
+        // injection of the same illegal text into the landing map — the
+        // seam-injection precedent the S44b ROLLBACK-INCOMPLETE pin uses.
+        // The end-to-end "refuses before the window opens" ORDER stays
+        // pinned byte-untouched by S48G on the artifact side.
         $dir = $this->makeScratchDir();
         $srcA = "<?php\nclass A {\n    public function m(\$u, \$s) { if (\$s > 10) { send(\"admin\", \$u); } }\n}\n";
-        $srcB = "<?php\nclass B {\n    public function m(\$u, \$s) { if (\$s > 20) { send(\"moderator\", \$u); } }\n}\n";
         $fileA = $dir . '/a.php';
-        $fileB = $dir . '/b.php';
         file_put_contents($fileA, $srcA);
-        file_put_contents($fileB, $srcB);
 
-        $members = [
-            $this->s48MethodBlock($fileA, $srcA),
-            $this->s48MethodBlock($fileB, $srcB),
+        $artifactPath = $dir . '/out/Refactored/S48M.php';
+        $bootstrapPath = $dir . '/out/Refactored/_autoload.php';
+        $landings = [
+            // artifact and stub land FIRST in the window order — they
+            // parse here, so any refusal can only be the member buffer;
+            $artifactPath => "<?php\ndeclare(strict_types=1);\nnamespace Refactored;\nfunction ok(): mixed { return 1; }\n",
+            $bootstrapPath => "<?php\ndeclare(strict_types=1);\n",
+            // the exact byte shape the pre-S46 defect produced:
+            $fileA => "<?php\nclass A {\n    return \\Refactored\\ok();\n}\n",
         ];
 
-        $cluster = new Cluster('S48M', $members, 0.9, false);
-        $cluster->generalizedAst = $members[0]->ast;
-        $cluster->signature = 'function notifyByThreshold($u, $s): mixed';
-        $cluster->holePaths = ['__P0' => ['stmts', 0]];
+        $cluster = new Cluster('S48M', [$this->s48MethodBlock($fileA, $srcA)], 0.9, false);
 
         try {
-            (new ApplyExtractor())->apply($cluster, $dir . '/out');
-            $this->fail('expected the unparseable class-body rewrite to be refused before the window');
+            (new \ReflectionMethod(ApplyExtractor::class, 'assertBuffersReparse'))
+                ->invoke(new ApplyExtractor(), $cluster, $landings, $bootstrapPath);
+            $this->fail('expected the crafted un-re-parseable member buffer to be refused by the guard');
         } catch (\RuntimeException $e) {
             $this->assertStringContainsString('refusing cluster S48M', $e->getMessage());
             $this->assertStringContainsString('the rewrite of ' . $fileA . ' does not re-parse', $e->getMessage());
             $this->assertStringContainsString('no files were written', $e->getMessage());
+            $this->assertStringContainsString('Syntax error', $e->getMessage(),
+                'the php-parser reason rides the refusal (the witness text is the T_RETURN the grammar refuses)');
         }
 
-        $this->assertSame($srcA, (string) file_get_contents($fileA));
-        $this->assertSame($srcB, (string) file_get_contents($fileB));
+        $this->assertSame($srcA, (string) file_get_contents($fileA),
+            'the member file keeps its original bytes');
         $this->assertDirectoryDoesNotExist($dir . '/out');
     }
 
@@ -1193,10 +1205,15 @@ final class ApplyExtractorTest extends TestCase
             'the generated function file re-parses — the acceptance bar output-005 failed');
 
         // Call-site shape unchanged by S48 (S45 owns argument work): the
-        // optional hole still rides the literal arg.
+        // optional hole still rides the literal arg. S46-era update: the
+        // declaration stays and delegates (the old NotContains pinned the
+        // delete-the-declaration defect); the body-gone half is pinned
+        // directly.
         foreach ([$fileA, $fileB] as $memberFile) {
             $rewritten = (string) file_get_contents($memberFile);
-            $this->assertStringNotContainsString('function logIt', $rewritten);
+            $this->assertStringContainsString('function logIt', $rewritten);
+            $this->assertStringNotContainsString('send(', $rewritten,
+                'the member body was replaced by the delegating call');
             $this->assertMatchesRegularExpression(
                 '/Refactored\\\\[A-Za-z_][A-Za-z0-9_]*\(0\);/',
                 $rewritten,
@@ -1204,6 +1221,333 @@ final class ApplyExtractorTest extends TestCase
             );
             $this->assertNotNull((new AstParser())->parseCode($rewritten), 'the rewritten member still parses');
         }
+    }
+
+    // ---------------------------------------------------------------
+    // output-S46 (php-dup-finder-output-002): the member rewrite KEEPS the
+    // declaration and delegates from inside its body. Function_/ClassMethod
+    // members get [Stmt\Return_(call)] as the new statement list, a `: void`
+    // member a bare Stmt\Expression (a void contract may not return the
+    // abstraction's value). A Closure/arrow member — which has no
+    // declaration to keep — and a bodyless method (abstract/interface) are
+    // refused loudly with zero files touched.
+    // ---------------------------------------------------------------
+
+    /** Extract the first block of $kind (optionally named $name) from $src. */
+    private function s46Block(string $file, string $src, string $kind, ?string $name = null): Block
+    {
+        $stmts = (new AstParser())->parseCode($src);
+        $this->assertNotNull($stmts);
+        foreach ((new BlockExtractor(minSize: 1))->extract($file, $stmts) as $block) {
+            if ($block->kind === $kind && ($name === null || $block->name === $name)) {
+                return $block;
+            }
+        }
+        $this->fail(sprintf(
+            'fixture: no %s block%s extracted from %s',
+            $kind,
+            $name !== null ? " named {$name}" : '',
+            $file,
+        ));
+    }
+
+    /** Re-parse a rewritten file and return the named class's named method. */
+    private function s46MethodOf(string $path, string $class, string $method): Node\Stmt\ClassMethod
+    {
+        $stmts = (new AstParser())->parseCode((string) file_get_contents($path));
+        $this->assertNotNull($stmts, "fixture: {$path} re-parses");
+        foreach ($stmts as $stmt) {
+            if ($stmt instanceof Node\Stmt\Class_ && $stmt->name?->toString() === $class) {
+                $found = $stmt->getMethod($method);
+                $this->assertNotNull($found, "fixture: class {$class} still declares {$method}()");
+                return $found;
+            }
+        }
+        $this->fail("fixture: no class {$class} in {$path}");
+    }
+
+    /** Assert `php -l` accepts a file (child process, same bar the finding names). */
+    private function assertPhpLints(string $path): void
+    {
+        $lint = shell_exec('php -l ' . escapeshellarg($path) . ' 2>&1');
+        $this->assertStringContainsString('No syntax errors', (string) $lint, "php -l on {$path}");
+    }
+
+    public function testClassMethodMemberKeepsItsDeclarationAndReturnsTheCall(): void
+    {
+        // The finding's headline shape: the acceptance said the old output
+        // died with php's own `unexpected token "return"` — the class body
+        // got a top-level return where the method used to be. Now the
+        // method stays, signature intact, and delegates from INSIDE its
+        // body (the shape the dry-run hint always promised).
+        $dir = $this->makeScratchDir();
+        $srcA = "<?php\nclass LedgerA {\n    public function post(\$v, \$w) { logEntry(\$v); sealOne(\$w); }\n}\n";
+        $srcB = "<?php\nclass LedgerB {\n    public function post(\$v, \$w) { logEntry(\$v); }\n}\n";
+        $fileA = $dir . '/la.php';
+        $fileB = $dir . '/lb.php';
+        file_put_contents($fileA, $srcA);
+        file_put_contents($fileB, $srcB);
+
+        $members = [
+            $this->s46Block($fileA, $srcA, 'method', 'post'),
+            $this->s46Block($fileB, $srcB, 'method', 'post'),
+        ];
+        $returned = (new ApplyExtractor())->apply($this->applyReadyCluster('S46RET', $members), $dir . '/out');
+
+        $this->assertSame([$fileA, $fileB], $returned);
+        $this->assertPhpLints($fileA);
+
+        // AST check, acceptance's exact wording: no top-level Stmt\Return_
+        // anywhere in the class body; the method is still a ClassMethod
+        // with its name, both params, public visibility — and one
+        // delegating statement.
+        $stmts = (new AstParser())->parseCode((string) file_get_contents($fileA));
+        $this->assertNotNull($stmts);
+        $class = null;
+        foreach ($stmts as $stmt) {
+            $this->assertNotInstanceOf(
+                Node\Stmt\Return_::class,
+                $stmt,
+                'a file-top-level Return_ is the deleted-declaration shape',
+            );
+            if ($stmt instanceof Node\Stmt\Class_) {
+                $class = $stmt;
+            }
+        }
+        $this->assertInstanceOf(Node\Stmt\Class_::class, $class);
+        foreach ($class->stmts as $bodyStmt) {
+            $this->assertNotInstanceOf(
+                Node\Stmt\Return_::class,
+                $bodyStmt,
+                'no top-level Return_ in the class body (the output-002 corruption)',
+            );
+        }
+
+        $post = $this->s46MethodOf($fileA, 'LedgerA', 'post');
+        $this->assertCount(2, $post->params, 'the signature survives the rewrite');
+        $this->assertTrue($post->isPublic());
+        $this->assertCount(1, $post->stmts, 'the body is exactly the delegation');
+        $this->assertInstanceOf(Node\Stmt\Return_::class, $post->stmts[0]);
+        $call = $post->stmts[0]->expr;
+        $this->assertInstanceOf(Node\Expr\FuncCall::class, $call);
+        $this->assertInstanceOf(Node\Name\FullyQualified::class, $call->name,
+            'the delegation calls through the same fully qualified identity as the hint (S47 law)');
+        $this->assertSame('Refactored\\notifyByThreshold', $call->name->toString());
+        $this->assertStringNotContainsString('sealOne(', (string) file_get_contents($fileB),
+            'member 2 rewrote too (the single-pass law, kept)');
+        $this->assertPhpLints($fileB);
+    }
+
+    public function testVoidMethodMemberDelegatesWithoutReturning(): void
+    {
+        // A `: void` declaration may not return the abstraction's value —
+        // the plan's "or Stmt\Expression for void" arm. php -l cannot tell
+        // the difference (both parse), so the pin is the AST shape itself.
+        $dir = $this->makeScratchDir();
+        $srcA = "<?php\nclass SinkA {\n    public function flushAll(): void { logEntry(); sealOne(); }\n}\n";
+        $srcB = "<?php\nclass SinkB {\n    public function flushAll(): void { logEntry(); }\n}\n";
+        $fileA = $dir . '/sa.php';
+        $fileB = $dir . '/sb.php';
+        file_put_contents($fileA, $srcA);
+        file_put_contents($fileB, $srcB);
+
+        $members = [
+            $this->s46Block($fileA, $srcA, 'method', 'flushAll'),
+            $this->s46Block($fileB, $srcB, 'method', 'flushAll'),
+        ];
+        (new ApplyExtractor())->apply($this->applyReadyCluster('S46VOID', $members), $dir . '/out');
+
+        $flush = $this->s46MethodOf($fileA, 'SinkA', 'flushAll');
+        $this->assertInstanceOf(Node\Identifier::class, $flush->returnType, 'the : void return type survives');
+        $this->assertSame('void', (string) $flush->returnType->name);
+        $this->assertCount(1, $flush->stmts);
+        $this->assertInstanceOf(Node\Stmt\Expression::class, $flush->stmts[0],
+            'a void member delegates through a bare statement — no Return_');
+        $this->assertInstanceOf(Node\Expr\FuncCall::class, $flush->stmts[0]->expr);
+        $this->assertPhpLints($fileA);
+
+        $other = $this->s46MethodOf($fileB, 'SinkB', 'flushAll');
+        $this->assertInstanceOf(Node\Stmt\Expression::class, $other->stmts[0]);
+    }
+
+    public function testFileScopeFunctionMemberKeepsItsDeclarationAndDelegates(): void
+    {
+        // The function half of the defect: the old rewrite left the file
+        // with a top-level `return \Refactored\…;` in place of the
+        // function — the declaration vanished, and at include time the
+        // return ran before every later statement. Structural proof here;
+        // the executable external-caller smoke lives in the new
+        // tests/Integration/ApplyExtractionTest.php harness.
+        $dir = $this->makeScratchDir();
+        $src = "<?php\n"
+            . "function performAudit() { logEntry(); sealOne(); }\n"
+            . "function laterOne() { echo 'L1'; }\n";
+        $file = $dir . '/audit.php';
+        $fileOther = $dir . '/other.php';
+        file_put_contents($file, $src);
+        file_put_contents($fileOther, $src);
+
+        $auditA = $this->s46Block($file, $src, 'function', 'performAudit');
+        $auditB = $this->s46Block($fileOther, $src, 'function', 'performAudit');
+
+        (new ApplyExtractor())->apply($this->applyReadyCluster('S46FN', [$auditA, $auditB]), $dir . '/out');
+
+        $this->assertPhpLints($file);
+        $stmts = (new AstParser())->parseCode((string) file_get_contents($file));
+        $this->assertNotNull($stmts);
+        $names = [];
+        foreach ($stmts as $stmt) {
+            $this->assertNotInstanceOf(Node\Stmt\Return_::class, $stmt,
+                'no include-time top-level return survives in the rewritten file');
+            if ($stmt instanceof Node\Stmt\Function_) {
+                $names[] = $stmt->name->toString();
+                if ($stmt->name->toString() === 'performAudit') {
+                    $this->assertCount(1, $stmt->stmts, 'the body is exactly the delegation');
+                    $this->assertInstanceOf(Node\Stmt\Return_::class, $stmt->stmts[0]);
+                    $this->assertInstanceOf(Node\Expr\FuncCall::class, $stmt->stmts[0]->expr);
+                }
+            }
+        }
+        $this->assertSame(['performAudit', 'laterOne'], $names,
+            'the rewritten function AND the later declaration are both still in the file');
+    }
+
+    public function testClosureMemberRefusesTheClusterWithItsFilesUntouched(): void
+    {
+        // "Closure/arrow members: REFUSE (typed reason)": a closure has no
+        // declaration to keep — the only node-local rewrite replaces the
+        // callable VALUE with the result of an immediate call at the
+        // definition site. The cluster is refused before anything else
+        // happens (script posture); both files keep their bytes.
+        $dir = $this->makeScratchDir();
+        $srcA = "<?php\n\$cbA = function () { logEntry(); sealOne(); };\n";
+        $srcB = "<?php\n\$cbB = function () { logEntry(); };\n";
+        $fileA = $dir . '/ca.php';
+        $fileB = $dir . '/cb.php';
+        file_put_contents($fileA, $srcA);
+        file_put_contents($fileB, $srcB);
+
+        $members = [
+            $this->s46Block($fileA, $srcA, 'closure'),
+            $this->s46Block($fileB, $srcB, 'closure'),
+        ];
+        $this->assertSame('closure', $members[0]->kind, 'fixture: BlockExtractor really mints closure members');
+
+        try {
+            (new ApplyExtractor())->apply($this->applyReadyCluster('S46CLO', $members), $dir . '/out');
+            $this->fail('expected the closure member to be refused');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('refusing cluster S46CLO', $e->getMessage());
+            $this->assertStringContainsString('closure member', $e->getMessage());
+            $this->assertStringContainsString('has no declaration to delegate through', $e->getMessage());
+            $this->assertStringContainsString('no files were written', $e->getMessage());
+        }
+
+        $this->assertSame($srcA, (string) file_get_contents($fileA));
+        $this->assertSame($srcB, (string) file_get_contents($fileB));
+        $this->assertDirectoryDoesNotExist($dir . '/out');
+    }
+
+    public function testArrowMemberRefusesTheClusterToo(): void
+    {
+        // The 'arrow' twin of the refusal (ALL_KINDS mints it; engine-057
+        // exempts it from minSize — the taxonomy must cover it by name,
+        // not by accident of size).
+        $dir = $this->makeScratchDir();
+        $srcA = "<?php\n\$quickA = fn () => logEntry();\n";
+        $srcB = "<?php\n\$quickB = fn () => sealOne();\n";
+        $fileA = $dir . '/aa.php';
+        $fileB = $dir . '/ab.php';
+        file_put_contents($fileA, $srcA);
+        file_put_contents($fileB, $srcB);
+
+        $members = [
+            $this->s46Block($fileA, $srcA, 'arrow'),
+            $this->s46Block($fileB, $srcB, 'arrow'),
+        ];
+        $this->assertSame('arrow', $members[0]->kind, 'fixture: BlockExtractor really mints arrow members');
+
+        try {
+            (new ApplyExtractor())->apply($this->applyReadyCluster('S46ARR', $members), $dir . '/out');
+            $this->fail('expected the arrow member to be refused');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('refusing cluster S46ARR', $e->getMessage());
+            $this->assertStringContainsString('arrow member', $e->getMessage());
+            $this->assertStringContainsString('no files were written', $e->getMessage());
+        }
+
+        $this->assertSame($srcA, (string) file_get_contents($fileA));
+        $this->assertSame($srcB, (string) file_get_contents($fileB));
+        $this->assertDirectoryDoesNotExist($dir . '/out');
+    }
+
+    public function testAbstractMethodMemberRefusesTheCluster(): void
+    {
+        // Extending the refusal taxonomy to the bodyless ClassMethod:
+        // there is no body to replace with a delegating one, and the
+        // composition this would print (`abstract public function x() {
+        // return ...; }`) is text php-parser ACCEPTS while php -l refuses
+        // — the S48 re-parse guard is blind to it (verified on the vendor
+        // grammar), so the only honest posture is a typed refusal at
+        // collection, before any replacement is built.
+        $dir = $this->makeScratchDir();
+        $srcA = "<?php\nclass ReadyA {\n    public function warmUp() { logEntry(); }\n}\n";
+        $srcB = "<?php\nclass ReadyB {\n    abstract public function drain();\n}\n";
+        $fileA = $dir . '/ra.php';
+        $fileB = $dir . '/rb.php';
+        file_put_contents($fileA, $srcA);
+        file_put_contents($fileB, $srcB);
+
+        $members = [
+            $this->s46Block($fileA, $srcA, 'method', 'warmUp'),
+            $this->s46Block($fileB, $srcB, 'method', 'drain'),
+        ];
+
+        try {
+            (new ApplyExtractor())->apply($this->applyReadyCluster('S46ABS', $members), $dir . '/out');
+            $this->fail('expected the abstract member to be refused');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('refusing cluster S46ABS', $e->getMessage());
+            $this->assertStringContainsString('abstract or interface-typed', $e->getMessage());
+            $this->assertStringContainsString('drain', $e->getMessage());
+            $this->assertStringContainsString($fileB, $e->getMessage());
+            $this->assertStringContainsString('no files were written', $e->getMessage());
+        }
+
+        $this->assertSame($srcA, (string) file_get_contents($fileA),
+            'the concrete member the plan already handled is NOT applied while the abstract one is refused');
+        $this->assertSame($srcB, (string) file_get_contents($fileB));
+        $this->assertDirectoryDoesNotExist($dir . '/out');
+    }
+
+    public function testInterfaceMethodMemberRefusesTheCluster(): void
+    {
+        // The interface twin of the same arm (stmts === null is the
+        // predicate; the entry point differs enough to name it).
+        $dir = $this->makeScratchDir();
+        $srcA = "<?php\nclass ReadyA {\n    public function warmUp() { logEntry(); }\n}\n";
+        $srcB = "<?php\ninterface DrainI {\n    public function drain();\n}\n";
+        $fileA = $dir . '/ia.php';
+        $fileB = $dir . '/ib.php';
+        file_put_contents($fileA, $srcA);
+        file_put_contents($fileB, $srcB);
+
+        $members = [
+            $this->s46Block($fileA, $srcA, 'method', 'warmUp'),
+            $this->s46Block($fileB, $srcB, 'method', 'drain'),
+        ];
+
+        try {
+            (new ApplyExtractor())->apply($this->applyReadyCluster('S46IFACE', $members), $dir . '/out');
+            $this->fail('expected the interface member to be refused');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('refusing cluster S46IFACE', $e->getMessage());
+            $this->assertStringContainsString('abstract or interface-typed', $e->getMessage());
+            $this->assertStringContainsString($fileB, $e->getMessage());
+        }
+
+        $this->assertSame($srcA, (string) file_get_contents($fileA));
+        $this->assertSame($srcB, (string) file_get_contents($fileB));
     }
 }
 
