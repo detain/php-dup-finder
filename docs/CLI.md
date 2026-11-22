@@ -163,8 +163,9 @@ The stores self-heal around a removed or poisoned tree — a vanished dir
 is recreated private (0700, blobs 0600) by the next construction, a
 group-writable dir is write-tightened on adoption, a symlinked one is
 refused outright with the store degraded to plain misses — and
-`--no-cache` silences reads and writes for a single run without deleting
-anything.
+`--no-cache` silences the per-file stores' reads and writes for a single run
+(the cluster cache is governed by `--no-incremental`, see its option row) —
+without deleting anything.
 
 ### TUI / watch
 
