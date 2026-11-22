@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Phpdup\Tests\Unit\Reporting;
 
 use PHPUnit\Framework\TestCase;
+use Phpdup\Clustering\Cluster;
 use Phpdup\Cli\Config;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\Stages\ClusterStage;
@@ -322,6 +323,90 @@ final class TimeseriesReporterTest extends TestCase
 
         $record = $this->recordFor([$repo]);
         $this->assertSame('0123456789abcdef0123456789abcdef01234567', $record['commit_sha']);
+    }
+
+    // ------------------------------------------------------------------
+    // once-S38 (once-042) — raw non-UTF-8 bytes degrade to U+FFFD,
+    // never a falsy encode / blank line in the append-only JSONL
+    // ------------------------------------------------------------------
+
+    public function testRawLatin1BytesInRecordEncodeToStrictJson(): void
+    {
+        // The bug: a plain json_encode returns false on any invalid
+        // UTF-8 byte; handed to a string parameter under strict_types
+        // that was an uncaught TypeError (exit 255 mid-report). Realistic
+        // carriers: a CI env sha, a crafted ref file, or pattern tags
+        // that absorbed raw path bytes. The fix ships every writer
+        // through Util/Json (JSON_INVALID_UTF8_SUBSTITUTE), so hostile
+        // bytes become U+FFFD and the record still encodes.
+        $hostile = "dead\xE9beef\xFF";
+        $line    = (new TimeseriesReporter(commitSha: $hostile, timestamp: 1700000000))
+            ->buildLine(new Report(0, 0, 0, [], Config::defaults([])));
+
+        $this->assertNotSame('', $line, 'a produced line is never the silent empty string');
+        $decoded = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
+        $this->assertIsArray($decoded);
+        // U+FFFD is the substitution for each of the two invalid bytes.
+        $this->assertSame('dead' . "\u{FFFD}" . 'beef' . "\u{FFFD}", $decoded['commit_sha']);
+    }
+
+    public function testRawBytesFromEnvShaAppendNoBlankLine(): void
+    {
+        // Second carrier route: GIT_COMMIT itself smuggles invalid bytes.
+        // writeTo is FILE_APPEND — the pre-fix `(string) json_encode()`
+        // collapse wrote a BLANK row into the series instead of failing,
+        // poisoning every downstream line-oriented reader.
+        putenv("GIT_COMMIT=abc\xE9def\xFF");
+        $dir    = $this->scratchDir('latin1-env');
+        $file   = $dir . '/metrics.jsonl';
+        $report = new Report(1, 2, 0, [], Config::defaults([$dir]));
+
+        (new TimeseriesReporter(commitSha: 'clean-sha', timestamp: 1))->writeTo($report, $file);
+        (new TimeseriesReporter(timestamp: 2))->writeTo($report, $file);
+
+        $contents = (string) file_get_contents($file);
+        $rows     = explode("\n", rtrim($contents, "\n"));
+        $this->assertCount(2, $rows, 'the hostile run must append a full row, not a blank line');
+        foreach ($rows as $i => $row) {
+            $this->assertNotSame('', $row, "row {$i} of the append-only JSONL is blank");
+            $decoded = json_decode($row, true, 512, JSON_THROW_ON_ERROR);
+            $this->assertIsArray($decoded);
+            if ($i === 1) {
+                $this->assertStringContainsString("\u{FFFD}", (string) $decoded['commit_sha']);
+            }
+        }
+    }
+
+    public function testUnencodablePayloadFailsLoudBeforeAnyWrite(): void
+    {
+        // Full-failure honest arm of the contract: line production is
+        // fully evaluated BEFORE file_put_contents, so any encode-class
+        // failure throws out of writeTo and the append-only file keeps
+        // byte-for-byte the rows it already had. The unsound patternTag
+        // (an object is no legal tag string, and — unlike scalars — is no
+        // legal array offset either) stands in for "the record could not
+        // be produced": reachable type confusion, same seam.
+        $dir  = $this->scratchDir('encode-fail');
+        $file = $dir . '/metrics.jsonl';
+
+        $good = new Report(0, 0, 0, [], Config::defaults([$dir]));
+        (new TimeseriesReporter(commitSha: 'first', timestamp: 1))->writeTo($good, $file);
+        $before = (string) file_get_contents($file);
+
+        $cluster = new Cluster('F0000000000000000', [], 1.0, true);
+        $cluster->patternTags = [new \stdClass()];
+        $bad = new Report(1, 1, 0, [$cluster], Config::defaults([$dir]));
+
+        $this->expectException(\TypeError::class);
+        try {
+            (new TimeseriesReporter(timestamp: 2))->writeTo($bad, $file);
+        } finally {
+            $this->assertSame(
+                $before,
+                (string) file_get_contents($file),
+                'a failed line must write nothing — not even a newline',
+            );
+        }
     }
 
     // ------------------------------------------------------------------

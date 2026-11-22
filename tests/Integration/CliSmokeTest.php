@@ -837,6 +837,86 @@ final class CliSmokeTest extends TestCase
         $this->assertSame($before, $this->gitPorcelain(), 'binary runs must never dirty the repo code surface');
     }
 
+    // ------------------------------------------------- non-UTF-8 end-to-end
+
+    public function testLatin1FixtureRunsWholeJsonFamilyNeverExit255(): void
+    {
+        // once-042: invalid UTF-8 in a scanned path made every raw
+        // json_encode site return false — under strict_types that rode out
+        // as an uncaught TypeError (exit 255 traceback) mid-report, and
+        // every later reporter in the same run was silently skipped. The
+        // Util/Json core retired the class at source; this is the
+        // end-to-end regression pin: one run, four JSON-family surfaces,
+        // Latin-1 bytes in BOTH the file name and the file content.
+        $corpus = $this->makeLatin1Corpus();
+        $run = $this->cli(['analyze', $corpus,
+            '--json', $this->tmp . '/l1.json',
+            '--sarif', $this->tmp . '/l1.sarif',
+            '--gitlab-sast', $this->tmp . '/l1.gitlab.json',
+            '--timeseries', $this->tmp . '/l1.jsonl',
+        ]);
+
+        // Contract (docs/CLI.md): 0 = ok incl findings, 1 = runtime error.
+        // 255 = uncaught-exception surface — the crash this step retired.
+        $this->assertContains($run['exit'], [0, 1], $run['combined']);
+        $this->assertStringNotContainsString('Fatal error', $run['combined']);
+        $this->assertStringNotContainsString('Uncaught', $run['combined']);
+        $this->assertStringNotContainsString('TypeError', $run['combined']);
+
+        // The crash happened in the FIRST writer, so the whole point is
+        // that every member was actually emitted: a skipped-later-reporter
+        // run fails here.
+        $json = $this->strictParseFile($this->tmp . '/l1.json');
+        $this->strictParseFile($this->tmp . '/l1.sarif');
+        $this->strictParseFile($this->tmp . '/l1.gitlab.json');
+        $this->assertGreaterThan(0, $json['summary']['clusters'], 'the hostile corpus must produce findings');
+
+        // The hostile bytes rode into the payload and came out as the
+        // U+FFFD replacement character — escaped, never a raw invalid
+        // byte and never a refused encode.
+        $raw = (string) file_get_contents($this->tmp . '/l1.json');
+        $this->assertStringContainsString('\ufffd', $raw, 'invalid bytes must substitute, not abort');
+        $this->assertSame(
+            0,
+            preg_match('/[\x80-\xFF]/', $raw),
+            'no raw non-ASCII byte may leak into the emitted JSON',
+        );
+
+        // Timeseries is the append-only line-oriented member: exactly one
+        // complete row, no blank line poisoning the series.
+        $rows = explode("\n", rtrim((string) file_get_contents($this->tmp . '/l1.jsonl'), "\n"));
+        $this->assertCount(1, $rows);
+        $this->assertNotSame('', $rows[0], 'encode failure must never blank-line the JSONL');
+        $row = json_decode($rows[0], true, 512, JSON_THROW_ON_ERROR);
+        $this->assertIsArray($row);
+        $this->assertArrayHasKey('clusters', $row);
+    }
+
+    public function testTimeseriesAppendSurvivesTwoHostileRuns(): void
+    {
+        // The JSONL idiom differs from the write-once reporters (its
+        // pre-fix failure mode was a SILENT blank row, not a fatal). Two
+        // consecutive runs against one fixture: the series must gain two
+        // strict-parseable rows and zero blanks — the exact append-only
+        // consumer contract.
+        $corpus = $this->makeLatin1Corpus();
+        for ($i = 1; $i <= 2; $i++) {
+            $run = $this->cli(['analyze', $corpus, '--timeseries', $this->tmp . '/l1.jsonl']);
+            $this->assertContains($run['exit'], [0, 1], "run {$i}:\n" . $run['combined']);
+            $this->assertStringNotContainsString('Fatal error', $run['combined']);
+        }
+
+        $contents = (string) file_get_contents($this->tmp . '/l1.jsonl');
+        $rows     = explode("\n", rtrim($contents, "\n"));
+        $this->assertCount(2, $rows, 'two runs must append two rows, never row-plus-blank');
+        foreach ($rows as $i => $row) {
+            $this->assertNotSame('', $row, "row {$i} of the series is blank");
+            $decoded = json_decode($row, true, 512, JSON_THROW_ON_ERROR);
+            $this->assertIsArray($decoded);
+            $this->assertGreaterThan(0, $decoded['clusters']);
+        }
+    }
+
     // ----------------------------------------------------------- plumbing
 
     /**
@@ -1126,6 +1206,31 @@ final class CliSmokeTest extends TestCase
         }
         ksort($out);
         return $out;
+    }
+
+    /**
+     * once-S38 corpus: two byte-similar `report_totals` clones where the
+     * HOSTILE file carries raw Latin-1 bytes (0xE9 'é', 0xFF undefined)
+     * in BOTH its name and its content — the exact non-UTF-8 input that
+     * made raw json_encode sites return false (php-dup-finder-once-042).
+     */
+    private function makeLatin1Corpus(): string
+    {
+        $dir = $this->tmp . '/latin1';
+        mkdir($dir, 0o775, true);
+        $body = "<?php\nfunction report_totals(array \$rows): float\n{\n    \$sum = 0.0;\n    \$label = '%s';\n    foreach (\$rows as \$row) {\n        \$sum += \$row['amount'] * \$row['rate'];\n    }\n    return round(\$sum, 2);\n}\n";
+        $this->assertNotFalse(file_put_contents($dir . "/caf\xE9\xFF.php", sprintf($body, "\xE9\xFF")));
+        $this->assertNotFalse(file_put_contents($dir . '/clean.php', sprintf($body, 'caf')));
+        return $dir;
+    }
+
+    /** @return array<string,mixed> the file's JSON, strictly parsed */
+    private function strictParseFile(string $path): array
+    {
+        $this->assertFileExists($path);
+        $decoded = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+        $this->assertIsArray($decoded);
+        return $decoded;
     }
 
     private function makeDupCorpus(int $n): string
