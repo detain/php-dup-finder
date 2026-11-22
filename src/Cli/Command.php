@@ -147,7 +147,7 @@ final class Command extends SymfonyCommand
             ->addOption('ir-threshold', null, InputOption::VALUE_REQUIRED, 'IR-tier multiset-Jaccard threshold (0..1). Pairs at or above this score form edges. Default 0.85.')
             ->addOption('ml-pair-url', null, InputOption::VALUE_REQUIRED, 'External pair-similarity ML sidecar URL (option 6 of docs/plans/orm-db-semantic-dedup.md). Empty = disabled. When set, the very last clustering tier — runs after structural-hash, AST Jaccard + TED, containment, and IR all reject a pair. Posts a PairFeatures vector to <URL>/score-pair and accepts pairs at or above --ml-pair-threshold. Returns null on transport failure so unavailability never breaks the run. http(s) only.')
             ->addOption('ml-pair-threshold', null, InputOption::VALUE_REQUIRED, 'Similarity threshold (0..1) for the option-6 ML pair tier. Pairs whose model-returned similarity meets this value emit edges. Default 0.80.')
-            ->addOption('fail-on-impact', null, InputOption::VALUE_REQUIRED, 'Exit code 3 when total cluster impact exceeds N. 0 = disabled. CI gate for duplicate debt thresholds.')
+            ->addOption('fail-on-impact', null, InputOption::VALUE_REQUIRED, 'Exit code 3 when any single cluster impact is >= N (canonical per-cluster maximum formula; the shipped GitHub action fail-on-impact input enforces the same rule). 0 = disabled.')
             ->addOption('max-clusters', null, InputOption::VALUE_REQUIRED, 'Exit code 3 when cluster count exceeds N. 0 = disabled. CI gate for max cluster count.');
 
         // ── Output / reports ───────────────────────────────────────────────
@@ -1405,17 +1405,28 @@ HELP;
             return 130; // canonical SIGINT exit code
         }
 
-        // CI gate: exit code 3 when thresholds are exceeded
+        // CI gate: exit code 3 when thresholds are exceeded.
+        // once-S15 (php-dup-finder-once-018): ONE canonical --fail-on-impact
+        // semantic — the per-cluster MAXIMUM impact compared with `>=`,
+        // identical to the shipped GitHub action's fail-on-impact input and
+        // to the formula documented in docs/CLI.md and docs/CI.md. (The CLI
+        // used to sum TOTAL impact and compare `>`, so CI and local runs
+        // disagreed on the same flag name.) The exit-code contract is
+        // untouched: 3 = gate trip. A trip line names WHICH gate fired.
         if ($config->failOnImpact > 0) {
-            $totalImpact = 0;
+            $maxImpact = 0;
             foreach ($state->clusters as $cluster) {
-                $totalImpact += $cluster->impact;
+                if ($cluster->impact > $maxImpact) {
+                    $maxImpact = $cluster->impact;
+                }
             }
-            if ($totalImpact > $config->failOnImpact) {
+            if ($maxImpact >= $config->failOnImpact) {
+                $output->writeln('<error>phpdup: --fail-on-impact gate tripped — max cluster impact ' . $maxImpact . ' >= ' . $config->failOnImpact . '.</error>');
                 return 3;
             }
         }
         if ($config->maxClusters > 0 && count($state->clusters) > $config->maxClusters) {
+            $output->writeln('<error>phpdup: --max-clusters gate tripped — ' . count($state->clusters) . ' clusters > ' . $config->maxClusters . '.</error>');
             return 3;
         }
 

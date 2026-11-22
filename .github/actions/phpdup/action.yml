@@ -50,7 +50,7 @@ inputs:
     required: false
     default: 'true'
   fail-on-impact:
-    description: 'When set to a positive integer N, the action exits 3 (the phpdup gate-trip exit code) if any cluster has impact >= N. 0 disables. Distinct from the CLI gate --fail-on-impact, which measures TOTAL impact > N; this input gates on the per-cluster maximum.'
+    description: 'Canonical phpdup impact gate (once-S15): exits 3 (the phpdup gate-trip code) when the LARGEST cluster impact in the JSON report is >= N; 0 disables. IDENTICAL formula to the CLI --fail-on-impact N and to docs/CLI.md/docs/CI.md — enforced here in a separate step so older pinned tool refs without the native CLI flag (v1.0.0) still gate.'
     required: false
     default: '0'
   php-version:
@@ -283,24 +283,47 @@ runs:
       env:
         PHPDUP_FAIL_ON_IMPACT: ${{ inputs.fail-on-impact }}
       run: |
-        # Gate trip exits 3 — the phpdup gate-trip exit code per the
-        # docs/CLI.md contract. A missing report while gating is ON is an
-        # error, never a silent pass (the old 'no jq -> exit 0' skip).
+        # once-S15 (php-dup-finder-once-018): one canonical --fail-on-impact
+        # semantic on BOTH surfaces — the largest single cluster impact
+        # compared with `>=` the threshold, tripping with exit 3. This step
+        # mirrors the CLI gate exactly (same formula, same gate-trip code);
+        # it stays JSON-based so a tool ref predating the native CLI flag
+        # still gates. A missing OR unparseable report while gating is ON
+        # fails loudly with exit 1 (runtime posture) — never the historical
+        # `&&`-chain exit 0 that silently passed any backlog without jq.
+        set -euo pipefail
         if [ ! -f phpdup-report.json ]; then
           echo "::error::fail-on-impact is enabled but phpdup-report.json is missing — cannot gate; failing instead of skipping."
           exit 1
         fi
         php -r '
-          $threshold = (int) getenv("PHPDUP_FAIL_ON_IMPACT");
-          $report = json_decode((string) file_get_contents("phpdup-report.json"), true);
+          $rawThreshold = (string) getenv("PHPDUP_FAIL_ON_IMPACT");
+          if (!is_numeric($rawThreshold) || (int) $rawThreshold <= 0) {
+              fwrite(STDERR, "::error::fail-on-impact: expected a positive integer threshold, got \x27{$rawThreshold}\x27 — refusing to gate (or pass) on a garbled value.\n");
+              exit(1);
+          }
+          $threshold = (int) $rawThreshold;
+          $raw = @file_get_contents("phpdup-report.json");
+          $report = null;
+          if ($raw !== false) {
+              try {
+                  $report = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+              } catch (JsonException) {
+                  $report = null;
+              }
+          }
+          if (!is_array($report) || !isset($report["clusters"]) || !is_array($report["clusters"])) {
+              fwrite(STDERR, "::error::fail-on-impact: phpdup-report.json is not a readable phpdup JSON report (no clusters array) — cannot gate; failing (exit 1) instead of passing silently.\n");
+              exit(1);
+          }
           $max = 0;
-          foreach ((array) ($report["clusters"] ?? []) as $cluster) {
-              $impact = (int) ($cluster["impact"] ?? 0);
+          foreach ($report["clusters"] as $cluster) {
+              $impact = (int) ((is_array($cluster) ? $cluster["impact"] : null) ?? 0);
               if ($impact > $max) { $max = $impact; }
           }
-          echo "phpdup max cluster impact: {$max} (threshold {$threshold})\n";
-          if ($threshold > 0 && $max >= $threshold) {
-              fwrite(STDERR, "::error::phpdup found a cluster with impact {$max} >= {$threshold}\n");
+          echo "phpdup fail-on-impact gate: max cluster impact {$max}, threshold {$threshold} (trip at >=, exit 3).\n";
+          if ($max >= $threshold) {
+              fwrite(STDERR, "::error::fail-on-impact gate tripped: max cluster impact {$max} >= {$threshold}.\n");
               exit(3);
           }
         '

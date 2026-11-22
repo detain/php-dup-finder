@@ -138,11 +138,15 @@ The action:
 - Optionally uploads SARIF to GitHub Code Scanning so findings appear under
   *Security → Code scanning alerts*.
 - Optionally gates on impact: `fail-on-impact: N` fails the step with
-  **exit 3** when any cluster's impact ≥ N. This is the per-cluster maximum;
+  **exit 3** when any cluster's impact ≥ N — the per-cluster maximum. This is
+  the ONE canonical `--fail-on-impact` formula, identical on both surfaces:
   the CLI's own `--fail-on-impact N` gate (available through the tool's
-  standard flags in the GitLab/Jenkins/… snippets) measures **total** impact
-  > N. A missing JSON report while gating is ON is an error, not a pass; the
-  old silent `exit 0` when `jq` was unavailable is gone — the gate and the
+  standard flags in the GitLab/Jenkins/… snippets) uses the same per-cluster
+  maximum with `>=`, not a total (the two once disagreed — unified at
+  once-S15; the action re-checks the JSON report in its own step only so
+  pinned tool refs without the native CLI flag still gate). A missing JSON
+  report while gating is ON is an error, not a pass; the old silent
+  `exit 0` when `jq` was unavailable is gone — the gate and the
   `clusters` output parse the JSON with PHP itself, so no external `jq` is
   required anywhere in the action anymore.
 
@@ -198,7 +202,8 @@ variables:
   `mbstring` nor `docker-php-ext-install`.
 - Variables: `PHPDUP_PATHS`, `PHPDUP_MIN_IMPACT`, `PHPDUP_WORKERS`,
   `PHPDUP_PHP_IMAGE`, `PHPDUP_VERSION` (materialized ref, default `master`),
-  `PHPDUP_FAIL_ON_IMPACT` (native total-impact gate, default `0` = off; a
+  `PHPDUP_FAIL_ON_IMPACT` (native CLI gate — canonical per-cluster maximum,
+  trip at ≥ N, default `0` = off; a
   trip exits 3 and fails the job). Runners behind GitHub's anonymous API
   ceilings: set `GITHUB_AUTH_TOKEN` (masked CI variable — Composer honors
   it), pin `PHPDUP_VERSION`, and add a composer `cache:` to the job;
@@ -321,8 +326,9 @@ one machine (it is what once-S14 executed before landing; adapt paths).
    `php -r '$j=json_decode(file_get_contents("phpdup-report.json"),true); echo $j["summary"]["clusters"];'`
    to print the count the action exposes as its `clusters` output.
 2. **Gate legs** — `--fail-on-impact 1` against any corpus with clones must
-   exit 3; the action's per-cluster `fail-on-impact` input likewise exits 3 on
-   a max-impact hit and exits 1 when the JSON is missing while gating.
+   exit 3; the action's `fail-on-impact` input enforces the same canonical
+   per-cluster-maximum formula, exits 3 on a max-impact hit and exits 1 when
+   the JSON report is missing or unparseable while gating.
 3. **GitLab mirror** — drive the template's `before_script` + `script` strings
    verbatim inside the default image against a fixture project:
 
