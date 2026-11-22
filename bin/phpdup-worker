@@ -28,9 +28,22 @@ declare(strict_types=1);
  * daemon death, unlinking its socket on the way out (see AnalysisWorker).
  * Without ext-posix, without the env token (manual/dev spawns), or when
  * spawned directly under init, the poll degrades to a no-op (same
- * graceful posture as WorkerPool's serial fallback without pcntl); the
- * worker keeps SIGINT/SIGTERM default dispositions, and ServeCommand's
- * bounded tree reap covers every path that has a live parent.
+ * graceful posture as WorkerPool's serial fallback without pcntl);
+ * ServeCommand's bounded tree reap still covers every path that has a
+ * live parent.
+ *
+ * Death paths (once-S44, php-dup-finder-once-048): this entry installs
+ * SIGINT/SIGTERM handlers that stop the loop, so a targeted kill or a
+ * terminal Ctrl-C routes through AnalysisWorker::run()'s single exit
+ * funnel — the loop ends, the worker's own socket file is unlinked —
+ * instead of dying mid-scan with the socket left serving to nobody.
+ * Where pcntl is unavailable the install is the documented graceful
+ * no-op and the default dispositions stand. SIGKILL/OOM still admits no
+ * handler: that leftover socket is CLASSIFIED, never trusted, on the
+ * next bind — the worker (and ServeCommand pre-spawn) probe the path
+ * with a zero-byte connect and reclaim it only after proving no live
+ * listener, so restart-after-`kill -9` cannot wedge on stale litter and
+ * a live worker's socket is never silently stolen.
  */
 
 $autoloads = [
@@ -104,6 +117,25 @@ try {
         $serveRoot,
         servePid: is_numeric($servePidRaw) ? (int)$servePidRaw : null
     );
+
+    // once-S44 (php-dup-finder-once-048): a death-path handler for the
+    // worker's OWN signals. stop() only flips a bool — all real cleanup
+    // rides run()'s single exit funnel (unlink the socket, return) — the
+    // same discipline as the watchdog legs. pcntl_async_signals makes
+    // the verdict land inside the blocked accept instead of waiting for
+    // the next loop poll. Where pcntl is unavailable this is the
+    // documented graceful no-op; the daemon's bounded tree reap and the
+    // probe-then-reclaim bind leg stand behind it exactly as before.
+    if (function_exists('pcntl_signal') && function_exists('pcntl_async_signals')
+        && defined('SIGINT') && defined('SIGTERM')) {
+        pcntl_async_signals(true);
+        $stopOnSignal = static function () use ($worker): void {
+            $worker->stop();
+        };
+        pcntl_signal(SIGINT, $stopOnSignal);
+        pcntl_signal(SIGTERM, $stopOnSignal);
+    }
+
     $worker->run();
 } catch (\Throwable $e) {
     fwrite(STDERR, "phpdup-worker: fatal error: {$e->getMessage()}\n");

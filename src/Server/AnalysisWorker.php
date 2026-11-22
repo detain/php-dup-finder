@@ -114,6 +114,19 @@ use Symfony\Component\Console\Output\NullOutput;
  * check degrades to a deliberate no-op instead of guessing, the same
  * posture WorkerPool takes without pcntl_fork. No wire change: the
  * checks read only the worker's own process-table view.
+ *
+ * Death paths (once-S44, php-dup-finder-once-048) tighten that lifecycle
+ * into one funnel: run()'s loop ends via the watchdog above, via a
+ * stop() (the bin entry's installed SIGINT/SIGTERM handlers turn a
+ * targeted signal into a clean stop), or via an escaping throw — and
+ * EVERY such exit removes this worker's socket file ({@see run()}'s
+ * finally). The only death no process can clean up is SIGKILL/OOM, and
+ * that leftover is classified, never trusted: setupSocket() probes a
+ * pre-existing name before touching it — live listener → refuse the
+ * steal loudly, stale file → reclaim and bind (the Linux EADDRINUSE
+ * bind-error path that makes restart-after-kill work). ServeCommand's
+ * results-directory pid file (flock, {@see \Phpdup\Cli\ServeCommand::
+ * SERVE_PID_FILE}) is the daemon-side twin of the same doctrine.
  */
 final class AnalysisWorker
 {
@@ -154,6 +167,49 @@ final class AnalysisWorker
      * reason shell-022 refusals echo no id).
      */
     public const REQUEST_TOO_LONG_ACK = "FAIL 0 request line too long\n";
+
+    /**
+     * Connect budget (seconds) for {@see self::socketHasLiveListener()}.
+     * Same order as the dispatcher's connect timeout in Application
+     * (`stream_socket_client(…, 1)`): a live unix listener answers a
+     * connect immediately, so the whole window is spent waiting for a
+     * verdict that only a wedged kernel socket could delay.
+     */
+    private const LISTENER_PROBE_TIMEOUT_SECONDS = 1;
+
+    /**
+     * Is a live process listening on this unix-socket path?
+     *
+     * once-S44 (php-dup-finder-once-048): the only question a reclaim
+     * decision depends on. A stale leftover (owner died without cleanup)
+     * refuses the connect with ECONNREFUSED; a live listener accepts it.
+     * The probe sends nothing and closes immediately — the worker's
+     * documented silent-probe posture (an empty connection names no job,
+     * see {@see self::handleClient()}) makes it harmless against a live
+     * worker, idle or mid-job (a busy worker simply finds a closed
+     * zero-byte connection in its accept queue once the job lands).
+     *
+     * Public: ServeCommand's pre-spawn reclaim and any future stale-path
+     * audit ride this ONE verdict instead of re-forking a second liveness
+     * semantics (the once-S46 taxonomy law, applied to the lifecycle leg).
+     */
+    public static function socketHasLiveListener(string $path): bool
+    {
+        $errno = 0;
+        $errstr = '';
+        $probe = @stream_socket_client(
+            'unix://' . $path,
+            $errno,
+            $errstr,
+            self::LISTENER_PROBE_TIMEOUT_SECONDS
+        );
+        if ($probe === false) {
+            // ECONNREFUSED / ENOENT / timeout: nothing live owns the name.
+            return false;
+        }
+        @fclose($probe);
+        return true;
+    }
 
     /** @var resource|null */
     private $socket;
@@ -241,31 +297,45 @@ final class AnalysisWorker
     public function run(): void
     {
         $this->setupSocket();
-        $this->running = true;
-        $this->spawnParentPid = $this->currentParentPid();
 
-        while ($this->running) {
-            if ($this->parentHasDied()) {
-                // The serve parent died (the kernel reparented us the
-                // moment it did): quit instead of looping forever as an
-                // orphan, and remove the socket file ourselves — the
-                // parent's cleanupWorker() can no longer do it.
-                $this->running = false;
-                $this->abandonOrphanSocket();
-                break;
+        try {
+            $this->running = true;
+            $this->spawnParentPid = $this->currentParentPid();
+
+            while ($this->running) {
+                if ($this->parentHasDied()) {
+                    // The serve parent died (the kernel reparented us the
+                    // moment it did): quit instead of looping forever as
+                    // an orphan — the socket file goes with the exit, the
+                    // parent's cleanupWorker() can no longer remove it.
+                    $this->running = false;
+                    break;
+                }
+                $client = @stream_socket_accept($this->socket, 5);
+                if ($client === false) {
+                    continue;
+                }
+                try {
+                    $this->handleClient($client);
+                } catch (\Throwable) {
+                    // Belt-and-braces: handleClient is self-contained, but a
+                    // transport-level failure must never take the loop down.
+                } finally {
+                    @fclose($client);
+                }
             }
-            $client = @stream_socket_accept($this->socket, 5);
-            if ($client === false) {
-                continue;
-            }
-            try {
-                $this->handleClient($client);
-            } catch (\Throwable) {
-                // Belt-and-braces: handleClient is self-contained, but a
-                // transport-level failure must never take the loop down.
-            } finally {
-                @fclose($client);
-            }
+        } finally {
+            // once-S44 (php-dup-finder-once-048): ONE exit funnel for every
+            // loop-completing death path. Whatever ended the loop — the
+            // orphan watchdog above, a stop() (the bin entry's SIGINT/
+            // SIGTERM handlers, or any harness calling stop()), or a
+            // throw escaping an iteration — the socket file never
+            // outlives the only process that can answer it. A SIGKILL'd
+            // worker reaches no funnel (no handler can run); that
+            // leftover is what setupSocket()'s probe-then-reclaim leg
+            // classifies on the next bind, never silently stolen from a
+            // live listener.
+            $this->releaseSocket();
         }
     }
 
@@ -333,12 +403,13 @@ final class AnalysisWorker
     }
 
     /**
-     * Remove the socket file this worker created when exiting because its
-     * parent is gone: the unlink in ServeCommand::cleanupWorker() will
-     * never run, so without this the dead daemon's /tmp surface outlives
-     * both processes.
+     * Remove the socket file this worker created, at the single exit
+     * funnel of {@see run()} (once-S44): whichever path ended the loop,
+     * the parent's cleanup unlink may never run for this file — leaving
+     * it means the next pid-reusing serve false-reads it as a ready
+     * worker, and no /tmp sweep knows this name.
      */
-    private function abandonOrphanSocket(): void
+    private function releaseSocket(): void
     {
         if ($this->socketPath !== '' && file_exists($this->socketPath)) {
             @unlink($this->socketPath);
@@ -347,10 +418,31 @@ final class AnalysisWorker
 
     /**
      * Set up the Unix socket server.
+     *
+     * once-S44 (php-dup-finder-once-048): the historic posture was an
+     * unconditional unlink-then-bind. That silently STEALS a path a live
+     * worker is still listening on — the split-brain the finding names:
+     * the old holder keeps serving the now-unlinked socket forever while
+     * the daemon dispatches to its replacement — and it never proved the
+     * removed file was actually dead. Now the existing name is classified
+     * first: a live listener refuses this worker's start loudly (the
+     * daemon answers with its sync-mode warning instead of a corrupted
+     * async posture); a proven-dead leftover — the normal shape after
+     * `kill -9`, where no cleanup could run — is reclaimed, then bound.
+     * The reclaim is not decoration: on Linux a bind to a path whose name
+     * exists fails with EADDRINUSE even when the file is stale, so
+     * restart-after-kill works exactly because this leg removes what the
+     * probe proves dead. A bind that still fails after the reclaim is
+     * reported verbatim (fail-loud, no second silent-retry posture).
      */
     private function setupSocket(): void
     {
         if (file_exists($this->socketPath)) {
+            if (self::socketHasLiveListener($this->socketPath)) {
+                throw new \RuntimeException(
+                    "A live worker is already listening on {$this->socketPath}; refusing to steal its socket"
+                );
+            }
             @unlink($this->socketPath);
         }
 

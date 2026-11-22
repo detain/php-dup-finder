@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Phpdup\Cli;
 
+use Phpdup\Server\AnalysisWorker;
 use Phpdup\Server\Application;
 use Symfony\Component\Console\Command\Command as SymfonyCommand;
 use Symfony\Component\Console\Input\InputInterface;
@@ -100,12 +101,23 @@ use Symfony\Component\Console\Output\OutputInterface;
  *   writing job results into an attacker-visible tree. The shutdown
  *   handler sweeps the directory so results never outlive the process.
  *   The sweep runs in reverse at STARTUP too (once-S71): results
- *   directories owned by this uid whose pid is provably dead are removed
- *   before the bind, so crashed and `kill -9` runs cannot strand pid
- *   directories in `/tmp` forever. Live-pid, foreign-owner, symlinked and
- *   unparseable directories are never touched; with no pid-liveness
- *   oracle available (no ext-posix and no `/proc`) the sweep does nothing
- *   at all — it may miss cleanup, never misfire a deletion.
+ *   directories owned by this uid whose owning process is provably dead
+ *   are removed before the bind, so crashed and `kill -9` runs cannot
+ *   strand pid directories in `/tmp` forever. Live, foreign-owner,
+ *   symlinked and unparseable directories are never touched; with no
+ *   liveness oracle available at all the sweep does nothing — it may
+ *   miss cleanup, never misfire a deletion.
+ * - Every serve claims `{results-dir}/serve.pid` under a non-blocking
+ *   `flock(LOCK_EX)` at startup and holds it for its lifetime
+ *   (once-S44, php-dup-finder-once-048): the kernel releases the lock on
+ *   EVERY death path — clean exit, signal, `kill -9`, OOM — which makes
+ *   the flock the pid-reuse-proof liveness oracle the startup sweep
+ *   consults first ({@see pidFileDeathProof()}, the reuse point
+ *   once-S97's stale-socket leg rides), with the raw pid vote as the
+ *   fallback exactly as before. A pre-existing results directory whose
+ *   claim is still held refuses startup (a live serve owns that name —
+ *   no adoption race, no shared tree); an unclaimed one is adopted and
+ *   re-armed. The claim is what "no stale lock" means for `serve`.
  * - Security posture of the default bind (once-S71, docs/SERVER.md
  *   "Security"): a tokenless serve is reachable by EVERY user on this
  *   machine — loopback confines the network, not the uid — and such a run
@@ -128,6 +140,17 @@ use Symfony\Component\Console\Output\OutputInterface;
  *   worker likewise self-exits once its parent dies (reparent poll,
  *   {@see \Phpdup\Server\AnalysisWorker}), so even `kill -9` on the
  *   daemon cannot leave an orphan worker loop behind.
+ * - Worker death paths are classified, not trusted (once-S44,
+ *   php-dup-finder-once-048). The socket name embeds this daemon's pid,
+ *   so a pre-existing file at the exact spawn path is either a stale
+ *   leftover of a dead predecessor (pid reuse — the readiness poll would
+ *   false-ready, the worker's bind would EADDRINUSE-fail: both legs are
+ *   handled — the daemon probes it, proves no live listener, and reclaims
+ *   it before the spawn) or an actual live listener sharing the name, in
+ *   which case nothing is unlinked: the daemon runs in sync mode naming
+ *   the collision, and the worker's own bind refuses to steal a path a
+ *   live worker answers. Either way a worker never ends up serving an
+ *   unlinked socket forever, and `kill -9` then restart cannot wedge.
  */
 final class ServeCommand extends SymfonyCommand
 {
@@ -171,6 +194,24 @@ final class ServeCommand extends SymfonyCommand
      * spawns run without it and keep reparent-only detection.
      */
     public const WORKER_PID_ENV = 'PHPDUP_SERVE_PID';
+
+    /**
+     * Name of the daemon-liveness pid file inside the results directory
+     * (once-S44, php-dup-finder-once-048): content is the owning serve
+     * pid, the file is held under a non-blocking `flock(LOCK_EX)` for the
+     * daemon's whole lifetime, and the KERNEL releases that lock on every
+     * death path — clean exit, signal, `kill -9`, OOM. It is therefore
+     * the one liveness oracle that survives pid reuse, the hole a
+     * `posix_kill(pid, 0)` verdict cannot see: a dead serve's pid slots
+     * back into the live-looking address space while its flock is
+     * provably free. Consumers: {@see pidFileDeathProof()} (the startup
+     * sweep's stronger dead-proof — S71's sweep "sees" this file, plan
+     * shared-resources row) and once-S97's predict+@unlink socket window
+     * (its queue row names the reuse). PHP ≥ 7.4 marks every fd it opens
+     * FD_CLOEXEC, so the `sh -c` worker exec closes this descriptor —
+     * the spawn child can never outlive-hold the daemon's lock.
+     */
+    public const SERVE_PID_FILE = 'serve.pid';
 
     /**
      * Per-client read deadline in seconds (shell-007). The daemon serves
@@ -231,6 +272,16 @@ final class ServeCommand extends SymfonyCommand
 
     /** Path to the worker Unix socket. */
     private string $workerSocket = '';
+
+    /**
+     * Open handle for this daemon's {@see SERVE_PID_FILE} claim, held for
+     * the process lifetime so the flock stays armed (null = no claim —
+     * either none taken or this instance inherited the path's authority
+     * from an earlier instance in the same process and holds no lock).
+     *
+     * @var resource|null
+     */
+    private $pidFileHandle = null;
 
     /** Private results directory prepared at startup ('' = refused or already swept). */
     private string $resultDir = '';
@@ -962,6 +1013,35 @@ final class ServeCommand extends SymfonyCommand
         $resultDir = $this->resultDir;
 
         $this->workerSocket = sys_get_temp_dir() . '/phpdup-worker-' . getmypid() . '.sock';
+
+        // once-S44 (php-dup-finder-once-048): a file already at the exact
+        // socket path is a fact to classify, never to trust. The only
+        // way one exists here is a dead predecessor whose pid the kernel
+        // has just handed to this process (the name embeds getmypid()).
+        // As litter it would make the readiness poll below false-ready
+        // at t=0 — jobs dispatched toward a socket no live worker binds —
+        // and it would make the worker's own bind answer EADDRINUSE. A
+        // LIVE listener is a different animal: stealing that name would
+        // strand an orphan worker serving an unlinked socket forever
+        // while this daemon talked to its replacement (the finding's
+        // split-brain). Probe first — zero-byte connect, the worker's
+        // silent-probe posture: stale → reclaim now, before the spawn,
+        // so readiness can only ever observe a file our own worker made;
+        // live → fall to sync mode naming the collision, and forget the
+        // path so no cleanup ever unlinks a socket that is not ours.
+        if (file_exists($this->workerSocket)) {
+            if (AnalysisWorker::socketHasLiveListener($this->workerSocket)) {
+                $output->writeln(
+                    '<comment>phpdup serve: a live worker is already listening on '
+                        . $this->workerSocket . ' (a reused daemon pid with an unburied worker?); '
+                        . 'running in sync mode</comment>'
+                );
+                $this->workerSocket = '';
+                return null;
+            }
+            @unlink($this->workerSocket);
+        }
+
         $command = $this->workerCommand($workerBin, $this->workerSocket, $resultDir, $serveRoot);
 
         $descriptors = [
@@ -1137,6 +1217,14 @@ final class ServeCommand extends SymfonyCommand
      */
     private function cleanupWorker(): void
     {
+        // once-S44: drop the liveness claim first — the sweep below
+        // removes the directory the pid file lives in, and an inherited
+        // (un-flock-able) handle would linger otherwise. On a signal
+        // death this runs before the 130 exit; on any other death the
+        // kernel closed the fd and released the flock anyway — the file
+        // then simply rides the directory sweep.
+        $this->releaseServePidFile();
+
         if (is_resource($this->workerProcess)) {
             $status = proc_get_status($this->workerProcess);
             if ($status['running'] && function_exists('posix_kill')) {
@@ -1310,7 +1398,156 @@ final class ServeCommand extends SymfonyCommand
             return null;
         }
 
+        // once-S44 (php-dup-finder-once-048): the directory is private and
+        // ours — arm the liveness claim inside it before anything else
+        // can answer a request. Fail-closed like every other leg: a serve
+        // that cannot prove its own death-path liveness refuses startup
+        // instead of leaving the next serve (or S71's sweep) to guess.
+        if (!$this->claimServePidFile($dir)) {
+            return null;
+        }
+
         return $dir;
+    }
+
+    /**
+     * Write and flock the daemon-liveness pid file inside `$dir`
+     * ({@see self::SERVE_PID_FILE}) — {@see prepareResultsDir()} calls
+     * this as its last leg, so the directory is already proven private.
+     *
+     * Returns true when the claim governs (this process holds the lock,
+     * or this same process already holds it from an earlier instance),
+     * false with {@see $resultsDirRefusal} set when startup must refuse.
+     *
+     * The claim order is load-bearing: flock FIRST, content SECOND. A
+     * sweep-side probe can therefore never see a written pid file whose
+     * writer had not already locked it — "file present, lock free,
+     * content is the dir's pid" is an exact dead-proof, while a live
+     * daemon mid-claim either carries no content yet or already holds
+     * the lock the probe is trying to take.
+     *
+     * No process-lifetime claim registry: one phpunit process runs many
+     * ServeCommand instances over the same pid-derived results directory,
+     * but the kernel makes the second instance's flock(LOCK_NB) fail with
+     * the FIRST instance still truthfully the owner — the owner-is-this-pid
+     * accept below resolves that in-process overlap without ever sharing a
+     * stream between instances (a shared fd would let whichever release
+     * lands first close the other's still-advertised lock).
+     */
+    private function claimServePidFile(string $dir): bool
+    {
+        $path = $dir . '/' . self::SERVE_PID_FILE;
+
+        $handle = @fopen($path, 'c+');
+        if ($handle === false) {
+            $this->resultsDirRefusal = "cannot open the serve pid file {$path}";
+            return false;
+        }
+        if (!@chmod($path, 0600)) {
+            @fclose($handle);
+            $this->resultsDirRefusal = "cannot enforce mode 0600 on the serve pid file {$path}";
+            return false;
+        }
+
+        if (@flock($handle, LOCK_EX | LOCK_NB)) {
+            $pid = (string)getmypid();
+            @ftruncate($handle, 0);
+            if (@fwrite($handle, $pid . "\n") !== strlen($pid) + 1 || !@fflush($handle)) {
+                @flock($handle, LOCK_UN);
+                @fclose($handle);
+                $this->resultsDirRefusal = "cannot write the serve pid file {$path}";
+                return false;
+            }
+            $this->pidFileHandle = $handle;
+            return true;
+        }
+
+        // The lock is held by another open file description. The path
+        // embeds getmypid(), so the holder can only be this same process
+        // (an earlier ServeCommand instance still alive in the run — the
+        // kernel gives no two live processes one pid, and PHP's
+        // FD_CLOEXEC bars a spawn from inheriting the fd anyway). Read the
+        // owner's pid and judge: ours, accept without taking a second
+        // handle (the true owner's release governs); anything else, the
+        // claim cannot be trusted, refuse.
+        $owner = trim((string)@file_get_contents($path));
+        @fclose($handle);
+        if ($owner === (string)getmypid()) {
+            $this->pidFileHandle = null; // the lock's real owner governs
+            return true;
+        }
+        $this->resultsDirRefusal = "results directory {$dir} carries a pid file locked by pid "
+            . $owner . " while this process is pid " . getmypid() . '; refusing to share it';
+        return false;
+    }
+
+    /**
+     * Release this instance's pid-file claim: unlock and close the stream
+     * THIS instance opened (idempotent; an inherited accept carries no
+     * handle and releases nothing, since the kernel drops the lock with
+     * its owner anyway). cleanupWorker() runs this first so the shutdown
+     * sweep's rmdir is never racing a file this process still has open.
+     */
+    private function releaseServePidFile(): void
+    {
+        $handle = $this->pidFileHandle;
+        $this->pidFileHandle = null;
+        if ($handle !== null) {
+            @flock($handle, LOCK_UN);
+            @fclose($handle);
+        }
+    }
+
+    /**
+     * The flock-based dead-proof over one results directory (once-S44) —
+     * the oracle {@see sweepStaleResultsDirs()} runs in front of the
+     * legacy pid vote, and the public reuse point for once-S97's
+     * stale-socket window (pair it with the directory path derived from
+     * {@see self::RESULTS_DIR_PREFIX} + the socket path's pid).
+     *
+     * Returns true when a pid file exists, its flock is FREE, and its
+     * content names the directory's pid — the writer died (the kernel
+     * released the lock on every death path, `kill -9` included) and pid
+     * reuse cannot fake that verdict. Returns false when the flock is
+     * HELD — a live serve owns this directory and no posix_kill answer
+     * may outvote it. Returns null when the directory carries no usable
+     * oracle (pre-S44 leftover, empty content mid-claim, unreadable
+     * file): the caller falls back to {@see pidStillAlive()}, so the
+     * sweep may miss cleanup, never misfire a deletion.
+     *
+     * Any lock this probe takes is released before returning — the sweep
+     * deletes the file, it never claims it.
+     */
+    public static function pidFileDeathProof(string $dir, int $dirPid): ?bool
+    {
+        $path = $dir . '/' . self::SERVE_PID_FILE;
+        if ($dirPid <= 0 || !is_file($path)) {
+            return null;
+        }
+        $handle = @fopen($path, 'c+');
+        if ($handle === false) {
+            return null;
+        }
+        if (!@flock($handle, LOCK_EX | LOCK_NB)) {
+            @fclose($handle);
+            return false; // held: a live daemon owns this directory
+        }
+        clearstatcache(true, $path);
+        $content = trim((string)@file_get_contents($path));
+        @flock($handle, LOCK_UN);
+        @fclose($handle);
+
+        // A free lock only proves death once the claim ever COMPLETED:
+        // empty or non-numeric content means the writer died between
+        // opening and writing — no verdict is available, so answer null
+        // and let the legacy pid vote decide. Completed content naming a
+        // FOREIGN pid inside this pid-named directory is an anomaly no
+        // sweep may delete into: that's the false ("do not touch") side.
+        if ($content === '' || !ctype_digit($content)) {
+            return null;
+        }
+
+        return (int)$content === $dirPid;
     }
 
     /**
@@ -1374,8 +1611,11 @@ final class ServeCommand extends SymfonyCommand
      * the shutdown sweep only ever fires for processes that reach it, so
      * a crashed or `kill -9`'d serve strands `/tmp/phpdup-results-<pid>`
      * with its 0600 result files forever. Before binding, this method
-     * removes the directories of this uid whose owning pid is provably
-     * dead, and returns the number of directories fully removed.
+     * removes the directories of this uid whose owning process is
+     * provably dead — since once-S44 the serve.pid flock is the FIRST
+     * dead-proof (exact under pid reuse, the one case the raw pid vote
+     * can lie about), the legacy liveness vote its fallback — and
+     * returns the number of directories fully removed.
      *
      * Containment law, deliberately as tight as the shutdown sweep's:
      * only `RESULTS_DIR_PREFIX<digits>` names are considered; this
@@ -1412,8 +1652,24 @@ final class ServeCommand extends SymfonyCommand
             if (!$this->staleDirOwnedByUs($path)) {
                 continue; // another uid's tree (or unstatable): not ours to touch
             }
-            if (self::pidStillAlive($pid)) {
-                continue; // live process: its directory is in play, not stale
+            // once-S44 (php-dup-finder-once-048): the flock dead-proof is
+            // consulted BEFORE the legacy pid vote, because it is the
+            // only oracle that survives pid reuse in either direction.
+            // A HELD lock is the strongest alive-vote available — a live
+            // serve owns the directory, full stop. An acquirable lock on
+            // a file that names this directory's pid is exact death — the
+            // kernel released it on the owner's last close, whatever a
+            // reused pid number now claims. Only when the directory
+            // carries no usable claim (a pre-S44 leftover, or a file
+            // caught mid-claim with no content) does the sweep fall back
+            // to pidStillAlive(), preserving the S71 posture verbatim:
+            // may miss cleanup, never misfire a deletion.
+            $deathProof = self::pidFileDeathProof($path, $pid);
+            if ($deathProof === false) {
+                continue; // the flock is held: a live serve owns this tree
+            }
+            if ($deathProof === null && self::pidStillAlive($pid)) {
+                continue; // no claim here: the legacy live-pid vote governs
             }
             if (self::removeDeadResultsDir($path)) {
                 $removed++;
