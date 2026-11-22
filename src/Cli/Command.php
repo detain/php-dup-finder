@@ -1444,7 +1444,11 @@ HELP;
             // config's diff_base was explicitly nulled at admission).
             $state->diffBaseFiles = $diffCohort;
         }
-        SignalHandler::install($state);
+        // once-S75 (php-dup-finder-once-090): the scope hands back its own
+        // restorer — disposition AND async mode return to as-found in the
+        // finally below, and a second SIGINT now exits 130 immediately
+        // (reaping children) instead of the old third-press dance.
+        $restoreSignals = SignalHandler::install($state);
         $pipeline = $buildPipeline(null);
         // shell-S23 (php-dup-finder-shell-040): drive the cooperative
         // generator here instead of Pipeline::run() so a ScanningStage that
@@ -1477,7 +1481,7 @@ HELP;
             $output->writeln('<error>phpdup: ' . self::escapeMarkup($e->getMessage()) . '</error>');
             return 1;
         } finally {
-            SignalHandler::uninstall();
+            $restoreSignals();
         }
 
         if ($state->scanError !== null) {
@@ -1613,8 +1617,11 @@ HELP;
             $watcher->syncFromFileList($fileInfos);
         });
 
-        $program->run();
-        return 0;
+        // once-S75 (php-dup-finder-once-090): run under the scoped SIGINT
+        // contract — first press cancels + stops the program cooperatively,
+        // second press reaps children and exits 130 now; the signal
+        // environment returns to as-found before this method returns.
+        return $tuiRunner->runWatchProgram($program, $model, $loop);
     }
 
     private function shouldRunTui(InputInterface $input, OutputInterface $_output): bool

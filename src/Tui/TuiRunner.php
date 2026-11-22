@@ -3,7 +3,9 @@ declare(strict_types=1);
 
 namespace Phpdup\Tui;
 
+use Phpdup\Cli\SignalHandler;
 use Phpdup\Pipeline\PipelineState;
+use React\EventLoop\Loop;
 use React\EventLoop\LoopInterface;
 use SugarCraft\Core\Program;
 use SugarCraft\Core\ProgramOptions;
@@ -60,16 +62,20 @@ final class TuiRunner
         mixed $input = null,
         mixed $output = null,
     ): int {
-        $options = new ProgramOptions(
+        $reactLoop = $loop ?? Loop::get();
+        $options   = new ProgramOptions(
             useAltScreen: $useAltScreen,
             catchInterrupts: true,
             hideCursor: true,
             input: $input,
             output: $output,
-            loop: $loop,
+            loop: $reactLoop,
         );
 
-        (new Program($model, $options))->run();
+        // once-S07: the return value is the model's exitCode() — this line
+        // must stay on the other side of the signal scope for that posture
+        // to hold, so the scope lives in the helper, not around the call.
+        $this->runProgramScoped(new Program($model, $options), $model, $reactLoop);
 
         return $model->exitCode();
     }
@@ -87,6 +93,68 @@ final class TuiRunner
             hideCursor: true,
             loop: $loop,
         ));
+    }
+
+    /**
+     * Drive a watch-mode Program (built by {@see makeProgram()} and already
+     * wired to its file watcher by the caller) under the once-S75 scoped
+     * SIGINT contract, then report the watch-TUI's historical graceful-stop
+     * status. Returns 0 exactly as the old straight `$program->run();
+     * return 0;` tail did — the watch-TUI belt posture is unchanged.
+     */
+    public function runWatchProgram(Program $program, PhpdupModel $model, LoopInterface $loop): int
+    {
+        $this->runProgramScoped($program, $model, $loop);
+        return 0;
+    }
+
+    /**
+     * once-S75 (php-dup-finder-once-090): run a Program under a scoped
+     * SIGINT contract that replaces — from the first loop tick — the
+     * cooperative arm sugar-core's Program installs inside run().
+     *
+     * Too early is impossible (run() arms its own handler synchronously on
+     * entry), so the timer lands on the first tick, microseconds after.
+     * From then on every press hits our scope: the first marks the model's
+     * state cancelled (the pool/stages unwind promptly — the delayed
+     * Ctrl+C this finding measured) and hard-stops the program through its
+     * public kill(), the same synchronous stopProgram body Program's own
+     * SIGINT listener ran; the second reaps children and exits 130 now.
+     *
+     * Because our scope is armed INSIDE run() but restored outside it, the
+     * layers unwind non-LIFO — Program's teardown only knows the handler it
+     * captured at its entry. The entry snapshot therefore gets the last
+     * word: whatever the process walked in with is exactly what it walks
+     * out with (async mode included — the S93 "leave it as found"
+     * discipline).
+     */
+    private function runProgramScoped(Program $program, PhpdupModel $model, LoopInterface $loop): void
+    {
+        if (!function_exists('pcntl_signal')) {
+            $program->run();
+            return;
+        }
+
+        $entry          = SignalHandler::captureEnvironment();
+        $restoreSignals = null;
+        $timer          = $loop->addTimer(0.001, static function () use (&$restoreSignals, $model, $program): void {
+            $restoreSignals = SignalHandler::install(static function () use ($model, $program): void {
+                $model->state->cancelled = true;
+                $program->kill();
+            });
+        });
+
+        try {
+            $program->run();
+        } finally {
+            // Never let an un-fired one-shot leak into the next loop run
+            // (the loop is a singleton; sibling tests reuse it).
+            $loop->cancelTimer($timer);
+            if ($restoreSignals !== null) {
+                $restoreSignals();
+            }
+            $entry();
+        }
     }
 
     public function buildModel(PipelineState $state, string $themeName): PhpdupModel

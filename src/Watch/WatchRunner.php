@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Phpdup\Watch;
 
 use Phpdup\Clustering\CandidateBudgetException;
+use Phpdup\Cli\SignalHandler;
 use Phpdup\Pipeline\Pipeline;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Refactor\ScriptKindApplyRefusal;
@@ -59,6 +60,22 @@ final class WatchRunner
     public const MAX_CONSECUTIVE_PASS_FAILURES = 3;
 
     private FileWatcher $fileWatcher;
+
+    /**
+     * once-S75 (php-dup-finder-once-090): true from the first SIGINT press
+     * inside {@see run()}'s signal scope. No new pass may boot while the
+     * loop is unwinding, and a pass whose state was not yet live adopts
+     * the cancellation the moment its state exists.
+     */
+    private bool $cancelRequested = false;
+
+    /**
+     * The PipelineState of the pass currently in flight, visible to the
+     * signal sink so a first press reaches a running pipeline immediately
+     * (the finding's minutes-delayed Ctrl+C) instead of waiting for the
+     * next event. Null between passes.
+     */
+    private ?PipelineState $liveState = null;
 
     private int $reloadCount = 0;
 
@@ -119,9 +136,35 @@ final class WatchRunner
             };
             $loop->addSignal(SIGINT, $stop);
             $loop->addSignal(SIGTERM, $stop);
+
+            // once-S75 (php-dup-finder-once-090): a scoped pcntl arm for
+            // SIGINT, installed AFTER the React listeners so it displaces
+            // the loop-tick-dispatched one (a later pcntl_signal wins, and
+            // async dispatch runs the sink mid-tick instead of between
+            // ticks — the finding's minutes-delayed Ctrl+C). First press:
+            // cancel the in-flight pass AND take the exact same $stop seam
+            // the old listener owned, so single-press watch keeps its
+            // graceful stop-and-return-0 posture. Second press: the scope
+            // reaps children and exits 130 now. SIGTERM stays on the
+            // React listener — its belt is untouched.
+            $restoreSignals = SignalHandler::install(function () use ($stop): void {
+                $this->cancelRequested = true;
+                if ($this->liveState !== null) {
+                    $this->liveState->cancelled = true;
+                }
+                $stop();
+            });
+        } else {
+            $restoreSignals = static function (): void {
+            };
         }
 
-        $loop->run();
+        try {
+            $loop->run();
+        } finally {
+            $restoreSignals();
+            $this->liveState = null;
+        }
         return 0;
     }
 
@@ -141,6 +184,15 @@ final class WatchRunner
     {
         try {
             $state = ($this->rebuildState)();
+
+            // once-S75 (php-dup-finder-once-090): a press that landed while
+            // this pass was still booting had no live state to mark — the
+            // cancellation is adopted here; and while the pass runs, its
+            // state is exposed so the sink reaches the pool immediately.
+            if ($this->cancelRequested) {
+                $state->cancelled = true;
+            }
+            $this->liveState = $state;
 
             $this->runGuarded($state);
 
@@ -170,6 +222,10 @@ final class WatchRunner
         } catch (\Throwable $e) {
             $this->notePassFailure($e);
             return 0;
+        } finally {
+            // once-S75: the pass is over — the sink must not (and cannot)
+            // mark a state that no longer exists.
+            $this->liveState = null;
         }
     }
 
@@ -183,6 +239,12 @@ final class WatchRunner
      */
     public function handleChange(string $path, FileChangeType $type, array $batch = []): void
     {
+        if ($this->cancelRequested) {
+            // once-S75 (php-dup-finder-once-090): Ctrl+C was pressed — the
+            // loop is unwinding; do not boot another pass behind it.
+            return;
+        }
+
         if ($this->consecutivePassFailures >= self::MAX_CONSECUTIVE_PASS_FAILURES) {
             // Skip-note posture (pinned): after the cap, events no longer
             // re-run the pipeline; the notice is rendered exactly once.
