@@ -10,6 +10,15 @@ use Phpdup\Persistence\SerializedClassAllowList;
 /**
  * Disk-backed token-stream cache keyed by file content hash.
  *
+ * Status (catalog close-out, engine-S31c): PRE-WIRED, NOT INSTANTIATED
+ * in production — `AstParser` still lexes inline, and the `src/`
+ * references to this class are the AstCache/CacheBlob cross-links and
+ * the SerializedClassAllowList trust anchor, not call sites. The
+ * finding-era "dead decoder" label predates the engine-S23b
+ * framing/seal and engine-S24 key honesty this class now carries;
+ * the honest disposition is a hardened, tested API kept for its
+ * wiring step.
+ *
  * The php-parser tokenisation step is allocator-heavy — for large
  * files it's often the dominant cost when the AST cache misses
  * (e.g. on first analysis of a fresh corpus, or after a parser
