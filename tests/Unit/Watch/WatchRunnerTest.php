@@ -11,8 +11,11 @@ use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\Stage;
 use Phpdup\Pipeline\StageInterface;
 use Phpdup\Watch\FileChangeType;
+use Phpdup\Watch\FileWatcher;
 use Phpdup\Watch\WatchRunner;
 use Psr\Log\NullLogger;
+use React\EventLoop\LoopInterface;
+use React\EventLoop\TimerInterface;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\OutputInterface;
 
@@ -53,8 +56,20 @@ final class WatchRunnerTest extends TestCase
 
     protected function tearDown(): void
     {
-        foreach (glob($this->scanRoot . '/*') ?: [] as $f) {
-            @unlink($f);
+        // Recursive: the once-S47 pins create an excluded vendor/ tree
+        // under the root; a plain glob+unlink would strand it (and the
+        // root rmdir) in /tmp on failure paths.
+        $iter = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($this->scanRoot, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($iter as $path) {
+            /** @var \SplFileInfo $path */
+            if ($path->isDir() && !$path->isLink()) {
+                @rmdir($path->getPathname());
+            } else {
+                @unlink($path->getPathname());
+            }
         }
         @rmdir($this->scanRoot);
     }
@@ -538,6 +553,127 @@ final class WatchRunnerTest extends TestCase
             $this->scanRoot,
         );
     }
+
+    /**
+     * once-S47: pin the REAL consumer wiring (FileWatcher on a fake loop +
+     * the injectable WatchRunner seam + run()'s exact
+     * watch([$runner,'handleChange']) installation) so burst-to-single-pass
+     * and exclude-coherence are measured end to end, blocking loop and
+     * wall-clock untouched exactly like the run()-outside seams above.
+     */
+    private function instrumentedRunner(
+        WatchScriptedStage $stage,
+        BufferedOutput $output,
+        FileWatcher $watcher,
+    ): WatchRunner {
+        return new WatchRunner(
+            new Pipeline([$stage]),
+            fn(): PipelineState => new PipelineState(Config::defaults([$this->scanRoot])),
+            $output,
+            new NullLogger(),
+            $this->scanRoot,
+            1.5,
+            $watcher,
+        );
+    }
+
+    private function pollBackedWatcher(
+        LoopInterface $loop,
+    ): FileWatcher {
+        return new FileWatcher(
+            new NullLogger(),
+            $this->scanRoot,
+            1.0,
+            $loop,
+            FileWatcher::BACKEND_POLL,
+            FileWatcher::DEBOUNCE_SECONDS,
+        );
+    }
+
+    // ─── once-S47: debounced bursts + exclude coherence through WatchRunner ──
+
+    /**
+     * Acceptance "events within debounce window coalesce to ONE
+     * re-analysis" (php-dup-finder-once-086/094), measured through the
+     * pipeline-pass counter — the ONLY consumer-visible unit of work:
+     * three hint ticks inside one window are one flush = one pass (not
+     * three); the pass lands exactly when the window expires, never at
+     * hint time. A second window is its own single pass.
+     */
+    public function testBurstInsideWindowCoalescesToOneReanalysis(): void
+    {
+        $loop = new CoalescingTestLoop();
+        $watcher = $this->pollBackedWatcher($loop);
+        $stage = new WatchScriptedStage();
+        $output = new BufferedOutput();
+        $runner = $this->instrumentedRunner($stage, $output, $watcher);
+
+        // run()'s consumer installation, verbatim shape.
+        $watcher->watch([$runner, 'handleChange']);
+
+        foreach (['a.php', 'b.php', 'c.php'] as $file) {
+            file_put_contents($this->scanRoot . '/' . $file, "<?php\n//x\n");
+            $loop->firePeriodic(); // raw hint per file
+        }
+        $this->assertSame(0, $stage->runs, 'hints alone never re-analyze — the window decides');
+
+        $loop->fireTimers();
+        $this->assertSame(1, $stage->runs, 'one debounced window = exactly one re-analysis');
+        $this->assertStringContainsString('3 files coalesced', $output->fetch());
+
+        // The window re-arms after expiry: the next burst is its own pass.
+        file_put_contents($this->scanRoot . '/d.php', "<?php\n//y\n");
+        $loop->firePeriodic();
+        $loop->firePeriodic();
+        $this->assertSame(1, $loop->countPendingOneShots(), 'hints inside the open window merge');
+        $loop->fireTimers();
+        $this->assertSame(2, $stage->runs, 'second window = second (and only second) pass');
+        $this->assertStringContainsString('change detected (created:', $output->fetch());
+    }
+
+    /**
+     * Acceptance "Config::exclude respected in BOTH backends" on its live
+     * wiring: every dispatch pushes its state's exclude view onto the
+     * watcher before the run (once-086's vendor-churn half). Mutation:
+     * drop the applyExcludes call in WatchRunner::dispatchGuarded() and
+     * the vendor edit below flushes a re-analysis — runs hits 2.
+     */
+    public function testExcludedTreeNeverReanalyzesViaDispatchedState(): void
+    {
+        mkdir($this->scanRoot . '/vendor', 0777, true);
+        file_put_contents($this->scanRoot . '/a.php', "<?php\n");
+        file_put_contents($this->scanRoot . '/vendor/loaded.php', "<?php\n");
+
+        $loop = new CoalescingTestLoop();
+        $watcher = $this->pollBackedWatcher($loop);
+        $stage = new WatchScriptedStage();
+        $output = new BufferedOutput();
+        $runner = $this->instrumentedRunner($stage, $output, $watcher);
+
+        // Boot dispatch first (run()'s order): rebuildState -> applyExcludes
+        // -> pass -> resync. Config::defaults excludes '**/vendor/**'.
+        $runner->handleChange('a.php', FileChangeType::Created);
+        $this->assertSame(1, $stage->runs);
+
+        $watcher->watch([$runner, 'handleChange']);
+
+        // Same-second-size-changing edit under vendor: invisible in the
+        // flush enumeration — neither Modified nor phantom anything.
+        file_put_contents($this->scanRoot . '/vendor/loaded.php', "<?php\n//mutated\n");
+        touch($this->scanRoot . '/vendor/loaded.php', time() + 10);
+        $loop->firePeriodic();
+        $loop->fireTimers();
+        $this->assertSame(1, $stage->runs, 'vendor churn must never wake the pipeline');
+
+        // A watched-tree edit still fires: the exclude view narrows, it
+        // does not deafen.
+        file_put_contents($this->scanRoot . '/a.php', "<?php\n//moved\n");
+        touch($this->scanRoot . '/a.php', time() + 20);
+        $loop->firePeriodic();
+        $loop->fireTimers();
+        $this->assertSame(2, $stage->runs, 'non-excluded changes keep re-analyzing');
+        $this->assertStringContainsString('change detected', $output->fetch());
+    }
 }
 
 /**
@@ -596,4 +732,114 @@ final class PoisonedRebaseWrapper
     {
         throw new \RuntimeException('poisoned rebase enumeration');
     }
+}
+
+/**
+ * Deterministic LoopInterface double for the once-S47 consumer pins. The
+ * classes declared inside FileWatcherTest.php are not autoloadable from
+ * here (tests autoload is PSR-4, no classmap), so this file stays
+ * self-contained like every other test double in this suite — the twin of
+ * WatchTestLoop under a collision-free name, with the same fire-by-hand
+ * semantics (one-shot tracking is the debounce window's observable).
+ */
+final class CoalescingTestTimer implements TimerInterface
+{
+    public bool $cancelled = false;
+
+    /** @param callable $callback */
+    public function __construct(
+        private readonly float $interval,
+        private $callback,
+        private readonly bool $periodic,
+    ) {}
+
+    public function getInterval(): float
+    {
+        return $this->interval;
+    }
+
+    /** @return callable */
+    public function getCallback()
+    {
+        return $this->callback;
+    }
+
+    public function isPeriodic(): bool
+    {
+        return $this->periodic;
+    }
+}
+
+final class CoalescingTestLoop implements LoopInterface
+{
+    /** @var list<CoalescingTestTimer> */
+    private array $oneShot = [];
+
+    /** @var list<CoalescingTestTimer> */
+    private array $periodic = [];
+
+    public function firePeriodic(): void
+    {
+        foreach ($this->periodic as $timer) {
+            if (!$timer->cancelled) {
+                ($timer->getCallback())();
+            }
+        }
+    }
+
+    /** Fire all armed one-shot timers once (then forget them, like a real loop). */
+    public function fireTimers(): void
+    {
+        $due = $this->oneShot;
+        $this->oneShot = [];
+        foreach ($due as $timer) {
+            if (!$timer->cancelled) {
+                ($timer->getCallback())();
+            }
+        }
+    }
+
+    public function countPendingOneShots(): int
+    {
+        return count($this->oneShot);
+    }
+
+    public function addTimer($interval, $callback): TimerInterface
+    {
+        $timer = new CoalescingTestTimer((float)$interval, $callback, false);
+        $this->oneShot[] = $timer;
+        return $timer;
+    }
+
+    public function addPeriodicTimer($interval, $callback): TimerInterface
+    {
+        $timer = new CoalescingTestTimer((float)$interval, $callback, true);
+        $this->periodic[] = $timer;
+        return $timer;
+    }
+
+    public function cancelTimer(TimerInterface $timer): void
+    {
+        if ($timer instanceof CoalescingTestTimer) {
+            $timer->cancelled = true;
+        }
+        $this->oneShot = array_values(array_filter(
+            $this->oneShot,
+            static fn(CoalescingTestTimer $t): bool => $t !== $timer,
+        ));
+        $this->periodic = array_values(array_filter(
+            $this->periodic,
+            static fn(CoalescingTestTimer $t): bool => $t !== $timer,
+        ));
+    }
+
+    public function addReadStream($stream, $listener): void {}
+    public function addWriteStream($stream, $listener): void {}
+    public function removeReadStream($stream): void {}
+    public function removeWriteStream($stream): void {}
+    public function futureTick($listener): void {}
+    public function addSignal($signal, $listener): void {}
+    public function removeSignal($signal, $listener): void {}
+    public function run(): void {}
+    public function stop(): void {}
 }

@@ -29,41 +29,59 @@ use SplFileInfo;
  *
  *  - re-enumerate watchable files through {@see FileScanner::scan()},
  *    which is the single home of both the PHP-extension predicate
- *    (`looksLikePhp` — reused, never forked here) and the shell-006
- *    symlink containment posture (out-of-root and root-re-entering links
- *    are pruned, so the watcher cannot follow them either), and
+ *    (`looksLikePhp` — reused, never forked here), the shell-006
+ *    symlink containment posture (out-of-root and root-re-entering
+ *    links are pruned, so the watcher cannot follow them either), and
+ *    the exclude verdicts this watcher applies (see below), and
  *  - diff that list against the snapshot, rebase the snapshot, and
  *  - dispatch the consumer ONCE with the whole coalesced batch.
  *
  * Consequences the consumer can rely on: a burst of edits inside one
  * window is a single callback; a touch of a non-PHP file changes nothing
- * in the enumerated set and dispatches nothing at all.
+ * in the enumerated set and dispatches nothing at all; changes landing
+ * DURING a dispatch are caught by the next window's diff against the
+ * post-dispatch rebase (nothing mid-run is lost, nothing is restarted
+ * per event — the once-086 A-16/A-19 halves).
  *
- * Config::exclude is deliberately NOT honored yet (that leg rides
- * once-S47, which owns the exclude-honoring coherence work). Self-
- * consistency is preserved by {@see resync()}: callers that want the
- * watcher's own view of the tree rebase on the watcher's own enumeration
- * instead of handing in the pipeline's (differently-excluded) file list.
+ * ## Coherence (php-dup-finder-once-051 / 086 / 094)
+ *
+ * - **Recursive inotify.** The kernel watch set covers the scan root and
+ *   EVERY existing watchable subdirectory ({@see collectInotifySetupDirs()}),
+ *   and follows directory creation under watched parents. An edit in any
+ *   subdirectory wakes the debounce — the HIGH finding's "only the root
+ *   is watched" backend asymmetry is closed.
+ * - **Bounded wd bookkeeping.** IN_DELETE_SELF/IN_IGNORED sit in the
+ *   mask; a self-destroyed watch drains its `wdToPath` entry, so the map
+ *   tracks the live kernel set instead of growing across churn.
+ * - **Size-aware poll key.** The snapshot stores `mtime:size` composites
+ *   ({@see statKey()}); an edit that lands within the mtime resolution
+ *   but moves bytes (exFAT/FAT cards, editor fsync races) is seen.
+ * - **Config::exclude honored in BOTH backends.** The glob list supplied
+ *   via the constructor or {@see applyExcludes()} drives the poll
+ *   enumeration (through FileScanner itself), the inotify setup walk, and
+ *   the new-directory watch decision alike.
  *
  * ## Snapshot lifecycle
  *
- * The watcher maintains an internal snapshot of known files and their mtimes:
+ * The watcher maintains an internal snapshot of known files and their
+ * stat keys:
  * - Call {@see resync()} after each pipeline run to rebase the snapshot on
  *   the watcher's own enumeration (what a flush would diff against anyway).
  * - {@see syncFromFileList()} remains for callers that seed from an external
  *   list (the TUI watch leg). Such a list is only consistent with this
- *   watcher when it matches the watcher's own no-excludes walk — an
- *   exclude-shaped pipeline list leaves files out of the snapshot and the
- *   next flush manufactures a phantom Created/Deleted batch from the
- *   mismatch. The TUI leg currently carries exactly that mismatch; its cure
- *   (exclude-honoring in both backends, or a Command-leg flip to resync())
- *   rides once-S47.
+ *   watcher when it was produced under the SAME exclude view the watcher
+ *   enumerates with; {@see applyExcludes()} rebases the snapshot itself, so
+ *   a mid-life view swap never fabricates a phantom Created/Deleted batch.
+ *   The TUI leg in Command.php currently seeds its exclude-shaped list
+ *   into a watcher built without globs — the wiring half of that cure
+ *   (`applyExcludes($config->exclude)` at that leg) rides its own Command
+ *   lane; {@see resync()} is the glob-free alternative.
  * - Call {@see detectNewFiles()}, {@see detectModifiedFiles()}, and
  *   {@see detectDeletedFiles()} to diff a given file list against the
  *   snapshot and return the respective change sets.
  * - All three `detect*` methods read from the snapshot but do not modify it.
- *   Only {@see syncFromFileList()}, {@see resync()} and an internal flush
- *   update the snapshot.
+ *   Only {@see syncFromFileList()}, {@see resync()}, {@see applyExcludes()}
+ *   and an internal flush update the snapshot.
  *
  * The consumer callback is invoked once per debounced flush with the
  * representative (last) change, its type, and the full coalesced batch.
@@ -84,16 +102,23 @@ final class FileWatcher
     public const BACKEND_INOTIFY = 'inotify';
 
     // inotify event mask constants — matches PHP's inotify extension constants.
-    private const IN_MODIFY     = 2;     // IN_MODIFY
-    private const IN_CREATE     = 256;   // IN_CREATE
-    private const IN_DELETE     = 512;   // IN_DELETE
-    private const IN_MOVED_FROM = 128;   // IN_MOVED_FROM
-    private const IN_MOVED_TO   = 64;    // IN_MOVED_TO
+    private const IN_MODIFY      = 2;      // IN_MODIFY
+    private const IN_MOVED_TO    = 64;     // IN_MOVED_TO
+    private const IN_MOVED_FROM  = 128;    // IN_MOVED_FROM
+    private const IN_CREATE      = 256;    // IN_CREATE
+    private const IN_DELETE      = 512;    // IN_DELETE
+    private const IN_DELETE_SELF = 1024;   // IN_DELETE_SELF (0x400): watched dir removed
+    private const IN_IGNORED     = 32768;  // IN_IGNORED (0x8000): kernel dropped the watch
 
-    /** Mask combining all events the watcher cares about. */
-    private const INOTIFY_MASK = self::IN_MODIFY | self::IN_CREATE | self::IN_DELETE | self::IN_MOVED_FROM | self::IN_MOVED_TO;
+    /**
+     * Mask combining all events the watcher cares about. The self-destroy
+     * pair (once-094) is what lets the read handler drain `wdToPath` the
+     * moment the kernel retires a watch, instead of leaving dead entries
+     * behind after directory deletions.
+     */
+    private const INOTIFY_MASK = self::IN_MODIFY | self::IN_CREATE | self::IN_DELETE | self::IN_MOVED_FROM | self::IN_MOVED_TO | self::IN_DELETE_SELF | self::IN_IGNORED;
 
-    /** @var array<string,int> path -> mtime snapshot of known files */
+    /** @var array<string,string> path -> "mtime:size" snapshot of known files */
     private array $snapshot = [];
 
     /** @var array<string,FileChangeType> paths that changed since last sync */
@@ -118,15 +143,32 @@ final class FileWatcher
     private $changeCallback = null;
 
     /**
-     * The watchable-file enumerator. Empty exclude globs on purpose: the
-     * PHP predicate + symlink containment come from FileScanner itself,
-     * while exclude-honoring is once-S47's declared scope. warnOnSkip
+     * The exclude view both backends honor (once-086/094). Mutable via
+     * {@see applyExcludes()} because WatchRunner learns the pipeline's
+     * Config::exclude from the first dispatch state, while the watcher
+     * itself is built (and in the TUI leg, started) before that state
+     * exists.
+     *
+     * @var list<string>
+     */
+    private array $excludeGlobs;
+
+    /**
+     * The watchable-file enumerator. The PHP predicate + symlink
+     * containment come from FileScanner itself (reused, never forked
+     * here); the exclude globs ride this watcher's own view. warnOnSkip
      * stays off — the pipeline's own scan renders skip notes once per
      * pass; the watcher must not spray them from a timer callback.
      */
-    private readonly FileScanner $fileScanner;
+    private FileScanner $fileScanner;
 
-    /** @param float $pollInterval seconds between poll-backend ticks */
+    /**
+     * @param float $pollInterval seconds between poll-backend ticks
+     * @param list<string> $excludeGlobs Config::exclude globs the watcher
+     *        must honor in both backends from the first flush (an empty
+     *        list watches the whole tree — Callers whose exclude view
+     *        arrives late use {@see applyExcludes()} instead).
+     */
     public function __construct(
         private readonly LoggerInterface $logger,
         private readonly string $scanRoot,
@@ -134,11 +176,13 @@ final class FileWatcher
         private readonly ?LoopInterface $loop = null,
         private readonly string $backend = self::BACKEND_AUTO,
         private readonly float $debounceSeconds = self::DEBOUNCE_SECONDS,
+        array $excludeGlobs = [],
     ) {
         if (!in_array($this->backend, [self::BACKEND_AUTO, self::BACKEND_POLL, self::BACKEND_INOTIFY], true)) {
             throw new \InvalidArgumentException("FileWatcher: unknown backend '{$this->backend}' (expected auto, poll or inotify)");
         }
-        $this->fileScanner = new FileScanner([], false);
+        $this->excludeGlobs = array_values($excludeGlobs);
+        $this->fileScanner = new FileScanner($this->excludeGlobs, false);
     }
 
     /**
@@ -185,7 +229,9 @@ final class FileWatcher
 
     /**
      * Stop watching and clean up resources: backends, a pending debounce
-     * flush, and the diff state all drop together.
+     * flush, and the diff state all drop together. Every fd/timer/map
+     * resource acquired by a start path is released here (once-086
+     * teardown symmetry; fenced by the fd-count test).
      */
     public function stop(): void
     {
@@ -213,11 +259,11 @@ final class FileWatcher
 
     /**
      * Rebase the snapshot on the watcher's OWN enumeration of the scan
-     * root (FileScanner::scan — PHP predicate + containment included).
-     * This is exactly the set the next flush diffs against, so a resync
-     * after a completed pass can never manufacture phantom "created"
-     * events out of an exclude-shape mismatch between the pipeline's
-     * file list and the watcher's walk.
+     * root (FileScanner::scan — PHP predicate + containment + this
+     * watcher's exclude view included). This is exactly the set the next
+     * flush diffs against, so a resync after a completed pass can never
+     * manufacture phantom "created" events out of an exclude-shape
+     * mismatch between the pipeline's file list and the watcher's walk.
      */
     public function resync(): void
     {
@@ -226,17 +272,48 @@ final class FileWatcher
     }
 
     /**
+     * Adopt a Config::exclude glob view (once-086/094: the excludes the
+     * pipeline scans under must be the excludes the watcher wakes under —
+     * otherwise vendor/.git churn re-analyzes every tick, or an
+     * exclude-shaped external seed fabricates a phantom Created batch).
+     *
+     * Replaces the enumerator and rebases the snapshot on the NEW view
+     * immediately: a stale-view key left in the snapshot would classify
+     * as a phantom Deleted against the first flush of the new view. The
+     * inotify kernel watch set keeps any already-watched directories
+     * (including ones a mid-life exclude now covers): a redundant wake
+     * flushes to an empty diff and stays silent — the flush walk remains
+     * the single authority. New directories are gated by the new view.
+     *
+     * @param list<string> $excludeGlobs
+     */
+    public function applyExcludes(array $excludeGlobs): void
+    {
+        $globs = array_values($excludeGlobs);
+        if ($globs === $this->excludeGlobs) {
+            return;
+        }
+        $this->excludeGlobs = $globs;
+        $this->fileScanner = new FileScanner($globs, false);
+        $this->resync();
+    }
+
+    /**
      * Sync the internal file snapshot from a caller-supplied file list.
      *
      * Consistency note (why this is NOT generally "just seed the list"):
-     * flush() diffs against this watcher's OWN no-excludes enumeration, so
-     * a caller-supplied list shaped by different rules (the pipeline's
-     * exclude-shaped file list the TUI watch leg currently seeds with)
-     * leaves excluded files out of the snapshot and the next flush
-     * dispatches them as a phantom Created batch. The TUI leg's cure
-     * (exclude-honoring in both backends, or flipping the leg to
-     * {@see resync()}) rides once-S47. WatchRunner already uses
-     * {@see resync()} instead so enumeration and diffing share one
+     * flush() diffs against this watcher's OWN enumeration — PHP
+     * predicate + containment + {@see applyExcludes()} view — so a
+     * caller-supplied list shaped by different rules (the TUI watch leg
+     * in Command.php currently seeds its exclude-shaped pipeline list
+     * into a watcher that was never given the globs) leaves files out of
+     * the snapshot and the next flush dispatches them as a phantom
+     * Created batch. The watcher-side half of the once-S47 cure is
+     * delivered: both backends now DO honor whatever view they were
+     * given. The leg-side wiring (pass the globs / call applyExcludes,
+     * or flip to {@see resync()}) rides Command.php's own lane.
+     * WatchRunner already uses {@see resync()} + per-dispatch
+     * {@see applyExcludes()} so enumeration and diffing share one
      * predicate.
      *
      * @param SplFileInfo[] $currentFiles
@@ -289,7 +366,8 @@ final class FileWatcher
     }
 
     /**
-     * Detect files whose mtime changed since the last snapshot.
+     * Detect files whose stat key (mtime + size, once-094) changed since
+     * the last snapshot.
      *
      * shell-S40 (php-dup-finder-shell-051): the stat-cache clear is
      * hoisted to once per scan instead of once per file. Every path is
@@ -310,8 +388,8 @@ final class FileWatcher
             if (!array_key_exists($path, $this->snapshot)) {
                 continue;
             }
-            $mtime = @filemtime($path);
-            if ($mtime !== false && $mtime !== $this->snapshot[$path]) {
+            $key = $this->statKey($path);
+            if ($key !== null && $key !== $this->snapshot[$path]) {
                 $modified[] = $path;
             }
         }
@@ -367,12 +445,12 @@ final class FileWatcher
     /**
      * Authoritative pass: re-enumerate watchable files, diff against the
      * snapshot, and dispatch the consumer once with the coalesced batch.
-     * An empty batch (a .txt touch, a file behind an out-of-root symlink)
-     * stays silent. The diff is mtime-keyed, so a re-write that bumps the
-     * mtime — even an editor re-writing identical bytes — classifies as
-     * Modified and DOES dispatch; only a re-touch within the same second
-     * stays silent on mtime resolution. Size-aware content suppression is
-     * once-S47's poll-key leg.
+     * An empty batch (a .txt touch, a file behind an out-of-root symlink,
+     * excluded-tree churn) stays silent. The stat key is
+     * mtime-AND-size-aware (once-094, closing the N-2 preview from
+     * shell-S40): an edit that lands within the same second but moves
+     * bytes is classified Modified; only a re-touch that changes neither
+     * mtime nor size stays silent on this clock.
      */
     private function flush(): void
     {
@@ -407,6 +485,22 @@ final class FileWatcher
     }
 
     /**
+     * The snapshot's change-detector key: an mtime:size composite. mtime
+     * alone missed same-second content moves (exFAT/FAT cards, editor
+     * fsync races — once-094); size alone would miss same-size rewrites;
+     * the composite catches either signal moving.
+     */
+    private function statKey(string $path): ?string
+    {
+        $mtime = @filemtime($path);
+        if ($mtime === false) {
+            return null;
+        }
+        $size = @filesize($path);
+        return $mtime . ':' . ($size === false ? -1 : $size);
+    }
+
+    /**
      * @param SplFileInfo[] $fileInfos
      */
     private function rebaseSnapshot(array $fileInfos): void
@@ -414,9 +508,9 @@ final class FileWatcher
         $this->snapshot = [];
         foreach ($fileInfos as $file) {
             $path = $file instanceof SplFileInfo ? $file->getPathname() : (string)$file;
-            $mtime = @filemtime($path);
-            if ($mtime !== false) {
-                $this->snapshot[$path] = $mtime;
+            $key = $this->statKey($path);
+            if ($key !== null) {
+                $this->snapshot[$path] = $key;
             }
         }
     }
@@ -424,9 +518,10 @@ final class FileWatcher
     /**
      * Enumerate watchable files via FileScanner::scan — the single source
      * of truth for "is this a PHP file" (its private looksLikePhp is
-     * reused, not forked) and for symlink containment (shell-006):
+     * reused, not forked), for symlink containment (shell-006):
      * out-of-root links are pruned before the walk descends, so the poll
-     * path cannot leak events for files outside the scan root.
+     * path cannot leak events for files outside the scan root, and for
+     * the exclude verdicts of this watcher's current view.
      *
      * @return list<SplFileInfo>
      */
@@ -437,6 +532,101 @@ final class FileWatcher
             $files[] = new SplFileInfo($path);
         }
         return $files;
+    }
+
+    /**
+     * Root-relative slash form of a path this watcher constructed, or
+     * null when the path is not under the root (kernel events only ever
+     * arrive for watched paths, but the guard keeps the exclude verdict
+     * fail-closed: an unmappable path is never watched).
+     */
+    private function relUnderRoot(string $abs): ?string
+    {
+        $root = rtrim($this->scanRoot, '/');
+        if ($abs === $root) {
+            return '';
+        }
+        if (!str_starts_with($abs, $root . '/')) {
+            return null;
+        }
+        return str_replace('\\', '/', substr($abs, strlen($root) + 1));
+    }
+
+    /**
+     * Is one child entry of a watched directory worth its own kernel
+     * watch? Directories only, never through a symlink (the containment
+     * posture has no realpath duplication here: a link's real target is
+     * enumerated — and watched, if in-root — under its own path by the
+     * setup walk), and never under the exclude view (once-086).
+     */
+    private function inotifyWatchableChild(string $basePath, string $name): bool
+    {
+        if ($name === '' || !is_dir($basePath . '/' . $name)) {
+            return false;
+        }
+        if (is_link($basePath . '/' . $name)) {
+            return false;
+        }
+        $rel = $this->relUnderRoot($basePath . '/' . $name);
+        if ($rel === null) {
+            return false;
+        }
+        return !$this->fileScanner->isExcluded($rel . '/');
+    }
+
+    /**
+     * Recursive watch setup (once-051): the root plus every existing
+     * watchable subdirectory. Deriving the set by hand here is only a
+     * WAKE-latency decision — flush() re-enumerates through FileScanner
+     * regardless — but without it an edit inside a pre-existing (or
+     * empty) nested directory produced no kernel event at all, and the
+     * default Linux backend silently missed everything below the root.
+     *
+     * A directory joins the set only after its OWN listing completed:
+     * the kernel likewise refuses to watch what PHP cannot open
+     * (read-permission), so an unreadable branch is never watchable and
+     * never listed, and every UnexpectedValueException the raw SPL walk
+     * can raise (once-094: symlink loops, vanished-mid-descent races)
+     * costs exactly its own branch, never the tree.
+     *
+     * @return list<string> absolute paths, root excluded
+     */
+    private function collectInotifySetupDirs(): array
+    {
+        $root = rtrim($this->scanRoot, '/');
+        $watchable = [];
+        /** @var list<string> $queue root-relative directory paths ('' is the root) */
+        $queue = [''];
+        while ($queue !== []) {
+            $rel = (string)array_pop($queue);
+            $abs = $rel === '' ? $root : $root . '/' . $rel;
+            $children = [];
+            try {
+                foreach (new \DirectoryIterator($abs) as $entry) {
+                    if ($entry->isDot() || !$entry->isDir() || $entry->isLink()) {
+                        continue;
+                    }
+                    $childRel = $rel === '' ? $entry->getFilename() : $rel . '/' . $entry->getFilename();
+                    if ($this->fileScanner->isExcluded($childRel . '/')) {
+                        continue;
+                    }
+                    $children[] = $childRel;
+                }
+            } catch (\UnexpectedValueException $e) {
+                // Per-entry catch, mirroring the scanner's posture: this
+                // branch cannot be listed → it is not watchable → descend
+                // no further; siblings already queued keep walking.
+                $this->logger->info('FileWatcher: inotify setup walk skipped ' . $abs . ' (' . $e->getMessage() . ')');
+                continue;
+            }
+            if ($rel !== '') {
+                $watchable[] = $abs;
+            }
+            foreach ($children as $childRel) {
+                $queue[] = $childRel;
+            }
+        }
+        return $watchable;
     }
 
     // ─── Private backend starters ─────────────────────────────────────────────
@@ -453,29 +643,53 @@ final class FileWatcher
         stream_set_blocking($this->inotifyFd, false);
 
         $this->addInotifyWatch($this->scanRoot);
+        foreach ($this->collectInotifySetupDirs() as $dir) {
+            $this->addInotifyWatch($dir);
+        }
 
         $loop->addReadStream($this->inotifyFd, function (): void {
             $events = @inotify_read($this->inotifyFd);
             if ($events === false || $events === []) {
                 return;
             }
-            foreach ($events as $event) {
-                $basePath = $this->wdToPath[$event['wd']] ?? null;
-                if ($basePath === null) {
-                    continue;
-                }
-                // Track new directories so deeper events keep arriving.
-                // This is the ONLY per-event work: WHICH paths changed is
-                // decided by the flush diff, never by the raw mask — so no
-                // extension filter and no snapshot edits happen in here.
-                if ((((int)$event['mask']) & self::IN_CREATE) && is_dir($basePath . '/' . $event['name'])) {
-                    $this->addInotifyWatch($basePath . '/' . $event['name']);
-                }
-            }
+            $this->processInotifyEvents($events);
             $this->noteChangeHint();
         });
 
         $this->logger->info('FileWatcher: using inotify backend');
+    }
+
+    /**
+     * Per-batch bookkeeping the kernel events exist for: drain destroyed
+     * watches, adopt new watchable directories. WHICH paths changed is
+     * decided by the flush diff, never by the raw mask — so no extension
+     * filter and no snapshot edits happen in here (the once-051 fix stays
+     * a wake-latency surface, not a second source of truth).
+     *
+     * @param array<array-key, array<string, mixed>> $events raw inotify_read batch
+     */
+    private function processInotifyEvents(array $events): void
+    {
+        foreach ($events as $event) {
+            $wd = (int)$event['wd'];
+            $mask = (int)$event['mask'];
+            $basePath = $this->wdToPath[$wd] ?? null;
+            if ($basePath === null) {
+                continue;
+            }
+            if (($mask & (self::IN_DELETE_SELF | self::IN_IGNORED)) !== 0) {
+                // once-094: the kernel retired (or is retiring) this watch;
+                // drain the map so deletions cannot grow it unboundedly.
+                // IN_IGNORED is always the last event for a wd, so a
+                // delete-self entry dropped here can never shadow a wake.
+                unset($this->wdToPath[$wd]);
+                continue;
+            }
+            // Track new directories so deeper events keep arriving.
+            if (($mask & self::IN_CREATE) !== 0 && $this->inotifyWatchableChild($basePath, (string)($event['name'] ?? ''))) {
+                $this->addInotifyWatch($basePath . '/' . (string)($event['name'] ?? ''));
+            }
+        }
     }
 
     private function addInotifyWatch(string $path): void

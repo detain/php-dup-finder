@@ -19,6 +19,9 @@ use Symfony\Component\Console\Output\OutputInterface;
  * polling fallback, so watch mode works across all platforms. The watcher
  * coalesces each burst of changes into ONE debounced callback (see
  * FileWatcher), which this runner turns into exactly one pipeline pass.
+ * Each dispatch also pushes its state's Config::exclude view onto the
+ * watcher before the run (once-S47), so the watch backends enumerate
+ * under the same excludes the pipeline scanned under.
  *
  * Resilience (php-dup-finder-shell-023): a single poisoned pipeline pass
  * must never kill the long-lived loop. The pipeline call runs through
@@ -66,6 +69,13 @@ final class WatchRunner
      * @param \Closure(): PipelineState $rebuildState  Constructs a fresh PipelineState
      *                                                  for each iteration; called once
      *                                                  per re-run (and once at startup).
+     * @param FileWatcher|null $fileWatcher once-S47 seam: inject a watcher
+     *                                                  (built on a fake loop) to pin
+     *                                                  debounce/coalescing and the
+     *                                                  exclude wiring end-to-end
+     *                                                  through the real consumer;
+     *                                                  null builds the production
+     *                                                  auto-backend watcher.
      */
     public function __construct(
         private readonly Pipeline $pipeline,
@@ -74,8 +84,9 @@ final class WatchRunner
         LoggerInterface $logger,
         string $scanRoot,
         float $intervalSeconds = 1.5,
+        ?FileWatcher $fileWatcher = null,
     ) {
-        $this->fileWatcher = new FileWatcher($logger, $scanRoot, $intervalSeconds);
+        $this->fileWatcher = $fileWatcher ?? new FileWatcher($logger, $scanRoot, $intervalSeconds);
     }
 
     public function run(): int
@@ -129,7 +140,21 @@ final class WatchRunner
     {
         try {
             $state = ($this->rebuildState)();
+
             $this->runGuarded($state);
+
+            // once-S47 (php-dup-finder-once-086): the watcher must walk the
+            // same tree the pipeline does. The loop is single-threaded — a
+            // flush can only ever run when a dispatch is NOT in flight —
+            // so adopting the state's exclude view immediately before the
+            // rebase puts the NEXT wake window on the same excludes the
+            // pass scanned under. Until this leg existed the default view
+            // never saw the globs, and vendor/.git-cache churn re-analyzed
+            // every tick on the plain `phpdup watch` path. applyExcludes
+            // short-circuits on an unchanged list; a changed one rebases
+            // internally, the explicit resync() keeps the every-pass
+            // fresh-key rebase (and the pinned rebase-throw position).
+            $this->fileWatcher->applyExcludes($state->config->exclude);
 
             // Rebase the watcher on its OWN enumeration so the next flush
             // diffs against exactly what it would re-scan (an external

@@ -349,9 +349,10 @@ final class FileWatcherTest extends TestCase
      * [representativePath, representativeType, batchMap].
      *
      * @param list<array{0:string,1:FileChangeType,2:array<string,FileChangeType>}> $dispatches
+     * @param list<string> $excludeGlobs the watcher's exclude view (once-S47)
      * @return array{0:FileWatcher,1:WatchTestLoop}
      */
-    private function pollWatcher(array &$dispatches, ?string $root = null): array
+    private function pollWatcher(array &$dispatches, ?string $root = null, array $excludeGlobs = []): array
     {
         $loop = new WatchTestLoop();
         $watcher = new FileWatcher(
@@ -361,6 +362,7 @@ final class FileWatcherTest extends TestCase
             $loop,
             FileWatcher::BACKEND_POLL,
             FileWatcher::DEBOUNCE_SECONDS,
+            $excludeGlobs,
         );
         $watcher->watch(function (string $path, FileChangeType $type, array $batch = []) use (&$dispatches): void {
             $dispatches[] = [$path, $type, $batch];
@@ -611,6 +613,10 @@ final class FileWatcherTest extends TestCase
             'IN_MOVED_FROM' => 128,
             'IN_CREATE' => 256,
             'IN_DELETE' => 512,
+            // once-S47 (php-dup-finder-once-094): the self-destroy pair —
+            // without either bit in the mask the wd map could never drain.
+            'IN_DELETE_SELF' => 1024,
+            'IN_IGNORED' => 32768,
         ];
         foreach ($canonical as $name => $value) {
             $bit = $ref->getReflectionConstant($name)->getValue();
@@ -669,6 +675,271 @@ final class FileWatcherTest extends TestCase
         // After expiry the window is re-armable, still singly.
         $loop->firePeriodic();
         $this->assertSame(1, $loop->countPendingOneShots());
+    }
+
+    // ─── once-S47: size-aware poll key, exclude-honoring view, recursive setup ──
+
+    /**
+     * once-094 (A-06/XP-06): the poll key carries SIZE, not just mtime.
+     * A rewrite that lands within the same second but moves bytes
+     * (exFAT/FAT cards, editor fsync races — mtime re-pinned to the exact
+     * original to force the resolution edge deterministically, zero
+     * sleep) must classify as Modified. Mutation: drop the size term from
+     * statKey() and this dispatch vanishes.
+     */
+    public function testSameSecondResizeCountsAsModified(): void
+    {
+        $this->createFile('a.php', 'short');
+        $mtime = filemtime($this->tmpDir . '/a.php');
+
+        $dispatches = [];
+        [, $loop] = $this->pollWatcher($dispatches);
+
+        $loop->firePeriodic();
+        $loop->fireTimers(); // seed snapshot at 'short' bytes
+        $this->assertCount(1, $dispatches);
+
+        $this->createFile('a.php', 'much longer content now');
+        touch($this->tmpDir . '/a.php', (int)$mtime);
+        clearstatcache();
+
+        $loop->firePeriodic();
+        $loop->fireTimers();
+
+        $this->assertCount(2, $dispatches);
+        $batch = $dispatches[1][2];
+        $this->assertSame([$this->tmpDir . '/a.php'], array_keys($batch));
+        $this->assertSame(FileChangeType::Modified, $batch[$this->tmpDir . '/a.php']);
+    }
+
+    /**
+     * once-086: the poll backend enumerates under Config::exclude. An
+     * excluded tree enters neither the Created batch nor later diffs —
+     * churn under vendor/ must never re-analyze.
+     */
+    public function testPollBackendHonorsExcludes(): void
+    {
+        mkdir($this->tmpDir . '/vendor/pkg', 0777, true);
+        $this->createFile('a.php');
+        file_put_contents($this->tmpDir . '/vendor/pkg/loaded.php', "<?php\n");
+
+        $dispatches = [];
+        [, $loop] = $this->pollWatcher($dispatches, null, ['**/vendor/**']);
+
+        $loop->firePeriodic();
+        $loop->fireTimers();
+
+        $this->assertCount(1, $dispatches);
+        $this->assertSame([$this->tmpDir . '/a.php'], array_keys($dispatches[0][2]),
+            'the excluded tree must not enter the Created batch');
+
+        touch($this->tmpDir . '/vendor/pkg/loaded.php', time() + 10);
+        $loop->firePeriodic();
+        $loop->fireTimers();
+        $this->assertCount(1, $dispatches, 'an edit under an excluded dir must not wake a dispatch');
+    }
+
+    /**
+     * once-S47: a mid-life view swap (WatchRunner's per-dispatch
+     * applyExcludes posture) rebases the snapshot on the NEW view, so the
+     * next flush dispatches nothing — a stale vendor key left behind would
+     * otherwise surface as a phantom Deleted batch.
+     */
+    public function testApplyExcludesRebasesWithoutPhantomDeletions(): void
+    {
+        mkdir($this->tmpDir . '/vendor', 0777, true);
+        $this->createFile('a.php');
+        file_put_contents($this->tmpDir . '/vendor/v.php', "<?php\n");
+
+        $dispatches = [];
+        [$watcher, $loop] = $this->pollWatcher($dispatches); // glob-free start
+
+        $loop->firePeriodic();
+        $loop->fireTimers();
+        $this->assertCount(2, $dispatches[0][2]); // both files known
+
+        $watcher->applyExcludes(['**/vendor/**']);
+
+        $loop->firePeriodic();
+        $loop->fireTimers();
+        $this->assertCount(1, $dispatches,
+            'the excludes swap itself must fabricate no Deleted for the just-excluded file');
+        // applyExcludes rebases through resync(): the tracked view AND the
+        // accumulated ledger speak the new exclude view from that moment.
+        $this->assertSame([], $watcher->pendingChanges());
+    }
+
+    /**
+     * once-051: the inotify wake set is RECURSIVE. The setup walk returns
+     * every existing watchable directory — including pre-existing empty
+     * ones (an edit inside them never fires an event unless the directory
+     * itself is watched: the finding's core asymmetry) — while honoring
+     * the exclude view and never descending a symlink (shell-006 posture;
+     * the ancestor-pointing link pair doubles as the once-094 symlink-loop
+     * fixture: with link descent the walk would not terminate).
+     */
+    public function testCollectInotifySetupDirsIsRecursiveExcludeAwareAndLinkSafe(): void
+    {
+        mkdir($this->tmpDir . '/src/Deep/Deeper', 0777, true);
+        mkdir($this->tmpDir . '/src/Empty');
+        mkdir($this->tmpDir . '/vendor/pkg', 0777, true);
+        $this->createFile('src/Deep/Deeper/leaf.php');
+        file_put_contents($this->tmpDir . '/vendor/pkg/loaded.php', "<?php\n");
+
+        $outside = $this->tmpDir . '_loopoutside';
+        mkdir($outside . '/inner', 0777, true);
+        $this->extraDirs[] = $outside;
+        symlink($this->tmpDir, $outside . '/inner/back'); // ancestor-pointing
+        symlink($outside, $this->tmpDir . '/looplink');   // link into the loop
+
+        $watcher = new FileWatcher(
+            new NullLogger(), $this->tmpDir, 1.0, null,
+            FileWatcher::BACKEND_POLL, FileWatcher::DEBOUNCE_SECONDS, ['**/vendor/**'],
+        );
+        $collect = new \ReflectionMethod(FileWatcher::class, 'collectInotifySetupDirs');
+
+        /** @var list<string> $dirs */
+        $dirs = $collect->invoke($watcher);
+        $rel = array_map(fn(string $d): string => substr($d, strlen($this->tmpDir) + 1), $dirs);
+        sort($rel);
+
+        $this->assertContains('src', $rel);
+        $this->assertContains('src/Deep', $rel);
+        $this->assertContains('src/Deep/Deeper', $rel, 'a nested directory holding a watched file must be watched (once-051)');
+        $this->assertContains('src/Empty', $rel, 'a pre-existing EMPTY directory must be watched too — its first new file has no other wake source');
+        $this->assertNotContains('vendor', $rel);
+        $this->assertNotContains('vendor/pkg', $rel);
+        $this->assertNotContains('looplink', $rel, 'never watch through a symlink');
+        foreach ($rel as $r) {
+            $this->assertStringNotContainsString('inner', $r, 'the symlink loop must never be descended');
+        }
+    }
+
+    /**
+     * once-094: the setup walk catches UnexpectedValueException PER
+     * DIRECTORY (the scanner's fail-soft posture): a branch that cannot
+     * be listed is not watchable and loses its own subtree, the walk
+     * continues, nothing escapes. Mutation: delete the catch and this
+     * test dies with the raw SPL throw.
+     */
+    public function testUnreadableBranchNeverKillsSetupWalk(): void
+    {
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            $this->markTestSkipped('root bypasses DAC: a chmod-000 directory stays readable');
+        }
+        mkdir($this->tmpDir . '/locked/hidden', 0777, true);
+        mkdir($this->tmpDir . '/ok');
+        $this->createFile('ok/fine.php');
+        chmod($this->tmpDir . '/locked', 0000);
+
+        $watcher = new FileWatcher(new NullLogger(), $this->tmpDir, 1.0);
+        $collect = new \ReflectionMethod(FileWatcher::class, 'collectInotifySetupDirs');
+        try {
+            /** @var list<string> $dirs */
+            $dirs = $collect->invoke($watcher); // must NOT throw
+            $this->assertContains($this->tmpDir . '/ok', $dirs, 'the walk continues past the unreadable branch');
+            $this->assertNotContains($this->tmpDir . '/locked', $dirs);
+            $this->assertNotContains($this->tmpDir . '/locked/hidden', $dirs);
+        } finally {
+            chmod($this->tmpDir . '/locked', 0755);
+        }
+    }
+
+    /**
+     * once-094 (A-07): the wd bookkeeping DRAINS on the kernel's
+     * self-destroy events instead of growing across rm -rf churn.
+     * Extension-independent: the drain logic is driven through the
+     * reflection seam with a synthetic batch (the plan's "assert count").
+     */
+    public function testWdMapDrainsOnSelfDestroyEvents(): void
+    {
+        $ref = new \ReflectionClass(FileWatcher::class);
+        $deleteSelf = $ref->getReflectionConstant('IN_DELETE_SELF')->getValue();
+        $ignored = $ref->getReflectionConstant('IN_IGNORED')->getValue();
+        $modify = $ref->getReflectionConstant('IN_MODIFY')->getValue();
+
+        $watcher = new FileWatcher(new NullLogger(), $this->tmpDir, 1.0, new WatchTestLoop(), FileWatcher::BACKEND_POLL);
+        $map = $ref->getProperty('wdToPath');
+        $map->setValue($watcher, [5 => $this->tmpDir, 7 => $this->tmpDir . '/gone', 9 => $this->tmpDir . '/src']);
+
+        $process = new \ReflectionMethod(FileWatcher::class, 'processInotifyEvents');
+        $process->invoke($watcher, [
+            ['wd' => 5, 'mask' => $modify, 'name' => 'keep.php'],   // ordinary wake: untouched
+            ['wd' => 7, 'mask' => $deleteSelf, 'name' => ''],        // rm -rf: dir self-destroyed
+            ['wd' => 7, 'mask' => $ignored, 'name' => ''],           // kernel goodbye for that wd
+        ]);
+
+        $this->assertSame(
+            [5 => $this->tmpDir, 9 => $this->tmpDir . '/src'],
+            $map->getValue($watcher),
+            'IN_DELETE_SELF/IN_IGNORED must retire the map entry the kernel retired',
+        );
+
+        // A repeated (already-drained) ignored event is clean, not fatal.
+        $process->invoke($watcher, [['wd' => 7, 'mask' => $ignored, 'name' => '']]);
+        $this->assertCount(2, $map->getValue($watcher));
+    }
+
+    /**
+     * once-086: the new-directory watch decision honors BOTH the exclude
+     * view and the no-symlink posture (the IN_CREATE arm of
+     * processInotifyEvents funnels through this predicate).
+     */
+    public function testNewDirectoryWatchHonorsExcludesAndLinks(): void
+    {
+        mkdir($this->tmpDir . '/newok');
+        mkdir($this->tmpDir . '/vendorX');
+        $outside = $this->tmpDir . '_ext';
+        mkdir($outside, 0777, true);
+        $this->extraDirs[] = $outside;
+        symlink($outside, $this->tmpDir . '/linked');
+
+        $watcher = new FileWatcher(
+            new NullLogger(), $this->tmpDir, 1.0, null,
+            FileWatcher::BACKEND_POLL, FileWatcher::DEBOUNCE_SECONDS, ['**/vendor*/**'],
+        );
+        $child = new \ReflectionMethod(FileWatcher::class, 'inotifyWatchableChild');
+
+        $this->assertTrue((bool)$child->invoke($watcher, $this->tmpDir, 'newok'));
+        $this->assertFalse((bool)$child->invoke($watcher, $this->tmpDir, 'vendorX'),
+            'a new dir under the exclude view must never earn a watch');
+        $this->assertFalse((bool)$child->invoke($watcher, $this->tmpDir, 'linked'),
+            'never watch through a symlink (shell-006 posture)');
+        $this->assertFalse((bool)$child->invoke($watcher, $this->tmpDir, 'nosuch'));
+        $this->assertFalse((bool)$child->invoke($watcher, $this->tmpDir, ''));
+    }
+
+    /**
+     * Shared-resource fence from the plan ("fd-leak fence in test
+     * teardown", once-086 A-05): twenty real inotify start/stop cycles
+     * must leave the descriptor table exactly as they found it. Measured
+     * only where the extension exists (the drain logic itself is pinned
+     * extension-independently above).
+     */
+    public function testInotifyStartStopLeavesNoFileDescriptorBehind(): void
+    {
+        if (!function_exists('inotify_init')) {
+            $this->markTestSkipped('ext-inotify unavailable in this build');
+        }
+        mkdir($this->tmpDir . '/sub', 0777, true);
+        $this->createFile('sub/a.php');
+
+        $before = $this->countOpenFds();
+        for ($i = 0; $i < 20; $i++) {
+            $watcher = new FileWatcher(new NullLogger(), $this->tmpDir, 1.0, new WatchTestLoop(), FileWatcher::BACKEND_INOTIFY);
+            $watcher->watch(static function (): void {});
+            $watcher->stop();
+        }
+
+        $this->assertSame($before, $this->countOpenFds(),
+            'every fd acquired by the inotify start path must be released by stop()');
+    }
+
+    private function countOpenFds(): int
+    {
+        $fds = glob('/proc/self/fd/*') ?: [];
+        clearstatcache();
+        return count($fds);
     }
 }
 
