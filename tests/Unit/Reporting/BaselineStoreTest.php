@@ -9,6 +9,7 @@ use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
 use Phpdup\Reporting\BaselineStore;
 use Phpdup\Util\LineRange;
+use Phpdup\Util\PathCanonical;
 
 final class BaselineStoreTest extends TestCase
 {
@@ -29,6 +30,7 @@ final class BaselineStoreTest extends TestCase
     {
         $iter = new \RecursiveIteratorIterator(
             new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST,
         );
         foreach ($iter as $file) {
             if ($file->isDir()) {
@@ -464,6 +466,372 @@ final class BaselineStoreTest extends TestCase
             (new BaselineStore())->computeBlockHash($block),
             (new BaselineStore())->computeBlockHash($laptopCopy),
         );
+    }
+
+    /**
+     * once-055 (once-S50): an empty file is invalid INPUT with a named
+     * repair, not the old bare "not valid JSON" shrug. Code 2 is the
+     * leg the console maps onto the CLI's exit-2 invalid-invocation door.
+     */
+    public function testEmptyBaselineFileGetsActionableAdviceWithExitCode2(): void
+    {
+        foreach (['', '   ', "\n\t "] as $i => $raw) {
+            $path = $this->tmpDir . '/empty-' . $i . '.json';
+            file_put_contents($path, $raw);
+
+            $store = new BaselineStore();
+            try {
+                $store->readBaseline($path);
+                $this->fail('empty baseline (case ' . $i . ') must be refused');
+            } catch (\RuntimeException $e) {
+                $this->assertSame(2, $e->getCode(), 'the empty-file refusal rides the exit-2 door');
+                $this->assertStringContainsString('Baseline file is empty', $e->getMessage());
+                $this->assertStringContainsString('--baseline-out', $e->getMessage());
+                $this->assertStringContainsString('first-run', $e->getMessage());
+                $this->assertStringContainsString($path, $e->getMessage());
+            }
+        }
+    }
+
+    /**
+     * once-055: a well-formed `[]` (or `{}`, which decodes to the same
+     * empty array) carries no baseline — same actionable advice, same
+     * exit-2 posture, never "invalid structure" guessed at exit 1.
+     */
+    public function testEmptyJsonDocumentBaselineGetsActionableAdviceWithExitCode2(): void
+    {
+        foreach (['[]', '{}', " [\t] "] as $i => $raw) {
+            $path = $this->tmpDir . '/bare-empty-doc-' . $i . '.json';
+            file_put_contents($path, $raw);
+
+            $store = new BaselineStore();
+            try {
+                $store->readBaseline($path);
+                $this->fail('empty JSON baseline document (case ' . $i . ') must be refused');
+            } catch (\RuntimeException $e) {
+                $this->assertSame(2, $e->getCode(), 'the [] refusal rides the exit-2 door');
+                $this->assertStringContainsString('empty JSON document', $e->getMessage());
+                $this->assertStringContainsString('--baseline-out', $e->getMessage());
+            }
+        }
+    }
+
+    /**
+     * once-055: corrupt/truncated JSON keeps its 'not valid JSON' class
+     * word (pinned by the historical test) but gains the repair advice
+     * and the exit-2 code the finding demanded.
+     */
+    public function testCorruptJsonBaselineAdviceCarriesExitCode2(): void
+    {
+        $path = $this->tmpDir . '/truncated.json';
+        file_put_contents($path, '{"version": 3, "clusters": [{"id": "c1", "imp');
+
+        $store = new BaselineStore();
+        try {
+            $store->readBaseline($path);
+            $this->fail('truncated baseline JSON must be refused');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(2, $e->getCode());
+            $this->assertStringContainsString('not valid JSON', $e->getMessage());
+            $this->assertStringContainsString('corrupt or truncated', $e->getMessage());
+            $this->assertStringContainsString('--baseline-out', $e->getMessage());
+        }
+    }
+
+    /**
+     * once-055's boundary, pinned so the new advice door cannot swallow
+     * the loud structural refusals the v1/v2 migration contract relies
+     * on: a well-formed document that simply is not a v3 baseline keeps
+     * the ORIGINAL messages at the ORIGINAL (codeless) posture.
+     */
+    public function testLoudStructuralRefusalsKeepTheirContract(): void
+    {
+        $store = new BaselineStore();
+
+        $path = $this->tmpDir . '/no-version.json';
+        file_put_contents($path, json_encode(['clusters' => [['id' => 'x', 'impact' => 1, 'member_hashes' => ['h']]]]));
+        try {
+            $store->readBaseline($path);
+            $this->fail('missing version must still refuse loudly');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('invalid structure', $e->getMessage());
+            $this->assertSame(0, $e->getCode(), 'structural refusal stays outside the advice door');
+        }
+
+        $path = $this->tmpDir . '/v1.json';
+        file_put_contents($path, json_encode(['version' => 1, 'clusters' => []]));
+        try {
+            $store->readBaseline($path);
+            $this->fail('version mismatch must still refuse loudly');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('version mismatch', $e->getMessage());
+            $this->assertSame(0, $e->getCode());
+        }
+    }
+
+    /**
+     * once-055: the documented recipe — sha256(underRoots(file) + '|' +
+     * structuralHash) — IS the identity, recomputed literally here (the
+     * acceptance demands the doc formula == code, not prose == prose).
+     */
+    public function testDocumentedIdentityFormulaMatchesTheRealRecipe(): void
+    {
+        $block = new Block(
+            file: '/srv/www/project/src/Util/Widget.php',
+            range: new LineRange(31, 58),
+            kind: 'method',
+            namespace: null,
+            class: null,
+            name: 'render',
+            ast: new Node\Stmt\Nop(),
+        );
+        $block->structuralHash = 'abc123def';
+
+        $store = new BaselineStore(['/srv/www/project']);
+
+        // Path under the configured root, separator-folded, root stripped.
+        $this->assertSame('src/Util/Widget.php', PathCanonical::underRoots($block->file, ['/srv/www/project']));
+
+        // The docs' formula, computed BY HAND from the literal parts...
+        $byHand = 'sha256:' . hash('sha256', 'src/Util/Widget.php|abc123def');
+        // ...and exactly what the store emits.
+        $this->assertSame($byHand, $store->computeBlockHash($block));
+
+        // Line numbers are NOT in the recipe: a shifted range with the
+        // same path+structural hash is the same identity (the v1 lie).
+        $shifted = new Block(
+            file: '/srv/www/project/src/Util/Widget.php',
+            range: new LineRange(131, 158),
+            kind: 'method',
+            namespace: null,
+            class: null,
+            name: 'render',
+            ast: new Node\Stmt\Nop(),
+        );
+        $shifted->structuralHash = 'abc123def';
+        $this->assertSame($store->computeBlockHash($block), $store->computeBlockHash($shifted));
+    }
+
+    /**
+     * once-056: writeBaseline lands through a temp + fsync + rename, so
+     * the committed file is ALWAYS a whole payload and no temp residue
+     * survives a successful write. Pin: after each write the target
+     * parses in full, and the directory holds exactly the files we made.
+     */
+    public function testWriteBaselineLandsWholeAndLeavesNoTempResidue(): void
+    {
+        $store = new BaselineStore();
+        $path = $this->tmpDir . '/gate.json';
+
+        $clusters = [
+            $this->clusterWithHashes('c-a', 10),
+            $this->clusterWithHashes('c-b', 25),
+        ];
+        $store->writeBaseline($clusters, $path);
+
+        $entries = $store->readBaseline($path);
+        $this->assertCount(2, $entries);
+        $this->assertSame('c-a', $entries[0]['id']);
+        $this->assertCount(10, $entries[0]['member_hashes']);
+        $this->assertSame('c-b', $entries[1]['id']);
+        $this->assertCount(25, $entries[1]['member_hashes']);
+
+        $this->assertSame([], $this->tempResidue(), 'a completed write leaves no .tmp behind');
+    }
+
+    /**
+     * once-056: re-writing an existing baseline replaces it whole (the
+     * roundtrip test wrote a fresh path; this proves the OVERWRITE arm
+     * goes through the same atomic door — old content can linger under a
+     * truncated in-place rewrite, never under rename).
+     */
+    public function testRewriteReplacesExistingBaselineAtomically(): void
+    {
+        $store = new BaselineStore();
+        $path = $this->tmpDir . '/gate.json';
+
+        $store->writeBaseline([$this->clusterWithHashes('old', 40)], $path);
+        $firstBytes = (string)file_get_contents($path);
+
+        // Deliberately SMALLER payload: a truncate-in-place writer could
+        // leave trailing bytes of the old document; rename cannot.
+        $store->writeBaseline([$this->clusterWithHashes('new', 3)], $path);
+        $secondBytes = (string)file_get_contents($path);
+
+        $this->assertStringNotContainsString('old', $secondBytes);
+        $entries = $store->readBaseline($path);
+        $this->assertCount(1, $entries);
+        $this->assertSame('new', $entries[0]['id']);
+        $this->assertCount(3, $entries[0]['member_hashes']);
+        $this->assertGreaterThan(strlen($secondBytes), strlen($firstBytes));
+        $this->assertSame([], $this->tempResidue());
+    }
+
+    /**
+     * once-056: when the final handover cannot happen (here: the target
+     * name is a directory, so rename is impossible), the run FAILS
+     * loudly, the temp is discarded, and nothing half-landed.
+     */
+    public function testImpossibleHandoverFailsLoudlyAndCleansItsTemp(): void
+    {
+        $store = new BaselineStore();
+        $path = $this->tmpDir . '/blocked';
+        mkdir($path);
+
+        try {
+            $store->writeBaseline([$this->clusterWithHashes('c', 5)], $path);
+            $this->fail('a directory target cannot accept a baseline');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('Failed to write baseline file', $e->getMessage());
+        }
+
+        $this->assertSame([], $this->tempResidue(), 'the failed write discards its temp');
+        $this->assertSame([], glob($path . '/*'), 'nothing landed inside the blocked target');
+    }
+
+    /**
+     * once-056 acceptance: two writers, one target — every observation
+     * (and the final file) is a WHOLE payload, never a truncation or a
+     * mix. Forked processes, the posture HttpTest uses (bounded poll
+     * reaping, SIGKILL only at deadline); skipped where pcntl is absent.
+     */
+    public function testTwoConcurrentWritersNeverExposeTruncatedBaseline(): void
+    {
+        if (!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid')) {
+            self::markTestSkipped('concurrent baseline writers require pcntl_fork/pcntl_waitpid');
+        }
+
+        $path = $this->tmpDir . '/contended.json';
+
+        $store = new BaselineStore();
+        $store->writeBaseline([$this->clusterWithHashes('small', 12)], $path); // seed: readers always hold a file
+
+        $jobs = [
+            ['tag' => 'small', 'members' => 12],
+            ['tag' => 'big', 'members' => 60],
+        ];
+
+        $writers = [];
+        foreach ($jobs as $job) {
+            $pid = pcntl_fork();
+            if ($pid === -1) {
+                self::markTestSkipped('pcntl_fork failed');
+            }
+            if ($pid === 0) {
+                // Child: hammer the same target with whole payloads.
+                $kid = new BaselineStore();
+                $payload = [$this->clusterWithHashes($job['tag'], $job['members'])];
+                for ($round = 0; $round < 120; $round++) {
+                    try {
+                        $kid->writeBaseline($payload, $path);
+                    } catch (\Throwable $t) {
+                        exit(1);
+                    }
+                }
+                exit(0);
+            }
+            $writers[] = ['tag' => $job['tag'], 'members' => $job['members'], 'pid' => $pid, 'reaped' => false, 'ok' => false];
+        }
+
+        $violations = 0;
+        $observed = ['small' => 0, 'big' => 0];
+        $deadline = microtime(true) + 30.0;
+        while (true) {
+            $alive = false;
+            foreach ($writers as $i => $w) {
+                if ($w['reaped']) {
+                    continue;
+                }
+                $status = 0;
+                $reaped = pcntl_waitpid($w['pid'], $status, WNOHANG);
+                if ($reaped === $w['pid']) {
+                    $writers[$i]['reaped'] = true;
+                    $writers[$i]['ok'] = pcntl_wifexited($status) && pcntl_wexitstatus($status) === 0;
+                } elseif ($reaped === -1) {
+                    self::fail('pcntl_waitpid failed for baseline writer ' . $w['pid']);
+                } else {
+                    $alive = true;
+                }
+            }
+            if (!$alive) {
+                break;
+            }
+            if (microtime(true) > $deadline) {
+                foreach ($writers as $w) {
+                    if (!$w['reaped']) {
+                        posix_kill($w['pid'], SIGKILL);
+                    }
+                }
+                self::fail('baseline writers stalled past the 30 s deadline');
+            }
+
+            try {
+                $entries = $store->readBaseline($path);
+            } catch (\Throwable $t) {
+                $violations++; // truncated or mixed document seen mid-run
+                usleep(2000);
+                continue;
+            }
+            $shape = count($entries) === 1 ? $entries[0]['id'] : '?';
+            if ($shape === 'small' && count($entries[0]['member_hashes']) === 12) {
+                $observed['small']++;
+            } elseif ($shape === 'big' && count($entries[0]['member_hashes']) === 60) {
+                $observed['big']++;
+            } else {
+                $violations++; // some third shape: half, merged or mangled
+            }
+            usleep(2000);
+        }
+
+        foreach ($writers as $w) {
+            $this->assertTrue($w['ok'], "writer {$w['tag']} (pid {$w['pid']}) died mid-loop");
+        }
+
+        $this->assertSame(0, $violations, 'every concurrent observation was a whole payload');
+        $this->assertGreaterThan(0, $observed['small'] + $observed['big']);
+        $this->assertGreaterThan(0, $observed['big'], 'the contended run actually saw the bigger payload land');
+
+        $final = $store->readBaseline($path);
+        $this->assertCount(1, $final);
+        $this->assertContains($final[0]['id'], ['small', 'big']);
+        $this->assertSame([], $this->tempResidue(), 'temps of both writers are gone');
+    }
+
+    /** @return list<string> */
+    private function tempResidue(): array
+    {
+        $found = [];
+        foreach (scandir($this->tmpDir) ?: [] as $name) {
+            if (str_ends_with($name, '.tmp')) {
+                $found[] = $name;
+            }
+        }
+        return $found;
+    }
+
+    /**
+     * A cluster whose member blocks carry distinct structural hashes at
+     * distinct paths, so payload sizes differ measurably between ids.
+     */
+    private function clusterWithHashes(string $id, int $members): Cluster
+    {
+        $blocks = [];
+        for ($i = 0; $i < $members; $i++) {
+            $b = new Block(
+                file: 'src/M' . $i . '.php',
+                range: new LineRange(1, 10),
+                kind: 'method',
+                namespace: null,
+                class: null,
+                name: 'm' . $i,
+                ast: new Node\Stmt\Nop(),
+            );
+            $b->structuralHash = $id . '-hash-' . $i;
+            $blocks[] = $b;
+        }
+        $cluster = new Cluster($id, $blocks, 1.0, false);
+        $cluster->impact = $members * 10;
+        return $cluster;
     }
 
     private function cluster(string $id, array $memberSpecs, int $impact): Cluster

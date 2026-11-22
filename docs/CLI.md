@@ -151,10 +151,17 @@ CI build only when **new** duplicate clusters appear in subsequent runs.
 
 **How it works:**
 
-- `member_hashes` are the primary identity key. They are SHA-256 fingerprints
-  computed from `sha256(file_path + start_line + end_line)` for each block
-  in a cluster. They are stable across runs (not dependent on cluster IDs,
-  which may change as clustering algorithms evolve).
+- `member_hashes` are the primary identity key. A block's identity is
+  `sha256(underRoots(file) . '|' . structuralHash)` — the block's file
+  path reduced to its root-relative, separator-folded form, `|`, and
+  the block's normalized structural hash. Line numbers are NOT in the
+  recipe (v1's `sha256(file + start_line + end_line)` churned every
+  entry whenever an unrelated edit shifted lines above a block), and
+  neither are cluster IDs, which may change as clustering algorithms
+  evolve. Each entry carries one hash per member block, duplicates
+  included, sorted; the subset check below counts those raw members —
+  a current cluster is covered only when its whole member multiset fits
+  inside the list of ONE baseline cluster.
 - A cluster is considered **new** if its member hashes are not a subset of
   any baseline cluster's member hashes. This means a baseline cluster may
   grow (new members added) without triggering a new-duplicate gate.
@@ -177,7 +184,8 @@ CI build only when **new** duplicate clusters appear in subsequent runs.
 3. **Explicit baseline update:**
    ```bash
    bin/phpdup analyze src --baseline-out baseline.json
-   # Always writes baseline (overwrites existing), exits 0
+   # Replaces baseline.json atomically (temp + fsync + rename under
+   # LOCK_EX: readers never see a half-written file), exits 0
    ```
 
 **Exit codes:**
@@ -185,6 +193,7 @@ CI build only when **new** duplicate clusters appear in subsequent runs.
 | Code | Condition                                                            |
 |------|----------------------------------------------------------------------|
 | `0`  | Normal run, OR baseline written (first run / --baseline-out), OR `--baseline FILE` exists and no new clusters detected |
+| `2`  | `--baseline FILE` exists but is empty or corrupt (zero bytes, whitespace, a bare `[]`/`{}`, or invalid/truncated JSON): the run names the repair (delete the file, or re-accept with `--baseline-out`) instead of analyzing against a broken gate input |
 | `4`  | `--baseline FILE` exists and new duplicate clusters were found       |
 
 **Example CI pipeline:**
@@ -192,18 +201,26 @@ CI build only when **new** duplicate clusters appear in subsequent runs.
 ```bash
 # In CI: fail if new duplication introduced since main branch baseline
 git fetch origin main
-git diff origin/main -- baseline.json > /dev/null 2>&1 && \
-    cp baseline.json baseline-branch.json || \
-    cp /dev/null baseline-branch.json
+# Stage main's baseline in a scratch file. Never `cp` onto or over the
+# tracked baseline.json: a copy interrupted mid-write hands the next job
+# a truncated gate input (empty/corrupt baselines exit 2 above), and a
+# careless restore overwrites the accepted state with scratch bytes.
+git show origin/main:baseline.json > .phpdup-baseline-ci.json 2>/dev/null \
+    || rm -f .phpdup-baseline-ci.json
 
-bin/phpdup analyze src --baseline baseline-branch.json
+bin/phpdup analyze src --baseline .phpdup-baseline-ci.json
 STATUS=$?
-
-# Restore main baseline
-cp baseline-branch.json baseline.json
+rm -f .phpdup-baseline-ci.json
 
 exit $STATUS
 ```
+
+If `main` carries no baseline yet, the scratch file is removed and
+`--baseline` sees a missing file: first-run auto-baseline, exit 0 — the
+gate starts once main has an accepted baseline. To re-accept the current
+state deliberately, refresh the tracked file with
+`bin/phpdup analyze src --baseline-out baseline.json` (atomic replace)
+in a normal commit — never with `cp`.
 
 ### Validation
 

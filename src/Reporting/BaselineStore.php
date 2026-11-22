@@ -40,6 +40,21 @@ use Phpdup\Util\PathCanonical;
  * machine compares on another even when the scan root is spelled in a
  * natively different join form (C:\proj\… vs. /proj/…). Slash-form
  * scans hash byte-identically, so no existing v3 baseline re-hashes.
+ *
+ * Write posture (once-056, step once-S50): writeBaseline() replaces the
+ * file atomically — exclusive temp in the target directory, LOCK_EX
+ * while its bytes land, fsync before the rename, short-write refusal
+ * after close. A reader (or a second CI writer) never observes a
+ * truncated baseline, and a failed write leaves the previous file
+ * intact with no temp residue.
+ *
+ * Read posture (once-055, step once-S50): an empty, whitespace-only or
+ * bare `[]`/`{}` baseline file is INVALID INPUT, not a runtime death —
+ * the refusal names the repair (delete → first-run auto-baseline, or
+ * --baseline-out to re-accept) and carries exception code 2, which the
+ * console surface maps to the CLI's exit-2 invalid-invocation door.
+ * Well-formed-but-incompatible documents (old versions, missing keys)
+ * keep their loud structural refusals unchanged.
  */
 final class BaselineStore
 {
@@ -64,7 +79,10 @@ final class BaselineStore
 
     /**
      * Write a baseline snapshot of the current clusters to a JSON file.
-     * Overwrites $path if it exists.
+     * Replaces $path if it exists — atomically, never in place: the
+     * bytes land in an exclusive temp that is flocked, fsynced and only
+     * then renamed over the target (once-056), so a concurrent reader
+     * sees either the old complete file or the new complete file.
      *
      * @param list<Cluster> $clusters
      */
@@ -96,7 +114,77 @@ final class BaselineStore
             throw new \RuntimeException('Failed to encode baseline JSON: ' . json_last_error_msg());
         }
 
-        if (@file_put_contents($path, $json) === false) {
+        $this->writeAtomically($json, $path);
+    }
+
+    /**
+     * once-056: the write itself, one complete payload or no change.
+     *
+     * The old shape was a single `file_put_contents($path, ...)` whose
+     * `=== false` guard missed short writes (the call returns the byte
+     * COUNT on partial success) and whose in-place truncate left every
+     * later run holding a wrecked gate input. The replacement claims a
+     * uniquely named temp in the TARGET directory (`x`: exclusive, so a
+     * pre-claimed name is never clobbered), holds LOCK_EX while the
+     * bytes stream in, fsyncs before the rename so a power loss cannot
+     * resurrect an empty shell under the final name, and re-counts the
+     * landed file before handing it over — no consumer can race a
+     * `.tmp` name, unlike the final one (the posture
+     * Server/AnalysisWorker.php uses for result files). A failure in
+     * any arm discards the temp and leaves the previous baseline
+     * standing. The flock serializes temp handling belt-and-braces:
+     * rename() atomicity alone already guarantees whole-file readers.
+     */
+    private function writeAtomically(string $json, string $path): void
+    {
+        $tmp = dirname($path) . DIRECTORY_SEPARATOR . '.' . basename($path)
+            . '.' . getmypid() . '.' . bin2hex(random_bytes(6)) . '.tmp';
+
+        $handle = @fopen($tmp, 'x');
+        if ($handle === false) {
+            throw new \RuntimeException("Failed to create temp baseline file: $tmp");
+        }
+
+        if (@flock($handle, LOCK_EX) === false) {
+            fclose($handle);
+            @unlink($tmp);
+            throw new \RuntimeException("Failed to lock temp baseline file: $tmp");
+        }
+
+        $written = fwrite($handle, $json);
+        $flushed = fflush($handle);
+        $synced = $flushed && fsync($handle);
+        flock($handle, LOCK_UN);
+        fclose($handle);
+
+        $expected = strlen($json);
+        if (!$flushed || !$synced || $written !== $expected) {
+            @unlink($tmp);
+            throw new \RuntimeException(sprintf(
+                'Failed to write baseline file %s: temp stream took %d of %d bytes%s',
+                $path,
+                $written === false ? 0 : $written,
+                $expected,
+                $synced ? '' : ' and fsync failed (the bytes never reached stable storage)',
+            ));
+        }
+
+        $landed = @filesize($tmp);
+        if ($landed !== $expected) {
+            // The write count is not the truth until the closed file
+            // agrees: a full-count return can still sit on a stream that
+            // lost bytes at close.
+            @unlink($tmp);
+            throw new \RuntimeException(sprintf(
+                'Failed to write baseline file %s: temp landed %d of %d bytes',
+                $path,
+                $landed === false ? 0 : $landed,
+                $expected,
+            ));
+        }
+
+        if (@rename($tmp, $path) === false) {
+            @unlink($tmp);
             throw new \RuntimeException("Failed to write baseline file: $path");
         }
     }
@@ -117,9 +205,36 @@ final class BaselineStore
             throw new \RuntimeException("Failed to read baseline file: $path");
         }
 
+        // once-055: an empty document — zero bytes, whitespace, or a
+        // well-formed `[]`/`{}` that carries no baseline — is invalid
+        // INPUT with a named repair, not the old bare "not valid JSON"
+        // death at exit 1. The exception code 2 below is what the
+        // console surface turns into the CLI's exit-2 invalid-
+        // invocation door; the message says exactly how to recover.
+        if (trim($content) === '') {
+            throw new \RuntimeException(
+                "Baseline file is empty: $path — delete it to take a first-run "
+                . "baseline from this run, or re-accept one with --baseline-out $path",
+                2,
+            );
+        }
+
         $decoded = json_decode($content, true);
         if (!is_array($decoded)) {
-            throw new \RuntimeException("Baseline file is not valid JSON: $path");
+            throw new \RuntimeException(
+                "Baseline file is not valid JSON: $path — it is corrupt or truncated; "
+                . "restore it from version control or re-accept with --baseline-out $path",
+                2,
+            );
+        }
+
+        if ($decoded === []) {
+            throw new \RuntimeException(
+                "Baseline file is an empty JSON document ([] carries no baseline): $path — "
+                . "delete it to take a first-run baseline from this run, "
+                . "or re-accept one with --baseline-out $path",
+                2,
+            );
         }
 
         if (!isset($decoded['version'], $decoded['clusters']) || !is_int($decoded['version'])) {
