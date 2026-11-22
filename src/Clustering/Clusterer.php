@@ -118,6 +118,19 @@ final class Clusterer
         // Default equals the extraction ceiling, so nothing gates out of the
         // box — every historical score stays byte-identical.
         private readonly int $maxTedSize = self::DEFAULT_MAX_TED_SIZE,
+        // engine-010 (engine-S10): AGGREGATE bound on the serial TED tier.
+        // maxTedSize caps one pair; it is silent on the family — many
+        // just-under-cap near-identical pairs charge their quadratic cost
+        // one verdict at a time and together dominate the run (the finding:
+        // 397 blocks near the 800-node cap, pairwise scoring exceeded 400 s
+        // without finishing). scorePairsSerially accumulates the node
+        // product of every pair it actually sends to APTED and halts loudly
+        // when the sum would cross this budget. Internal default with NO
+        // user-facing flag per the plan's [OWNER] direction: below the
+        // budget the scoring is pair-for-pair identical, so every corpus
+        // that completes today (measured: this repo's 4,090 blocks charge
+        // 715,006 units in total — see TedSizeGateTest) is untouched.
+        private readonly int $maxTedCost = self::DEFAULT_MAX_TED_COST,
     ) {
         if ($this->minSplitSize < 2) {
             throw new \InvalidArgumentException(sprintf(
@@ -129,6 +142,12 @@ final class Clusterer
             throw new \InvalidArgumentException(sprintf(
                 'maxTedSize must be >= 1 (0 or negative would gate every TED pair); got %d.',
                 $this->maxTedSize,
+            ));
+        }
+        if ($this->maxTedCost < 1) {
+            throw new \InvalidArgumentException(sprintf(
+                'maxTedCost must be >= 1 (0 or negative would refuse every TED pair); got %d. Use Clusterer::UNLIMITED_TED_COST to disable the guard.',
+                $this->maxTedCost,
             ));
         }
         $this->containment = new ContainmentSimilarity();
@@ -159,10 +178,60 @@ final class Clusterer
      * exceed it and the gate is inert at the default — pairs are judged
      * exactly as before, goldens byte-identical. Lowering the cap trades
      * structural certainty for wall time and memory on huge-function
-     * corpora (the 161s/1.2GB APTED cost site). A pinned unit test keeps
-     * this value equal to the Config default (candidate-budget precedent).
+     * corpora. A pinned unit test keeps this value equal to the Config
+     * default (candidate-budget precedent).
+     *
+     * engine-S10 cap-default review (the plan's open owner row: 800 →
+     * 300–400?): KEPT AT 800. Three reasons, recorded because the plan
+     * flagged the change as customer-feel: (1) §240 does not mandate a
+     * golden re-pin, and dropping under the extraction ceiling would flip
+     * real near-cap pairs to jaccard-unverified verdicts — a silent,
+     * unmandated behaviour change; (2) engine-S09's band + memoization
+     * already cut the pre-fix cost point (the old "161 s / 1.2 GB"
+     * full-grid figure predates that step — measured post-S09 here: one
+     * near-identical 728×734 pair ≈ 2.3 s, no 1.2 GB grid); (3) the
+     * residual gap the cap cannot close — many just-under-cap pairs whose
+     * SUM runs away — is now bounded by DEFAULT_MAX_TED_COST below, which
+     * halts the storm loudly instead of silently downgrading every large
+     * pair's verdict. A future owner ruling may still lower this cap; the
+     * inertness triangle (Config default == this const == both engines'
+     * fallbacks == extraction ceiling) is pinned in
+     * {@see \Phpdup\Tests\Unit\Clustering\TedSizeGateTest}.
      */
     public const DEFAULT_MAX_TED_SIZE = 800;
+
+    /**
+     * engine-010 (engine-S10): aggregate APTED-cost budget for the serial
+     * scoring tier — the per-pair-count twin of MAX_CANDIDATE_PAIRS.
+     *
+     * The candidate budget bounds how MANY pairs are enumerated; nothing
+     * bounded what they COST: one 47 KB file of 3k nested ifs yielded 397
+     * blocks near the 800-node cap, pairwise near-identical, and phase-2
+     * scoring exceeded 400 s without finishing (rc=124, RSS flat). Each
+     * such pair is at or under maxTedSize, so the per-pair cap sees
+     * nothing; the cost is the SUM of the quadratic per-verdict grids.
+     *
+     * Unit: cumulative NODE-PRODUCT — every pair actually sent to
+     * APTED charges size(a)×size(b), the pair's DP grid shape. The
+     * accumulation never consults a clock, so scored edges stay a pure
+     * function of the corpus (TUI/serve golden-stability law).
+     *
+     * Sized against measurement, the MAX_CANDIDATE_PAIRS house way: the
+     * largest real corpus scanned through this rule on the lane box
+     * (phpdup's own src/, 4,090 blocks / 407,377 candidates) charged
+     * 715,006 units — a ~140× headroom under this budget; while the
+     * finding's storm mass (~78k judged pairs × ~640k units ≈ 5.0e10)
+     * sits ~500× ABOVE it and halts at under 0.2% of its enumeration
+     * (~187 full-size verdicts ≈ 7–20 min serial wall at the measured
+     * 2.3–6 s per cap-size pair). Breaching halts loudly
+     * ({@see scorePairsSerially()}); below it, scoring is pair-for-pair
+     * identical to the unguarded loop — every corpus that completes
+     * today is untouched.
+     */
+    public const DEFAULT_MAX_TED_COST = 100_000_000;
+
+    /** Sentinel for {@see $maxTedCost} meaning "no aggregate cap". */
+    public const UNLIMITED_TED_COST = PHP_INT_MAX;
 
     /**
      * Safety budget on total candidate-pair output of
@@ -826,12 +895,28 @@ final class Clusterer
     }
 
     /**
+     * Score every candidate pair in-process and return the edge list.
+     *
+     * engine-010 (engine-S10): the APTED lane is the one quadratic cost
+     * site in this loop, so it runs behind an aggregate budget: each pair
+     * actually judged charges size(a)×size(b) node-pairs, and the scoring
+     * halts loudly — before paying for the pair that would cross the
+     * budget — once the cumulative charge would exceed $maxTedCost. This
+     * is a fail-fast guard, not a filter: below the budget (i.e. on every
+     * corpus that completes today — measured headroom ~140×) the edge
+     * list is pair-for-pair identical to the unguarded loop, in order.
+     * The clock never enters the accumulator, so edges stay a pure
+     * function of the corpus.
+     *
      * @return list<array{0:string,1:string,2:float,3:string}>
      */
     private function scorePairsSerially(BlockIndex $index): array
     {
         $pairs = $this->generateCandidatePairs($index);
         $edges = [];
+        // engine-010: cumulative node-product charged for APTED verdicts.
+        $tedCost = 0;
+        $tedVerdicts = 0;
         foreach ($pairs as [$aId, $bId]) {
             $a = $index->get($aId);
             $b = $index->get($bId);
@@ -850,8 +935,10 @@ final class Clusterer
             $tedRefuted = false;
             if ($jac >= $this->similarityThreshold) {
                 // Item 1.2: TED cost gate. When the pair's LARGER member
-                // exceeds max_ted_size, the APTED matrix would dominate the
-                // run (161s / 1.2GB on huge functions) — so the pair rides
+                // exceeds max_ted_size, its APTED verdict is by far the
+                // most expensive one the loop can pay (post-S09 measured:
+                // ~2.3-6 s per cap-size near-identical pair, was 161 s /
+                // 1.2 GB on the old full-grid DP) — so the pair rides
                 // on the jaccard verdict alone, honestly stamped as
                 // structurally UNVERIFIED instead of silently dropped or
                 // pretending TED judged it.
@@ -877,6 +964,42 @@ final class Clusterer
                     $edges[] = [$aId, $bId, $jac, MatchTier::JaccardUnverified->value];
                     continue;
                 }
+                // engine-010 (engine-S10): the per-pair cap above sees a
+                // single monster; it is silent on the FAMILY — many just-
+                // under-cap near-identical pairs each pay a quadratic
+                // verdict, and the sum is what once ran the cluster stage
+                // past 400 s without finishing. Charge each verdict's DP
+                // grid shape (size(a) x size(b) node-pairs, deterministic,
+                // no clock) BEFORE paying for it, and halt loudly on the
+                // pair that would cross the aggregate budget instead.
+                // 64-bit-safe by construction: the running sum never
+                // exceeds budget + one grid, ≤ 60M pairs × 800².
+                $pairCost = $a->size * $b->size;
+                if ($tedCost + $pairCost > $this->maxTedCost) {
+                    throw new \RuntimeException(sprintf(
+                        'APTED scoring exceeded its aggregate safety budget of %s node-pairs'
+                        . " (halted before paying for the pair that would breach it: %s verdicts"
+                        . ' already judged, %s units charged, this pair alone costs %s — %s (%d nodes)'
+                        . ' x %s (%d nodes)). The corpus holds a family of large near-identical'
+                        . ' blocks whose cost together dominates the run; no single pair breaks'
+                        . ' max_ted_size, so the per-pair cap alone cannot bound it.' . "\n"
+                        . 'Ways forward: scan a narrower path (or exclude the family\'s directories'
+                        . ' via the config "exclude" list); lower the config key max_ted_size so'
+                        . ' large members ride the jaccard-unverified tier; or raise the Clusterer'
+                        . ' constructor knob maxTedCost for this caller'
+                        . ' (Clusterer::UNLIMITED_TED_COST disables the aggregate guard).',
+                        number_format($this->maxTedCost),
+                        number_format($tedVerdicts),
+                        number_format($tedCost),
+                        number_format($pairCost),
+                        $aId,
+                        $a->size,
+                        $bId,
+                        $b->size,
+                    ));
+                }
+                $tedCost += $pairCost;
+                $tedVerdicts++;
                 $tedSim = $this->tree->similarity($a->canonical, $b->canonical, $this->treeThreshold);
                 if ($tedSim >= $this->treeThreshold) {
                     // engine-S15 (engine-056 item 1, delete branch): the

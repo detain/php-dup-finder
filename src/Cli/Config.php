@@ -233,8 +233,16 @@ final class Config
         // stamped tier `jaccard-unverified`. Default 800 equals the extraction
         // ceiling (max_block_size default) — no block can exceed it, so at the
         // default NOTHING new is compared and every historical score stays
-        // byte-identical. Lowering it trades structural certainty for wall time
-        // and memory on huge-function corpora (the 161s/1.2GB cost site).
+        // byte-identical (inertness triangle pinned in TedSizeGateTest; the
+        // engine-S10 cap-default review kept 800 and records why at
+        // Clusterer::DEFAULT_MAX_TED_SIZE). Lowering it trades structural
+        // certainty for wall time: the engine-010 family that motivated the
+        // review (397 blocks near the cap, pairwise scoring > 400 s without
+        // finishing) charges per verdict — the old full-grid DP cost measured
+        // 161 s / 1.2 GB per pair pre-S09, ~2.3-6 s post-band+memo — and the
+        // SUM over the family is now bounded aggregate-side by
+        // Clusterer::DEFAULT_MAX_TED_COST on the serial engine (internal knob,
+        // no config key by the plan's [OWNER] direction).
         public readonly int $maxTedSize = 800,
         // Item 5.4: coverage ceiling above which a cluster's signature is
         // marked `re_expressed` and a hole-free `hole_fragment` is surfaced

@@ -45,7 +45,13 @@ use Phpdup\Util\CanonicalNodePool;
  *   (c) at-or-under-cap behaviour is unchanged (TED still judges,
  *       tier stays 'jaccard'), including size == cap exactly;
  *   (d) jaccard-failing pairs fall through untouched (no gate-made edge);
- *   (e) the engines share one default (800) and refuse caps < 1.
+ *   (e) the engines share one default (800) and refuse caps < 1;
+ *   (f) engine-S10 (engine-010): the serial APTED lane additionally runs
+ *       behind an AGGREGATE node-product budget (Clusterer::$maxTedCost)
+ *       that halts a storm of large near-identical pairs loudly — with
+ *       the charged cost in the message — before paying for the pair
+ *       that would cross it, while every corpus below the budget scores
+ *       pair-for-pair identically to the unguarded loop.
  */
 final class TedSizeGateTest extends TestCase
 {
@@ -571,5 +577,286 @@ final class TedSizeGateTest extends TestCase
         $clusters = $this->serialClusterer(800000)->cluster($this->indexOf($a, $b), null);
         $this->assertSame([], $clusters,
             'a tree-refuted pair must not be re-acclaimed by the containment lens (engine-056 scope ruling)');
+    }
+
+    // ------------------------------------------------------------------
+    // engine-S10 / php-dup-finder-engine-010 — the AGGREGATE APTED budget.
+    //
+    // maxTedSize caps one pair; it is silent on the family: 397 blocks
+    // near the 800-node cap, pairwise near-identical, ran phase-2 scoring
+    // past 400 s without finishing (rc=124) because the cost is the SUM
+    // of per-verdict grids. scorePairsSerially now charges every pair it
+    // actually sends to APTED size(a)×size(b) node-pairs up-front and
+    // halts loudly when the next charge would cross Clusterer::$maxTedCost
+    // — refusing the breaching verdict BEFORE paying for it. Below the
+    // budget the edge list is pair-for-pair identical to the unguarded
+    // loop (every corpus that completes today is untouched); the clock
+    // never enters the accumulator, so the result stays a pure function
+    // of the corpus.
+    // ------------------------------------------------------------------
+
+    /**
+     * Serial engine with an aggregate-cost budget (df 1.0 so a forced-
+     * bag family's shared grams still seed candidates, mirroring
+     * serialClusterer()).
+     */
+    private function costClusterer(int $maxTedCost, int $maxTedSize = 5000): Clusterer
+    {
+        return new Clusterer(
+            similarity: new JaccardSimilarity(),
+            tree: new TreeEditDistance(),
+            similarityThreshold: 0.8,
+            treeThreshold: 0.85,
+            maxDocumentFrequency: 1.0,
+            maxTedSize: $maxTedSize,
+            maxTedCost: $maxTedCost,
+        );
+    }
+
+    /**
+     * $count near-identical REAL functions with manually FORCED-equal
+     * bags: Jaccard is exactly 1.0 for every pair, while the structural
+     * hashes genuinely differ — variant v carries v extra guard
+     * statements (aggressive mode folds NAMES and LITERALS, so the
+     * difference must be structural, a drift trap this builder pins).
+     * The canonicals are real trees, so APTED runs and the aggregate
+     * charge is paid for a fact, not stubbed.
+     *
+     * @return list<Block>
+     */
+    private function stormFamily(int $count): array
+    {
+        $parser     = new AstParser();
+        $extractor  = new BlockExtractor(minSize: 1, maxSize: 100000);
+        $normalizer = new Normalizer('aggressive');
+        $hasher     = new \Phpdup\Fingerprint\SubtreeHasher();
+        $bag        = ['fam_alpha' => 2, 'fam_beta' => 3, 'fam_gamma' => 1];
+        $blocks     = [];
+        $seen       = [];
+        for ($v = 0; $v < $count; $v++) {
+            $code = "<?php\nfunction storm_{$v}(\$p) {\n";
+            for ($i = 0; $i < 5; $i++) {
+                $code .= "    \$q{$v}_{$i} = strlen(\$p) + {$i}; if (\$q{$v}_{$i} > {$i}) { \$out[] = 'z{$v}_{$i}'; }\n";
+            }
+            for ($g = 0; $g < $v; $g++) {
+                $code .= "    if (\$p) { \$extra{$v}_{$g} = 1; }\n";
+            }
+            $code .= "    return \$out ?? [];\n}\n";
+            $stmts = $parser->parseCode($code);
+            $this->assertNotNull($stmts);
+            $b = $extractor->extract("storm_{$v}.php", $stmts)[0];
+            $normalizer->normalize($b);
+            $b->structuralHash = $hasher->hash($b->canonical);
+            $b->id             = 'SF' . $v;
+            $b->ngramBag       = $bag;
+            $this->assertArrayNotHasKey($b->structuralHash, $seen,
+                "storm builder sanity: variant {$v} must not collapse onto an earlier structural hash");
+            $seen[$b->structuralHash] = true;
+            $blocks[] = $b;
+        }
+        return $blocks;
+    }
+
+    /**
+     * Replay of the production charge rule over a family whose every
+     * candidate pair IS TED-eligible (equal forced bags ⇒ Jaccard 1.0,
+     * distinct hashes, sizes under the cap): the ordered cumulative
+     * node-product after each pair, exactly as scorePairsSerially
+     * accumulates it.
+     *
+     * @return list<int>
+     */
+    private function chargedCumulative(BlockIndex $index): array
+    {
+        $probe  = $this->costClusterer(Clusterer::UNLIMITED_TED_COST);
+        $cum    = [];
+        $sum    = 0;
+        foreach ($probe->generateCandidatePairs($index) as [$aId, $bId]) {
+            $a = $index->get($aId);
+            $b = $index->get($bId);
+            $this->assertNotNull($a);
+            $this->assertNotNull($b);
+            $this->assertNotSame($a->structuralHash, $b->structuralHash,
+                'charge-replay sanity: no exact-collapse in the family');
+            $sum += $a->size * $b->size;
+            $cum[] = $sum;
+        }
+        return $cum;
+    }
+
+    /**
+     * Scalar-only content fingerprint of a cluster list (ids, member ids,
+     * pair rows) — no Block/AST serialization anywhere.
+     *
+     * @param list<\Phpdup\Clustering\Cluster> $clusters
+     */
+    private function clustersFingerprint(array $clusters): string
+    {
+        $rows = [];
+        foreach ($clusters as $c) {
+            $rows[] = [
+                $c->id,
+                array_map(static fn ($b): string => $b->id, $c->members),
+                $c->pairs,
+            ];
+        }
+        return hash('sha256', (string) json_encode($rows));
+    }
+
+    public function testAggregateBudgetHaltsAtTheExactChargedPrefix(): void
+    {
+        // Four near-identical members = 6 judged pairs. A budget equal to
+        // the full charged total completes silently; one unit short halts
+        // ON the final pair, and the message names where it halted (the
+        // GenerationBudgetTest prefix law, in cost units).
+        $index = $this->indexOf(...$this->stormFamily(4));
+        $cum   = $this->chargedCumulative($index);
+        $this->assertCount(6, $cum, 'a 4-member forced family must charge exactly C(4,2) verdicts');
+
+        $ok = $this->costClusterer($cum[5])->cluster($index, null);
+        $this->assertNotEmpty($ok, 'the exact total budget completes');
+
+        $clusters = $this->costClusterer(Clusterer::UNLIMITED_TED_COST)->cluster($index, null);
+        $this->assertSame(
+            $this->clustersFingerprint($clusters),
+            $this->clustersFingerprint($ok),
+            'budget-equal-to-corpus completes pair-for-pair identical to unguarded',
+        );
+
+        try {
+            $this->costClusterer($cum[5] - 1)->cluster($index, null);
+            $this->fail('one unit short of the charged total must halt');
+        } catch (\RuntimeException $e) {
+            $message = $e->getMessage();
+            $this->assertStringContainsString('aggregate safety budget', $message);
+            $this->assertStringContainsString('node-pairs', $message, 'the unit is the node-product');
+            $this->assertStringContainsString(number_format($cum[4]), $message,
+                'the message must name the cost charged when it halted');
+            $this->assertStringContainsString(number_format($cum[5] - $cum[4]), $message,
+                'the message must name the breaching pair cost');
+            $this->assertStringContainsString('5 verdicts', $message,
+                'the message must count the verdicts already judged');
+            $this->assertStringContainsString('maxTedCost', $message, 'the way forward must be named');
+        }
+
+        // Mid-stream halt: budget equal to the first TWO charges refuses
+        // the third without paying for it.
+        try {
+            $this->costClusterer($cum[1])->cluster($index, null);
+            $this->fail('budget of two charges must halt on the third');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString(number_format($cum[1]), $e->getMessage());
+        }
+    }
+
+    public function testBreachingPairIsRefusedBeforePayingForIt(): void
+    {
+        // The finding's texture at real cap-proximate sizes: ONE ~730-node
+        // near-identical pair costs ~2.3 s post-S09. Under a starved
+        // aggregate budget the scoring must halt on the first big pair
+        // CHEAPLY — the charge is taken before the verdict is paid, so
+        // the refusal is the bound. Wall < 1 s vs the ~2.3 s payment is
+        // the (b)-suite proof-of-not-paying, and the message names the
+        // pair's actual node product (acceptance: cost in the message).
+        [$a, $b] = $this->realPair(40);
+        $this->assertGreaterThan(500, $a->size);
+        $index  = $this->indexOf($a, $b);
+        $budget = $a->size * $b->size - 1;
+
+        $t0    = microtime(true);
+        $threw = null;
+        try {
+            $this->costClusterer($budget)->cluster($index, null);
+        } catch (\RuntimeException $e) {
+            $threw = $e;
+        }
+        $wall = microtime(true) - $t0;
+
+        $this->assertNotNull($threw, 'a pair whose product alone crosses the budget must halt');
+        $this->assertLessThan(1.0, $wall, 'the halting verdict must NOT be paid for (control: ~2.3s)');
+        $this->assertStringContainsString(number_format($budget), $threw->getMessage(),
+            'the breached budget (in node-pairs) must be in the message');
+        $this->assertStringContainsString(number_format($a->size * $b->size), $threw->getMessage(),
+            'the breaching pair cost must be in the message');
+        $this->assertStringContainsString("({$a->size} nodes)", $threw->getMessage(),
+            'the message must name the breaching pair by id and size');
+
+        // Control: the same budget + 1 pays the pair (below-budget stays
+        // pair-for-pair identical to unguarded — same single edge).
+        $armed = $this->costClusterer($budget + 1)->cluster($index, null);
+        $off   = $this->costClusterer(Clusterer::UNLIMITED_TED_COST)->cluster($index, null);
+        $this->assertSame($this->clustersFingerprint($off), $this->clustersFingerprint($armed));
+        $this->assertNotEmpty($off, 'builder sanity: the pair does reach the APTED lane');
+    }
+
+    public function testUntedLanesChargeNothingAgainstAStarvedBudget(): void
+    {
+        // The budget is charged only where APTED is actually paid. Under a
+        // budget of ONE node-pair, a corpus whose every pair leaves the
+        // APTED lane before the call — over-cap (jaccard-unverified),
+        // exact-hash, and jaccard/containment-dead strangers — completes
+        // untouched. The fakes' canonicals stay UNINITIALIZED (the file-
+        // level trick at the top of this class): had any lane reached TED
+        // the run would fatal, so silence here IS the no-charge proof.
+        $bag     = ['shared_gram' => 3, 'other_gram' => 2];
+        $bigA    = $this->fakeBlock('BIG-A', 200, $bag);
+        $bigB    = $this->fakeBlock('BIG-B', 240, $bag);
+        $twinA   = $this->fakeBlock('EX-A', 300, ['sole_gram' => 1]);
+        $twinB   = $this->fakeBlock('EX-B', 300, ['sole_gram' => 1]);
+        $twinB->structuralHash = $twinA->structuralHash; // exact-hash pair
+        $strX    = $this->fakeBlock('STR-X', 300, ['gram_one' => 1]);
+        $strY    = $this->fakeBlock('STR-Y', 300, ['gram_two' => 1]);
+
+        $clusters = $this->costClusterer(1, 50)
+            ->cluster($this->indexOf($bigA, $bigB, $twinA, $twinB, $strX, $strY), null);
+
+        $this->assertCount(2, $clusters, 'one exact cluster + one jaccard-unverified cluster, no exception');
+        $tiers = [];
+        foreach ($clusters as $c) {
+            foreach ($c->pairs as $p) {
+                $tiers[] = $p['matchTier'];
+            }
+        }
+        $this->assertContains('jaccard-unverified', $tiers,
+            'the over-cap pair rides on — without ever charging the budget');
+        $this->assertNotContains('jaccard', $tiers,
+            'no pair reached (and charged) an APTED verdict under the starved budget');
+    }
+
+    /** @dataProvider invalidBudgets */
+    public function testNonPositiveAggregateBudgetIsRejectedAtConstruction(int $budget): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('>= 1');
+        $this->costClusterer($budget);
+    }
+
+    /** @return array<string, array{0:int}> */
+    public static function invalidBudgets(): array
+    {
+        return ['zero' => [0], 'negative' => [-5]];
+    }
+
+    public function testDefaultAggregateCostIsPinnedWhereMeasuredCorporaStayFarBelow(): void
+    {
+        // Guard-rail on the constant itself, MAX_CANDIDATE_PAIRS house
+        // way: the largest real-corpus charge measured through this rule
+        // on the lane box (phpdup's own src/: 4,090 blocks, 407,377
+        // candidates — reviews/exec/engine-S10.impl.md transcript) is
+        // 715,006 node-pairs, ~140× under the default; the finding's
+        // storm mass (≈78k judged pairs of ~800-node members ≈ 5.0e10)
+        // sits ~500× above it, so a storm halts at under 0.2% of its
+        // enumeration instead of running past 400 s forever.
+        $this->assertSame(100_000_000, Clusterer::DEFAULT_MAX_TED_COST);
+        $this->assertSame(PHP_INT_MAX, Clusterer::UNLIMITED_TED_COST);
+
+        $param = (new \ReflectionParameter([Clusterer::class, '__construct'], 'maxTedCost'));
+        $this->assertSame(Clusterer::DEFAULT_MAX_TED_COST, $param->getDefaultValue(),
+            'the engine default IS the constant (one source of truth)');
+
+        $this->assertGreaterThan(100 * 715_006, Clusterer::DEFAULT_MAX_TED_COST,
+            'measured real corpora must sit far under the budget');
+        $this->assertLessThan(intdiv(50_000_000_000, 100), Clusterer::DEFAULT_MAX_TED_COST,
+            'the budget must trip long before a cap-size storm finishes even a tenth of its verdicts');
     }
 }

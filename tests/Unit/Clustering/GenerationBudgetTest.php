@@ -27,7 +27,15 @@ use Phpdup\Util\LineRange;
  *       the budget and the pre-halt stream is the exact prefix of the
  *       unguarded enumeration (never reordered, skipped, or duplicated);
  *   (b) normal corpora complete untouched — the armed-guard stream is
- *       byte-identical to the UNLIMITED (guard-off) stream.
+ *       byte-identical to the UNLIMITED (guard-off) stream;
+ *   (c) engine-010 (engine-S10) cross-guard: capping pair COUNT bounds
+ *       how many pairs enumerate, never what they COST — a 28-pair storm
+ *       of expensive members sails under 60M and runs away in the TED
+ *       tier. The aggregate node-product budget in scorePairsSerially
+ *       (armed in TedSizeGateTest) closes that hole; here we pin that it
+ *       (c1) halts storms the count guard cannot see and is a distinct
+ *       exception from CandidateBudgetException, and (c2) never invents
+ *       work for the count guard below its budget.
  */
 final class GenerationBudgetTest extends TestCase
 {
@@ -254,5 +262,99 @@ final class GenerationBudgetTest extends TestCase
             'completed corpora must sit under a third of the budget');
         $this->assertLessThan(intdiv(320_000_000, 5), Clusterer::MAX_CANDIDATE_PAIRS,
             'the budget must trip long before the historical 80-GB death zone');
+    }
+
+    // ------------------------------------------------------------------
+    // engine-010 (engine-S10): the count guard is BLIND to cost.
+    //
+    // The finding's storm enumerated only tens of thousands of pairs —
+    // nowhere near MAX_CANDIDATE_PAIRS — but every pair was two ~700-node
+    // trees, each verdict costing seconds; the run never finished. Here
+    // the synthetic makeBlock() family is given explicit large sizes and
+    // cheap identical canonicals, so the aggregate charge (size x size
+    // per judged pair) is fully analytic while the wall time stays test-
+    // safe. The real-node economics live in TedSizeGateTest.
+    // ------------------------------------------------------------------
+
+    /** @return list<Block> scoreable near-cap-size clique members */
+    private function expensiveClique(int $k, int $size): array
+    {
+        $blocks = [];
+        for ($i = 0; $i < $k; $i++) {
+            $block                   = $this->makeBlock(sprintf('E%04d', $i), ['family_gram' => 1, 'unique_' . $i => 1]);
+            $block->size             = $size;
+            $block->canonical        = new \PhpParser\Node\Stmt\Return_(new \PhpParser\Node\Scalar\String_('shared'));
+            $blocks[]                = $block;
+        }
+        return $blocks;
+    }
+
+    private function indexOf(Block ...$blocks): BlockIndex
+    {
+        $index = new BlockIndex();
+        foreach ($blocks as $b) {
+            $index->add($b);
+        }
+        return $index;
+    }
+
+    private function costClusterer(int $maxTedCost): Clusterer
+    {
+        return new Clusterer(
+            similarity: new JaccardSimilarity(),
+            tree: new TreeEditDistance(),
+            similarityThreshold: 0.0,
+            treeThreshold: 0.0,
+            maxDocumentFrequency: 1.0,
+            maxTedCost: $maxTedCost,
+        );
+    }
+
+    public function testCostStormSlidesUnderThePairCountGuard(): void
+    {
+        // (c1) The aggregate halt is a DIFFERENT exception object than the
+        // pair-count halt: a CLI that catches CandidateBudgetException for
+        // its exit-1 rendering must never confuse the two refusals.
+        $blocks = $this->expensiveClique(8, 700);   // 28 pairs x 490,000 units
+        $index  = $this->indexOf(...$blocks);
+
+        $this->assertCount(28, $this->collect($this->clusterer(), $index, null),
+            'builder sanity: the storm is 28 pairs — trivially under the 60M count budget');
+
+        // Control: pair-count armed (production default) + cost unlimited
+        // — the count guard has nothing to say about this corpus.
+        $off = $this->costClusterer(Clusterer::UNLIMITED_TED_COST)->cluster($index, null);
+        $this->assertNotEmpty($off);
+
+        try {
+            $this->costClusterer(2 * 700 * 700)->cluster($index, null);
+            $this->fail('a budget of two charges must halt on the third expensive pair');
+        } catch (\RuntimeException $e) {
+            $this->assertNotInstanceOf(CandidateBudgetException::class, $e,
+                'the aggregate refusal is its own loud halt, not a repurposed pair-count refusal');
+            $this->assertStringContainsString('aggregate safety budget', $e->getMessage());
+            $this->assertStringContainsString(number_format(2 * 700 * 700), $e->getMessage(),
+                'the breached cost budget (in node-pairs) must be named');
+        }
+    }
+
+    public function testAggregateBudgetNeverInventsWorkForTheCountGuard(): void
+    {
+        // (c2) Below its budget the cost guard is silent: the same 28-pair
+        // corpus scores pair-for-pair identically when armed with ample
+        // cost budget as with it disabled — the count guard neither fires
+        // earlier nor differently because the cost twin exists.
+        $blocks = $this->expensiveClique(8, 700);
+        $index  = $this->indexOf(...$blocks);
+
+        $armed = $this->costClusterer(28 * 700 * 700)->cluster($index, null); // exact total
+        $off   = $this->costClusterer(Clusterer::UNLIMITED_TED_COST)->cluster($index, null);
+
+        $project = static fn (array $cs): string => (string) json_encode(array_map(
+            static fn ($c): array => [$c->id, array_map(static fn ($b): string => $b->id, $c->members), $c->pairs],
+            $cs,
+        ));
+        $this->assertSame($project($off), $project($armed),
+            'a cost budget equal to the corpus charge completes byte-identically');
     }
 }
