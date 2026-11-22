@@ -39,6 +39,17 @@ final class TuiRunner
      * uses, instead of the previous unconditional 0 that made a crash look
      * like a clean run to scripts and CI.
      *
+     * once-S22 (php-dup-finder-once-025) boot contract: this method (and
+     * {@see makeProgram()}) is reached from the CLI only AFTER Command's
+     * admission doors have closed — an invalid --theme exits 2 at
+     * parseRuntimeOptions before dispatch ever builds a model, and --tui on
+     * a non-TTY STDOUT is likewise refused there (exit 2, hint toward the
+     * default CLI) so alt-screen bytes can never be painted into a pipe.
+     * A new boot site that bypasses Command (once-S75 and the S07→S22→S75
+     * spine) must replicate that admission first — the runner itself stays
+     * stream-agnostic on purpose so the in-process Program pins keep
+     * driving it through socketpair/memory streams.
+     *
      * @param mixed $input  readable stream handed to the runtime, null = STDIN
      * @param mixed $output writable stream handed to the runtime, null = STDOUT
      */
@@ -99,6 +110,16 @@ final class TuiRunner
         );
     }
 
+    /**
+     * Map a theme name to a Theme preset. The ansi fallback on an unknown
+     * name is the deliberate API valve (pinned by
+     * TuiRunnerTest::testResolveThemeFallsBackToAnsiForUnknownName) for
+     * programmatic callers. It is UNREACHABLE from the CLI: a bogus --theme
+     * is refused with exit 2 at Command's admission door before any model or
+     * Program is built (shell-S24 door, verified render-free by once-S22 /
+     * php-dup-finder-once-025), so "bogus theme keeps rendering" cannot
+     * happen on any command path.
+     */
     public static function resolveTheme(string $name): Theme
     {
         return match (strtolower($name)) {

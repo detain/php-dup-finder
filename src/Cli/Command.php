@@ -1211,6 +1211,29 @@ HELP;
             return null;
         }
 
+        // once-S22 (php-dup-finder-once-025): --tui on a non-terminal output
+        // is a usage refusal, not a silent fallback. sugar-core's Program
+        // paints the alt screen, hides the cursor and takes raw mode on the
+        // PROCESS streams (TuiRunner passes input/output nulls — STDIN/
+        // STDOUT are its defaults), so `phpdup --tui src | cat` used to
+        // inject escape garbage into the pipe and never exit (U-04 live).
+        // docs/CLI.md has always promised "Requires a real TTY" — this door
+        // makes the promise true. It rides the shell-S24 admission doctrine
+        // exactly (emitted `phpdup:` line + null => exit 2, before the
+        // pipeline is ever built), and it deliberately sits AFTER theme
+        // admission so a config typo — the deterministic failure that does
+        // not depend on where stdout points — is reported first. An invalid
+        // --theme can therefore never reach render on any stream shape:
+        // piped, the run dies on theme; on a PTY, it dies on theme before
+        // dispatch; only an admitted theme may boot the Program.
+        // `--plain --tui` keeps the pre-existing plain posture untouched:
+        // shouldRunTui() answers false, so there is nothing to refuse.
+        if ($tuiMode && !self::stdoutIsTerminal()) {
+            $output->writeln('<error>phpdup: --tui needs an interactive terminal; this output is not a TTY.</error>');
+            $output->writeln('<comment>phpdup: run without --tui for the default CLI report (or pass --plain to force it).</comment>');
+            return null;
+        }
+
         $pagerMode = (string)($input->getOption('pager') ?? Pager::MODE_NEVER);
         if (!in_array($pagerMode, Pager::MODES, true)) {
             $output->writeln('<error>phpdup: --pager must be one of ' . implode('|', Pager::MODES) . '</error>');
@@ -1602,6 +1625,25 @@ HELP;
         // Phase 2: require --tui explicitly. Auto-enable on TTY is deferred until Phase 3
         // wires live progress; auto-launching today would surprise users running interactively.
         return (bool)$input->getOption('tui');
+    }
+
+    /**
+     * once-S22 (php-dup-finder-once-025): honest "is this a terminal?" arbiter
+     * for --tui admission. The process STDOUT is the stream sugar-core's
+     * alt-screen bytes actually hit, so it — not Symfony's decoration flag,
+     * which --ansi/--no-ansi can flip independently of the stream — is the
+     * only stream whose tty-ness answers the question. Same detection policy
+     * as Pager::stdoutIsTty() (kept as a mirror here because Pager.php is not
+     * a seam this lane may touch); its fail-closed shape is deliberate: no
+     * stream_isatty AND no posix_isatty means we cannot prove a terminal, so
+     * we do not claim one.
+     */
+    private static function stdoutIsTerminal(): bool
+    {
+        if (function_exists('stream_isatty')) {
+            return @stream_isatty(STDOUT);
+        }
+        return function_exists('posix_isatty') ? @posix_isatty(STDOUT) : false;
     }
 
     /**
