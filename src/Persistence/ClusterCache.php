@@ -41,6 +41,18 @@ use Phpdup\Parsing\CacheBlob;
  * before serialization (PhpParser nodes are large and not strictly
  * required for downstream reporting) — RefactorStage rebuilds them
  * on-demand from the cached members + holes when needed.
+ *
+ * The payload shape is guarded recursively on read (shell-S19, finding
+ * shell-031): a disallowed class smuggled in at any depth, or a
+ * non-Cluster element in a payload that passed every header gate, is a
+ * provable contract violation and the entry is REFUSED with a
+ * `phpdup: refusing corrupt ...` runtime error instead of being served
+ * corrupt (pre-S19 the flat screen saw only payload values and one
+ * array level; a stdClass hidden in a Cluster's `holes` rode straight
+ * through to the pipeline). The bounded walk is the ONE implementation
+ * shared with the block store — {@see IndexStore::findIncompleteClass()}
+ * (hoist to SerializedClassAllowList once shell-S11 lands). Saves take
+ * LOCK_EX: concurrent writers can no longer interleave a torn blob.
  */
 final class ClusterCache
 {
@@ -120,26 +132,41 @@ final class ClusterCache
         if (!is_array($payload)) {
             return null;
         }
-        // Reject any payload where deserialization produced an
-        // `__PHP_Incomplete_Class` — a tampered blob, or one written by
-        // an incompatible build, has no business in the pipeline.
-        // (Recursive member-shape guards land on top of this read path
-        // in the shell-S19 chain step; this is the legacy flat screen.)
-        foreach ($payload as $value) {
-            if ($value instanceof \__PHP_Incomplete_Class) {
-                return null;
-            }
-            if (is_array($value)) {
-                foreach ($value as $inner) {
-                    if ($inner instanceof \__PHP_Incomplete_Class) {
-                        return null;
-                    }
-                }
+        // shell-S19 (finding shell-031): payload shape guards — the same
+        // contract IndexStore::load() enforces (see the refusal rationale
+        // there). The pre-S19 screen checked payload values and ONE array
+        // level, so a poison nested inside a legal Cluster was still
+        // served. Unprovable-by-budget graphs fall back to the plain
+        // miss; proven violations refuse loudly.
+        $clusters = $payload['clusters'] ?? null;
+        if ($clusters === null) {
+            throw self::corrupt('the payload carries no "clusters" section', $file);
+        }
+        if (!is_array($clusters)) {
+            throw self::corrupt(sprintf('the "clusters" section is %s, not a list', get_debug_type($clusters)), $file);
+        }
+
+        $poison = IndexStore::findIncompleteClass($payload);
+        if ($poison === IndexStore::SCAN_UNRESOLVED) {
+            return null;   // not provable — miss, never serve unchecked
+        }
+        if ($poison !== null) {
+            throw self::corrupt(
+                sprintf('a "%s" object hides inside the decoded graph — no writer of this format ever serializes it', $poison),
+                $file,
+            );
+        }
+
+        foreach ($clusters as $position => $cluster) {
+            if (!$cluster instanceof Cluster) {
+                throw self::corrupt(
+                    sprintf('cluster #%d is %s, not a Cluster snapshot', $position, get_debug_type($cluster)),
+                    $file,
+                );
             }
         }
 
-        $clusters = $payload['clusters'] ?? null;
-        return is_array($clusters) ? array_values($clusters) : null;
+        return array_values($clusters);
     }
 
     /**
@@ -172,10 +199,15 @@ final class ClusterCache
             'corpus_hash'    => $this->hashCorpus($blocks),
         ]) . CacheBlob::frame($blob);
 
-        // No LOCK_EX here yet by design — the concurrent-save guarantee
-        // (and its unit) lands on this write in the shell-S19 chain step.
-        if (@file_put_contents($this->cacheDir . '/clusters.idx', $bytes) === false) return;
-        @chmod($this->cacheDir . '/clusters.idx', 0o600);
+        // shell-S19 (finding shell-031): LOCK_EX — concurrent saves must
+        // never interleave. Torn bytes between the length prefix and the
+        // payload defeat even the framing codec's miss posture (a partly
+        // overwritten longer snapshot can frame-decode into a shorter
+        // corrupt one); the exclusive lock closes the window at the
+        // writer instead of hoping the reader notices.
+        $target = $this->cacheDir . '/clusters.idx';
+        if (@file_put_contents($target, $bytes, LOCK_EX) === false) return;
+        @chmod($target, 0o600);
     }
 
     /**
@@ -244,5 +276,23 @@ final class ClusterCache
         }
         sort($tokens);
         return sha1(implode("\n", $tokens));
+    }
+
+    /**
+     * The refusal template — same posture as the block store's: name
+     * what is wrong, name the file, offer the remedy. A
+     * \RuntimeException (code 0) so the CLI surfaces the refusal as a
+     * runtime error with exit 1, not an exit-255 TypeError from deep
+     * inside whichever consumer touched the corrupt slot first.
+     */
+    private static function corrupt(string $detail, string $file): \RuntimeException
+    {
+        return new \RuntimeException(sprintf(
+            "phpdup: refusing corrupt cluster cache entry \"%s\": %s. "
+            . "The snapshot contradicts what this build's cache writer produces — "
+            . 'delete the cache directory to rebuild it.',
+            $file,
+            $detail,
+        ));
     }
 }

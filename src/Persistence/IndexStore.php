@@ -44,7 +44,15 @@ use Phpdup\Parsing\CacheBlob;
  * Deserialization is restricted to the phpdup value-object classes
  * (Block / LineRange / Cluster / Hole) plus the PhpParser node
  * namespace via {@see SerializedClassAllowList::blockCacheClasses()}.
- * Any other class lands as `__PHP_Incomplete_Class` and forces a miss.
+ * Any other class lands as `__PHP_Incomplete_Class`; the shell-S19
+ * shape guard (finding shell-031) then walks the decoded graph
+ * recursively — every header gate has passed, so this build's writer
+ * produced the file, and a smuggled class or a non-Block element is a
+ * provable contract violation: the entry is REFUSED with a
+ * `phpdup: refusing corrupt ...` runtime error (a clean exit 1 at the
+ * CLI, never a downstream exit-255 TypeError). A graph too large to
+ * walk inside the bounded budget is the unprovable case: ordinary miss
+ * semantics, nothing served unchecked.
  */
 final class IndexStore
 {
@@ -57,6 +65,25 @@ final class IndexStore
      * treated as malformed (miss) instead of being slurped whole.
      */
     private const HEADER_READ_BYTES = 4096;
+
+    /**
+     * Edge budget for the shell-S19 shape walk. Measured against this
+     * repo's own warm caches the honest worst case sits two-to-three
+     * orders of magnitude below it (the largest per-file snapshot here
+     * is ~24k graph nodes ≈ 9 ms; the 8 MB whole-corpus cluster graph
+     * ~127k nodes ≈ 65 ms), so legitimate blobs never brush the cap
+     * while a reference-cycle poison is still caught in milliseconds.
+     */
+    private const SHAPE_SCAN_EDGES = 5_000_000;
+
+    /**
+     * Returned by {@see self::findIncompleteClass()} when the walk ran
+     * out of edge budget before it covered the graph — NOT a clean
+     * verdict. Both stores translate it into an ordinary cache miss
+     * (recompute, never serve unchecked data) instead of refusing a
+     * blob that may be perfectly honest and merely enormous.
+     */
+    public const SCAN_UNRESOLVED = '<unresolved: bounded shape walk exceeded>';
 
     // 'floatbytes': AstSerializer renders float literals as IEEE-754
     // bytes instead of the ini-dependent decimal cast, moving every
@@ -150,20 +177,48 @@ final class IndexStore
         ]);
         if (!is_array($payload)) return null;
 
-        // Tampered blob → bail with cache-miss semantics.
-        // (Recursive member-shape guards land on top of this read path
-        // in the shell-S19 chain step; this is the legacy flat screen.)
-        $rawBlocks = $payload['blocks'] ?? [];
-        if (is_array($rawBlocks)) {
-            foreach ($rawBlocks as $block) {
-                if ($block instanceof \__PHP_Incomplete_Class) {
-                    return null;
-                }
+        // shell-S19 (finding shell-031): payload shape guards. Every
+        // header gate has passed, so a payload violating the writer's
+        // contract here is provably not this build's output — either
+        // tampered or the product of a broken build. Serving it
+        // corrupts the run; silently missing it launders a planted
+        // poison past the very check that should have caught it. The
+        // honest answer is loud: a \RuntimeException whose message
+        // starts with `phpdup:` reaches the CLI as an exit-1 refusal
+        // (pre-S19 the flat screen let both repro shapes slip through
+        // and the pipeline died mid-serve with an exit-255 TypeError).
+        $blocks = $payload['blocks'] ?? null;
+        if ($blocks === null) {
+            throw self::corrupt('the payload carries no "blocks" section', $cacheFile);
+        }
+        if (!is_array($blocks)) {
+            throw self::corrupt(sprintf('the "blocks" section is %s, not a list', get_debug_type($blocks)), $cacheFile);
+        }
+
+        $poison = self::findIncompleteClass($payload);
+        if ($poison === self::SCAN_UNRESOLVED) {
+            // Not provably poison — fall back to miss semantics. An
+            // honest cache just pays a recompute; a poison of this
+            // shape (over-budget graph) cannot be served either way.
+            return null;
+        }
+        if ($poison !== null) {
+            throw self::corrupt(
+                sprintf('a "%s" object hides inside the decoded graph — no writer of this format ever serializes it', $poison),
+                $cacheFile,
+            );
+        }
+
+        foreach ($blocks as $position => $block) {
+            if (!$block instanceof Block) {
+                throw self::corrupt(
+                    sprintf('block #%d is %s, not a Block snapshot', $position, get_debug_type($block)),
+                    $cacheFile,
+                );
             }
         }
 
-        $blocks = $payload['blocks'] ?? null;
-        return is_array($blocks) ? array_values($blocks) : null;
+        return array_values($blocks);
     }
 
     /**
@@ -254,5 +309,101 @@ final class IndexStore
     private static function isHex40(string $candidate): bool
     {
         return preg_match('/\A[0-9a-f]{40}\z/', $candidate) === 1;
+    }
+
+    /**
+     * Bounded, cycle-safe walk of a decoded cache graph looking for the
+     * one shape an honest payload cannot contain: a
+     * `__PHP_Incomplete_Class` smuggled in at ANY depth by a class
+     * outside the allow-list (finding shell-031 repro B hid a stdClass
+     * inside a Cluster's `holes` slot — deeper than the flat pre-S19
+     * screens could see).
+     *
+     * A reference-decoded graph is a DAG at best (serialized ASTs
+     * share subtrees) and cyclic at worst (a poison can weave `R:`
+     * self-references), so the walk expands each object at most once
+     * (identity set) and charges every graph edge against
+     * $edgeBudget. Out-budget graphs are never declared clean — they
+     * come back {@see self::SCAN_UNRESOLVED} and the caller falls back
+     * to a plain miss.
+     *
+     * get_object_vars() from outside a declaring class fires no magic
+     * accessor, and every allow-listed class is plain public data, so
+     * the walk is side-effect free. It touches only what the load path
+     * already decoded — no new memory is manufactured.
+     *
+     * Shared by BOTH framed persistence classes through this single
+     * implementation (shell-S11's hoist target is
+     * SerializedClassAllowList — until that lands, do not fork a second
+     * copy; ClusterCache calls this method).
+     *
+     * @param int $edgeBudget traversal cap; the public signature lets
+     *                        the shape tests inject a small budget and
+     *                        exercise the unresolved arm in
+     *                        milliseconds. Production readers always
+     *                        use the default.
+     * @return null|string  null when the whole graph walked clean; the
+     *                      smuggled class name on the first poison hit;
+     *                      the SCAN_UNRESOLVED sentinel on budget-out.
+     */
+    public static function findIncompleteClass(mixed $root, int $edgeBudget = self::SHAPE_SCAN_EDGES): ?string
+    {
+        /** @var list<mixed> $pending */
+        $pending = [$root];
+        /** @var array<int,true> $expanded */
+        $expanded = [];
+        $edges = 0;
+
+        while ($pending !== []) {
+            $node = array_pop($pending);
+
+            if (is_array($node)) {
+                foreach ($node as $child) {
+                    if (++$edges > $edgeBudget) return self::SCAN_UNRESOLVED;
+                    if (is_array($child) || is_object($child)) {
+                        $pending[] = $child;
+                    }
+                }
+                continue;
+            }
+
+            if (!is_object($node)) continue;   // scalars cannot hide anything
+
+            $objectId = spl_object_id($node);
+            if (isset($expanded[$objectId])) continue;   // shared subtree: walked once
+            $expanded[$objectId] = true;
+
+            if ($node instanceof \__PHP_Incomplete_Class) {
+                $vars = get_object_vars($node);
+                $name = $vars['__PHP_Incomplete_Class_Name'] ?? null;
+                return is_string($name) && $name !== '' ? $name : '<unknown>';
+            }
+
+            foreach (get_object_vars($node) as $child) {
+                if (++$edges > $edgeBudget) return self::SCAN_UNRESOLVED;
+                if (is_array($child) || is_object($child)) {
+                    $pending[] = $child;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The refusal template: name what is wrong, name the file, offer
+     * the remedy. A \RuntimeException (code 0) so the CLI surfaces it
+     * as a runtime error with exit 1 — the finding's whole complaint
+     * was the opaque exit-255 TypeError this replaces.
+     */
+    private static function corrupt(string $detail, string $file): \RuntimeException
+    {
+        return new \RuntimeException(sprintf(
+            "phpdup: refusing corrupt block-index cache entry \"%s\": %s. "
+            . "The snapshot contradicts what this build's cache writer produces — "
+            . 'delete the cache directory or rerun with --no-cache to rebuild it.',
+            $file,
+            $detail,
+        ));
     }
 }

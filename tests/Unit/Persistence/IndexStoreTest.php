@@ -4,11 +4,13 @@ declare(strict_types=1);
 namespace Phpdup\Tests\Unit\Persistence;
 
 use PHPUnit\Framework\TestCase;
+use Phpdup\Cli\Config;
 use Phpdup\Extraction\Block;
 use Phpdup\Extraction\BlockExtractor;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Parsing\AstParser;
 use Phpdup\Persistence\IndexStore;
+use Phpdup\Pipeline\Stages\PreprocessStage;
 
 /**
  * IndexStore snapshot round-trip and gate semantics.
@@ -331,8 +333,300 @@ final class IndexStoreTest extends TestCase
     }
 
     // ------------------------------------------------------------------
+    // shell-S19: recursive payload shape guards (finding shell-031)
+    // ------------------------------------------------------------------
+
+    public function testTamperedBlockListPayloadIsRefusedNotServed(): void
+    {
+        // The finding's repro A: an otherwise-live-header blob whose
+        // block list is ['not-a-block', 42]. Pre-S19 the flat screen
+        // served it and the pipeline died mid-run with an exit-255
+        // TypeError; the refusal must be a RuntimeException (the CLI's
+        // exit-1 runtime-error class), naming the offending element.
+        $this->forgeBlob($this->liveMeta(), serialize(['blocks' => ['not-a-block', 42]]));
+
+        $store = new IndexStore($this->cacheDir, 'cfg-key-1');
+        try {
+            $served = $store->load($this->sourceFile);
+            $this->fail('a proven contract violation must refuse, not return; got ' . ($served === null ? 'null' : 'a list'));
+        } catch (\TypeError $e) {
+            $this->fail('refusal must be the exit-1 exception class, never the exit-255 TypeError shape: ' . $e->getMessage());
+        } catch (\RuntimeException $e) {
+            $this->assertMatchesRegularExpression(
+                '/phpdup: refusing corrupt block-index cache entry .*block #0 is string, not a Block snapshot/',
+                $e->getMessage(),
+            );
+            $this->assertStringContainsString('--no-cache', $e->getMessage(), 'the refusal must name the remedy');
+            $this->assertSame(0, (int) $e->getCode(), 'code 0 keeps the CLI on exit 1, not a custom nonzero fatal');
+        }
+    }
+
+    public function testMissingBlocksSectionIsRefused(): void
+    {
+        // A decoded array with no "blocks" key cannot come from this
+        // writer — same provable-violation posture as repro A.
+        $this->forgeBlob($this->liveMeta(), serialize(['written-by-something-else' => true]));
+
+        $store = new IndexStore($this->cacheDir, 'cfg-key-1');
+        try {
+            $store->load($this->sourceFile);
+            $this->fail('payload without its section must refuse');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('carries no "blocks" section', $e->getMessage());
+        }
+    }
+
+    public function testNestedSmuggledClassInsideLegalBlockIsRefused(): void
+    {
+        // The finding's repro B, block-store edition: the list is real
+        // Block objects (element checks pass) and the stdClass poison
+        // sits inside a public array field — one level deeper than the
+        // flat pre-S19 screen could reach. Under the allow-list it
+        // decodes to __PHP_Incomplete_Class; the recursive walk names the
+        // original class and the load refuses.
+        $blocks = $this->extract($this->sourceFile);
+        $this->assertNotEmpty($blocks);
+        $blocks[0]->ngramBag = ['deep' => [new \stdClass()]];
+
+        $this->forgeBlob($this->liveMeta(), serialize(['blocks' => $blocks]));
+
+        $store = new IndexStore($this->cacheDir, 'cfg-key-1');
+        try {
+            $served = $store->load($this->sourceFile);
+            $this->fail('nested smuggled class must refuse; got ' . ($served === null ? 'a miss' : 'a served list'));
+        } catch (\RuntimeException $e) {
+            $this->assertMatchesRegularExpression(
+                '/phpdup: refusing corrupt block-index cache entry .*hides inside the decoded graph/',
+                $e->getMessage(),
+            );
+            $this->assertStringContainsString('stdClass', $e->getMessage(), 'the refusal names the smuggled class');
+        }
+    }
+
+    public function testHonestGraphIncludingRealAstWalksClean(): void
+    {
+        // Non-vacuity for every refusal pin above: a real extracted,
+        // normalized Block graph (canonical + ast + the whole PhpParser
+        // node forest) must walk clean AND keep serving cache hits.
+        // Should this ever refuse, the guard became a false-positive
+        // machine against warm caches.
+        $blocks = $this->extract($this->sourceFile);
+        $this->assertNotEmpty($blocks);
+        $this->assertNull(
+            IndexStore::findIncompleteClass(['blocks' => $blocks]),
+            'the honest graph must walk clean',
+        );
+
+        $store = new IndexStore($this->cacheDir, 'cfg-key-1');
+        $store->save($this->sourceFile, $blocks);
+        $loaded = $store->load($this->sourceFile);
+        $this->assertNotNull($loaded, 'honest snapshots keep hitting after the guards landed');
+        $this->assertCount(count($blocks), $loaded);
+    }
+
+    public function testShapeWalkIsCycleSafeAndBudgetDegradesToSentinel(): void
+    {
+        // serialize()/unserialize() round-trips R: self-references, so a
+        // poison graph can be cyclic — the walk must neither hang nor
+        // pass it clean. The injected budget runs the unresolved arm in
+        // milliseconds; production readers hand it to miss semantics
+        // (never serve unchecked, never refuse a merely huge graph).
+        $cyclic = ['guard' => 'top'];
+        $cyclic['self'] = &$cyclic;
+        $decoded = unserialize(serialize($cyclic));
+        $this->assertIsArray($decoded, 'precondition: the cycle survives the round trip');
+
+        $this->assertSame(
+            IndexStore::SCAN_UNRESOLVED,
+            IndexStore::findIncompleteClass($decoded, 100),
+            'a cyclic graph must run out the budget, not hang and not pass clean',
+        );
+
+        // Non-vacuity the other way: an honest-but-wide 50k-entry list
+        // (~50k edges) walks clean inside the production default budget.
+        $this->assertNull(
+            IndexStore::findIncompleteClass(['blocks' => array_fill(0, 50_000, 'phpdup-shell-S19-wide')]),
+            'a wide honest graph must not trip the budget',
+        );
+    }
+
+    public function testPoisonedCacheRefusesAtTheCliWithExitOneNotFatal(): void
+    {
+        // The acceptance probe as an automated pin: analyze once (honest
+        // warm cache), swap every .idx payload for repro A's shape with
+        // the live header bytes kept verbatim, rerun — the second run
+        // ends in the friendly refusal at exit 1 (never 255, never a
+        // TypeError or Fatal), and --no-cache keeps the corpus
+        // analysable again. All paths are tmp-dir; the real tree is not
+        // touched.
+        $base   = sys_get_temp_dir() . '/phpdup-s19-cli-' . uniqid();
+        $corpus = $base . '/src';
+        $cache  = $base . '/cache';
+        mkdir($corpus, 0o700, true);
+        foreach (['a', 'b', 'c'] as $letter) {
+            file_put_contents(
+                $corpus . '/' . $letter . '.php',
+                "<?php function f_{$letter}(\$x) { \$y = \$x + 1; if (\$y > 2) { return 'a'; } return 'b'; }",
+            );
+        }
+        $cfg = $base . '/cfg.json';
+        file_put_contents($cfg, (string) json_encode(['cache_dir' => $cache]));
+
+        try {
+            $warm = $this->runCli($cfg, $corpus);
+            $this->assertSame(0, $warm['exit'], 'precondition: the honest warm run succeeds: ' . $warm['combined']);
+            // The block-store surgery targets per-file snapshots only —
+            // clusters.idx shares the *.idx suffix but rides the other
+            // class's guards (pinned in ClusterCacheTest).
+            $idxFiles = array_values(array_filter(
+                glob($cache . '/*.idx') ?: [],
+                static fn (string $f): bool => basename($f) !== 'clusters.idx',
+            ));
+            $this->assertNotEmpty($idxFiles, 'precondition: the warm run wrote per-file snapshots');
+
+            foreach ($idxFiles as $idx) {
+                $this->surgeryBlocks($idx);
+            }
+
+            $poisoned = $this->runCli($cfg, $corpus);
+            $this->assertSame(1, $poisoned['exit'], 'refusal must be exit 1 (runtime error), got ' . $poisoned['exit'] . "\n" . $poisoned['combined']);
+            $this->assertMatchesRegularExpression('/phpdup: refusing corrupt block-index cache entry/', $poisoned['err']);
+            $this->assertStringNotContainsString('TypeError', $poisoned['combined'], 'the finding-031 crash shape must be gone');
+            $this->assertStringNotContainsString('Fatal error', $poisoned['combined'], 'no PHP fatal may escape the refusal');
+
+            $bypassed = $this->runCli($cfg, $corpus, extra: ['--no-cache']);
+            $this->assertSame(0, $bypassed['exit'], '--no-cache must be unaffected by a poisoned cache: ' . $bypassed['combined']);
+        } finally {
+            $this->purgeDir($base);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // shell-S16: the IndexStore config key binds low_memory (finding shell-027)
+    // ------------------------------------------------------------------
+
+    /**
+     * Mirror of the shell-S30 scoring-knob pin: the low_memory flag
+     * rewrites every stored bag (hex-keyed 64-bit vs CompactNgramBag
+     * int-keyed), so flipping it must move the key PreprocessStage feeds
+     * the store, and a snapshot from one side must MISS on the other —
+     * while still HITTING under its own key (the refusal is about the
+     * flag alone). This is the cache-invalidation consequence of S16:
+     * existing pre-S16 caches (whose key was computed WITHOUT lowMemory)
+     * self-invalidate once through this very gate — a clean miss, never
+     * a stale serve, disclosed in the lane report.
+     */
+    public function testLowMemoryFlipSeparatesConfigKeysAndRefusesCrossServe(): void
+    {
+        $base = new Config(paths: ['/x'], exclude: []);
+        $flipped = new Config(paths: ['/x'], exclude: [], lowMemory: true);
+
+        $stage = new PreprocessStage(useCache: true);
+        $keyOf = new \ReflectionMethod(PreprocessStage::class, 'indexStoreConfigKey');
+
+        $keyDefault = $keyOf->invoke($stage, $base);
+        $keyFlipped = $keyOf->invoke($stage, $flipped);
+
+        $this->assertNotSame($keyDefault, $keyFlipped,
+            'low_memory rewrites stored bag keys — the IndexStore config key must bind it');
+        $this->assertSame($keyDefault, $keyOf->invoke($stage, $base),
+            'non-vacuity: the key must be a pure function of the config');
+
+        $blocks = $this->extract($this->sourceFile);
+        $this->assertNotEmpty($blocks);
+        (new IndexStore($this->cacheDir, $keyDefault))->save($this->sourceFile, $blocks);
+
+        $this->assertNull((new IndexStore($this->cacheDir, $keyFlipped))->load($this->sourceFile),
+            'a snapshot from the other side of the flag flip must never be served');
+        $served = (new IndexStore($this->cacheDir, $keyDefault))->load($this->sourceFile);
+        $this->assertNotNull($served, 'same-flag serve still works (non-vacuity)');
+        $this->assertCount(count($blocks), $served);
+    }
+
+    // ------------------------------------------------------------------
     // helpers
     // ------------------------------------------------------------------
+
+    /** @return array<string,string> header meta that clears every load() gate for sourceFile */
+    private function liveMeta(): array
+    {
+        return [
+            'file_hash'      => (string) sha1_file($this->sourceFile),
+            'parser_version' => self::LIVE_VERSION,
+            'config_key'     => 'cfg-key-1',
+        ];
+    }
+
+    /**
+     * Keep the framed header verbatim, replace the payload section with
+     * ['blocks' => ['not-a-block', 42]] (repro A) under correct framing.
+     */
+    private function surgeryBlocks(string $idxFile): void
+    {
+        $bytes  = (string) file_get_contents($idxFile);
+        $sep    = strpos($bytes, "\n\n");
+        $this->assertIsInt($sep, 'precondition: framed snapshot carries its terminator');
+        $header = substr($bytes, 0, $sep + 2);
+        $framed = substr($bytes, $sep + 2);
+        $colon  = strpos($framed, ':');
+        $this->assertIsInt($colon, 'precondition: framed payload carries its length prefix');
+        $blob     = substr($framed, $colon + 1, (int) substr($framed, 0, $colon));
+        $payload  = unserialize($blob);
+        $this->assertIsArray($payload, 'precondition: the warm payload decodes');
+
+        $payload['blocks'] = ['not-a-block', 42];
+        $poison = serialize($payload);
+        file_put_contents($idxFile, $header . strlen($poison) . ':' . $poison);
+    }
+
+    /**
+     * @param list<string> $extra
+     * @return array{exit:int, out:string, err:string, combined:string}
+     */
+    private function runCli(string $cfgPath, string $corpus, array $extra = []): array
+    {
+        $cmd = array_merge(
+            [PHP_BINARY, dirname(__DIR__, 3) . '/bin/phpdup', 'analyze', $corpus, '--workers=1', '-c', $cfgPath],
+            $extra,
+        );
+        $proc = proc_open($cmd, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, dirname($corpus));
+        $this->assertIsResource($proc, 'proc_open refused ' . implode(' ', $cmd));
+
+        fclose($pipes[0]);   // </dev/null law: no interactive prompt can block the child
+        stream_set_blocking($pipes[1], false);
+        stream_set_blocking($pipes[2], false);
+
+        $out      = '';
+        $err      = '';
+        $deadline = microtime(true) + 30.0;
+        $outOpen  = true;
+        $errOpen  = true;
+        while ($outOpen || $errOpen) {
+            $read = array_values(array_filter([$outOpen ? $pipes[1] : null, $errOpen ? $pipes[2] : null]));
+            $w = $e = null;
+            if ($read !== [] && stream_select($read, $w, $e, 1) > 0) {
+                foreach ($read as $stream) {
+                    $chunk = fread($stream, 65536);
+                    if ($stream === $pipes[1]) {
+                        $out .= $chunk === false ? '' : $chunk;
+                    } else {
+                        $err .= $chunk === false ? '' : $chunk;
+                    }
+                }
+            }
+            if (microtime(true) > $deadline) {
+                proc_terminate($proc, 9);
+                $this->fail('phpdup child timed out: ' . implode(' ', $cmd));
+            }
+            if (@feof($pipes[1])) $outOpen = false;
+            if (@feof($pipes[2])) $errOpen = false;
+        }
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exit = proc_close($proc);
+
+        return ['exit' => $exit, 'out' => $out, 'err' => $err, 'combined' => $out . $err];
+    }
 
     /**
      * Forge a framed cache file behind a mismatched header and prove the
