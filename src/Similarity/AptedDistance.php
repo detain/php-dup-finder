@@ -133,7 +133,9 @@ final class AptedDistance
      */
     public function hasMemoisedInputs(Node $node): bool
     {
-        return $this->tupleMemo->contains($node);
+        // CI-85: SplObjectStorage::contains() deprecated since PHP 8.5;
+        // offsetExists() is the identical-semantics replacement (8.1 floor safe).
+        return $this->tupleMemo->offsetExists($node);
     }
 
     /**
@@ -235,7 +237,7 @@ final class AptedDistance
      */
     private function countOf(Node $node): int
     {
-        if ($this->countMemo->contains($node)) {
+        if ($this->countMemo->offsetExists($node)) {
             return $this->countMemo[$node];
         }
         $count = AstSerializer::nodeCount($node);
@@ -246,7 +248,7 @@ final class AptedDistance
     /** Memoised shapelet sketch (engine-009); see countOf() for the immutability contract. */
     private function sketchOf(Node $node): int
     {
-        if ($this->sketchMemo->contains($node)) {
+        if ($this->sketchMemo->offsetExists($node)) {
             return $this->sketchMemo[$node];
         }
         $sketch = ShapeletSketch::sketch($node);
@@ -265,7 +267,7 @@ final class AptedDistance
      */
     private function tupleOf(Node $node): array
     {
-        if ($this->tupleMemo->contains($node)) {
+        if ($this->tupleMemo->offsetExists($node)) {
             $this->tupleMemoHits++;
             return $this->tupleMemo[$node];
         }

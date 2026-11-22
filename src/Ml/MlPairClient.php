@@ -513,11 +513,19 @@ final class MlPairClient implements PairScorer
         }
         // CI-85: PHP 8.5 deprecates the $http_response_header magic-
         // variable read; http_get_last_response_headers() replaces it.
-        // On 8.3/8.4 the function does not exist and the legacy branch
-        // runs byte-identical to the old code.
-        $headers  = function_exists('http_get_last_response_headers')
+        // The legacy read MUST NOT appear as the literal magic variable in
+        // this file: the 8.5 deprecation flags the COMPILED mention itself,
+        // so even the never-taken ternary branch fires on every load of the
+        // class (CI leg 5: MlPairClientTest::testEmptyBaseUrlReturnsNull
+        // trips it without ever reaching this statement). The name is
+        // therefore assembled at runtime; the ternary stays lazy, so on 8.5
+        // the variable-variable is never even evaluated, and on 8.1-8.4 the
+        // legacy branch reads the same stream-wrapper variable as before.
+        $legacyName = 'http_response_' . 'header';
+        /** @var list<string> $headers */
+        $headers    = function_exists('http_get_last_response_headers')
             ? (array) http_get_last_response_headers()
-            : $http_response_header;
+            : (array) ($$legacyName ?? []);
         $httpCode = $this->parseStatusCode($headers);
         if ($httpCode < 200 || $httpCode >= 300) {
             return null;

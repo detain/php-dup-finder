@@ -688,7 +688,8 @@ final class WorkerPoolTest extends TestCase
     private function invokeDecodeFrame(int $idx, string $payload, array $allowList): mixed
     {
         $ref = new \ReflectionMethod(WorkerPool::class, 'decodeFrame');
-        $ref->setAccessible(true);
+        // No setAccessible(): it has been a no-op since PHP 8.1 and is
+        // deprecated since 8.5 (CI-85 leg tests/Unit/Parallel/WorkerPoolTest.php:691).
         return $ref->invoke(null, $idx, $payload, $allowList);
     }
 

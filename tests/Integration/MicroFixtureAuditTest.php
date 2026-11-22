@@ -46,7 +46,10 @@ final class MicroFixtureAuditTest extends TestCase
 
     /**
      * Measured defective detection on master (ce9dc03 lineage; row 0
-     * similarity re-measured on the 4c543f3 lineage, 2026-11-21 — see row note).
+     * similarity re-measured on the 4c543f3 lineage, 2026-11-21 — see row note;
+     * full signature re-derived on the f382e73/9fc8e86 lineage, 2026-11-22 —
+     * the engine-S15 (d997604) exact-bucket pair mint at index 2, see its
+     * row note).
      * Each row: [kind, memberCount, impact, similarity, sortedMembers(file:start-end)].
      * Sorted canonically by impact desc, then kind, then first member.
      */
@@ -71,6 +74,44 @@ final class MicroFixtureAuditTest extends TestCase
         ['method', 5, 312, 1.0, [
             "inline_0.php:14-23", "inline_1.php:14-23", "inline_2.php:14-23",
             "inline_3.php:14-23", "inline_4.php:14-23",
+        ]],
+        // Flip 2026-11-22 (audit-leg discipline honoured: "if a wave cure
+        // landed, re-derive truth and update RED_STATE_SIGNATURE + SHOULD_FIND
+        // deliberately"). CAUSE (disk-proven, engine-S15 r1 verdict §1): the
+        // 10th cluster is engine-S15 d997604's exact-bucket re-emission — a
+        // structural-hash-exact method bucket previously suppressed while
+        // riding the weaker 5-preamble component. Causal evidence: parent
+        // f583c1e ran this file 7/7 green (Integration OK 87/1558); d997604
+        // produced exactly these two failures. Era context (cures since the
+        // f541a8ad re-pin): engine-S18a int-postings 588c431, engine-S18b
+        // gram-dict interning 15c4a0c, engine-S15 tier-honesty d997604,
+        // engine-S09 memoise 7fc37bf/ecedabd, engine-S31b/c + shell-* batches.
+        // Detection strictly IMPROVED: an exact method-pair cluster is now
+        // minted for preamble_0.php:10-33 <-> preamble_2.php:10-29. Truth
+        // adjudication on the fixture bytes: the 13-line preamble (lines
+        // 12-24) is BYTE-IDENTICAL across all five preamble_* files, and
+        // p0/p2 are the only pair whose tails are also parameter-equivalent
+        // (query -> accumulator init -> while-append -> json_response,
+        // differing only in string/identifier literals — the fixture's
+        // designed parameterization); this pin ALREADY recorded their
+        // while-tails as an exact 1.0 clone (preamble_0.php:29-31 <->
+        // preamble_2.php:27-27, last row). The pair row lifts that
+        // established tail truth to method granularity: a genuine
+        // parameterizable clone, precisely what the tool exists to find.
+        // p1/p3/p4 tails differ in statement shape (e.g. p1's count(*)/
+        // return one-liner), so the 5-member cluster correctly stays at
+        // sim 0.9226 < 1.0 — P1 remains open. SHOULD_FIND DECISION (kept at
+        // 6 patterns, deliberately): the manifest lists BLIND SPOTS, and the
+        // new pair is detected truth, not a blind spot — a 7th entry would
+        // invert the manifest's meaning. P1's should-find (one hole-pinned
+        // preamble-sequence cluster across ALL 5 preambles) remains unmet:
+        // the pair covers 2 of 5 at method level without exposing the
+        // 12-24 fragment. Rows re-derived hermetically at f382e73 and
+        // re-confirmed at 9fc8e86 (git-archive extracts + hardlinked
+        // read-only vendor, PHP 8.3): all nine pre-existing rows
+        // byte-identical, only this row inserted (clusters 9 -> 10).
+        ['method', 2, 114, 1.0, [
+            "preamble_0.php:10-33", "preamble_2.php:10-29",
         ]],
         ['if', 5, 84, 1.0, [
             "inline_0.php:19-21", "inline_1.php:19-21", "inline_2.php:19-21",
@@ -105,7 +146,7 @@ final class MicroFixtureAuditTest extends TestCase
      */
     public const SHOULD_FIND = [
         ['P1', '2.1 + 1.1', 'one hole-pinned preamble-sequence cluster (lines 12-24) across all 5 preambles',
-            'only whole-method sim<1 near-dup + 3 disjoint if-fragments; statements 12-13 and 17-18 never appear as shared fragments'],
+            'whole-method 5-preamble near-dup at sim 0.9226 + (since the 2026-11-22 wave-3 mint) an exact p0<->p2 method pair from parameter-equivalent tails; statements 12-13 and 17-18 still never appear as shared fragments — no hole-pinned sequence view yet'],
         ['P2', '1.3', 'the three top-level scripts as one sequence family (one table name apart)',
             'only inner while/foreach control blocks cluster; script statements (lines 8-10, 17) invisible'],
         ['P3', '3.2 + 1.1', 'Env::isDev/baseUrl helper bodies linked to the 5 inline re-implementations (lines 16-17 of inline_*)',
@@ -230,7 +271,10 @@ final class MicroFixtureAuditTest extends TestCase
     public function testTruthManifestCoversSixPatternsAndFileCount(): void
     {
         $this->assertCount(6, self::SHOULD_FIND, 'the Appendix-A truth manifest has exactly six patterns');
-        $this->assertCount(9, $this->buildPayload()['clusters']);
+        // 10 clusters since the 2026-11-22 wave-3 pair mint (see the row note
+        // at RED_STATE_SIGNATURE index 2); the manifest count 6 is pattern
+        // state, not cluster count, and stays.
+        $this->assertCount(10, $this->buildPayload()['clusters']);
     }
 
     /** @return array<string,mixed> */

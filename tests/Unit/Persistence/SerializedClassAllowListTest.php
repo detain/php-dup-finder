@@ -297,7 +297,8 @@ final class SerializedClassAllowListTest extends TestCase
         // Structural witness that this is MEMOIZED, not merely
         // deterministic: the private slot holds the list after the call.
         $prop = new \ReflectionProperty(SerializedClassAllowList::class, 'blockCacheClasses');
-        $prop->setAccessible(true);
+        // No setAccessible(): no-op since PHP 8.1, deprecated since 8.5
+        // (CI-85 leg tests/Unit/Persistence/SerializedClassAllowListTest.php:300).
         $slot = $prop->getValue();
         self::assertIsArray($slot, 'the memo slot must be populated after a call');
         self::assertTrue($slot === $first, 'callers must receive the memoized instance');
