@@ -188,6 +188,45 @@ final class RefactorTestReporterTest extends TestCase
         $this->assertStringNotContainsString('<missing>', $skeleton);
     }
 
+    public function testCanonicalAbsenceRowOnHonestOptionalHoleProjectsFalse(): void
+    {
+        // output-S27: the canonical absence row on an optional hole whose
+        // evidence is complete is a VERIFIED absence — the retired printable
+        // sentinel's exact meaning — so the provider row says `false`, not
+        // the degraded annotation.
+        $cluster = $this->clusterWithNoHoles();
+        $cluster->holes = [new Hole('__O0', 'optional_block', ["'x'", Hole::MISSING], false)];
+        $skeleton = (new RefactorTestReporter())->buildTest($cluster);
+
+        $this->assertStringNotContainsString('degraded', $skeleton, 'verified absence carries no degradation');
+        $rows = preg_split('/\r?\n/', $skeleton);
+        $absentRow = null;
+        $valueRow  = null;
+        foreach ($rows as $line) {
+            if (str_contains($line, 'member_1_')) {
+                $absentRow = $line;
+            } elseif (str_contains($line, 'member_0_')) {
+                $valueRow = $line;
+            }
+        }
+        $this->assertNotNull($absentRow, 'provider must carry a row per member');
+        $this->assertStringContainsString('false', (string) $absentRow, 'verified-absent member row passes false');
+        $this->assertStringContainsString("'x'", (string) $valueRow, 'the observed member keeps its value');
+    }
+
+    public function testAmbiguousAbsenceRowOnDegradedOptionalHoleStaysAnnotatedNull(): void
+    {
+        // The other half of the S27 projection law: once the hole is
+        // degraded, a canonical '' row may be a never-observed gap — the
+        // generator must NOT claim `false` on ambiguous evidence.
+        $cluster = $this->clusterWithNoHoles();
+        $cluster->holes = [new Hole('__O0', 'optional_block', ["'x'", Hole::MISSING], true)];
+        $skeleton = (new RefactorTestReporter())->buildTest($cluster);
+
+        $this->assertStringContainsString('null /* degraded', $skeleton);
+        $this->assertStringNotContainsString("'x', false", $skeleton);
+    }
+
     // ── output-035 (S6): the cluster-name metadata row defuses ────────────────
 
     public function testClusterNameMetadataRowDefusesFormulaTrigger(): void

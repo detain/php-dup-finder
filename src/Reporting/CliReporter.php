@@ -266,7 +266,7 @@ final class CliReporter
                     self::scrub($h->suggestedName),
                     self::scrub($h->inferredType),
                     $h->kind,
-                    $this->summarizeObserved($h->observedValues, 60),
+                    $this->summarizeObserved($h->observedValues, 60, $h->kind, $h->degraded),
                 );
             }
             $out->writeln($holesTable->render());
@@ -379,23 +379,35 @@ final class CliReporter
     }
 
     /** @param list<string> $values */
-    private function summarizeObserved(array $values, int $maxLen): string
+    private function summarizeObserved(array $values, int $maxLen, string $kind, bool $degraded): string
     {
         // output-046: an observed value is a raw source fragment, so it
         // carries every byte the scanned file held — control bytes included.
         // Scrub through the shared boundary before it is truncated and
         // printed; length folding alone left an OSC intro intact on stdout.
-        $unique = array_values(array_unique(array_map(
-            static fn(string $v): string => self::scrub($v),
+        //
+        // output-S27 render projection: the data layer carries ONE canonical
+        // absence row; here it becomes an honest label. On an optional hole
+        // whose evidence is complete (not degraded) the row states a
+        // verified absence — '(absent)'; anywhere else it is an unevidenced
+        // gap — '(gap)'. The pre-1.7 printable sentinel and pre-5.4
+        // impostor project to the label each of them always meant.
+        $verified = $kind === 'optional_block' && !$degraded;
+        $shown    = array_values(array_unique(array_map(
+            static function (string $v) use ($verified): string {
+                if ($v === Hole::MISSING)  return $verified ? '(absent)' : '(gap)';
+                if ($v === '<absent>')     return '(absent)';
+                if ($v === '<missing>')    return '(gap)';
+                return self::scrub($v);
+            },
             $values,
         )));
-        $shown  = array_map(
-            static fn(string $v) => ($v === Hole::MISSING || $v === '<missing>') ? '(gap)' : $v,
-            array_slice($unique, 0, 5),
+        $displayed = array_map(
+            static fn(string $v) => mb_strlen($v) > 40 ? mb_substr($v, 0, 37) . '...' : $v,
+            array_slice($shown, 0, 5),
         );
-        $rendered = array_map(fn($v) => mb_strlen($v) > 40 ? mb_substr($v, 0, 37) . '...' : $v, $shown);
-        $extra = count($unique) > 5 ? sprintf(' (+%d more)', count($unique) - 5) : '';
-        $out = implode(', ', $rendered) . $extra;
+        $extra = count($shown) > 5 ? sprintf(' (+%d more)', count($shown) - 5) : '';
+        $out = implode(', ', $displayed) . $extra;
         return mb_strlen($out) > $maxLen ? mb_substr($out, 0, $maxLen - 1) . '…' : $out;
     }
 

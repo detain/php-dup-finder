@@ -58,7 +58,9 @@ When two members have differing-length statement arrays (think
 `function long() { a(); b(); c(); d(); }` vs `function short() { a(); b(); }`),
 LCS over per-statement structural hashes pairs up the matched
 statements and emits one `optional_block` hole per unmatched
-template statement. Hole values are `<absent>` for members that
+template statement. Hole values are the canonical absence row
+(`Hole::MISSING` — rendered by reporters as an honest "absent" marker,
+never a printable impostor in the data) for members that
 omit the segment, and the seed's repr for members that have it.
 
 That's how phpdup's `optional-segments` pattern tag fires and how

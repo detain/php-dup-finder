@@ -28,11 +28,25 @@ namespace Phpdup\Refactor;
  * member that never cleanly visited the path. Either way the value set
  * is incomplete evidence, which is exactly what `degraded` says; the
  * row count always equals the cluster's member count.
+ *
+ * Since output-S27 (php-dup-finder-output-019) it carries a third —
+ * and it is the only representation: the VERIFIED ABSENCE row of an
+ * optional segment. When the walk saw a member's slot and it holds no
+ * template statement, the row is the same Hole::MISSING, recorded via
+ * appendObserved WITHOUT degrading — the absence is complete evidence
+ * for that row (T4d: degraded:false optional holes state a fact, the
+ * old printable absent-impostor is retired to a render-time projection
+ * inside reporters only). Consumers tell the two apart
+ * exactly as far as the data can: on an optional hole, a MISSING row
+ * with degraded:false is a verified absence, and with degraded:true
+ * the hole states honestly that some MISSING rows were never observed.
  */
 final class Hole
 {
-    /** Observed-value marker for "this member had no node at — or was
-     *  never observed at — the hole path". */
+    /** The single canonical absence marker (output-S27): "this member had
+     *  no node at — or was never observed at — the hole path". Covers
+     *  structural gaps, never-gathered rows (output-018), and verified
+     *  optional-segment absences; the degraded flag says which. */
     public const MISSING = '';
 
     public string $inferredType = 'mixed';
@@ -41,8 +55,12 @@ final class Hole
     /**
      * @param list<string>           $observedValues one row per cluster member,
      *                                               in cluster order; '' entries
-     *                                               are structural gaps (item 5.4,
-     *                                               row contract from output-S26).
+     *                                               are the canonical absence —
+     *                                               a structural gap (item 5.4),
+     *                                               a never-gathered row (output-S26),
+     *                                               or a verified optional-segment
+     *                                               absence (output-S27; those do
+     *                                               not degrade — see class doc).
      * @param bool                   $degraded       true once any observation was recorded as a
      *                                                 structural gap — the value set is incomplete
      *                                                 evidence and reporters say so instead of

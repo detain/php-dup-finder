@@ -23,6 +23,24 @@ namespace Phpdup\Reporting;
 final class JsonSchemaSpec
 {
     /**
+     * 1.7 (minor, semantic correction inside existing keys): canonical
+     * absence (php-dup-finder-output-019). A hole's `observed` list nulls
+     * EVERY absence row: the canonical in-memory marker (Hole::MISSING)
+     * now carries structural gaps, never-gathered rows and verified
+     * optional-segment absences alike — the retired printable absent
+     * sentinel is no longer a data value (stale payloads still normalize
+     * to null here; pre-5.4 '<missing>' still lifts `degraded`, a
+     * sentinel row never did). Consequence for optional holes: on
+     * `degraded:false`, a null row states a VERIFIED absence — the member
+     * provably lacks the segment; on `degraded:true`, null rows are
+     * honestly ambiguous (some were never observed).
+     * `present_in_members` is corrected to list members with a genuine
+     * VALUE row: absence-marked members are not present, so the indices
+     * are computed from per-member rows, never the deduped `observed`
+     * set, and a gap row no longer counts as present (the pre-1.7 bug).
+     * No key is added, removed or retyped — consumers parsing 1.6 parse
+     * 1.7 untouched; the correction is in what null rows can now mean.
+     *
      * 1.6 (minor, additive): item 5.3 placement advice. Every cluster gains
      * one TRAILING key `placement` — {shape, rationale, same_host,
      * lca_namespace, host_packages} classifying where the extraction should
@@ -75,7 +93,7 @@ final class JsonSchemaSpec
      * files_without_blocks). Every 1.1 field keeps its name and type, so
      * 1.1 consumers parse 1.2 payloads untouched.
      */
-    public const SCHEMA_VERSION = '1.6';
+    public const SCHEMA_VERSION = '1.7';
 
     /**
      * Top-level shape of {@see JsonReporter::build()} output. This is
@@ -185,7 +203,7 @@ final class JsonSchemaSpec
             'signature'              => 'string|null',
             'members'                => 'list<object>  // trailing repo/scope keys since 1.4 (item 5.1); see JsonReporter::clusterPayload()',
             'pairs'                  => 'list<object>',
-            'holes'                  => 'list<object>  // trailing `degraded` bool since 1.5; `observed` entries may be null (structural gap) — see holeShape()',
+            'holes'                  => 'list<object>  // trailing `degraded` bool since 1.5; `observed` entries may be null — any absence row, since 1.7 see holeShape()',
             'scope'                  => "string  // 'single' | 'multi' — item 5.1, trailing (1.4)",
             'template'               => "?object  // {id,file,start,end} canonical template — item 5.4, trailing (1.5)",
             'source'                 => "object  // {text:string|null,truncated:bool} capped template source (200 lines / 8 KiB) — trailing (1.5)",
@@ -198,12 +216,19 @@ final class JsonSchemaSpec
     }
 
     /**
-     * Shape of one `holes[]` entry (item 5.4). `observed` is the deduped
-     * value set; a null entry means the member had NO node at the hole
-     * path (structural gap — shorter block), and `degraded` is then true.
-     * The legacy printable sentinels `<absent>` (optional_block presence)
-     * and pre-1.5 cache-resident `<missing>` keep their semantics; the
-     * latter is normalized to null on emission.
+     * Shape of one `holes[]` entry (item 5.4, canonicalized by output-S27).
+     * `observed` is the deduped value set; a null entry means the member's
+     * row was an ABSENCE of some kind — a structural gap, a never-gathered
+     * row, or a verified optional-segment absence (since 1.7 all three are
+     * the one canonical in-memory marker). On optional holes the
+     * `degraded` flag states which reading applies: false means every
+     * null row is VERIFIED absence (the member provably lacks the
+     * segment); true means incomplete evidence, and the printable
+     * pre-1.7 sentinel plus pre-1.5 cache-resident `<missing>` are
+     * normalized to null on emission (only the latter lifts `degraded`,
+     * exactly as before 1.7). `present_in_members` lists the members
+     * with a genuine value row — absence-marked indices never appear,
+     * so it is computed positionally from the per-member rows.
      *
      * @return array<string, string>
      */
@@ -214,10 +239,10 @@ final class JsonSchemaSpec
             'kind'               => 'string',
             'inferred_type'      => 'string',
             'suggested_name'     => 'string',
-            'observed'           => 'list<string|null>',
+            'observed'           => 'list<string|null>  // null = absence row (gap, never-gathered, or verified optional absence) — canonical since 1.7',
             'value_count'        => 'int',
             'degraded'           => 'bool  // trailing (1.5)',
-            'present_in_members' => 'list<int>  // optional_block only',
+            'present_in_members' => 'list<int>  // optional_block only; value-row indices (1.7)',
         ];
     }
 

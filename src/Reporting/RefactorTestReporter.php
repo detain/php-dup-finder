@@ -148,6 +148,14 @@ PHP;
         if ($v === null || $v === '<absent>') {
             return $h->kind === 'optional_block' ? 'false' : 'null';
         }
+        if ($v === Hole::MISSING && $h->kind === 'optional_block' && !$h->degraded) {
+            // output-S27: the canonical absence row on an optional hole
+            // whose evidence is complete is a VERIFIED absence — exactly
+            // what the retired printable sentinel stated, so the provider
+            // row reads `false` (skip the segment) rather than the M2
+            // degraded annotation below.
+            return 'false';
+        }
         if ($v === Hole::MISSING || $v === '<missing>') {
             // M2 fix: a degraded gap CARRIES '' (Hole::appendMissing) — the
             // null arm above never fires for it, and the quote fallback used

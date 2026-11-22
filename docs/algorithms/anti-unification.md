@@ -79,8 +79,11 @@ Specifically for statement arrays of differing lengths
 - Run LCS over the two sequences.
 - Matched indices recurse normally.
 - Unmatched template indices become `optional_block` holes whose
-  observed values are `<absent>` for members that lacked the
-  segment, the seed's repr otherwise.
+  observed values are the canonical absence row (`Hole::MISSING`) for
+  members that lacked the segment — recorded WITHOUT degrading the hole,
+  because a verified absence is complete evidence — the seed's repr
+  otherwise. Reporters project that row as an "absent" cell; it is
+  never a printable impostor string in the data.
 - Cap the optional-block count via `max_per_cluster`; over-budget
   clusters fall back to a single whole-array `subtree` hole.
 

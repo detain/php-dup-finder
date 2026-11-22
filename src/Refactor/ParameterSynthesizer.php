@@ -201,7 +201,9 @@ final class ParameterSynthesizer
     private function camelCaseFromSegment(array $observed): string
     {
         foreach ($observed as $v) {
-            if ($v === '<absent>' || $v === '<missing>' || $v === '') continue;
+            // output-S27: the canonical absence row is Hole::MISSING ('');
+            // '<missing>' survives only as a pre-1.5 stale-payload defense.
+            if ($v === Hole::MISSING || $v === '<missing>') continue;
             // First identifier-like token in the segment, e.g.
             //   `some_other_logic($here);` → `some_other_logic`
             //   `$ret = otherStuff();`     → `otherStuff`

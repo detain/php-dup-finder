@@ -199,11 +199,17 @@ final class HtmlReporter
   </td>
   <td><?php
       $vals = array_unique($h->observedValues);
+      // output-S27 render projection: one canonical absence row in the
+      // data; the honest label is chosen here. Optional hole with
+      // complete evidence → its MISSING rows are verified absences
+      // (.absent); anywhere else a MISSING row is an unevidenced gap
+      // (.gap). The two printable forms below are display-only.
+      $verified = $h->kind === 'optional_block' && !$h->degraded;
       $first = true;
       foreach ($vals as $v) {
           if (!$first) echo ', ';
           $first = false;
-          if ($v === '<absent>') {
+          if ($v === '<absent>' || ($v === Hole::MISSING && $verified)) {
               echo '<span class="absent">&lt;absent&gt;</span>';
           } elseif ($v === Hole::MISSING || $v === '<missing>') {
               // M1 parity: a degraded hole carries '' in memory — render the

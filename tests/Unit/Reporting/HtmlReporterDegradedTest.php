@@ -48,10 +48,13 @@ final class HtmlReporterDegradedTest extends TestCase
 
     public function testAbsentAndGapMarkersCoexistInOneCell(): void
     {
+        // output-S27 canonical form: BOTH absences are now the single
+        // Hole::MISSING row — the projection still splits them, because
+        // the honest HTML differs (verified absence vs degraded gap).
         $cluster        = $this->pair();
         $cluster->holes = [
             new Hole('__P0', 'literal', [Hole::MISSING, "'x'"], true),
-            new Hole('__P1', 'optional_block', ['<absent>', "'y'"], false),
+            new Hole('__P1', 'optional_block', [Hole::MISSING, "'y'"], false),
         ];
 
         $page = $this->renderClusterPage($cluster);
@@ -59,6 +62,19 @@ final class HtmlReporterDegradedTest extends TestCase
         $this->assertStringContainsString('<span class="gap">(gap)</span>', $page);
         $this->assertStringContainsString('<span class="absent">&lt;absent&gt;</span>', $page);
         $this->assertStringContainsString('<span class="gap">(gap)</span>, &#039;x&#039;', $page, 'gap joins the value list honestly');
+    }
+
+    public function testCanonicalRowOnDegradedOptionalHoleRendersGapNotAbsence(): void
+    {
+        // The other projection arm: a degraded optional hole cannot claim
+        // its '' rows were observed at all — the cell must say (gap).
+        $cluster        = $this->pair();
+        $cluster->holes = [new Hole('__P1', 'optional_block', ["'y'", Hole::MISSING], true)];
+
+        $page = $this->renderClusterPage($cluster);
+
+        $this->assertStringContainsString('<span class="gap">(gap)</span>', $page);
+        $this->assertStringNotContainsString('class="absent"', $page, 'ambiguous rows never claim verified absence');
     }
 
     public function testCssCarriesTheGapStyle(): void

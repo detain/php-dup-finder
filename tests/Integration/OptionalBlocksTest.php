@@ -10,6 +10,7 @@ use Phpdup\Pipeline\Stages\ClusterStage;
 use Phpdup\Pipeline\Stages\PreprocessStage;
 use Phpdup\Pipeline\Stages\RefactorStage;
 use Phpdup\Pipeline\Stages\ScanningStage;
+use Phpdup\Refactor\Hole;
 use Symfony\Component\Console\Output\NullOutput;
 
 /**
@@ -60,11 +61,15 @@ final class OptionalBlocksTest extends TestCase
         $this->assertNotNull($cluster->signature);
         $this->assertStringContainsString('= false', (string)$cluster->signature, 'signature must default the optional bools');
 
-        // The "<absent>" sentinel should appear at exactly one member position
-        // per optional hole — the short member.
+        // output-S27 canonical law: exactly one member row is the canonical
+        // absence (Hole::MISSING) per optional hole — the short member —
+        // and the walk observed every member honestly, so the hole is NOT
+        // degraded (absence is complete evidence, the printable sentinel
+        // retired to the reporters' projection layer).
         foreach ($optional as $hole) {
-            $absent = array_filter($hole->observedValues, static fn($v) => $v === '<absent>');
-            $this->assertCount(1, $absent, 'exactly one member should be marked <absent> per optional hole');
+            $absent = array_filter($hole->observedValues, static fn($v) => $v === Hole::MISSING);
+            $this->assertCount(1, $absent, 'exactly one member should carry the canonical absence row per optional hole');
+            $this->assertFalse($hole->isDegraded(), 'verified optional absence must not degrade the hole');
         }
     }
 

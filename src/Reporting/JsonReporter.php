@@ -28,6 +28,16 @@ use PhpParser\PrettyPrinter\Standard as PrettyPrinter;
  * objects additionally carry `degraded`, and structural gaps in `observed`
  * are JSON null, never the old `<missing>` string.
  *
+ * output-S27 (schema '1.6' → '1.7'): `observed` null now means any
+ * absence row — the canonical Hole::MISSING covers structural gaps,
+ * never-gathered rows and verified optional-segment absences alike, and
+ * the retired printable sentinel is normalized to null here (with
+ * pre-5.4 '<missing>') for stale payloads. `present_in_members` is
+ * corrected in the same pass: it lists members with a genuine value
+ * row, so canonical '' rows no longer count as present. No key is
+ * added or removed — a semantic correction inside existing keys, hence
+ * a minor bump.
+ *
  * output-038: source bytes arrive through the same per-run
  * {@see SourceTextStore} every other read surface uses (injected by
  * ReportStage; a standalone `build()` on a hand-built Report creates its
@@ -52,6 +62,18 @@ final class JsonReporter
     private ?PrettyPrinter $printer = null;
 
     public function __construct(private readonly ?SourceTextStore $sourceText = null) {}
+
+    /**
+     * Render-projection classifier (output-S27): is this observed row an
+     * absence of ANY kind — the canonical Hole::MISSING, the pre-5.4
+     * '<missing>' impostor, or the retired pre-1.7 printable absent
+     * sentinel? Those two string literals exist ONLY in this projection
+     * layer; the data layer has emitted canonical rows since 1.7.
+     */
+    private static function isAbsenceRow(string $v): bool
+    {
+        return $v === Hole::MISSING || $v === '<missing>' || $v === '<absent>';
+    }
 
     public function writeTo(Report $report, string $file): void
     {
@@ -155,10 +177,16 @@ final class JsonReporter
                 'matchScore' => Num::json($p['matchScore']),
             ], $c->pairs),
             'holes' => array_map(static function (Hole $h) {
-                // Item 5.4: structural gaps serialize as JSON null (both the
-                // new Hole::MISSING '' and the legacy '<missing>' string that
-                // pre-5.4 cluster caches still carry), and every hole now
-                // states whether its value set is degraded evidence.
+                // Item 5.4 + output-S27 (schema 1.7): `observed` entries
+                // serialize every absence row as JSON null — the canonical
+                // Hole::MISSING (structural gap, never-gathered row, or
+                // verified optional-segment absence alike) as well as the
+                // legacy impostor strings still carried by stale caches:
+                // '<missing>' (pre-5.4 gap, lifts `degraded` honestly) and
+                // the retired printable absent-sentinel (pre-1.7 optional
+                // absence, which never degraded anything). The printable
+                // impostors live only in this render-projection layer;
+                // fresh data emits canonical rows only.
                 $observed = [];
                 $degraded = $h->degraded;
                 foreach (array_unique($h->observedValues) as $v) {
@@ -167,7 +195,7 @@ final class JsonReporter
                         // gap — normalize it and lift the flag honestly.
                         $degraded = true;
                     }
-                    $observed[] = ($v === Hole::MISSING || $v === '<missing>') ? null : $v;
+                    $observed[] = self::isAbsenceRow($v) ? null : $v;
                 }
                 $base = [
                     'placeholder'    => $h->placeholder,
@@ -179,9 +207,16 @@ final class JsonReporter
                     'degraded'       => $degraded,
                 ];
                 if ($h->kind === 'optional_block') {
+                    // 1.7 correction: present_in_members lists the members
+                    // with a genuine VALUE row — computed from the raw
+                    // per-member rows (never the deduped `observed` set),
+                    // so any absence — gap, never-gathered, or verified
+                    // optional absence alike — reads as not-present. The
+                    // pre-1.7 rule counted canonical '' gap rows as
+                    // present (bug retired with the sentinel).
                     $present = [];
                     foreach ($h->observedValues as $i => $v) {
-                        if ($v !== '<absent>') $present[] = $i;
+                        if (!self::isAbsenceRow($v)) $present[] = $i;
                     }
                     $base['present_in_members'] = $present;
                 }

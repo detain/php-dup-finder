@@ -59,6 +59,36 @@ final class CliReporterHonestyTest extends TestCase
         $this->assertStringNotContainsString('re-expressed:', $rendered);
     }
 
+    public function testVerifiedOptionalAbsenceRendersAbsentLabelNotRawSentinel(): void
+    {
+        // output-S27: a canonical absence row on an optional hole with
+        // complete evidence gets its own honest label — and the retired
+        // printable sentinel must never be echoed, raw or otherwise.
+        $cluster = $this->pairCluster();
+        $cluster->holes[] = new Hole('__O9', 'optional_block', ["'kept();'", Hole::MISSING], false);
+
+        $rendered = $this->render($cluster, 1.0);
+
+        $this->assertStringContainsString('(absent)', $rendered, 'verified absence shows its label');
+        $this->assertStringNotContainsString('<absent>', $rendered, 'no printable sentinel reaches stdout');
+        // A verified absence is complete evidence — it must not trigger the
+        // partial-evidence note, which is only for degraded holes.
+        $this->assertStringNotContainsString('no node at the hole path', $rendered);
+    }
+
+    public function testDegradedOptionalHoleProjectsGapLabelForAmbiguousRows(): void
+    {
+        // Once the optional hole is degraded, its '' rows may be
+        // never-observed gaps — the cell says (gap), never claims (absent).
+        $cluster = $this->pairCluster();
+        $cluster->holes[] = new Hole('__O9', 'optional_block', ["'kept();'", Hole::MISSING], true);
+
+        $rendered = $this->render($cluster, 1.0);
+
+        $this->assertStringContainsString('(gap)', $rendered);
+        $this->assertStringNotContainsString('(absent)', $rendered);
+    }
+
     public function testCoverageStancePrintsWhenBarLowered(): void
     {
         $cluster = $this->pairCluster();

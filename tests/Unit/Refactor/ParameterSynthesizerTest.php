@@ -77,8 +77,10 @@ final class ParameterSynthesizerTest extends TestCase
 
     public function testOptionalBlockGetsBoolTypeAndIncludeName(): void
     {
+        // output-S27 canonical form: the verified-absence member row is
+        // Hole::MISSING (''), no longer the printable sentinel.
         $cluster = $this->clusterWithHoles([
-            new Hole('__O0', 'optional_block', ['some_other_logic($here);', '<absent>']),
+            new Hole('__O0', 'optional_block', ['some_other_logic($here);', Hole::MISSING]),
         ]);
         (new ParameterSynthesizer())->synthesize($cluster);
 
@@ -92,7 +94,7 @@ final class ParameterSynthesizerTest extends TestCase
         // First identifier in the segment is "if" — a stop-word. Synthesizer
         // should reach for the next identifier ("doExtraWork") instead.
         $cluster = $this->clusterWithHoles([
-            new Hole('__O0', 'optional_block', ['if ($x) doExtraWork();', '<absent>']),
+            new Hole('__O0', 'optional_block', ['if ($x) doExtraWork();', Hole::MISSING]),
         ]);
         (new ParameterSynthesizer())->synthesize($cluster);
 
@@ -103,7 +105,7 @@ final class ParameterSynthesizerTest extends TestCase
     {
         // Segment with no identifier-like token at all (just punctuation/numbers).
         $cluster = $this->clusterWithHoles([
-            new Hole('__O0', 'optional_block', ['<absent>', '<missing>']),
+            new Hole('__O0', 'optional_block', [Hole::MISSING, '<missing>']),
         ]);
         (new ParameterSynthesizer())->synthesize($cluster);
 
@@ -113,7 +115,7 @@ final class ParameterSynthesizerTest extends TestCase
     public function testOptionalBlockNameConvertsSnakeToCamel(): void
     {
         $cluster = $this->clusterWithHoles([
-            new Hole('__O0', 'optional_block', ['some_snake_thing();', '<absent>']),
+            new Hole('__O0', 'optional_block', ['some_snake_thing();', Hole::MISSING]),
         ]);
         (new ParameterSynthesizer())->synthesize($cluster);
 

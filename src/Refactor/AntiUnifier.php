@@ -582,15 +582,20 @@ final class AntiUnifier
             // belt: unreachable while the pad invariant holds
             $this->fillGaps($existing, $memberIdx);
             if ($existing->kind === 'optional_block') {
-                // '<absent>' is the native row of an optional segment —
-                // this member verifiably lacks the template's statement here.
-                $existing->appendObserved('<absent>');
+                // output-S27 (php-dup-finder-output-019): the canonical
+                // absence row of an optional segment is Hole::MISSING —
+                // this member verifiably lacks the template's statement
+                // here, and the absence itself is complete evidence for
+                // the row, so the hole does NOT degrade (appendMissing
+                // would degrade it for what is not a gap). Reporters
+                // project this row as absent/gap from (kind, degraded).
+                $existing->appendObserved(Hole::MISSING);
             } else {
-                // output-018: stamping '<absent>' into a VALUE hole claims
-                // the member merely lacked what the seed has. This path is
-                // a recorded divergence, not an optional segment — the
-                // member's real slot content is unrecoverable here, so the
-                // row is an explicit structural gap and the hole degrades.
+                // output-018 leg 4: a value hole records VERIFIED ABSENCE
+                // nowhere — this path is a recorded divergence, not an
+                // optional segment. The member's real slot content is
+                // unrecoverable here, so the row is an explicit structural
+                // gap and the hole degrades.
                 $existing->appendMissing();
             }
             return null;
@@ -612,7 +617,10 @@ final class AntiUnifier
             }
         }
         $this->fillGaps($hole, $memberIdx);
-        $hole->appendObserved('<absent>');
+        // output-S27: the member verifiably lacks this segment — the
+        // canonical absence row, recorded WITHOUT degrading (the walk
+        // saw the slot; it was empty).
+        $hole->appendObserved(Hole::MISSING);
         $ctx->holes[$holeId]      = $hole;
         $ctx->holesByPath[$key]   = $hole;
         $ctx->holePaths[$holeId]  = $path;

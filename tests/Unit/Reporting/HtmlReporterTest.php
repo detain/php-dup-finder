@@ -98,7 +98,7 @@ final class HtmlReporterTest extends TestCase
                 if (str_contains($body, 'hole-optional_block')) {
                     $found = true;
                     $this->assertStringContainsString('class="badge optional"', $body, 'optional rows get a "type-3" badge');
-                    $this->assertStringContainsString('class="absent"', $body, '<absent> sentinel rendered with .absent class');
+                    $this->assertStringContainsString('class="absent"', $body, 'verified optional absence renders with .absent class (canonical row projected)');
                 }
             }
             $this->assertTrue($found, 'expected at least one cluster page to render an optional_block row');

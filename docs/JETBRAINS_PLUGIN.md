@@ -71,7 +71,20 @@ Cluster fields (each entry of `clusters[]`):
 | `architectural_findings` | list&lt;object&gt; | `{analyzer, code, severity, message, suggestion}`. |
 | `signature` | string\|null | Suggested abstraction signature (multi-line). |
 | `members` | list&lt;object&gt; | `{file, start, end, kind, namespace, class, name, size}`. |
-| `holes` | list&lt;object&gt; | `{placeholder, kind, inferred_type, suggested_name, observed[], value_count, present_in_members?}`. |
+| `holes` | list&lt;object&gt; | `{placeholder, kind, inferred_type, suggested_name, observed[], value_count, degraded, present_in_members?}` — `present_in_members` only for `optional_block` holes. |
+
+Hole value semantics (schema 1.7): an `observed[]` entry is either a raw
+source fragment or `null`. `null` means the member's row is an ABSENCE —
+a structural gap, a never-gathered observation, or a verified
+optional-segment absence (one canonical marker since 1.7; no printable
+sentinel strings ever reach the wire). The hole's `degraded` bool says
+how far to trust the value set; on an `optional_block` hole it also
+disambiguates the nulls: `degraded:false` means every null row is a
+VERIFIED absence — the member provably lacks the segment — while
+`degraded:true` means some null rows were simply never observed.
+`present_in_members` lists the indices of members with a genuine VALUE
+row (cluster `members[]` order); absent-marked members, whatever the
+kind of absence, never appear.
 
 ## Plugin features that map to fields
 
