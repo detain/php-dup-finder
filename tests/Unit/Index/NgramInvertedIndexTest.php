@@ -288,4 +288,161 @@ final class NgramInvertedIndexTest extends TestCase
             'family pair mass is quadratic — the pathological growth mode the gen-loop guard caps'
         );
     }
+
+    // ---------------------------------------------------------------
+    // engine-S18a (php-dup-finder-engine-011, half A): int postings.
+    // ---------------------------------------------------------------
+
+    /** @return array<string|int,list<int>> */
+    private function postingsOf(NgramInvertedIndex $inverted): array
+    {
+        return (new \ReflectionProperty(NgramInvertedIndex::class, 'postings'))->getValue($inverted);
+    }
+
+    /** @return list<string> */
+    private function idByIntOf(NgramInvertedIndex $inverted): array
+    {
+        return (new \ReflectionProperty(NgramInvertedIndex::class, 'idByInt'))->getValue($inverted);
+    }
+
+    /** @return array<string,int> */
+    private function intByIdOf(NgramInvertedIndex $inverted): array
+    {
+        return (new \ReflectionProperty(NgramInvertedIndex::class, 'intById'))->getValue($inverted);
+    }
+
+    public function testPostingsStoreSequentialIntsNotBlockIdStrings(): void
+    {
+        // The residency fix itself: every posting slot is a sequential int
+        // (0..k-1 in build/insertion order), never a block-id string. The id
+        // strings live once each in the decode table. A 16-char hex id is ~34
+        // bytes of zend_string + refcount churn per posting; an int slot is 8
+        // bytes in a packed array and no string traffic (engine-011).
+        $a = $this->makeBlockWithNgrams('A', 'hash_a', ['shared' => 1, 'only_a' => 1]);
+        $b = $this->makeBlockWithNgrams('B', 'hash_b', ['shared' => 1, 'only_b' => 1]);
+
+        $index = $this->buildIndex([$a, $b]);
+        $inverted = new NgramInvertedIndex();
+        $inverted->build($index);
+
+        $this->assertSame(
+            ['shared' => [0, 1], 'only_a' => [0], 'only_b' => [1]],
+            $this->postingsOf($inverted),
+            'postings must be exactly the interned sequential ints, in insertion order'
+        );
+        foreach ($this->postingsOf($inverted) as $gram => $posting) {
+            foreach ($posting as $intId) {
+                $this->assertIsInt($intId, 'posting for gram ' . $gram . ' leaked a non-int');
+            }
+        }
+        $this->assertSame(['A', 'B'], $this->idByIntOf($inverted));
+        $this->assertSame(['A' => 0, 'B' => 1], $this->intByIdOf($inverted));
+    }
+
+    public function testOneInternPerBlockAcrossAllItsGrams(): void
+    {
+        // "Map block ids → sequential ints once": a block with many grams
+        // still contributes exactly one table entry, and every posting on
+        // its side of the index carries that single int.
+        $grams = [];
+        for ($i = 0; $i < 40; $i++) {
+            $grams['gram_' . $i] = 1;
+        }
+        $a = $this->makeBlockWithNgrams('A', 'hash_a', $grams);
+        $b = $this->makeBlockWithNgrams('B', 'hash_b', ['gram_0' => 1]);
+
+        $index = $this->buildIndex([$a, $b]);
+        $inverted = new NgramInvertedIndex();
+        $inverted->build($index);
+
+        $this->assertSame(['A' => 0, 'B' => 1], $this->intByIdOf($inverted), 'one intern per block, not per gram');
+        $this->assertSame(['A', 'B'], $this->idByIntOf($inverted));
+        $postings = $this->postingsOf($inverted);
+        $this->assertSame([0], $postings['gram_1'], 'A-only gram posts A\'s single int');
+        $this->assertSame([0, 1], $postings['gram_0'], 'the shared gram posts both ints');
+        // The decode must give the real id strings back on every candidate.
+        $this->assertSame(['B'], $inverted->candidatesFor($a, 1.0));
+    }
+
+    public function testAllDecimalBlockIdDecodesBackToString(): void
+    {
+        // Truthfulness pin: the old `$seen[$otherId]` hash key-coerced an
+        // all-decimal id string to an int, so candidatesFor() could yield
+        // ints while promising list<string> (same coercion class engine-S32
+        // met on gram keys). Int postings decode through the table, so the
+        // original string always comes back byte-identical.
+        $a = $this->makeBlockWithNgrams('123456', 'hash_a', ['shared' => 1]);
+        $b = $this->makeBlockWithNgrams('789012', 'hash_b', ['shared' => 1]);
+
+        $index = $this->buildIndex([$a, $b]);
+        $inverted = new NgramInvertedIndex();
+        $inverted->build($index);
+
+        $candidates = $inverted->candidatesFor($a, 1.0);
+        $this->assertSame(['789012'], $candidates, 'candidate must be the id string, not a coerced int');
+        $this->assertIsString($candidates[0]);
+    }
+
+    public function testCandidateDedupKeepsFirstTouchOrderUnderInts(): void
+    {
+        // Dedup moved from string keys to int keys. The observable stream
+        // must be unchanged: first-touch order across gram keys, one entry
+        // even when several grams share the same poster (the budget guard's
+        // determinism contract, same as the order test above).
+        $a = $this->makeBlockWithNgrams('A', 'hash_a', ['g1' => 1, 'g2' => 1]);
+        $b = $this->makeBlockWithNgrams('B', 'hash_b', ['g1' => 1, 'g2' => 1]);
+        $c = $this->makeBlockWithNgrams('C', 'hash_c', ['g2' => 1]);
+
+        $index = $this->buildIndex([$a, $b, $c]);
+        $inverted = new NgramInvertedIndex();
+        $inverted->build($index);
+
+        $this->assertSame(
+            ['B', 'C'],
+            $inverted->candidatesFor($a, 1.0),
+            'B posts on both g1 and g2 but appears once, at its first touch'
+        );
+    }
+
+    public function testBuildResetsInternTables(): void
+    {
+        // Rebuilding the same instance must not alias stale ints: a leftover
+        // idByInt entry would decode a second build's postings to dead ids.
+        $a = $this->makeBlockWithNgrams('A', 'hash_a', ['g' => 1]);
+        $b = $this->makeBlockWithNgrams('B', 'hash_b', ['g' => 1]);
+        $x = $this->makeBlockWithNgrams('X', 'hash_x', ['h' => 1]);
+
+        $inverted = new NgramInvertedIndex();
+        $inverted->build($this->buildIndex([$a, $b]));
+        $inverted->build($this->buildIndex([$x]));
+
+        $this->assertSame(['h' => [0]], $this->postingsOf($inverted));
+        $this->assertSame(['X'], $this->idByIntOf($inverted));
+        $this->assertSame(['X' => 0], $this->intByIdOf($inverted));
+
+        // And the queried-in-index self-exclusion still runs on ints:
+        $this->assertSame([], $inverted->candidatesFor($x, 1.0));
+    }
+
+    public function testBlockNotInternedByBuildIsNeverSelfExcludedByAccident(): void
+    {
+        // A block skipped at build (null bag ⇒ no intern, no postings) has
+        // no int in the table, so candidatesFor() falls back to the -1
+        // sentinel — an int no real posting can ever hold. Reachable shape:
+        // the indexed copy had no bag, the queried copy does (post-reload).
+        $indexedNoBag = $this->makeBlockWithNgrams('A', 'hash_a', ['g' => 1]);
+        $b = $this->makeBlockWithNgrams('B', 'hash_b', ['g' => 1]);
+        $indexedNoBag->ngramBag = null;
+
+        $index = $this->buildIndex([$indexedNoBag, $b]);
+        $inverted = new NgramInvertedIndex();
+        $inverted->build($index);
+
+        // A has no intern entry; queried with a bag again (post-reload
+        // shape), it must see B — nothing about the sentinel excludes B.
+        $withBag = $this->makeBlockWithNgrams('A', 'hash_a', ['g' => 1]);
+        $this->assertSame(['B'], $inverted->candidatesFor($withBag, 1.0));
+        // And B never sees A, because A was never posted at all.
+        $this->assertSame([], $inverted->candidatesFor($b, 1.0));
+    }
 }

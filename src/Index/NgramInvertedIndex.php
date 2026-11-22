@@ -16,6 +16,18 @@ use Phpdup\Extraction\Block;
  * large clone-detection corpora — keeps candidate generation near
  * linear in the corpus size.
  *
+ * Postings are stored as sequential internal ints, not block-id
+ * strings (php-dup-finder-engine-011, engine-S18 half A): each block
+ * id is interned once per build and every posting slot is then a
+ * packed int, so a 16-char id zend_string is referenced by the decode
+ * table exactly once instead of once per posting. The old shape cost
+ * ~one id string per (gram, block) incidence and dominated preprocess
+ * residency on WordPress-scale corpora. {@see candidatesFor()} decodes
+ * back to id strings, so the external contract is byte-identical —
+ * and now truthful even for an all-decimal id, which the old `$seen`
+ * hash would have leaked back as an int key through numeric-string
+ * coercion.
+ *
  * The floor of 2 is load-bearing (finding engine-001): a gram shared
  * by two distinct blocks has posting count ≥ 2 by definition, so a
  * cap that can drop below 2 (floor(df × N) on any corpus smaller
@@ -25,9 +37,18 @@ use Phpdup\Extraction\Block;
  */
 final class NgramInvertedIndex
 {
-    /** @var array<string|int,list<string>> ngram → block ids. Keys are string (xxh64 hex)
-     *                                          in normal mode; int (hi^lo) when --low-memory. */
+    /** @var array<string|int,list<int>> ngram → internal int block ids. Gram keys are
+     *                                      string (xxh64 hex) in normal mode; the digest
+     *                                      as a positive 63-bit int under --low-memory
+     *                                      (CompactNgramBag::compact, engine-042). */
     private array $postings = [];
+
+    /** @var list<string> internal int id → block id (decode table) */
+    private array $idByInt = [];
+
+    /** @var array<string,int> block id → internal int id (interning table) */
+    private array $intById = [];
+
     private int $blockCount = 0;
 
     /**
@@ -36,6 +57,8 @@ final class NgramInvertedIndex
     public function build(BlockIndex $index, ?callable $progressCallback = null): void
     {
         $this->postings = [];
+        $this->idByInt = [];
+        $this->intById = [];
         $this->blockCount = $index->size();
         $indexed = 0;
         foreach ($index->all() as $b) {
@@ -52,9 +75,29 @@ final class NgramInvertedIndex
         if ($b->ngramBag === null) {
             return;
         }
-        foreach (array_keys($b->ngramBag) as $gram) {
-            $this->postings[$gram][] = $b->id;
+        $grams = array_keys($b->ngramBag);
+        if ($grams === []) {
+            return; // empty bag: no postings, no table slot
         }
+        // One intern per block, not one per gram: every posting of this
+        // block's grams carries the same sequential int (engine-011).
+        $intId = $this->internId($b->id);
+        foreach ($grams as $gram) {
+            $this->postings[$gram][] = $intId;
+        }
+    }
+
+    /** Map a block id to its stable sequential int, assigning one on first sight. */
+    private function internId(string $id): int
+    {
+        $existing = $this->intById[$id] ?? null;
+        if ($existing !== null) {
+            return $existing;
+        }
+        $intId = count($this->idByInt);
+        $this->idByInt[] = $id;
+        $this->intById[$id] = $intId;
+        return $intId;
     }
 
     /**
@@ -73,19 +116,29 @@ final class NgramInvertedIndex
         // near-dup candidate generation is dead. What the pair actually
         // is, the score gates decide.
         $maxDf = max(2, (int)ceil($this->blockCount * $maxDocumentFrequency));
+        // Self-exclusion on the int side: a block that was never interned
+        // (queried outside this index, or bag-less at build time) gets an
+        // int no real posting can hold.
+        $ownInt = $this->intById[$block->id] ?? -1;
         $seen = [];
         foreach (array_keys($block->ngramBag) as $gram) {
             $posting = $this->postings[$gram] ?? [];
             if (count($posting) > $maxDf) {
                 continue; // too common to be informative
             }
-            foreach ($posting as $otherId) {
-                if ($otherId === $block->id) {
+            foreach ($posting as $otherInt) {
+                if ($otherInt === $ownInt) {
                     continue;
                 }
-                $seen[$otherId] = true;
+                $seen[$otherInt] = true;
             }
         }
-        return array_keys($seen);
+        // Decode in first-touch order: the same gram-key-order ×
+        // insertion-order stream the string postings produced.
+        $candidates = [];
+        foreach (array_keys($seen) as $intId) {
+            $candidates[] = $this->idByInt[$intId];
+        }
+        return $candidates;
     }
 }
