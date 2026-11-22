@@ -7,6 +7,7 @@ use PHPUnit\Framework\TestCase;
 use Phpdup\Extraction\Block;
 use Phpdup\Ml\MlClient;
 use Phpdup\Ml\MlPairClient;
+use Phpdup\Ml\PairFeatures;
 use Phpdup\Parsing\AstParser;
 use Phpdup\Util\LineRange;
 
@@ -464,6 +465,95 @@ final class MlPairClientTest extends TestCase
         self::assertIsArray($verdicts);
         self::assertNull($verdicts[0], 'bool similarity refuses');
         self::assertSame(['similarity' => 0.6, 'confidence' => 0.2], $verdicts[1]);
+    }
+
+    // =====================================================================
+    // once-S48 — wire-shape docblock truth (php-dup-finder-once-052).
+    //
+    // PairFeatures::WIRE_KEYS is now the single source of truth for the
+    // combined vector BOTH endpoints send. These pins assert the real
+    // extractor output and the real /score-batch body against that
+    // const, so the docblocks cannot contradict the wire again; the
+    // engine-S20 refusal units above stay byte-untouched.
+    // =====================================================================
+
+    public function testCombinedVectorIsExactlyTheWireKeysConst(): void
+    {
+        $vector = (new PairFeatures())->extract($this->makeBlock(), $this->makeBlock());
+
+        self::assertCount(
+            11,
+            PairFeatures::WIRE_KEYS,
+            'the combined pair wire is the exact 11-field vector the wire-contract docblock states',
+        );
+        // Fields-count equality: the vector is the envelope marker plus
+        // WIRE_KEYS — nothing more, nothing less.
+        self::assertCount(count(PairFeatures::WIRE_KEYS) + 1, $vector);
+        self::assertSame(
+            array_merge([PairFeatures::FEATURE_VERSION_KEY], PairFeatures::WIRE_KEYS),
+            array_keys($vector),
+            'extract() must emit feature_version + PairFeatures::WIRE_KEYS in exactly that order',
+        );
+        self::assertSame(
+            PairFeatures::FEATURE_VERSION,
+            $vector[PairFeatures::FEATURE_VERSION_KEY],
+            'the envelope marker carries the current feature shape version',
+        );
+    }
+
+    public function testBatchRequestCarriesOneCombinedVectorPerPair(): void
+    {
+        // The /score-batch body is the shape the docblock now states:
+        // {"pairs": [ <combined vector>, … ]} in request order — NOT the
+        // nested [features_a, features_b] tuples the old prose promised.
+        $a = $this->makeBlock();
+        $b = $this->makeBlock();
+        $c = $this->makeBlock();
+
+        $client = new MlPairClient('http://ml.invalid');
+        $encode = new \ReflectionMethod($client, 'encodeBatchBody');
+        $body   = $encode->invoke($client, [[$a, $b], [$b, $c]]);
+        self::assertIsString($body);
+
+        $decoded = json_decode($body, true);
+        self::assertIsArray($decoded);
+        self::assertSame(['pairs'], array_keys($decoded), 'batch envelope is exactly the pairs list');
+        $pairs = $decoded['pairs'];
+        self::assertIsArray($pairs);
+        self::assertTrue(array_is_list($pairs), 'pairs must be a sequential list');
+        self::assertCount(2, $pairs, 'one entry per requested pair, in request order');
+
+        $expected = array_merge([PairFeatures::FEATURE_VERSION_KEY], PairFeatures::WIRE_KEYS);
+        foreach ($pairs as $i => $entry) {
+            self::assertIsArray($entry);
+            self::assertSame($expected, array_keys($entry), "pairs[$i] must be the combined 11-field vector");
+        }
+    }
+
+    public function testShortOrListJunkEntriesDegradeToNullSlotsWithoutMintingVerdicts(): void
+    {
+        // Acceptance leg "short/list responses degrade without creating
+        // edges": inside an ALIGNED response every unusable entry
+        // shape — scalar, list, empty, short, out-of-domain number —
+        // decodes to a null slot, never a defaulted verdict (the
+        // consumer mints an ML edge only from a non-null verdict, so a
+        // null slot means no edge) and never a voided batch.
+        $client = new MlPairClient('http://ml.invalid');
+        $parse  = new \ReflectionMethod($client, 'parseBatchVerdicts');
+        $body   = '{"results":['
+            . '"0.9",'                                        // scalar entry
+            . '3,'                                            // int entry
+            . '[],'                                           // empty list
+            . '[0.7],'                                        // short list: 1 of 2 fields
+            . '{"similarity":"garbage","confidence":0.4}'      // out-of-domain number
+            . ']}';
+        $verdicts = $parse->invoke($client, $body, 5);
+
+        self::assertIsArray($verdicts, 'an aligned response decodes even when every entry is unusable');
+        self::assertCount(5, $verdicts, 'alignment (and thus positions) survives entry-level refusals');
+        foreach ($verdicts as $i => $verdict) {
+            self::assertNull($verdict, "unusable entry $i must degrade to a null slot, not a verdict");
+        }
     }
 
     /**

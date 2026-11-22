@@ -19,6 +19,12 @@ use Phpdup\Extraction\Block;
  *
  * **Wire contract**
  *
+ * The request body of either endpoint is the COMBINED feature vector —
+ * the `feature_version` envelope marker followed by EXACTLY the 11
+ * feature fields enumerated in {@see PairFeatures::WIRE_KEYS}, in that
+ * order (pinned against real extractor output by `MlPairClientTest`;
+ * php-dup-finder-once-052 retired the prose that contradicted it):
+ *
  *   POST /score-pair
  *   Content-Type: application/json
  *
@@ -39,6 +45,9 @@ use Phpdup\Extraction\Block;
  *
  *   200 OK
  *   { "similarity": 0.91, "confidence": 0.78 }
+ *
+ * /score-batch wraps one such vector per requested pair; see
+ * {@see self::scoreBatch()} for its exact request/response shape.
  *
  * **Failure mode**
  *
@@ -147,12 +156,29 @@ final class MlPairClient implements PairScorer
     /**
      * Score multiple `(A, B)` block pairs in a single HTTP request.
      *
-     * Uses the /score-batch endpoint which accepts:
+     * Uses the /score-batch endpoint. Each `pairs` entry is ONE
+     * combined feature vector — the same shape {@see self::score()}
+     * POSTs to /score-pair (`feature_version` + the exact 11 fields of
+     * {@see PairFeatures::WIRE_KEYS}), listed in request order:
      *   POST /score-batch
-     *   { "pairs": [[features_a, features_b], ...] }
+     *   { "pairs": [ {<combined vector>}, ... ] }
      *
-     * Server responds:
-     *   { "results": [[similarity, confidence], ...] }
+     * php-dup-finder-once-052: the old text promised nested
+     * `[features_a, features_b]` per-block tuples. The extractor has
+     * never emitted that shape — the merged vector is the wire, and
+     * the request built here is now pinned against the const by
+     * `MlPairClientTest::testBatchRequestCarriesOneCombinedVectorPerPair`.
+     *
+     * Server responds, one entry per requested pair:
+     *   { "results": [ [similarity, confidence] | {"similarity":…,"confidence":…}, ... ] }
+     *
+     * Either entry spelling decodes: a named object, or a positional
+     * list whose FIRST TWO elements are similarity and confidence
+     * (trailing fields are ignored). An entry that is not an array,
+     * carries fewer than two fields, or whose numbers fail the shared
+     * fence degrades to a null slot — that pair then receives no
+     * ML-tier edge while its neighbours keep their verdicts
+     * (engine-S20, php-dup-finder-engine-013).
      *
      * The results list is CONTRACTUALLY ORDERED: entry i answers pair
      * i (engine-S20, php-dup-finder-engine-014). A response whose
@@ -178,14 +204,8 @@ final class MlPairClient implements PairScorer
             return null;
         }
 
-        $payload = [];
-        foreach ($pairs as [$a, $b]) {
-            $payload[] = $this->features->extract($a, $b);
-        }
-
-        try {
-            $body = json_encode(['pairs' => $payload], JSON_THROW_ON_ERROR);
-        } catch (JsonException) {
+        $body = $this->encodeBatchBody($pairs);
+        if ($body === null) {
             return null;
         }
 
@@ -195,6 +215,30 @@ final class MlPairClient implements PairScorer
         }
 
         return $this->parseBatchVerdicts($resp, count($pairs));
+    }
+
+    /**
+     * Build the /score-batch request body: `{"pairs": […]}` with one
+     * combined {@see PairFeatures} vector per requested pair, in
+     * request order. Extracted as a seam so the wire shape the
+     * docblock states is assertable without a network round-trip
+     * (php-dup-finder-once-052); the bytes are exactly what the
+     * inline construction before it produced.
+     *
+     * @param list<array{0: Block, 1: Block}> $pairs
+     */
+    private function encodeBatchBody(array $pairs): ?string
+    {
+        $payload = [];
+        foreach ($pairs as [$a, $b]) {
+            $payload[] = $this->features->extract($a, $b);
+        }
+
+        try {
+            return json_encode(['pairs' => $payload], JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            return null;
+        }
     }
 
     /**

@@ -24,7 +24,10 @@ use Phpdup\Similarity\JaccardSimilarity;
  *
  * **Feature shape**
  *
- * For each pair `(A, B)` the extractor emits:
+ * For each pair `(A, B)` the extractor emits ONE combined vector of
+ * exactly 11 feature fields — {@see self::WIRE_KEYS} in that order —
+ * preceded by the `feature_version` envelope marker
+ * ({@see self::FEATURE_VERSION_KEY}):
  *
  *   - `structural_hash_match`: bool — true when both subtree hashes
  *     are identical (a tier-0 type-1 clone signal).
@@ -38,10 +41,14 @@ use Phpdup\Similarity\JaccardSimilarity;
  *     Jaccard. Falls back to `0.0` when either lift fails.
  *   - `block_size_ratio`: float in [0,1] — `min(size) / max(size)`.
  *   - `kind_match`: bool — same `Block::$kind`.
+ *   - `block_a_kind`, `block_b_kind`: string — each side's
+ *     `Block::$kind` verbatim (once-S48: these two were missing from
+ *     the prose above until the shape got a single source of truth).
  *
  * The numeric features are bounded; the booleans become `0`/`1` in
- * JSON. Adding/removing features is a wire-protocol change; bump
- * `featureVersion()` when the shape changes.
+ * JSON. Adding, removing or reordering a field is a wire-protocol
+ * change: update `WIRE_KEYS` and bump `FEATURE_VERSION` — the unit
+ * pins fail loud if the emitted vector and the const drift apart.
  *
  * **Per-block memoization (engine-033)**
  *
@@ -65,6 +72,39 @@ use Phpdup\Similarity\JaccardSimilarity;
 final class PairFeatures
 {
     public const FEATURE_VERSION = 1;
+
+    /**
+     * The exact 11 feature fields of the combined pair wire, in
+     * emission order. `extract()` sends this list preceded by
+     * {@see self::FEATURE_VERSION_KEY}; both {@see MlPairClient}
+     * endpoints carry one such vector per requested pair (/score-pair
+     * sends the vector itself, /score-batch sends it as one `pairs`
+     * entry). This const is the single source of truth the wire-shape
+     * docblocks state by reference (php-dup-finder-once-052) — the
+     * unit suite asserts the emitted keys against it, so prose and
+     * payload cannot drift again.
+     *
+     * @var list<string>
+     */
+    public const WIRE_KEYS = [
+        'structural_hash_match',
+        'ngram_jaccard',
+        'var_jaccard',
+        'call_jaccard',
+        'return_jaccard',
+        'db_tag_jaccard',
+        'ir_token_jaccard',
+        'block_size_ratio',
+        'kind_match',
+        'block_a_kind',
+        'block_b_kind',
+    ];
+
+    /**
+     * Wire key of the envelope marker that rides ALONGSIDE the 11
+     * feature fields (it names the shape; it is not a feature).
+     */
+    public const FEATURE_VERSION_KEY = 'feature_version';
 
     /**
      * Derived per-block ingredients, keyed by the Block object.
