@@ -410,10 +410,12 @@ function shouldSkipVendorPath(string $localPath): bool
 
     // Drop Markdown / reStructuredText documentation (README, CHANGELOG,
     // UPGRADE, ...) — but keep license texts (php-dup-finder-once-096):
-    // packages that publish their license ONLY as LICENSE.md — fidry/
-    // cpu-core-counter and spatie/array-to-xml do exactly that today —
-    // were being stripped out of a redistributable artifact. Match the
-    // legal basename exactly; everything else ending in .md/.rst is cruft.
+    // a redistributable artifact must carry every bundled package's
+    // license, and several packages publish it ONLY as LICENSE.md /
+    // LICENCE.md (fidry/cpu-core-counter and spatie/array-to-xml do in
+    // this repo's dev tree; today's lean runtime tree ships plain LICENSE
+    // files only, so this allow-list is the belt for the next addition).
+    // Match the legal basename exactly; every other .md/.rst stays cruft.
     static $licenseDocs = [
         'license.md', 'licence.md', 'license.rst', 'licence.rst',
         'copying.md', 'copying.rst', 'copyright.md', 'copyright.rst',
