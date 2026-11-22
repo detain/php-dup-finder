@@ -159,16 +159,18 @@ final class CustomDbSymbolsTest extends TestCase
 
     public function testCamelCasePackKeysFoldDespiteLowerCasedStockConvention(): void
     {
-        // Key-casing convention disclosure (engine-S06b): the stock
-        // tables and this file's JSON round-trip use lower-cased keys,
-        // but the six orphan db-aware-* packs re-registered by
-        // shell-S32 carry camelCase method keys (`findAll`,
-        // `queryAll`, …). Both lookup sides lower-case, so camelCase
-        // keys already match — the packs were NOT mass-rewritten to
-        // avoid churn against a live lane. This pin keeps that
-        // equivalence load-bearing rather than accidental: a camelCase
-        // custom key folds the camelCase call, and the lower-case
-        // spelling of the same name reaches the same entry.
+        // Key-casing convention disclosure (engine-S06b, r1 N-1
+        // disk-corrected): the stock tables and this file's JSON
+        // round-trip use lower-cased keys, but camelCase method keys
+        // (`findAll`, `queryAll`, …) span 18 of the 29 bundled
+        // db-aware-* packs — a surface that contains five of the six
+        // shell-S32-registered orphan packs (the laravel pack's 36
+        // keys are all lower-case). Both lookup sides lower-case, so
+        // camelCase keys already match — the packs were NOT
+        // mass-rewritten to avoid churn against a live lane. This pin
+        // keeps that equivalence load-bearing rather than accidental:
+        // a camelCase custom key folds the camelCase call, and the
+        // lower-case spelling of the same name reaches the same entry.
         $registry = new DbOpRegistry(customMethodOps: ['findAll' => DbOpRegistry::OP_READ]);
         $this->assertContains('Name|n:__DB_READ__', $this->canonicalTokens(
             '<?php function f($repo) { return $repo->findAll(); }', $registry,

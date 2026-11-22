@@ -435,6 +435,9 @@ final class DbOpRegistry
      * and sorted. Derived from the dispatch table itself, so it can
      * never drift out of agreement with it (engine-003 half B, r1 L-7).
      *
+     * @internal No production consumer yet (test and docblock readers
+     *           only); wave-5 wiring candidate — doctor/TUI listing or
+     *           docs generator (engine-S06b r1 N-2).
      * @return list<string>
      */
     public function genericNameTier(): array

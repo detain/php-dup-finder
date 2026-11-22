@@ -486,6 +486,34 @@ final class DbOpCanonicalizerTest extends TestCase
         );
     }
 
+    public function testOnDuplicateKeyUpdateColumnsAreOutsideTheSignature(): void
+    {
+        // Coarse-by-design boundary (engine-S06b r1 LOW-1): source (2)
+        // keys on the `SET` keyword, so MySQL `ON DUPLICATE KEY
+        // UPDATE` assignment columns are not collected. Twins that
+        // differ ONLY in the upsert column keep folding EXACT today
+        // (measured: both carry __DB_COLS_a_b, hash bdcc8cb2…) — the
+        // same scope the pre-signature base had. Pinning the boundary
+        // means a future widening (scanning the ODKU LHS with the
+        // existing assignment rule) trips this contract on purpose
+        // instead of drifting into it silently.
+        $upsertC = '<?php function f($db) { return $db->exec("INSERT INTO t (a,b) VALUES (1,2) ON DUPLICATE KEY UPDATE c = 3"); }';
+        $upsertD = '<?php function g($db) { return $db->exec("INSERT INTO t (a,b) VALUES (1,2) ON DUPLICATE KEY UPDATE d = 3"); }';
+
+        $this->assertContains('Name|n:__DB_COLS_a_b', $this->canonicalTokens($upsertC, true));
+        $this->assertContains('Name|n:__DB_COLS_a_b', $this->canonicalTokens($upsertD, true));
+        $this->assertStringNotContainsString(
+            '__DB_COLS_a_b_c',
+            implode(' ', $this->canonicalTokens($upsertC, true)),
+            'the upsert clause stays outside the column set',
+        );
+        $this->assertSame(
+            $this->canonicalHashDbAware($upsertC),
+            $this->canonicalHashDbAware($upsertD),
+            'ODKU-differing twins fold EXACT today (documented boundary)',
+        );
+    }
+
     public function testPayloadMarkerIsNeverParsedAsAnOpTag(): void
     {
         // Consumers that re-derive the op from a `__DB_<OP>__` name

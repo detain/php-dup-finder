@@ -423,7 +423,16 @@ final class DbOpCanonicalizer extends NodeVisitorAbstract
      * (payloads sharing the first slice and total collide — a known,
      * accepted coarseness). Members join with `_`, so a single column
      * literally named `credits_updated` aliases the set
-     * {credits, updated}; another accepted coarseness.
+     * {credits, updated}; another accepted coarseness. Likewise the
+     * MySQL `INSERT … ON DUPLICATE KEY UPDATE` clause: source (2)
+     * keys on the `SET` keyword, so upsert assignment columns are
+     * not collected and `…(a,b) VALUES … ON DUPLICATE KEY UPDATE c
+     * = 3` carries only the insert list `a_b` — ODKU-differing twins
+     * keep folding EXACT (third accepted coarseness; pinned by
+     * testOnDuplicateKeyUpdateColumnsAreOutsideTheSignature in
+     * DbOpCanonicalizerTest, so widening the clause into the set
+     * later is a deliberate, pin-noticing act — engine-S06b r1
+     * LOW-1).
      */
     private function extractColumnSet(string $sql): ?string
     {
@@ -450,7 +459,9 @@ final class DbOpCanonicalizer extends NodeVisitorAbstract
 
         // 2) SET assignment targets — the identifier left of each `=`
         //    between SET and WHERE. Covers `UPDATE … SET` and the
-        //    MySQL `INSERT … SET` variant.
+        //    MySQL `INSERT … SET` variant. The MySQL `INSERT … ON
+        //    DUPLICATE KEY UPDATE` clause carries no `SET` keyword and
+        //    is therefore out of scope — documented boundary above.
         if (preg_match('/\bSET\b(.*?)(?=\bWHERE\b|$)/is', $sql, $m) === 1) {
             if (preg_match_all('/(`?[A-Za-z_][A-Za-z0-9_`"]*(?:\s*\.\s*`?[A-Za-z_][A-Za-z0-9_`"]*)?)\s*=(?!=)/', $m[1], $mm) > 0) {
                 foreach ($mm[1] as $part) {
@@ -463,8 +474,10 @@ final class DbOpCanonicalizer extends NodeVisitorAbstract
         }
 
         // 3) SELECT projection list — between SELECT (after an
-        //    optional modifier) and the first FROM. Sub-queries see
-        //    only the outer projection's leading terms; coarse.
+        //    optional modifier) and the first FROM. The first
+        //    `SELECT … FROM` span in the statement (the outer
+        //    projection, or the first sub-query's when there is no
+        //    outer one) joins the set; coarse.
         if (
             preg_match(
                 '/\bSELECT\s+(?:DISTINCT\s+|HIGH_PRIORITY\s+|SQL_CALC_FOUND_ROWS\s+)?(.*?)\s+FROM\s/is',
