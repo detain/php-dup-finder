@@ -3,16 +3,29 @@ declare(strict_types=1);
 
 namespace Phpdup\Util;
 
+/**
+ * One-line memory gauge for debug output (php-dup-finder-engine-045).
+ *
+ * Every number on the line speaks ONE currency: PHP's emalloc arena as
+ * actually allocated from the system — the memory_get_usage(true) /
+ * memory_get_peak_usage(true) family, which is what PHP enforces
+ * memory_limit against and what the --max-memory ceiling measures.
+ * They are NOT OS RSS (kernel-resident pages incl. interpreter
+ * text/libs): the old label read "RSS" over memory_get_usage(false)
+ * bytes while "peak" silently switched to the true-argument family,
+ * mixing two metrics in one line. Current and peak are now directly
+ * comparable, and free is genuine headroom before the memory_limit.
+ */
 final class MemoryDebug
 {
     public static function getMemoryUsage(): string
     {
-        $rss = self::toMb(memory_get_usage(false));
+        $emalloc = self::toMb(memory_get_usage(true));
         $peak = self::toMb(memory_get_peak_usage(true));
         $free = self::getAvailableMemory();
         $freeStr = $free === -1 ? 'unlimited' : self::toMb($free) . 'MB';
 
-        return "RSS {$rss}MB | peak {$peak}MB | free {$freeStr}";
+        return "emalloc={$emalloc}MB | peak_alloc={$peak}MB | free {$freeStr}";
     }
 
     private static function toMb(int $bytes): int
@@ -28,7 +41,9 @@ final class MemoryDebug
         }
 
         $limitBytes = self::parseMemoryLimit($limit);
-        $currentUsage = memory_get_usage(false);
+        // memory_limit is enforced on the true-argument (real allocation)
+        // family — headroom must be measured in the same currency.
+        $currentUsage = memory_get_usage(true);
 
         return $limitBytes - $currentUsage;
     }
