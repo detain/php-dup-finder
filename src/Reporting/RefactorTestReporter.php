@@ -35,8 +35,10 @@ final class RefactorTestReporter
             if (count($cluster->members) < 2) {
                 continue;
             }
-            $safeId = Slug::safe($cluster->id);
-            $file = $dir . DIRECTORY_SEPARATOR . "Cluster{$safeId}Test.php";
+            // output-S36 (php-dup-finder-output-033): the filename stem and
+            // the declared class name are ONE derivation now — see
+            // className().
+            $file = $dir . DIRECTORY_SEPARATOR . $this->className($cluster) . '.php';
             file_put_contents($file, $this->buildTest($cluster));
         }
     }
@@ -46,12 +48,16 @@ final class RefactorTestReporter
      */
     public function buildTest(Cluster $cluster): string
     {
-        $className = "Cluster{$cluster->id}Test";
+        $className = $this->className($cluster);
         // output-035 (S6): the docblock row is metadata — defused name text.
-        // The class-name/method/provider positions are PHP CODE (a spurious
-        // `'` there would break the lint pins) and stay raw; provider labels
-        // always lead with "member_N_" (structurally inert) and row values
-        // are PHP literals, not spreadsheet cells.
+        // output-S36 (php-dup-finder-output-033): the class-name position is
+        // an identifier slot and now runs through the Slug sanitization —
+        // that is SANITIZE, not spreadsheet-defuse: the S6 point stands
+        // (a stray `'` there would break the lint pins) but raw id bytes
+        // are no longer admitted either. Method/provider names are fixed
+        // constants, provider labels always lead with "member_N_"
+        // (structurally inert) and row values are PHP literals, not
+        // spreadsheet cells.
         $defusedId = CsvReporter::defuseFormula($cluster->id);
         $paramList = $this->generateParamList($cluster->holes);
         $rows = $this->providerRows($cluster);
@@ -98,6 +104,26 @@ final class {$className} extends TestCase
 }
 
 PHP;
+    }
+
+    /**
+     * The SINGLE derivation of both the artifact filename stem and the
+     * declared class name (output-S36, php-dup-finder-output-033).
+     *
+     * Before this, writeTo() sanitized the id through {@see Slug} while
+     * buildTest() interpolated it RAW: any legacy/odd id (pre-F-hex
+     * streams, hand-seeded clusters) yielded an unparseable class
+     * declaration or a class≠file-stem mismatch. Both call sites now read
+     * this method, so stem == class is structural, not a coincidence of
+     * well-behaved ids. Slug::safe() admits '-' (path-safe) which a PHP
+     * identifier is not, hence the second byte-class tightening here —
+     * current content ids ('F' + 16 hex, or the hex-only cluster ids)
+     * contain no '-', so the projection is the identity on every shipped
+     * artifact name (Slug's round-trip law, inherited).
+     */
+    private function className(Cluster $cluster): string
+    {
+        return 'Cluster' . str_replace('-', '_', Slug::safe($cluster->id)) . 'Test';
     }
 
     /**
@@ -216,6 +242,19 @@ PHP;
             // honest: the human editing it sees this slot is placeholder
             // evidence, not an observed empty string.
             return 'null /* degraded: observed value was a structural gap */';
+        }
+        if ($h->kind === 'optional_block') {
+            // output-S36 (php-dup-finder-output-033): what survives the arms
+            // above is a PRESENCE row — and ParameterSynthesizer::inferType
+            // short-circuits EVERY optional_block hole to 'bool', so the
+            // declaration slot is `bool` unconditionally. The retired
+            // fall-through var_export'd the segment's statement repr INTO
+            // that bool parameter: every present-member row was a
+            // guaranteed TypeError the moment the skeleton drove a real
+            // extracted function. The skeleton states the boolean fact the
+            // generator can prove; the statement bytes stay visible on the
+            // JSON/refactor-patch surfaces where they are evidence.
+            return 'true';
         }
         // Numeric → bare; bool/null keywords → bare; everything else is DATA.
         if (preg_match('/^-?\d+(\.\d+)?$/', $v) === 1) {
