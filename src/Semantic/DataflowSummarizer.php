@@ -14,19 +14,49 @@ use PhpParser\NodeFinder;
  *   - vars       set of distinct variable names defined or used
  *   - returns    list of return-statement shapes
  *   - calls      multiset of called method/function names
- *   - sideEffects   bool: contains echo/print/header/exit/log/...
+ *   - sideEffects   bool: language-construct writes (echo/print/
+ *                   exit/die/header, exact function names) or a
+ *                   method-call name carrying a side-effect verb
+ *                   (log/logger/send/emit/dispatch/fire/publish/
+ *                   notify — full camelCase/snake_case words, never
+ *                   substrings: engine-028 fold-in)
  *
  * Uses NodeFinder to traverse all descendant nodes including nested
  * closures, so nested functions contribute their variables, calls,
  * returns, and side-effects to the parent block's summary.
  *
- * Used by {@see BehaviouralSimilarity} (and III.A's
- * SemanticHoleClassifier) to compare blocks by I/O shape rather
- * than syntactic structure — the foundation for type-4 clone
- * detection.
+ * Consumers (catalog engine-S31c truth pass — the old prose named a
+ * "SemanticHoleClassifier" that exists nowhere in src/):
+ *   - {@see \Phpdup\Ml\PairFeatures} feeds vars/calls/returns into
+ *     the sidecar pair vector; the sideEffects flag itself is not a
+ *     wire feature, so this file is inert to ML feature identity.
+ *   - {@see \Phpdup\Validation\MutationTester} selects side-effect-
+ *     bearing blocks.
+ *   - {@see \Phpdup\Similarity\BehaviouralSimilarity} scores by I/O
+ *     shape — itself a PLANNED type-4 tier, not wired into the
+ *     Clusterer (engine-S31a ledger row 3/16).
  */
 final class DataflowSummarizer
 {
+    /**
+     * Function names whose call is itself a write (exact match — a
+     * qualified `Foo\header` name never equals 'header', by design).
+     */
+    private const SIDE_EFFECT_FUNCTIONS = ['echo', 'print', 'exit', 'die', 'header'];
+
+    /**
+     * Method-call verbs that mark a side effect. Matched per word of
+     * the identifier (camelCase humps, digits, underscores), NOT as
+     * substrings: `catalog()`, `dialog()`, `firewall()` or an
+     * aggressive-mode stamped `__CALL_catalog` contain 'log'/'fire'
+     * as substrings but are not side effects (engine-028 fold-in —
+     * the substring test was a false-positive source the moment
+     * type-4 scoring is wired). Verb words at any position still
+     * match: `log`, `logError`, `sendEmail`, `notify_all`, and a
+     * stamped `__CALL_log`.
+     */
+    private const SIDE_EFFECT_METHOD_WORDS = ['log', 'logger', 'send', 'emit', 'dispatch', 'fire', 'publish', 'notify'];
+
     /**
      * @return array{
      *   vars: array<string,bool>,
@@ -43,8 +73,7 @@ final class DataflowSummarizer
         $sideEffects = false;
 
         $finder = new NodeFinder();
-        $sideEffectFns = ['echo', 'print', 'exit', 'die', 'header'];
-        $sideEffectMethods = ['log', 'logger', 'send', 'emit', 'dispatch', 'fire', 'publish', 'notify'];
+        $sideEffectFns = self::SIDE_EFFECT_FUNCTIONS;
 
         foreach ($finder->find([$block], static function (Node $n) {
             return $n instanceof Node\Expr\Variable
@@ -63,9 +92,8 @@ final class DataflowSummarizer
             } elseif ($node instanceof Node\Expr\MethodCall && $node->name instanceof Node\Identifier) {
                 $name = $node->name->name;
                 $calls[$name] = ($calls[$name] ?? 0) + 1;
-                $lower = strtolower($name);
-                foreach ($sideEffectMethods as $m) {
-                    if (str_contains($lower, $m)) { $sideEffects = true; break; }
+                if (!$sideEffects && self::isSideEffectCallName($name)) {
+                    $sideEffects = true;
                 }
             } elseif ($node instanceof Node\Expr\StaticCall && $node->name instanceof Node\Identifier) {
                 $name = $node->name->name;
@@ -83,5 +111,29 @@ final class DataflowSummarizer
             'calls'       => $calls,
             'sideEffects' => $sideEffects,
         ];
+    }
+
+    /**
+     * True when any word of the method-name identifier is a
+     * side-effect verb. The identifier is split on camelCase humps
+     * and underscores — the word-boundary rule the engine-028
+     * fold-in prescribes for the former `str_contains` substring
+     * test. `__CALL_log`-style aggressive-mode sentinels split to
+     * `[CALL, log]` and still match; `__CALL_catalog` does not.
+     */
+    private static function isSideEffectCallName(string $name): bool
+    {
+        $words = preg_split(
+            '/(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])|_+/',
+            $name,
+            -1,
+            PREG_SPLIT_NO_EMPTY
+        ) ?: [];
+        foreach ($words as $word) {
+            if (in_array(strtolower($word), self::SIDE_EFFECT_METHOD_WORDS, true)) {
+                return true;
+            }
+        }
+        return false;
     }
 }
