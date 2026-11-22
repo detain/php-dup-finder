@@ -27,7 +27,10 @@ use Phar;
  *   5. The downloaded artifact must hash to the sha256 pinned by the
  *      verified manifest. The plain `phpdup.phar.sha256` asset is NOT
  *      consulted — a checksum fetched from the same response as the
- *      artifact proves nothing about authenticity.
+ *      artifact proves nothing about authenticity. It ships in GNU
+ *      coreutils checksum format (`<hash>  phpdup.phar`, two spaces)
+ *      so manual installs can verify it with `sha256sum --check`
+ *      verbatim (once-S12); this command still ignores it.
  *   6. Only then replace the running phar atomically (temp rename).
  *
  * A placeholder/unset verification key REFUSES verification with an
@@ -118,7 +121,8 @@ Steps performed:
      verification key, then pin the artifact's SHA-256 to the value the
      verified manifest declares. The plain <fg=yellow>phpdup.phar.sha256</>
      asset is never trusted for verification (same-response checksums
-     prove nothing).
+     prove nothing). It ships in <fg=yellow>sha256sum --check</> format
+     ("<hash>  phpdup.phar", two spaces) for manual spot-checks only.
   4. Replace the running phar atomically (temp rename).
   5. On any error after the old phar is removed, print recovery steps.
 
@@ -315,8 +319,10 @@ HELP
         if ($pharUrl === null) {
             return $this->failed(
                 $io,
-                "Asset <fg=yellow>" . self::PHAR_ASSET_NAME . "</> not found in release. " .
-                'Ensure the release was created with `phpdup release` (build-phar.php --release).',
+                "Asset <fg=yellow>" . self::PHAR_ASSET_NAME . "</> not found in release {$tagName}. " .
+                'Release assets are attached by the release workflow ' .
+                '(.github/workflows/release.yml, triggered on a v* tag push) — see docs/RELEASE.md. ' .
+                'A tag published outside that workflow carries no assets.',
             );
         }
 

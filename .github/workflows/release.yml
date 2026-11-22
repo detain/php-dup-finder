@@ -109,21 +109,31 @@ jobs:
 
       - name: Compute SHA-256 checksum
         # Informational sidecar for manual installs (sha256sum). NOT used
-        # by self:update verification anymore — the artifact hash the
-        # client honors is the one pinned inside the SIGNED manifest.
-        run: php -r "echo hash_file('sha256', 'phpdup.phar');" > phpdup.phar.sha256
+        # by self:update verification — the artifact hash the client honors
+        # is the one pinned inside the SIGNED manifest. Once-S12
+        # (php-dup-finder-once-010): the file carries the GNU coreutils
+        # checksum format "<hash>  phpdup.phar" (TWO spaces — text mode)
+        # so `sha256sum --check phpdup.phar.sha256` from the README works
+        # verbatim; the old bare-hash line made coreutils report "no
+        # properly formatted checksum lines found".
+        run: php -r "printf('%s  phpdup.phar%s', hash_file('sha256', 'phpdup.phar'), PHP_EOL);" > phpdup.phar.sha256
 
       - name: Build release manifest
         env:
           MANIFEST_TAG: ${{ github.ref_name }}
         run: |
           php -r '
-            $sha = trim((string) file_get_contents("phpdup.phar.sha256"));
+            $line = trim((string) file_get_contents("phpdup.phar.sha256"));
             $tag = (string) getenv("MANIFEST_TAG");
-            if (!preg_match("/^[0-9a-f]{64}$/", $sha) || $tag === "") {
+            // The manifest consumes the SAME bytes the manual installer
+            // verifies: an exact coreutils-format line, hash captured from
+            // it. A sidecar that drifted out of that format aborts the
+            // release instead of pinning garbage (fail loud, once-S12).
+            if (!preg_match("/^([0-9a-f]{64})  phpdup\\.phar$/", $line, $m) || $tag === "") {
                 fwrite(STDERR, "release.yml: malformed checksum sidecar or empty tag\n");
                 exit(1);
             }
+            $sha = $m[1];
             echo json_encode(
                 ["schema" => 1, "tag" => $tag, "file" => "phpdup.phar", "sha256" => $sha],
                 JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES

@@ -8,14 +8,16 @@ artifact aborts the install with an explicit error instead of passing.
 
 ## Overview
 
-Each GitHub release includes four artifacts:
+Each GitHub release published by the workflow attaches six files:
 
 | File | Purpose |
 |------|---------|
 | `phpdup.phar` | The self-contained PHAR binary |
 | `phpdup.release.json` | **Signed release manifest**: tag-bound JSON pinning the artifact's SHA-256 |
 | `phpdup.release.json.sig` | HMAC-SHA256 (hex) over the **manifest bytes** |
-| `phpdup.phar.sha256` | Informational checksum sidecar for manual `sha256sum` spot-checks — **not trusted by `self:update`** (see below) |
+| `phpdup.phar.sha256` | Checksum sidecar for manual installs, in GNU coreutils `sha256sum --check` format — exactly `<hash>  phpdup.phar` (TWO spaces; text mode), so `sha256sum --check phpdup.phar.sha256` works verbatim from a directory holding both files. **Not trusted by `self:update`** (see below) |
+| `phpdup.build.json` | Reproducible-build metadata (once-S11): resolved `sugarcraft/*` `dev-master#<sha>` refs, composer content-hash, PHP runtime, build instant |
+| `phpdup.releasenotes.md` | Human-readable summary the `publish` job attaches as the GitHub release **body** |
 
 The manifest shape (schema 1):
 
@@ -28,11 +30,36 @@ The manifest shape (schema 1):
 }
 ```
 
+## Current publication status (once-S12, 2026-11-22)
+
+Verified against `api.github.com` the day this section was written:
+
+- **No tag has been published through this workflow chain yet.** The only
+  release, `v1.0.0`, predates the once-S05 signing rebuild and carries **no
+  assets** — so the README's `releases/latest/download/phpdup.phar` (and
+  `.sha256`) URLs currently return HTTP 404. They start working with the
+  first `v*` tag pushed once the `HMAC_SECRET_KEY` secret is configured (the
+  sign step refuses to run without it, so no gate-clean release — and no
+  assets — exists until then). Note that until the `VERIFICATION_KEY`
+  constant *also* carries the real key (owner action below), a published
+  phar installs fine but later live `self:update` runs still refuse on the
+  placeholder key.
+- `phpdup self:update` against an asset-less release reports the missing
+  `phpdup.phar` asset and exits 1 — honest refusal, not a client bug.
+- **`composer require --dev detain/php-dup-finder` does not resolve** from a
+  fresh stable project: the package's 16 `sugarcraft/*` dependencies are
+  pinned to `dev-master#<sha>` (once-S11), and pinned dev-version VCS
+  requirements are not resolvable transitively. Install from source until
+  upstream tags land (README "Composer — not supported yet").
+
 ## How It Works
 
 1. **Signing** (release workflow, `build-and-sign` job):
-   - On a `v*` tag push, GitHub Actions builds the PHAR and computes its SHA-256.
-   - Builds `phpdup.release.json` embedding the tag, artifact name, and that hash.
+   - On a `v*` tag push, GitHub Actions builds the PHAR and writes
+     `phpdup.phar.sha256` in the exact `sha256sum --check` format above.
+   - Builds `phpdup.release.json` embedding the tag, artifact name, and the
+     hash **re-parsed from that same sidecar file** — a sidecar line that
+     deviates from the format aborts the job rather than pinning garbage.
    - Computes `HMAC-SHA256(phpdup.release.json, HMAC_SECRET_KEY)` **with the raw
      secret string** — no base64 transform on either side — and writes
      `phpdup.release.json.sig`.
@@ -115,9 +142,9 @@ rebuild via the environment override `PHPDUP_UPDATE_VERIFICATION_KEY`
 git tag v1.2.3
 git push origin v1.2.3
 # GitHub Actions will then:
-#   - build the PHAR + checksum + signed manifest (secret on the SIGN step)
+#   - build the PHAR + sha256sum-format checksum sidecar + signed manifest (secret on the SIGN step)
 #   - run the sign -> verify round-trip gate (good / tampered / placeholder legs)
-#   - publish the GitHub release with all four assets only if the gate passed
+#   - publish the GitHub release with all six assets only if the gate passed
 ```
 
 ## Key Rotation

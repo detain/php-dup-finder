@@ -35,19 +35,45 @@ observed values, ready to apply.
 
 ### Install
 
+> **Status (verified against the live releases API, 2026-11-22):** no tag has
+> been published through the release workflow yet — the only release,
+> `v1.0.0`, predates the signing/publishing chain in
+> [`.github/workflows/release.yml`](.github/workflows/release.yml) and carries
+> **no assets**, so the phar URLs below currently return 404. The workflow
+> attaches them to every `v*` tag pushed from now on.
+
+**PHAR (recommended once published).** The release workflow builds a
+self-contained phar, signs a tag-bound release manifest, and attaches the
+artifact, its checksum sidecar, the manifest and signature, build metadata
+and release notes to the GitHub release:
+
 ```bash
-# Download PHAR (recommended)
 curl -sSLO https://github.com/detain/php-dup-finder/releases/latest/download/phpdup.phar
 curl -sSLO https://github.com/detain/php-dup-finder/releases/latest/download/phpdup.phar.sha256
-sha256sum --check phpdup.phar.sha256
+sha256sum --check phpdup.phar.sha256    # sidecar format: "<hash>  phpdup.phar"
 chmod +x phpdup.phar && sudo mv phpdup.phar /usr/local/bin/phpdup
-
-# Or via Composer (dev dependency)
-composer require --dev detain/php-dup-finder
-
-# Or from source
-git clone https://github.com/detain/php-dup-finder.git && cd php-dup-finder && composer install
 ```
+
+The sidecar confirms the download arrived intact; it authenticates nothing.
+`phpdup self:update` instead verifies the **signed manifest** before
+replacing the phar — see [docs/RELEASE.md](docs/RELEASE.md).
+
+**Composer — not supported yet.** `composer require --dev
+detain/php-dup-finder` does not resolve from a fresh stable project: the
+package depends on 16 `sugarcraft/*` libraries pinned to `dev-master#<sha>`,
+and pinned dev-version VCS requirements cannot be pulled in transitively —
+the consuming root would have to declare the repositories and
+`minimum-stability: dev` itself. Until those dependencies ship resolvable
+tags, use **from source** instead:
+
+```bash
+git clone https://github.com/detain/php-dup-finder.git
+cd php-dup-finder && composer install
+```
+
+Then run the CLI from the checkout via its launcher, e.g.
+`bin/phpdup analyze src` (the Analyze/View sections below all use it).
+To upgrade a source install: `git pull && composer install`.
 
 ### Analyze
 
