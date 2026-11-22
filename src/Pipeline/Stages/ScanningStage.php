@@ -18,7 +18,7 @@ use Symfony\Component\Console\Output\OutputInterface;
 final class ScanningStage implements CooperativeStageInterface
 {
     /** Yield to the runtime after every N files so the TUI can repaint. */
-    private const YIELD_INTERVAL = 16;
+    private const YIELD_EVERY = 16;
 
     private readonly ProgressListener $listener;
 
@@ -152,7 +152,7 @@ final class ScanningStage implements CooperativeStageInterface
                     $output->writeln($msg);
                     $state->pushDebugMessage($msg);
                 }
-                if (++$sinceYield >= self::YIELD_INTERVAL) {
+                if (++$sinceYield >= self::YIELD_EVERY) {
                     $sinceYield = 0;
                     $state->sampleMemory();
                     $state->debug($output, sprintf('scanning: %d files scanned so far [%s]', $state->totalFiles, MemoryDebug::getMemoryUsage()));

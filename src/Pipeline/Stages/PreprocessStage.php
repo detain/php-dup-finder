@@ -109,9 +109,13 @@ final class PreprocessStage implements CooperativeStageInterface
                 }
                 if (++$sinceYield >= self::YIELD_EVERY) {
                     $sinceYield = 0;
-                if ($state->cancelled) {
-                    break;
-                }
+                    // shell-042 (aborted-run accounting): cancel is polled
+                    // only at this yield boundary, so breaking here abandons
+                    // the rest of the loop - reused+toProcess can fall short
+                    // of scanned on an aborted run. Partial report by design.
+                    if ($state->cancelled) {
+                        break;
+                    }
                     $state->sampleMemory();
                     $state->debug($output, sprintf('preprocess: cache check progress %d/%d files [%s]', $state->processedFiles, count($files), MemoryDebug::getMemoryUsage()));
                     yield Stage::Preprocessing;
@@ -196,9 +200,13 @@ final class PreprocessStage implements CooperativeStageInterface
 
                 if (++$sinceYield >= self::YIELD_EVERY) {
                     $sinceYield = 0;
-                if ($state->cancelled) {
-                    break;
-                }
+                    // shell-042 (aborted-run accounting): breaking at this
+                    // yield boundary abandons the rest of the streamed rows,
+                    // so processed+skipped+parseErrors can fall short of the
+                    // files handed to the pool. Partial report by design.
+                    if ($state->cancelled) {
+                        break;
+                    }
                     $state->sampleMemory();
                     $state->debug($output, sprintf('preprocess: processed %d files, %d blocks so far [%s]', $state->processedFiles, count($blocks), MemoryDebug::getMemoryUsage()));
                     $this->listener->onFilePreprocessed(

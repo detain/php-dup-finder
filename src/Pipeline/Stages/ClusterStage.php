@@ -215,9 +215,13 @@ final class ClusterStage implements CooperativeStageInterface
                 foreach ($this->scorePairs($candidatePairs, $index, $config, $state, $output) as $_) {
                     // Each yield from scorePairs is Stage::Clustering for TUI repaint.
                     // We consume it here (no additional yield) to avoid doubling.
-                if ($state->cancelled) {
-                    break;
-                }
+                    // shell-042 (aborted-run accounting): breaking at this
+                    // boundary abandons the remaining pairs, so edges and
+                    // scoredPairs can fall short of candidatePairs on an
+                    // aborted run. Partial report by design.
+                    if ($state->cancelled) {
+                        break;
+                    }
                 }
             }
         }
@@ -425,9 +429,13 @@ final class ClusterStage implements CooperativeStageInterface
                 }
                 if (++$sinceYield >= self::YIELD_EVERY) {
                     $sinceYield = 0;
-                if ($state->cancelled) {
-                    break;
-                }
+                    // shell-042 (aborted-run accounting): breaking at this
+                    // yield boundary abandons the remaining streamed rows;
+                    // scoredPairs/edges can fall short of candidatePairs on
+                    // an aborted run. Partial report by design.
+                    if ($state->cancelled) {
+                        break;
+                    }
                     $this->updateScoringProgress($state, $output);
                     yield Stage::Clustering;
                 }
@@ -443,9 +451,13 @@ final class ClusterStage implements CooperativeStageInterface
                 $sinceYield += count($chunk);
                 if ($sinceYield >= self::YIELD_EVERY) {
                     $sinceYield = 0;
-                if ($state->cancelled) {
-                    break;
-                }
+                    // shell-042 (aborted-run accounting): breaking at this
+                    // yield boundary abandons the remaining chunks;
+                    // scoredPairs/edges can fall short of candidatePairs on
+                    // an aborted run. Partial report by design.
+                    if ($state->cancelled) {
+                        break;
+                    }
                     $this->updateScoringProgress($state, $output);
                     yield Stage::Clustering;
                 }
