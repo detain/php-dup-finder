@@ -10,7 +10,7 @@
             "type": "array",
             "minItems": 1,
             "items": { "type": "string", "minLength": 1 },
-            "description": "Source roots to scan. When this key is absent or empty, paths must come from the CLI args."
+            "description": "Source roots to scan. When this key is absent, the scan roots must come from the CLI args. An explicit empty list is refused at load (exit 2, \"paths must not be empty\") — the loader never falls through to argv for a present-but-empty paths key, hence minItems:1."
         },
         "exclude": {
             "type": "array",
@@ -272,7 +272,7 @@
         "ml_pair_allow_private": {
             "type": "boolean",
             "default": false,
-            "description": "Opt-in admitting an ml_pair_url sidecar in the PRIVATE address families — loopback, RFC 1918, CGNAT 100.64.0.0/10, link-local, ULA, and their IPv6/embedded (incl. NAT64) spellings — the documented local-sidecar topology (once-S54). Off by default; reserved non-private spaces (0.0.0.0/8, 192.0.0.0/24, 198.18.0.0/15, multicast) stay refused either way. Root-only key: subtree .phpdup.json files carrying it are refused. The argv spelling --ml-pair-allow-private registers with the next Command.php option-roster leg. CLI: --ml-pair-allow-private."
+            "description": "Opt-in admitting an ml_pair_url sidecar in the PRIVATE address families — loopback, RFC 1918, CGNAT 100.64.0.0/10, link-local, ULA, and their IPv6/embedded (incl. NAT64) spellings — the documented local-sidecar topology (once-S54). Off by default; reserved non-private spaces (0.0.0.0/8, 192.0.0.0/24, 198.18.0.0/15, multicast) stay refused either way. Root-only key: subtree .phpdup.json files carrying it are refused. The root config key takes effect today; the argv spelling does NOT exist at this tip — --ml-pair-allow-private is unregistered in the Command.php option roster (Symfony refuses it as an unknown option, exit 1) and lands with a later option-roster leg. CLI: none in this release (config-file family key until that leg)."
         },
         "db_symbols": {
             "type": "object",
