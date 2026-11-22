@@ -8,6 +8,7 @@ use PhpParser\Node\Expr;
 use PhpParser\Node\Scalar;
 use PHPUnit\Framework\TestCase;
 use Phpdup\Extraction\BlockExtractor;
+use Phpdup\Fingerprint\FingerprintIdMode;
 use Phpdup\Fingerprint\SubtreeHasher;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Parsing\AstParser;
@@ -510,6 +511,43 @@ final class AstSerializerTest extends TestCase
         );
         $joined = implode(Delimiters::HASH_JOIN, $forgeTokens);
         $this->assertSame($forgeTokens, self::decodeStream($joined, Delimiters::HASH_JOIN));
+    }
+
+    public function testDangerByteSetIsTheClosedFramingNulRoster(): void
+    {
+        // engine-S34b final-state pin: FRAME_DANGER is closed at exactly
+        // the four stream bytes — the NUL statement-alignment joiner
+        // (fix1 e18d52e) on top of the framing mark and the two stream
+        // joiners (a674d90). Widening or narrowing this set changes
+        // which values frame, i.e. it is a new stream generation: the
+        // edit must arrive as a roster bump + golden disclosure, and
+        // this assertion is the tripwire that forces that conversation.
+        $danger = (string) (new \ReflectionClassConstant(AstSerializer::class, 'FRAME_DANGER'))->getValue();
+        $this->assertSame("\x00\x1D\x1E\x1F", $danger);
+        foreach ([AstSerializer::FRAME_MARK, Delimiters::TOKEN_JOIN, Delimiters::NGRAM_SEP, Delimiters::HASH_JOIN] as $byte) {
+            $this->assertStringContainsString($byte, $danger, 'a stream joiner escaped the danger set');
+        }
+    }
+
+    public function testRosterEraWordTracksTheStreamContract(): void
+    {
+        // The serializer's framing and the cache identity are one con-
+        // tract: the roster token must name the era this stream is in.
+        // 'framing' entered with the length-frame; 'nul' entered when
+        // \x00 joined the danger set. A danger-byte change that leaves
+        // the era words stale (or vice versa) fails here on the very
+        // diff that caused it.
+        $danger = (string) (new \ReflectionClassConstant(AstSerializer::class, 'FRAME_DANGER'))->getValue();
+        $token  = FingerprintIdMode::CACHE_IDENTITY;
+        $this->assertStringContainsString('framing', $token);
+        if (str_contains($danger, "\x00")) {
+            $this->assertStringContainsString('-nul', $token, 'NUL danger without a nul era word — stale roster');
+        }
+        $this->assertSame(
+            FingerprintIdMode::rootTokenBytes(),
+            (string) file_get_contents(dirname(__DIR__, 3) . '/' . FingerprintIdMode::ROOT_TOKEN_FILE),
+            'root roster file diverged from the cache identity'
+        );
     }
 }
 

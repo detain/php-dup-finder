@@ -41,7 +41,20 @@ use PhpParser\Node;
  * Clean values — every literal in every non-adversarial corpus — are
  * byte-identical to the pre-framing stream, so structural hashes, cache
  * identities and goldens of honest code do not move on this leg. The
- * format-change roster bump + golden re-pin is engine-S34b's.
+ * format-change roster bump landed with engine-S34b: the stream's cache
+ * identity is {@see \Phpdup\Fingerprint\FingerprintIdMode::CACHE_IDENTITY}
+ * ('cachekey-v1-framing-nul', mirrored in the root
+ * {@see \Phpdup\Fingerprint\FingerprintIdMode::ROOT_TOKEN_FILE} file),
+ * and the golden regen on that step came back zero-diff exactly as the
+ * freeze law predicts — confirmatory, not corrective.
+ *
+ * The '|' (type|scalar) and '#' (type#append) channels rest on a
+ * php-parser v5 invariant: a node carries at most one free-text sub-node
+ * value — further appends are bool/int renderings and the float form,
+ * none of which can contain '#'. A node class that ever ships two
+ * string-valued sub-nodes would forge across the '#' boundary unframed
+ * and must widen the danger set (engine-S34b rider β: re-open here, not
+ * silently in the stores).
  */
 final class AstSerializer
 {

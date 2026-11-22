@@ -5,6 +5,7 @@ namespace Phpdup\Tests\Unit\Fingerprint;
 
 use PHPUnit\Framework\TestCase;
 use Phpdup\Extraction\BlockExtractor;
+use Phpdup\Fingerprint\FingerprintIdMode;
 use Phpdup\Fingerprint\NgramFingerprint;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Parsing\AstParser;
@@ -292,5 +293,24 @@ final class NgramFingerprintTest extends TestCase
                 "forged gram window at offset {$start} impersonated a real target gram"
             );
         }
+    }
+
+    public function testRosterHomeLivesBesideTheFingerprintClasses(): void
+    {
+        // Phase-5 r1 corrected a phantom roster path (`config/CacheKey/`):
+        // the cache-identity roster belongs in src/Fingerprint/, next to
+        // the classes whose keyspace it names. This pin keeps the roster
+        // from migrating out of the namespace it governs.
+        $file = (new \ReflectionClass(FingerprintIdMode::class))->getFileName();
+        $this->assertIsString($file);
+        $this->assertStringEndsWith(
+            '/src/Fingerprint/FingerprintIdMode.php',
+            str_replace('\\', '/', $file)
+        );
+        // The clean gram keyspace above is byte-frozen across the roster
+        // event (testCleanCorpusGramKeysAreByteFrozen): the roster names
+        // the generation, it does not re-key honest code — so its only
+        // job from here is that the store lanes stamp toward it.
+        $this->assertStringStartsWith('cachekey-v', FingerprintIdMode::CACHE_IDENTITY);
     }
 }
