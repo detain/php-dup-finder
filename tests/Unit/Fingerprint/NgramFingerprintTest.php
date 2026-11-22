@@ -211,4 +211,86 @@ final class NgramFingerprintTest extends TestCase
         // Bagging B did not touch A's dictionary either.
         $this->assertSame(count($bagA), $fpA->dictionarySize());
     }
+
+    // ------------------------------------------------------------------
+    // engine-S34a — prefix-free stream at the gram layer (engine-037)
+    // ------------------------------------------------------------------
+
+    private function canonicalStrict(string $code): \PhpParser\Node
+    {
+        $stmts = (new AstParser())->parseCode($code);
+        self::assertNotNull($stmts, 'fixture code must parse');
+        $blocks = (new BlockExtractor(minSize: 1))->extract('t.php', $stmts);
+        self::assertNotEmpty($blocks, 'fixture must yield a block');
+        (new Normalizer('strict'))->normalize($blocks[0]);
+        return $blocks[0]->canonical;
+    }
+
+    public function testCleanCorpusGramKeysAreByteFrozen(): void
+    {
+        // The no-move law at the gram layer: framing only rewrites values
+        // carrying the framing bytes, so the clean aggressive-mode corpus
+        // bag keeps its exact pre-framing digest sequence. These are the
+        // first three gram keys captured from the pre-framing build
+        // (engine-S34a baseline probe); a shift here means clean corpora
+        // silently re-fingerprinted on this half — goldens/caches included.
+        $bag  = $this->bagOf(self::DICT_CODE_A);
+        $keys = array_values(array_map('strval', array_keys($bag)));
+        $this->assertCount(13, $bag);
+        $this->assertSame(
+            ['58a4ad1e6104a32c', 'dedb09e8cc91d4d4', 'e5c7210d01184a9f'],
+            array_slice($keys, 0, 3)
+        );
+    }
+
+    public function testForgedLiteralNoLongerSharesGramWindowsWithItsTarget(): void
+    {
+        // PDDETECT-07 / ENGINE-FUZZ-04 on the n-gram layer: before the
+        // framing, a literal carrying \x1E/\x1F bytes forged gram windows
+        // byte-identical to windows built from the REAL tokens its text
+        // imitated (5 shared grams between the PD-07 pair at baseline,
+        // some of them forged). After the framing every gram window that
+        // touches the literal contains the frame header, so a forged
+        // window cannot exist in the target's bag at all.
+        $twoArg = $this->canonicalStrict('<?php function q() { e("a", "b"); return 1; }');
+        $forge  = $this->canonicalStrict(
+            '<?php function q() { e("a\x1f)\x1fArg#false#false(\x1fScalar_String_|s:b"); return 1; }'
+        );
+
+        $fp      = new NgramFingerprint(5);
+        $bagReal = $fp->fingerprint($twoArg);
+        $bagForge = $fp->fingerprint($forge);
+        $this->assertNotSame($bagReal, $bagForge, 'forged block must not fingerprint as its target');
+
+        // Window-level proof: each gram window of the forged block that
+        // covers its literal token hashes to bytes that appear nowhere in
+        // the target's window material — the splice is inert. Windows are
+        // folded exactly as NgramFingerprint folds them (engine-S02a
+        // stamp fold, unconditional).
+        $fold  = static fn(array $ts): array => array_map([\Phpdup\Util\IdentifierIds::class, 'foldStamps'], $ts);
+        $forgeTokens = $fold(\Phpdup\Util\AstSerializer::tokens($forge));
+        $literalAt   = null;
+        foreach ($forgeTokens as $i => $t) {
+            if (str_starts_with($t, 'Scalar_String_|s:' . \Phpdup\Util\AstSerializer::FRAME_MARK)) {
+                $literalAt = $i;
+                break;
+            }
+        }
+        self::assertNotNull($literalAt, 'the forged literal must ride the stream framed');
+
+        $realGramKeys = array_map('strval', array_keys($bagReal));
+        $n = 5;
+        $forgeCount = count($forgeTokens);
+        for ($start = max(0, $literalAt - $n + 1); $start <= min($forgeCount - $n, $literalAt); $start++) {
+            $windowKey = hash('xxh64', implode(
+                \Phpdup\Util\Delimiters::NGRAM_SEP,
+                array_slice($forgeTokens, $start, $n),
+            ));
+            $this->assertNotContains(
+                $windowKey,
+                $realGramKeys,
+                "forged gram window at offset {$start} impersonated a real target gram"
+            );
+        }
+    }
 }

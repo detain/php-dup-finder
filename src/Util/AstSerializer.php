@@ -6,7 +6,7 @@ namespace Phpdup\Util;
 use PhpParser\Node;
 
 /**
- * Serializes a PhpParser AST to a deterministic token stream.
+ * Serializes a PhpParser AST to a deterministic, prefix-free token stream.
  *
  * The token stream is what fingerprints and hashes consume. It captures
  * the node shape in pre-order traversal: every node emits a "type tag"
@@ -15,11 +15,61 @@ use PhpParser\Node;
  * structure so structurally distinct trees never collide.
  *
  *   tokens(if($x>0){f($x);}) =
- *     ["If_(", "BinaryOp_Greater_(", "Variable_$x", "Int_0", ")",
- *      "FuncCall_(", "Name_f", "Variable_$x", ")", ")"]
+ *     ["Stmt_If_(", "Expr_BinaryOp_Greater(", "Expr_Variable|v:x", …]
+ *
+ * **Prefix-free framing (php-dup-finder-engine-037).** Free-text scalar
+ * values (string literals, interpolated-string literal parts, variable /
+ * identifier / name payloads, appended string attributes) may carry the
+ * stream's own delimiter bytes: \x1F joins tokens into the structural
+ * hash, \x1E joins tokens into n-grams, and '|' / '#' delimit the type
+ * tag from the scalar. Un-framed, a literal's bytes spliced forged
+ * tokens into the joined stream — two reviewers independently produced
+ * byte-identical structural hashes for different code (PD-07 / FUZZ-04
+ * collision pairs), defeating the tool's strongest claim: equal hash ⇒
+ * equal code. The fix frames every free-text value: a value containing
+ * none of the framing bytes ({@see FRAME_MARK}, TOKEN_JOIN, NGRAM_SEP —
+ * plus ';' inside `L:` segments, which are list-terminated) passes
+ * through byte-identical; any other value is emitted as
+ * `FRAME_MARK . strlen . ':' . raw`, a length prefix that makes the
+ * segment self-delimiting regardless of the bytes it carries. The
+ * stream is then uniquely decodable left-to-right (a FRAME_MARK byte
+ * can only begin a frame; the frame body is skipped by length), so
+ * distinct token lists can never join to the same byte string.
+ *
+ * Clean values — every literal in every non-adversarial corpus — are
+ * byte-identical to the pre-framing stream, so structural hashes, cache
+ * identities and goldens of honest code do not move on this leg. The
+ * format-change roster bump + golden re-pin is engine-S34b's.
  */
 final class AstSerializer
 {
+    /**
+     * ASCII "group separator" opening a length frame. It is deliberately
+     * outside the join/gram delimiters and outside anything the grammar
+     * uses itself, and safe (un-framed) values never contain it — which
+     * is what makes a frame unambiguously recognizable mid-token.
+     */
+    public const FRAME_MARK = "\x1D";
+
+    /** Bytes that force framing: the mark itself plus both stream joiners. */
+    private const FRAME_DANGER = "\x1D\x1E\x1F";
+
+    /**
+     * Frame one free-text scalar value for the stream (see class docblock).
+     *
+     * @param string $extraDanger additional bytes that must force framing
+     *                            in this position (e.g. the `L:` segment
+     *                            terminator ';')
+     */
+    private static function frame(string $value, string $extraDanger = ''): string
+    {
+        $danger = self::FRAME_DANGER . $extraDanger;
+        if (strpbrk($value, $danger) === false) {
+            return $value;
+        }
+        return self::FRAME_MARK . strlen($value) . ':' . $value;
+    }
+
     /** @return list<string> */
     public static function tokens(Node $node): array
     {
@@ -120,7 +170,7 @@ final class AstSerializer
     public static function scalarPart(Node $node): ?string
     {
         // Scalar literals
-        if ($node instanceof Node\Scalar\String_)        return 's:' . $node->value;
+        if ($node instanceof Node\Scalar\String_)        return 's:' . self::frame($node->value);
         if ($node instanceof Node\Scalar\Int_)           return 'i:' . $node->value;
         // Floats must never ride the ini-driven decimal rendering
         // (precision / serialize_precision differ across PHP builds and
@@ -130,7 +180,10 @@ final class AstSerializer
             $parts = '';
             foreach ($node->parts as $p) {
                 if ($p instanceof Node\InterpolatedStringPart) {
-                    $parts .= 'L:' . $p->value . ';';
+                    // ';' is a segment terminator inside the list, so it
+                    // must force framing too (engine-037: "a;L:b" forged a
+                    // two-segment list from one value).
+                    $parts .= 'L:' . self::frame($p->value, ';') . ';';
                 } else {
                     $parts .= 'X;';
                 }
@@ -140,14 +193,14 @@ final class AstSerializer
 
         // Variables and identifiers
         if ($node instanceof Node\Expr\Variable && is_string($node->name)) {
-            return 'v:' . $node->name;
+            return 'v:' . self::frame($node->name);
         }
         // Identifier covers VarLikeIdentifier (its subclass); both serialise via the 'id:' prefix here.
         if ($node instanceof Node\Identifier) {
-            return 'id:' . $node->name;
+            return 'id:' . self::frame($node->name);
         }
         if ($node instanceof Node\Name) {
-            return 'n:' . $node->toString();
+            return 'n:' . self::frame($node->toString());
         }
 
         return null;
@@ -162,7 +215,9 @@ final class AstSerializer
         if (is_null($v))   return 'null';
         if (is_int($v))    return (string)$v;
         if (is_float($v))  return self::floatBytes($v);
-        return (string)$v;
+        // Remaining scalars are free text (e.g. InlineHTML's value) and
+        // ride the same frame as scalarPart's payloads (engine-037).
+        return self::frame((string)$v);
     }
 
     /**

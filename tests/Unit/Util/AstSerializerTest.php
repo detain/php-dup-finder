@@ -7,8 +7,12 @@ use PhpParser\Node;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Scalar;
 use PHPUnit\Framework\TestCase;
+use Phpdup\Extraction\BlockExtractor;
+use Phpdup\Fingerprint\SubtreeHasher;
+use Phpdup\Normalization\Normalizer;
 use Phpdup\Parsing\AstParser;
 use Phpdup\Util\AstSerializer;
+use Phpdup\Util\Delimiters;
 
 /**
  * Tests for AstSerializer node-count invariants.
@@ -168,4 +172,293 @@ final class AstSerializerTest extends TestCase
 
         self::assertSame($built + 1, AstSerializer::nodeCount($root));
     }
+
+    // ------------------------------------------------------------------
+    // engine-S34a — prefix-free stream (php-dup-finder-engine-037)
+    // ------------------------------------------------------------------
+
+    /** @return list<string> */
+    private function streamOf(string $code, string $mode = 'strict'): array
+    {
+        $stmts = self::$parser->parseCode($code);
+        self::assertNotNull($stmts, 'fixture code must parse');
+        $blocks = (new BlockExtractor(minSize: 1))->extract('t.php', $stmts);
+        self::assertNotEmpty($blocks, 'fixture must yield a block');
+        (new Normalizer($mode))->normalize($blocks[0]);
+        return AstSerializer::tokens($blocks[0]->canonical);
+    }
+
+    private function hashOf(string $code, string $mode = 'strict'): string
+    {
+        $stmts = self::$parser->parseCode($code);
+        self::assertNotNull($stmts, 'fixture code must parse');
+        $blocks = (new BlockExtractor(minSize: 1))->extract('t.php', $stmts);
+        self::assertNotEmpty($blocks, 'fixture must yield a block');
+        (new Normalizer($mode))->normalize($blocks[0]);
+        return (new SubtreeHasher())->hash($blocks[0]->canonical);
+    }
+
+    /**
+     * Independent left-to-right decoder for the framed stream grammar —
+     * the oracle the uniqueness properties are fenced against. A
+     * FRAME_MARK byte may only open a `MARK len ':' body` frame (safe
+     * values never contain it), so a reader skews zero knowledge of the
+     * node grammar: read bytes, on MARK take the decimal length and skip
+     * that many body bytes verbatim, on $sep flush the current token.
+     *
+     * @return list<string>
+     */
+    private static function decodeStream(string $stream, string $sep): array
+    {
+        $tokens = [];
+        $current = '';
+        $i = 0;
+        $n = strlen($stream);
+        while ($i < $n) {
+            $byte = $stream[$i];
+            if ($byte === AstSerializer::FRAME_MARK) {
+                $colon = strpos($stream, ':', $i + 1);
+                self::assertNotFalse($colon, 'frame marker without a length colon');
+                $len = (int) substr($stream, $i + 1, $colon - $i - 1);
+                $bodyEnd = $colon + 1 + $len;
+                self::assertLessThanOrEqual(strlen($stream), $bodyEnd, 'frame body overruns the stream');
+                $current .= substr($stream, $i, $bodyEnd - $i);
+                $i = $bodyEnd;
+                continue;
+            }
+            if ($byte === $sep) {
+                $tokens[] = $current;
+                $current = '';
+                ++$i;
+                continue;
+            }
+            $current .= $byte;
+            ++$i;
+        }
+        $tokens[] = $current;
+        return $tokens;
+    }
+
+    public function testCleanScalarsRideTheStreamByteIdentical(): void
+    {
+        // The no-move law of the framing leg: a value free of the framing
+        // bytes ({FRAME_MARK}, TOKEN_JOIN, NGRAM_SEP — plus ';' inside L:
+        // segments) passes through unframed, so every honest corpus keeps
+        // its pre-framing stream bytes. The absolute digest below is the
+        // structural hash captured from the pre-framing build (engine-S34a
+        // baseline probe on the pristine extract); drifting it here means
+        // the framing changed byte identity of clean code — a cache/golden
+        // mass-migration this half must never cause.
+        $tokens = $this->streamOf('<?php function c() { $s = "notify@x.org"; $n = send($s, 7); return $n > 0 ? "ok" : $s; }');
+        $this->assertContains('Scalar_String_|s:notify@x.org', $tokens);
+        $this->assertContains('Scalar_String_|s:ok', $tokens);
+        $this->assertSame('ab38abd589f9919e27634084903d1220', $this->hashOf(
+            '<?php function c() { $s = "notify@x.org"; $n = send($s, 7); return $n > 0 ? "ok" : $s; }'
+        ));
+    }
+
+    public function testControlBytesInScalarsAreLengthFramed(): void
+    {
+        // engine-037 mechanism pin: a literal carrying the stream joiner
+        // is framed `MARK len ':' raw` inside the s: payload…
+        $forged = $this->streamOf('<?php function g() { return "a\x1fb"; }');
+        $needle = 'Scalar_String_|s:' . AstSerializer::FRAME_MARK . '3:a' . Delimiters::TOKEN_JOIN . 'b';
+        $this->assertContains($needle, $forged);
+
+        // …and so is a literal carrying the n-gram separator or the mark
+        // itself (the mark forces framing precisely so a frame can never
+        // be confused with raw text).
+        $gramForged = $this->streamOf('<?php function g() { return "a\x1eb"; }');
+        $this->assertContains('Scalar_String_|s:' . AstSerializer::FRAME_MARK . '3:a' . Delimiters::NGRAM_SEP . 'b', $gramForged);
+
+        $mark = $this->streamOf('<?php function g() { return "a' . AstSerializer::FRAME_MARK . 'b"; }');
+        $this->assertContains('Scalar_String_|s:' . AstSerializer::FRAME_MARK . '3:a' . AstSerializer::FRAME_MARK . 'b', $mark);
+
+        // The framed stream still decodes to exactly its token list.
+        $decoded = self::decodeStream(implode(Delimiters::TOKEN_JOIN, $forged), Delimiters::TOKEN_JOIN);
+        $this->assertSame($forged, $decoded);
+    }
+
+    public function testInterpolatedSegmentsTerminateUnambiguously(): void
+    {
+        // ';' terminates an L: segment, so a part whose text contains ';'
+        // must be framed; a ';' free part rides byte-identical.
+        $withSemi = $this->streamOf('<?php function i() { return "a;X{$v}"; }');
+        $framed = 'is:L:' . AstSerializer::FRAME_MARK . '3:a;X;X;';
+        $this->assertContains('Scalar_InterpolatedString|' . $framed, $withSemi);
+        $this->assertSame(
+            $withSemi,
+            self::decodeStream(implode(Delimiters::TOKEN_JOIN, $withSemi), Delimiters::TOKEN_JOIN)
+        );
+
+        $plain = $this->streamOf('<?php function j() { return "pre{$v}"; }');
+        $this->assertContains('Scalar_InterpolatedString|is:L:pre;X;', $plain);
+    }
+
+    public function testAppendedStringAttributesAreFramed(): void
+    {
+        // walk() appends raw scalar sub-node attributes after '#'; the
+        // InlineHTML value is free text and takes the same frame.
+        $tokens = AstSerializer::tokens(new Node\Stmt\InlineHTML("a\x1Fb"));
+        $this->assertSame(
+            ['Stmt_InlineHTML#' . AstSerializer::FRAME_MARK . '3:a' . Delimiters::TOKEN_JOIN . 'b'],
+            $tokens
+        );
+    }
+
+    public function testPd07CollisionPairNowHashesDifferently(): void
+    {
+        // PDDETECT-07: a one-argument call whose literal splices the
+        // forged tokens `)`, `Arg#false#false(` and `Scalar_String_|s:b`
+        // joined to byte-identical streams with a real two-argument call
+        // (baseline probe at HEAD: both hash 71302f1d9c36d43cc5267b921b3bf4df).
+        $twoArg = '<?php function q() { e("a", "b"); return 1; }';
+        $forged = '<?php function q() { e("a\x1f)\x1fArg#false#false(\x1fScalar_String_|s:b"); return 1; }';
+
+        // The forged literal's bytes frame ⇒ the streams part company.
+        $this->assertNotSame($this->hashOf($twoArg), $this->hashOf($forged));
+
+        // The clean side is byte-frozen (unframed): its digest is the one
+        // the pre-framing build produced for it, too.
+        $this->assertSame('71302f1d9c36d43cc5267b921b3bf4df', $this->hashOf($twoArg));
+
+        // And the forgery attempt is visible in the stream: the spliced
+        // bytes survive inside a length frame, never as token structure.
+        $forgedTokens = $this->streamOf($forged);
+        $joined = implode(Delimiters::TOKEN_JOIN, $forgedTokens);
+        $this->assertSame($forgedTokens, self::decodeStream($joined, Delimiters::TOKEN_JOIN));
+    }
+
+    public function testFuzz04CollisionPairNowHashesDifferently(): void
+    {
+        // ENGINE-FUZZ-04: the two-argument variant over an Int token —
+        // f("a", 1) vs f(<forge of ")" + "Arg#false#false(" + "Scalar_Int_|i:1">).
+        // Baseline probe at HEAD: identical names ⇒ both hash
+        // fb3d807498ada2cfc99bb2fbc753e27a.
+        $real = '<?php function w() { f("a", 1); }';
+        $forge = '<?php function w() { f("a\x1F)\x1FArg#false#false(\x1FScalar_Int_|i:1"); }';
+
+        $this->assertNotSame($this->hashOf($real), $this->hashOf($forge));
+        $this->assertSame('fb3d807498ada2cfc99bb2fbc753e27a', $this->hashOf($real));
+    }
+
+    public function testDistinctTokenListsJoinToDistinctStreams(): void
+    {
+        // The prefix-free property, fenced over the serializer's image:
+        // build a corpus of function blocks whose literals, interpolated
+        // parts, variable names and identifiers are drawn from an
+        // adversarial alphabet (stream joiners, frame mark, '|', '#',
+        // ':', ';', digits+colon strings that imitate a frame header,
+        // and UTF-8 edge sequences). Two distinct token lists must never
+        // join to the same stream at either the TOKEN_JOIN or the
+        // NGRAM_SEP layer, and every stream must decode back to exactly
+        // its token list.
+        $alphabet = [
+            'a', 'ok', '', 'notify@x.org', '__V1', '__CALL_send',
+            'a' . "\x1E" . 'b', 'a' . "\x1F" . 'b', 'a' . AstSerializer::FRAME_MARK . 'b',
+            'x)y', 'Arg#false#false(', '|s:b', 'a;b', 'a:L:x', ';L:x', 'L:a;X;',
+            "\x1E", "\x1F", AstSerializer::FRAME_MARK, '|', '#', ':', ';', '3:ab',
+            '5:' . "\x1E" . 'x', '2:' . "\x1F", '€', 'é', "\xC3\x28", "\xF0\x9F\x98\x80x",
+            'a' . "\x1D" . '3:a', '0:', 'x' . "\x1F" . ')',
+        ];
+        mt_srand(20261122); // deterministic corpus
+        $quoteChars = "\0..\x1F\x7F" . chr(92) . chr(34) . chr(39) . chr(36) . chr(123) . chr(125);
+        $interpChars = $quoteChars; // same set: '$' '{' '}' must not leak either
+
+        /** @var list<array{name:string,tokens:list<string>}> $corpus */
+        $corpus = [];
+        for ($i = 0; $i < 260; $i++) {
+            $s1 = $alphabet[mt_rand(0, count($alphabet) - 1)];
+            $s2 = $alphabet[mt_rand(0, count($alphabet) - 1)];
+            $kind = mt_rand(0, 3);
+            if ($kind === 0) {
+                $code = sprintf(
+                    '<?php function %s() { return "%s"; }',
+                    'f' . $i . ($s1 === '' ? '' : '_'),
+                    addcslashes($s1, $quoteChars) // keep it a single literal
+                );
+            } elseif ($kind === 1) {
+                $code = sprintf(
+                    '<?php function %s() { return "%s{$v}%s"; }',
+                    'f' . $i,
+                    addcslashes($s1, $interpChars),
+                    addcslashes($s2, $interpChars)
+                );
+            } elseif ($kind === 2) {
+                // Non-UTF-8-safe names cannot be parsed, so drive the
+                // name/id channels synthetically instead.
+                $call = new Expr\FuncCall(new Node\Name(preg_replace('/[^\x20-\x7E]/', '', $s1) ?: 'fz'));
+                $stmt = new Node\Stmt\Expression(new Expr\Assign(
+                    new Expr\Variable(preg_replace('/[^\x20-\x7E]/', '', $s2) ?: 'vz'),
+                    new Scalar\String_($s1)
+                ));
+                $corpus[] = ['name' => "syn$i", 'tokens' => AstSerializer::tokens(new Node\Stmt\Expression($call))];
+                $corpus[] = ['name' => "synv$i", 'tokens' => AstSerializer::tokens($stmt)];
+                continue;
+            } else {
+                $code = sprintf(
+                    '<?php function %s() { $h = "%s"; $k = "%s"; return $h . $k; }',
+                    'f' . $i,
+                    addcslashes($s1, "\0..\x1F\x7F\\\"'"),
+                    addcslashes($s2, "\0..\x1F\x7F\\\"'")
+                );
+            }
+            $stmts = self::$parser->parseCode($code);
+            if ($stmts === null) {
+                continue; // escape-sequence round trip not re-parseable — corpus keeps going
+            }
+            $blocks = (new BlockExtractor(minSize: 1))->extract('t.php', $stmts);
+            if ($blocks === []) {
+                continue;
+            }
+            (new Normalizer('strict'))->normalize($blocks[0]);
+            $corpus[] = ['name' => "b$i", 'tokens' => AstSerializer::tokens($blocks[0]->canonical)];
+        }
+        $this->assertGreaterThan(180, count($corpus), 'property corpus must stay substantial');
+
+        // Injectivity: group by joined stream; every group must hold one
+        // and the same token list.
+        /** @var array<string,list<string>> $byStream */
+        $byStream = [];
+        /** @var array<string,list<string>> $byGram */
+        $byGram = [];
+        foreach ($corpus as $entry) {
+            $joined = implode(Delimiters::TOKEN_JOIN, $entry['tokens']);
+            $digest = hash('xxh128', $joined);
+            if (isset($byStream[$digest])) {
+                $this->assertSame(
+                    $byStream[$digest],
+                    $entry['tokens'],
+                    "distinct token lists joined to one TOKEN_JOIN stream (corpus member {$entry['name']})"
+                );
+            } else {
+                $byStream[$digest] = $entry['tokens'];
+            }
+
+            $gramJoined = implode(Delimiters::NGRAM_SEP, $entry['tokens']);
+            $gramDigest = hash('xxh128', $gramJoined);
+            if (isset($byGram[$gramDigest])) {
+                $this->assertSame(
+                    $byGram[$gramDigest],
+                    $entry['tokens'],
+                    "distinct token lists joined to one NGRAM_SEP stream (corpus member {$entry['name']})"
+                );
+            } else {
+                $byGram[$gramDigest] = $entry['tokens'];
+            }
+
+            // Unique decodability at both join layers.
+            $this->assertSame(
+                $entry['tokens'],
+                self::decodeStream($joined, Delimiters::TOKEN_JOIN),
+                "TOKEN_JOIN stream failed to decode back to its token list ({$entry['name']})"
+            );
+            $this->assertSame(
+                $entry['tokens'],
+                self::decodeStream($gramJoined, Delimiters::NGRAM_SEP),
+                "NGRAM_SEP stream failed to decode back to its token list ({$entry['name']})"
+            );
+        }
+    }
 }
+
