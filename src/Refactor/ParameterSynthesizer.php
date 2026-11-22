@@ -60,6 +60,74 @@ final class ParameterSynthesizer
     private const INT_LITERAL_REGEX = '/^-?\d+$/';
     private const FLOAT_LITERAL_REGEX = '/^(?:-?(?:\d+\.\d*|\.\d+|\d+(?:\.\d*)?[eE][+-]?\d+)|-?INF|NAN)$/';
 
+    /** The remaining cascade shape tests, promoted from inline duplicates
+     *  to the single classification authority (output-045), verbatim. */
+    private const STRING_LITERAL_REGEX = '/^([\'"]).*\1$/s';
+    private const CLASS_NAME_REGEX = '/^[A-Z][A-Za-z0-9_]*(\\\\[A-Z][A-Za-z0-9_]*)*$/';
+    private const IDENTIFIER_SHAPE_REGEX = '/^[a-z_][a-zA-Z0-9_]*$/';
+
+    /**
+     * Mutually-exclusive shape categories, one dispatch per value
+     * (classifyValue). A value's category is what the value IS; the old
+     * cascade's homogeneity arms tested which raw regex SETS a spelling
+     * belongs to, and those sets overlap — the class-like regex also
+     * accepts the words 'TRUE'/'FALSE'/'NULL'/'INF'/'NAN', the identifier
+     * shape also accepts 'true'/'false'/'null'. The word-case split below
+     * keeps every arm's membership recoverable from the counts WITHOUT a
+     * second walk: the arms become family-subset tests over the tally.
+     * 'identifier' and 'other' can name a callable slot, never a type.
+     */
+    private const CATEGORY_INT = 'int';
+    private const CATEGORY_FLOAT = 'float';
+    private const CATEGORY_FLOAT_WORD = 'float-word';           // 'INF', 'NAN'
+    private const CATEGORY_BOOL = 'bool';                       // 'true', 'false'
+    private const CATEGORY_BOOL_CAPS = 'bool-caps';             // 'TRUE', 'FALSE'
+    private const CATEGORY_NULL = 'null';                       // 'null'
+    private const CATEGORY_NULL_CAPS = 'null-caps';             // 'NULL'
+    private const CATEGORY_STRING = 'string';
+    private const CATEGORY_CLASS_NAME = 'class-name';
+    private const CATEGORY_IDENTIFIER = 'identifier';
+    private const CATEGORY_OTHER = 'other';
+
+    /**
+     * Which shape family each old homogeneity arm actually tested
+     * (a value matched the arm's own regex, with the cascade order as the
+     * tiebreaker when several arms pass). Families as category lists:
+     */
+    private const FLOAT_FAMILY = [self::CATEGORY_FLOAT, self::CATEGORY_FLOAT_WORD];
+    private const BOOL_FAMILY = [self::CATEGORY_BOOL, self::CATEGORY_BOOL_CAPS];
+    private const NULL_FAMILY = [self::CATEGORY_NULL, self::CATEGORY_NULL_CAPS];
+    private const CLASS_FAMILY = [
+        self::CATEGORY_CLASS_NAME,
+        self::CATEGORY_FLOAT_WORD,   // 'INF'/'NAN' match the class-like regex
+        self::CATEGORY_BOOL_CAPS,    // 'TRUE'/'FALSE' likewise
+        self::CATEGORY_NULL_CAPS,    // and 'NULL'
+    ];
+
+    /**
+     * Category → emitted type name for the union projection; categories
+     * absent from this map ('identifier', 'other') are untypeable.
+     *
+     * @var array<string,string>
+     */
+    private const CATEGORY_TYPE_NAMES = [
+        self::CATEGORY_INT         => 'int',
+        self::CATEGORY_FLOAT       => 'float',
+        self::CATEGORY_FLOAT_WORD  => 'float',
+        self::CATEGORY_BOOL        => 'bool',
+        self::CATEGORY_BOOL_CAPS   => 'bool',
+        self::CATEGORY_NULL        => 'null',
+        self::CATEGORY_NULL_CAPS   => 'null',
+        self::CATEGORY_STRING      => 'string',
+        self::CATEGORY_CLASS_NAME  => 'class-string',
+    ];
+
+    /**
+     * Stable union ordering: scalar primitives first, then class-string —
+     * the unionType roster the counts now spell through (output-045).
+     */
+    private const UNION_TYPE_ORDER = ['int', 'float', 'string', 'bool', 'null', 'class-string'];
+
     public function synthesize(Cluster $cluster): void
     {
         $usedNames = [];
@@ -69,6 +137,22 @@ final class ParameterSynthesizer
         }
     }
 
+    /**
+     * Map a hole's observed rows to one parameter type in a SINGLE
+     * classification pass (output-045). The old cascade proved each
+     * homogeneity with its own whole-list walk (up to ~6 passes) and, on
+     * disagreement, RE-walked every value through classifyValue() — 6–10
+     * regexes per value. Now every row is classified exactly once and both
+     * decisions — all-same and union — derive from the category counts.
+     *
+     * Decision order mirrors the historical cascade:
+     *
+     *   1. optional_block            → 'bool' (kind short-circuit, unchanged)
+     *   2. all rows in one arm       → that arm's type name
+     *   3. 'name' hole, every row identifier-shaped → 'callable|string'
+     *   4. every row typeable        → union in UNION_TYPE_ORDER
+     *   5. anything untypeable       → 'mixed'
+     */
     private function inferType(Hole $hole): string
     {
         if ($hole->kind === 'optional_block') {
@@ -78,84 +162,200 @@ final class ParameterSynthesizer
         $values = $hole->observedValues;
         if (!$values) return 'mixed';
 
-        if ($this->allMatch($values, self::INT_LITERAL_REGEX))                  return 'int';
-        if ($this->allMatch($values, self::FLOAT_LITERAL_REGEX))                return 'float';
-        if ($this->allMatchSet($values, ['true', 'false', 'TRUE', 'FALSE']))    return 'bool';
-        if ($this->allMatchSet($values, ['null', 'NULL']))                      return 'null';
-        if ($this->allMatch($values, '/^([\'"]).*\1$/s'))                       return 'string';
+        [$counts, $identifierShaped] = $this->tallyCategories($values);
 
-        // class-like: all CamelCase identifiers, possibly namespaced
-        if ($this->allMatch($values, '/^[A-Z][A-Za-z0-9_]*(\\\\[A-Z][A-Za-z0-9_]*)*$/')) {
-            return 'class-string';
-        }
+        // Homogeneity arms, in the exact cascade order the old code applied
+        // them — each is now a family-subset test over the counts. int and
+        // string are disjoint single categories; the word-case split makes
+        // float/bool/null/class memberships of overlapping spellings
+        // ('INF', 'TRUE', 'NULL', …) provable from the same tally.
+        if (count($counts) === 1 && isset($counts[self::CATEGORY_INT]))  return 'int';
+        if (self::countsWithinFamily($counts, self::FLOAT_FAMILY))       return 'float';
+        if (self::countsWithinFamily($counts, self::BOOL_FAMILY))        return 'bool';
+        if (self::countsWithinFamily($counts, self::NULL_FAMILY))        return 'null';
+        if (count($counts) === 1 && isset($counts[self::CATEGORY_STRING])) return 'string';
+        if (self::countsWithinFamily($counts, self::CLASS_FAMILY))       return 'class-string';
 
-        // callable: hole kind name + values look like simple identifiers
-        if ($hole->kind === 'name' && $this->allMatch($values, '/^[a-z_][a-zA-Z0-9_]*$/')) {
+        // 'name' positions whose every row matches the raw identifier shape
+        // are function/method-name slots. The lowercase bool/null words are
+        // identifier-shaped (the old callable arm tested the raw regex,
+        // which accepts 'true'/'false'/'null' and rejects the caps).
+        if ($hole->kind === 'name' && $identifierShaped === count($values)) {
             return 'callable|string';
         }
 
-        // Mixed-type observations — try to emit a union type instead of
-        // dropping straight to 'mixed'. Each observed value is classified
-        // independently; the unique set is joined with '|' in a stable
-        // ordering. If we can't classify *every* value we still fall
-        // back to 'mixed' rather than emitting a misleading partial union.
-        $union = $this->unionType($values);
+        // Mixed evidence: emit a union only when EVERY row classifies to a
+        // PHP type. Bare identifiers are NOT classified — they're often
+        // variables in the template, and naming a type for them would be a
+        // lie — so their presence (or any unparseable row) still degrades
+        // the whole hole to 'mixed' rather than a misleading partial union.
+        $union = $this->unionFromCounts($counts);
         return $union ?? 'mixed';
     }
 
     /**
-     * Try to classify each observed value individually and return a
-     * union type like 'int|string'. Returns null when at least one
-     * value can't be confidently classified — caller falls back to
-     * 'mixed'.
+     * True when every category present in the tally lies inside the given
+     * arm family. The tally is never empty (callers guard on a non-empty
+     * value list), so no extra "at least one row" check is needed.
      *
-     * Categories considered (per value):
-     *
-     *   - integer literal     → 'int'
-     *   - float literal       → 'float'
-     *   - PHP string literal  → 'string'
-     *   - bool keyword        → 'bool'
-     *   - null keyword        → 'null'
-     *   - class-like name     → 'class-string'
-     *
-     * Bare identifiers are NOT classified — they're often variables in
-     * the template, and emitting `'string'` for them would be a lie.
+     * @param array<string,int> $counts
+     * @param list<string>      $family
+     */
+    private static function countsWithinFamily(array $counts, array $family): bool
+    {
+        foreach ($counts as $category => $occurrences) {
+            if (!in_array($category, $family, true)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * One pass over the observed rows, classifying each value EXACTLY once
+     * into its shape category (output-045). Alongside the category counts it
+     * tallies identifier-SHAPED rows: category 'identifier' plus the
+     * lowercase bool and null words — with the word-case split the
+     * categories themselves ARE the membership of the raw
+     * /^[a-z_][a-zA-Z0-9_]*$/ test the old callable arm ran, recovered in
+     * the same walk for zero extra regex cost.
      *
      * @param list<string> $values
+     * @return array{0: array<string,int>, 1: int}  [category => count, identifier-shaped row count]
      */
-    private function unionType(array $values): ?string
+    private function tallyCategories(array $values): array
     {
-        $seen = [];
+        $counts           = [];
+        $identifierShaped = 0;
+
         foreach ($values as $v) {
-            $type = $this->classifyValue($v);
-            if ($type === null) {
-                return null;
+            $category = $this->classifyValue($v);
+            $counts[$category] = ($counts[$category] ?? 0) + 1;
+
+            if (
+                $category === self::CATEGORY_IDENTIFIER
+                || $category === self::CATEGORY_BOOL
+                || $category === self::CATEGORY_NULL
+            ) {
+                $identifierShaped++;
             }
-            $seen[$type] = true;
         }
-        if ($seen === []) {
+
+        return [$counts, $identifierShaped];
+    }
+
+    /**
+     * The stable-ordered union spelled by the category counts — kept only
+     * when every row type-ifies (the old unionType contract, without the
+     * second walk). Null says "at least one row is untypeable"; the caller
+     * then answers 'mixed'.
+     *
+     * @param array<string,int> $counts
+     */
+    private function unionFromCounts(array $counts): ?string
+    {
+        $types = [];
+        foreach ($counts as $category => $occurrences) {
+            $type = self::CATEGORY_TYPE_NAMES[$category] ?? null;
+            if ($type === null) {
+                return null; // 'identifier' / 'other' row: partial evidence
+            }
+            $types[$type] = true;
+        }
+        if ($types === []) {
             return null;
         }
-        // Stable ordering: scalar primitives first, then class-string.
-        $order = ['int', 'float', 'string', 'bool', 'null', 'class-string'];
+
         $sorted = [];
-        foreach ($order as $t) {
-            if (isset($seen[$t])) {
-                $sorted[] = $t;
+        foreach (self::UNION_TYPE_ORDER as $type) {
+            if (isset($types[$type])) {
+                $sorted[] = $type;
             }
         }
+
         return implode('|', $sorted);
     }
 
-    private function classifyValue(string $v): ?string
+    /**
+     * The literal-shape category of a single observed value — the one
+     * classification authority (output-045). A value is dispatched onto
+     * what it IS (numeric float vs the word 'NAN', 'true' vs 'TRUE'), and
+     * the overlapping regex-set membership the old arms relied on lives in
+     * the family constants instead. First-byte gating skips regexes a value
+     * cannot match by shape alone — a quoted row never tries a numeric
+     * regex, a '$var' never tries any type regex.
+     *
+     * @return 'int'|'float'|'float-word'|'bool'|'bool-caps'|'null'|'null-caps'|'string'|'class-name'|'identifier'|'other'
+     */
+    private function classifyValue(string $v): string
     {
-        if (preg_match(self::INT_LITERAL_REGEX, $v)) return 'int';
-        if (preg_match(self::FLOAT_LITERAL_REGEX, $v)) return 'float';
-        if (in_array($v, ['true', 'false', 'TRUE', 'FALSE'], true)) return 'bool';
-        if (in_array($v, ['null', 'NULL'], true)) return 'null';
-        if (preg_match('/^([\'"]).*\1$/s', $v)) return 'string';
-        if (preg_match('/^[A-Z][A-Za-z0-9_]*(\\\\[A-Z][A-Za-z0-9_]*)*$/', $v)) return 'class-string';
-        return null;
+        if ($v === '') {
+            // The canonical absence row (Hole::MISSING) is no evidence of
+            // any shape — the old cascade reached the same 'mixed' verdict.
+            return self::CATEGORY_OTHER;
+        }
+
+        $head = $v[0];
+        $ord  = ord($head);
+
+        if ($head === '-' || $head === '.' || ($ord >= 0x30 && $ord <= 0x39)) {
+            // Numeric family: signed int digits, the full var_export float
+            // vocabulary (decimal, exponent, leading-dot, legacy-cast and
+            // '-INF' spellings). Nothing else opens with sign/dot/digit, so
+            // failing both regexes settles it: 'other'.
+            if (preg_match(self::INT_LITERAL_REGEX, $v) === 1) {
+                return self::CATEGORY_INT;
+            }
+            if (preg_match(self::FLOAT_LITERAL_REGEX, $v) === 1) {
+                return self::CATEGORY_FLOAT;
+            }
+            return self::CATEGORY_OTHER;
+        }
+
+        if ($head === "'" || $head === '"') {
+            // Only a quote-opened row can be a PHP string literal.
+            return preg_match(self::STRING_LITERAL_REGEX, $v) === 1
+                ? self::CATEGORY_STRING
+                : self::CATEGORY_OTHER;
+        }
+
+        // Keyword arms, split by case: the lowercase words are identifier-
+        // SHAPED (the old callable arm's raw regex accepted them) and the
+        // all-caps ones are class-like-SHAPED (the old class arm's regex
+        // accepted them) — the families keep both readings provable.
+        if ($v === 'true' || $v === 'false') {
+            return self::CATEGORY_BOOL;
+        }
+        if ($v === 'TRUE' || $v === 'FALSE') {
+            return self::CATEGORY_BOOL_CAPS;
+        }
+        if ($v === 'null') {
+            return self::CATEGORY_NULL;
+        }
+        if ($v === 'NULL') {
+            return self::CATEGORY_NULL_CAPS;
+        }
+
+        if (($head === 'I' || $head === 'N') && preg_match(self::FLOAT_LITERAL_REGEX, $v) === 1) {
+            // 'INF' / 'NAN': non-finite float words that ALSO satisfy the
+            // class-like regex. Own category: the float arm sat above the
+            // class arm in the cascade, and both families list this one.
+            return self::CATEGORY_FLOAT_WORD;
+        }
+
+        if ($ord >= 0x41 && $ord <= 0x5A) {
+            // A-Z: possibly a class-like name, possibly namespaced.
+            if (preg_match(self::CLASS_NAME_REGEX, $v) === 1) {
+                return self::CATEGORY_CLASS_NAME;
+            }
+        } elseif (($ord >= 0x61 && $ord <= 0x7A) || $head === '_') {
+            // a-z/underscore: possibly a bare identifier.
+            if (preg_match(self::IDENTIFIER_SHAPE_REGEX, $v) === 1) {
+                return self::CATEGORY_IDENTIFIER;
+            }
+        }
+
+        return self::CATEGORY_OTHER;
     }
 
     /**
@@ -266,18 +466,6 @@ final class ParameterSynthesizer
     {
         foreach ($values as $v) {
             if (preg_match($regex, $v) !== 1) return false;
-        }
-        return !!$values;
-    }
-
-    /**
-     * @param list<string> $values
-     * @param list<string> $set
-     */
-    private function allMatchSet(array $values, array $set): bool
-    {
-        foreach ($values as $v) {
-            if (!in_array($v, $set, true)) return false;
         }
         return !!$values;
     }
