@@ -1204,20 +1204,25 @@ final class ApplyExtractorTest extends TestCase
         $this->assertStringContainsString('No syntax errors', (string) $lint,
             'the generated function file re-parses — the acceptance bar output-005 failed');
 
-        // Call-site shape unchanged by S48 (S45 owns argument work): the
-        // optional hole still rides the literal arg. S46-era update: the
-        // declaration stays and delegates (the old NotContains pinned the
-        // delete-the-declaration defect); the body-gone half is pinned
-        // directly.
-        foreach ([$fileA, $fileB] as $memberFile) {
+        // S45-era update (output-001 fix): the call-arg pin that lived here
+        // asserted the OLD literal-0 argument ('the optional hole still
+        // rides the literal arg', struck with S48's own note that 'S45 owns
+        // argument work'). Arguments are now this member's own: the optional
+        // knob passes true for the member that CARRIED the segment and false
+        // for the one that did not — a literal 0 binding into a `bool`
+        // parameter is a TypeError class under strict_types. The S46-era
+        // half (declaration stays and delegates; body-gone pinned directly)
+        // is kept exactly as struck-in-place then.
+        $knobbed = [$fileA => 'true', $fileB => 'false'];
+        foreach ($knobbed as $memberFile => $expectedKnob) {
             $rewritten = (string) file_get_contents($memberFile);
             $this->assertStringContainsString('function logIt', $rewritten);
             $this->assertStringNotContainsString('send(', $rewritten,
                 'the member body was replaced by the delegating call');
             $this->assertMatchesRegularExpression(
-                '/Refactored\\\\[A-Za-z_][A-Za-z0-9_]*\(0\);/',
+                '/Refactored\\\\[A-Za-z_][A-Za-z0-9_]*\(' . $expectedKnob . '\);/',
                 $rewritten,
-                'the member rewrite calls the extracted function with the literal 0 arg',
+                'the member rewrite calls the extracted function with its own knob value (' . $expectedKnob . ')',
             );
             $this->assertNotNull((new AstParser())->parseCode($rewritten), 'the rewritten member still parses');
         }
@@ -1548,6 +1553,266 @@ final class ApplyExtractorTest extends TestCase
 
         $this->assertSame($srcA, (string) file_get_contents($fileA));
         $this->assertSame($srcB, (string) file_get_contents($fileB));
+    }
+
+    // ---------------------------------------------------------------
+    // output-S45 (php-dup-finder-output-001): the delegating call carries
+    // THIS member's own observed expressions, in the parameter order the
+    // emitted signature declares — not hole-parameter names (undefined in
+    // member scope), not hole-creation order (SignatureBuilder appends the
+    // optional_block knobs last), not one identical argument list shared
+    // by every member, and never an invented value for a row this member
+    // does not have.
+    // ---------------------------------------------------------------
+
+    /** The delegating FuncCall inside the named rewritten function. */
+    private function s45CallOf(string $path, string $fn): Node\Expr\FuncCall
+    {
+        $stmts = (new AstParser())->parseCode((string) file_get_contents($path));
+        $this->assertNotNull($stmts, "fixture: {$path} re-parses");
+        foreach ($stmts as $stmt) {
+            if ($stmt instanceof Node\Stmt\Function_ && $stmt->name->toString() === $fn) {
+                $this->assertNotEmpty($stmt->stmts, "fixture: function {$fn} kept its body");
+                $inner = $stmt->stmts[0];
+                $this->assertTrue($inner instanceof Node\Stmt\Return_ || $inner instanceof Node\Stmt\Expression,
+                    "fixture: {$fn}'s body starts with a return or expression statement");
+                $expr = $inner->expr;
+                $this->assertInstanceOf(Node\Expr\FuncCall::class, $expr,
+                    "fixture: {$fn}'s body delegates through a call");
+                return $expr;
+            }
+        }
+        $this->fail("fixture: no function {$fn} in {$path}");
+    }
+
+    public function testMembersPassTheirOwnObservedLiteralsAtTheCallSites(): void
+    {
+        // The finding, end to end on the REAL generator chain: guardA/guardB
+        // differ in ONE call argument; AntiUnifier holes the argument itself
+        // (row = its printed literal). The first life of the builder passed
+        // the hole PARAMETER name at every site — live undefined-variable
+        // code — and its second passed one identical argument list to both.
+        $dir = $this->makeScratchDir();
+        $srcA = "<?php\nfunction guardA(\$x) { audit('alpha', \$x); }\n";
+        $srcB = "<?php\nfunction guardB(\$x) { audit('beta', \$x); }\n";
+        $fileA = $dir . '/a.php';
+        $fileB = $dir . '/b.php';
+        file_put_contents($fileA, $srcA);
+        file_put_contents($fileB, $srcB);
+
+        $cluster = new Cluster('S45LIT', [
+            $this->cloneFunctionBlock($fileA, $srcA, 'guardA'),
+            $this->cloneFunctionBlock($fileB, $srcB, 'guardB'),
+        ], 0.9, false);
+        (new AntiUnifier())->unify($cluster);
+        (new SignatureBuilder())->buildSignature($cluster);
+        $this->assertSame(
+            [['stmts', 0, 'expr', 'args', 0, 'value']],
+            array_values($cluster->holePaths),
+            'fixture: the chain holes the differing argument itself, so the rows are expressions',
+        );
+
+        (new ApplyExtractor())->apply($cluster, $dir . '/out');
+
+        $expected = [$fileA => ['guardA', 'alpha'], $fileB => ['guardB', 'beta']];
+        foreach ($expected as $file => [$fn, $value]) {
+            $call = $this->s45CallOf($file, $fn);
+            $this->assertCount(1, $call->args, 'one hole, one argument');
+            $this->assertInstanceOf(Node\Scalar\String_::class, $call->args[0]->value);
+            $this->assertSame($value, $call->args[0]->value->value);
+            $this->assertPhpLints($file);
+        }
+        $this->assertPhpLints($dir . '/out/Refactored/S45LIT.php');
+
+        // The two defects that lived here are gone for good: the call no
+        // longer passes the hole parameter name (undefined in the member),
+        // and no literal-0 placeholder rides an argument slot.
+        foreach ([$fileA, $fileB] as $file) {
+            $rewritten = (string) file_get_contents($file);
+            $this->assertStringNotContainsString('$__P0', $rewritten);
+            $this->assertStringNotContainsString('(0)', $rewritten);
+        }
+    }
+
+    public function testIntegerArgumentsAreCanonicalIntNodesAndTheWholeRewriteRuns(): void
+    {
+        // Three acceptance legs in one honest run: an int row lands as a
+        // Node\Scalar\Int_ (the canonical v5 class — the old arm rode
+        // Node\Scalar\LNumber, a deprecated alias the v5 parser never
+        // mints), every rewritten buffer php -l's, and under
+        // declare(strict_types=1) the generated+rewritten code EXECUTES
+        // with no TypeError: wrapA delegates wrap(3), wrapB wrap(7).
+        $dir = $this->makeScratchDir();
+        $srcA = "<?php\ndeclare(strict_types=1);\nfunction wrapA(\$v) { \$s = 1; return mult(3); }\n";
+        $srcB = "<?php\ndeclare(strict_types=1);\nfunction wrapB(\$v) { \$s = 1; return mult(7); }\n";
+        $fileA = $dir . '/a.php';
+        $fileB = $dir . '/b.php';
+        file_put_contents($fileA, $srcA);
+        file_put_contents($fileB, $srcB);
+
+        $cluster = new Cluster('S45RUN', [
+            $this->cloneFunctionBlock($fileA, $srcA, 'wrapA'),
+            $this->cloneFunctionBlock($fileB, $srcB, 'wrapB'),
+        ], 0.9, false);
+        (new AntiUnifier())->unify($cluster);
+        (new SignatureBuilder())->buildSignature($cluster);
+        $this->assertCount(1, $cluster->holes, 'fixture: the identical statements stay out of the holes');
+        $this->assertSame('literal', $cluster->holes[0]->kind);
+        $this->assertSame(['3', '7'], $cluster->holes[0]->observedValues,
+            'fixture: number rows are printed literals, not quoted strings');
+
+        (new ApplyExtractor())->apply($cluster, $dir . '/out');
+        $this->assertPhpLints($fileA);
+        $this->assertPhpLints($fileB);
+        $this->assertPhpLints($dir . '/out/Refactored/S45RUN.php');
+
+        $argA = $this->s45CallOf($fileA, 'wrapA')->args[0]->value;
+        $argB = $this->s45CallOf($fileB, 'wrapB')->args[0]->value;
+        $this->assertSame(Node\Scalar\Int_::class, get_class($argA),
+            'the deprecated LNumber alias must never ride new output');
+        $this->assertSame(3, $argA->value);
+        $this->assertSame(7, $argB->value);
+
+        // Runtime smoke: a real child process, exact stdout — any warning
+        // or TypeError fails the match. mult() is global and unqualified,
+        // so it resolves through the Refactored namespace fallback.
+        $run = $dir . '/run.php';
+        file_put_contents($run, "<?php\nfunction mult(int \$p): int { return \$p * 2; }\n"
+            . 'require ' . var_export($dir . '/out/Refactored/_autoload.php', true) . ";\n"
+            . 'require ' . var_export($fileA, true) . ";\n"
+            . 'require ' . var_export($fileB, true) . ";\n"
+            . "echo wrapA(0) . ',' . wrapB(0) . PHP_EOL;\n");
+        $out = (string) shell_exec('php ' . escapeshellarg($run) . ' 2>&1');
+        $this->assertSame("6,14\n", $out);
+    }
+
+    public function testArgumentsFollowTheEmittedSignatureEvenWhenHolesWereCreatedOutOfOrder(): void
+    {
+        // SignatureBuilder declares required parameters first and appends
+        // the optional_block knobs LAST. Building the call in hole-CREATION
+        // order would bind each value to the wrong parameter whenever the
+        // holes were not created required-first — the finding's silent data
+        // corruption. This cluster is primed in exactly that worst order
+        // (knob hole first), and its required rows are NAMES: a bare name
+        // row reads back as a constant fetch, which would fatal at the call
+        // site, so it must bind as the string it printed to.
+        $dir = $this->makeScratchDir();
+        [$file, $blocks] = $this->twoMemberFile($dir);
+
+        $cluster = new Cluster('S45ORD', $blocks, 0.9, false);
+        $cluster->generalizedAst = $blocks[0]->ast;
+        $cluster->holes = [
+            new Hole('__O0', 'optional_block', ['send("admin", $u);', '']),
+            new Hole('__P0', 'name', ['Alpha\Thing', 'Beta\Thing']),
+        ];
+        (new SignatureBuilder())->buildSignature($cluster);
+        $cluster->holePaths = ['__P0' => ['stmts', 0, 'stmts', 0, 'expr', 'args', 0, 'value']];
+
+        (new ApplyExtractor())->apply($cluster, $dir . '/out');
+
+        $perMember = [
+            'notifyA' => ['Alpha\Thing', 'true'],
+            'notifyB' => ['Beta\Thing', 'false'],
+        ];
+        foreach ($perMember as $fn => [$row, $knob]) {
+            $call = $this->s45CallOf($file, $fn);
+            $this->assertCount(2, $call->args, 'required hole + knob — arity matches the signature');
+            $this->assertInstanceOf(Node\Scalar\String_::class, $call->args[0]->value,
+                'a name row binds as a string, never as a constant fetch');
+            $this->assertSame($row, $call->args[0]->value->value);
+            $this->assertInstanceOf(Node\Expr\ConstFetch::class, $call->args[1]->value);
+            $this->assertSame($knob, $call->args[1]->value->name->toLowerString(),
+                'the knob is switched by THIS member (first row present, second missing)');
+        }
+        $this->assertPhpLints($file);
+
+        // Structural equality with the emitted signature, read from the
+        // artifact itself (nikic printer, not regex): required parameter
+        // first, bool knob second with its false default. The artifact
+        // declares inside namespace Refactored — descend into it.
+        $stmts = (new AstParser())->parseCode((string) file_get_contents($dir . '/out/Refactored/S45ORD.php'));
+        $this->assertNotNull($stmts);
+        foreach ($stmts as $stmt) {
+            if ($stmt instanceof Node\Stmt\Namespace_) {
+                $stmts = $stmt->stmts;
+                break;
+            }
+        }
+        $function = null;
+        foreach ($stmts as $stmt) {
+            if ($stmt instanceof Node\Stmt\Function_) {
+                $function = $stmt;
+            }
+        }
+        $this->assertInstanceOf(Node\Stmt\Function_::class, $function);
+        $this->assertCount(2, $function->params, 'call arity == signature arity');
+        $this->assertSame('__P0', $function->params[0]->var->name);
+        $this->assertInstanceOf(Node\Identifier::class, $function->params[1]->type);
+        $this->assertSame('bool', $function->params[1]->type->name);
+        $this->assertInstanceOf(Node\Expr\ConstFetch::class, $function->params[1]->default);
+        $this->assertSame('false', $function->params[1]->default->name->toLowerString());
+    }
+
+    public function testRequiredHoleWithoutAnObservedRowForAMemberRefusesTheCluster(): void
+    {
+        // A MISSING row (canonical '', S27) for a REQUIRED hole means this
+        // member had nothing at that position. The old builder passed the
+        // parameter name regardless — an invented argument; the loud
+        // zero-write taxonomy refuses instead.
+        $dir = $this->makeScratchDir();
+        [$file, $blocks] = $this->twoMemberFile($dir);
+
+        $cluster = new Cluster('S45MIS', $blocks, 0.9, false);
+        $cluster->generalizedAst = $blocks[0]->ast;
+        $cluster->holes = [new Hole('__P0', 'literal', ["'admin'", ''])];
+        (new SignatureBuilder())->buildSignature($cluster);
+        $cluster->holePaths = ['__P0' => ['stmts', 0, 'stmts', 0, 'expr', 'args', 0, 'value']];
+        $untouched = (string) file_get_contents($file);
+
+        try {
+            (new ApplyExtractor())->apply($cluster, $dir . '/out');
+            $this->fail('expected a loud refusal for the member with no observed value');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('refusing cluster S45MIS', $e->getMessage());
+            $this->assertStringContainsString('__P0', $e->getMessage());
+            $this->assertStringContainsString('notifyB', $e->getMessage());
+            $this->assertStringContainsString('no observed value', $e->getMessage());
+            $this->assertStringContainsString('no files were written', $e->getMessage());
+        }
+
+        $this->assertSame($untouched, (string) file_get_contents($file),
+            'the member file stays byte-identical through the refusal');
+        $this->assertFileDoesNotExist($dir . '/out/Refactored/S45MIS.php');
+    }
+
+    public function testRequiredHoleRowThatDoesNotReadAsOneExpressionRefusesTheCluster(): void
+    {
+        // The AntiUnifier repr fallback prints '<ShortType>' for nodes it
+        // cannot render; if such a row (or any statement-shaped fragment)
+        // reaches a REQUIRED hole slot, there is no honest argument to
+        // pass. Refuse with the php-parser reason, touch nothing.
+        $dir = $this->makeScratchDir();
+        [$file, $blocks] = $this->twoMemberFile($dir);
+
+        $cluster = new Cluster('S45JNK', $blocks, 0.9, false);
+        $cluster->generalizedAst = $blocks[0]->ast;
+        $cluster->holes = [new Hole('__P0', 'literal', ["'admin'", '<ShortType>'])];
+        (new SignatureBuilder())->buildSignature($cluster);
+        $cluster->holePaths = ['__P0' => ['stmts', 0, 'stmts', 0, 'expr', 'args', 0, 'value']];
+        $untouched = (string) file_get_contents($file);
+
+        try {
+            (new ApplyExtractor())->apply($cluster, $dir . '/out');
+            $this->fail('expected a loud refusal for the unparseable observed row');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('refusing cluster S45JNK', $e->getMessage());
+            $this->assertStringContainsString('__P0', $e->getMessage());
+            $this->assertStringContainsString('does not read as a single expression', $e->getMessage());
+            $this->assertStringContainsString('no files were written', $e->getMessage());
+        }
+
+        $this->assertSame($untouched, (string) file_get_contents($file));
+        $this->assertFileDoesNotExist($dir . '/out/Refactored/S45JNK.php');
     }
 }
 

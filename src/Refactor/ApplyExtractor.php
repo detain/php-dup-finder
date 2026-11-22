@@ -97,6 +97,30 @@ use Phpdup\Util\AstSerializer;
  * refusal; a method whose declaration carries no body at all
  * (abstract/interface) is refused at collection, before any member
  * replacement is built.
+ *
+ * output-001 (S45): the delegating call now passes each member's OWN
+ * observed expressions, in the argument order the emitted signature
+ * declares. The first life of buildCallReplacement passed the hole
+ * PARAMETER NAMES as call-site arguments — Variable('$threshold') at a
+ * position where the member scope never defines it, so every rewritten
+ * call site was live undefined-variable code. It also walked the holes
+ * in creation order while SignatureBuilder reorders the parameter list
+ * (required holes in hole order, optional_block knobs appended last),
+ * quietly binding value to wrong parameter whenever creation order
+ * differed from declaration order — silent data corruption. Optional
+ * knobs emitted a literal `0`, an argument not even the deprecated
+ * php-parser v5 scalar class stands behind honestly, and every member
+ * received identical arguments because no member index reached the
+ * builder. The call is now built from the canonical parameter order:
+ * for each required hole, the re-parsed observedValues[member] row
+ * (php-parser reads a bare name row back as a constant fetch, so such
+ * rows bind as string literals — a fetch of a missing constant is a
+ * fatal); for each optional hole,
+ * `true`/`false` keyed on whether this member actually carried the
+ * segment (Hole::MISSING, the S27 canonical absence row). A required
+ * hole whose row for THIS member is missing, or does not re-parse to
+ * one expression, refuses the cluster in the loud zero-write taxonomy
+ * — an argument is never invented.
  */
 final class ApplyExtractor
 {
@@ -724,7 +748,7 @@ final class ApplyExtractor
                     $file,
                 ));
             }
-            $replacements[$targetId] = $this->buildCallReplacement($funcName, $cluster, $targetNode);
+            $replacements[$targetId] = $this->buildCallReplacement($funcName, $cluster, $member, $targetNode);
         }
 
         $newStmts = $this->replaceNodesInStmts($stmts, $replacements, $cluster, $file);
@@ -1229,29 +1253,17 @@ final class ApplyExtractor
      * members a CLONE of the declaration whose body is the single delegating
      * call (output-002/S46), otherwise the bare call expression.
      *
+     * output-001 (S45): the delegating call carries THIS member's own
+     * observed expressions (buildCallArguments), in the order the emitted
+     * signature declares its parameters — not hole-parameter names, not
+     * hole-creation order, not one shared argument list for all members.
+     *
      * @return Node
      */
-    private function buildCallReplacement(string $funcName, Cluster $cluster, Node $targetNode): Node
+    private function buildCallReplacement(string $funcName, Cluster $cluster, Block $member, Node $targetNode): Node
     {
-        // Build argument list from holes.
-        $args = [];
-        foreach ($cluster->holes as $hole) {
-            if ($hole->kind === 'optional_block') {
-                // output-005 disclosure: this literal 0 rides the bool
-                // position to keep call and signature arity aligned. The
-                // knob Variable currently lands in the extracted body as
-                // an EVALUATED-AND-DISCARDED sibling statement (see
-                // setNodeAtPath's statement-slot wrap), so it gates
-                // nothing yet — optional gating proper is S49a (parameter
-                // promotion), and call-argument construction is S45's to
-                // own. Do not re-shape the arg here.
-                $args[] = new Node\Arg(new Node\Scalar\LNumber(0));
-            } else {
-                // Code-domain name (declaration, body rewrites and these
-                // call-site args must agree — CodeParam owns the '$'-boundary).
-                $args[] = new Node\Arg(new Node\Expr\Variable(CodeParam::bareName($hole->suggestedName, $hole->placeholder)));
-            }
-        }
+        // Build the argument list for this member, in canonical order.
+        $args = $this->buildCallArguments($cluster, $member);
 
         $call = new Node\Expr\FuncCall(
             // output-003: FullyQualified, not the old qualified-relative
@@ -1295,6 +1307,130 @@ final class ApplyExtractor
         // keep — the bare call is the whole rewrite for them. Closure/arrow
         // kinds never reach here: apply() refuses them up front (S46).
         return $call;
+    }
+
+    /**
+     * The delegating call's arguments for ONE member, in the order
+     * SignatureBuilder declares the parameters: required holes in hole
+     * order first, optional_block knobs appended last (output-001/S45 —
+     * walking creation order as-is would bind values to wrong parameters
+     * whenever a cluster's holes were not created required-first).
+     *
+     * Required holes pass the member's own observed expression, re-parsed
+     * from its Hole::$observedValues row. Optional holes pass a `true`/
+     * `false` constant keyed on whether THIS member actually carried the
+     * segment — the row equal to Hole::MISSING (canonical absence, S27)
+     * means "the member had nothing here", so the knob is switched off;
+     * any real row means it did, so the knob is switched on. The knob
+     * gates nothing inside the body until S49a's parameter promotion,
+     * but its call value must be honest NOW: a bool parameter accepting a
+     * literal 0 under strict_types is a TypeError class, and the old
+     * literal rode on Node\Scalar\LNumber — a deprecated v5 alias.
+     *
+     * @return list<Node\Arg>
+     */
+    private function buildCallArguments(Cluster $cluster, Block $member): array
+    {
+        $memberIdx = array_search($member, $cluster->members, true);
+        if (false === $memberIdx) {
+            // Defensive: planFileRewrite groups $cluster->members itself, so
+            // no apply() path can arrive with an alien member. Fail fast and
+            // loudly rather than guess an index — a wrong index would
+            // silently bind another member's values.
+            throw new \RuntimeException(sprintf(
+                'ApplyExtractor: refusing cluster %s — call-site member %s is not one of the cluster members; the argument list cannot be attributed; no files were written.',
+                $cluster->id,
+                self::describeMember($member),
+            ));
+        }
+
+        $args = [];
+        foreach ($cluster->holes as $hole) {
+            if ('optional_block' !== $hole->kind) {
+                $args[] = new Node\Arg($this->observedArgument($cluster, $hole, $memberIdx));
+            }
+        }
+        foreach ($cluster->holes as $hole) {
+            if ('optional_block' === $hole->kind) {
+                $present = ($hole->observedValues[$memberIdx] ?? Hole::MISSING) !== Hole::MISSING;
+                $args[] = new Node\Arg(new Node\Expr\ConstFetch(new Node\Name($present ? 'true' : 'false')));
+            }
+        }
+
+        return $args;
+    }
+
+    /**
+     * Re-parse one member's observed row into the expression the call
+     * passes for a required hole (output-001/S45). The row is what
+     * AntiUnifier saw at THIS member's position — passing it (instead of
+     * the hole parameter's name) is what makes every call site define the
+     * values it actually held. A row that is missing for this member, or
+     * that does not read back as exactly one expression, refuses the
+     * cluster in the loud zero-write taxonomy: an argument is never
+     * invented, and a half-read row must not ride into a rewritten file.
+     */
+    private function observedArgument(Cluster $cluster, Hole $hole, int $memberIdx): Node\Expr
+    {
+        $row = $hole->observedValues[$memberIdx] ?? Hole::MISSING;
+        $member = $cluster->members[$memberIdx];
+        if (Hole::MISSING === $row) {
+            throw new \RuntimeException(sprintf(
+                'ApplyExtractor: refusing cluster %s — required hole %s has no observed value for member %s; the argument cannot be invented; no files were written.',
+                $cluster->id,
+                $hole->placeholder,
+                self::describeMember($member),
+            ));
+        }
+
+        // A row is either one statement (`audit('alpha', $x);' — what a
+        // whole-statement hole prints, AntiUnifier's LCS granularity is the
+        // statement) or one expression (what a sub-node row prints).
+        // Normalise to a single statement, parse it, and take the expression
+        // out: `return cleanup();`, `echo`, an `if` or two statements in a
+        // row are NOT arguments and refuse honestly rather than smuggle an
+        // unprintable fragment into a rewritten file.
+        $text = trim($row);
+        if (!str_ends_with($text, ';')) {
+            $text .= ';';
+        }
+
+        $parser = new AstParser();
+        $stmts = $parser->parseCode('<?php ' . $text);
+        $why = null === $stmts
+            ? ($parser->lastError?->getMessage() ?? 'unknown parse error')
+            : '';
+
+        $expr = (is_array($stmts) && 1 === count($stmts)
+            && $stmts[0] instanceof Node\Stmt\Expression)
+            ? $stmts[0]->expr
+            : null;
+        if (null === $expr) {
+            throw new \RuntimeException(sprintf(
+                'ApplyExtractor: refusing cluster %s — hole %s observed value for member %s does not read as a single expression (%s); no files were written.',
+                $cluster->id,
+                $hole->placeholder,
+                self::describeMember($member),
+                '' !== $why ? $why : 'not a single expression',
+            ));
+        }
+
+        if ($expr instanceof Node\Expr\ConstFetch) {
+            // php-parser reads a bare `Alpha\Thing` row back as a constant
+            // fetch. true/false/null ARE constants and ride as fetched;
+            // anything else is a name the member USED (a class, a registry
+            // key) — passed as a fetch it would fatal at the call site on
+            // the missing constant, so it binds as the string it printed
+            // to, which is what the hole was gathered from.
+            $name = $expr->name->toString();
+            if (!in_array(strtolower($name), ['true', 'false', 'null'], true)) {
+                return new Node\Scalar\String_($name);
+            }
+
+            return $expr;
+        }
+
+        return $expr;
     }
 
     /** A `: void` declaration must delegate without returning a value. */
