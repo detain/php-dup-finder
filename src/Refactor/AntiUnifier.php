@@ -294,8 +294,7 @@ final class AntiUnifier
      * degraded flag — the tail was never gathered, which is exactly what
      * output-018's MISSING+degraded grammar states.
      *
-     * @param list<Block> $clusterMembers
-     * @param list<int>   $repPositions representative positions, cluster order
+     * @param list<int> $repPositions representative positions, cluster order
      */
     private function remapRowsToClusterPositions(Cluster $cluster, int $count, array $repPositions, int $seedIdx): void
     {
