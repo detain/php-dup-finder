@@ -7,6 +7,9 @@ use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\Config;
 use Phpdup\Persistence\SerializedClassAllowList;
 use Phpdup\Pipeline\PipelineState;
+use Phpdup\Pipeline\Stages\ClusterStage;
+use Phpdup\Pipeline\Stages\PreprocessStage;
+use Phpdup\Pipeline\Stages\RefactorStage;
 use Phpdup\Parallel\WorkerPool;
 
 final class WorkerPoolTest extends TestCase
@@ -978,5 +981,102 @@ final class WorkerPoolTest extends TestCase
             sort($expect);
             $this->assertSame($expect, $rows, 'a wired-but-never-armed probe changes nothing: all records stream, verification keeps its historic quiet success');
         });
+    }
+
+    public function testEveryStageHandsThePoolAStateCancelledProbe(): void
+    {
+        // shell-S12 r1 (LOW-1): code-inspection pin for the stage-side leg.
+        // The behavioural tests above prove the POOL reacts to a probe; they
+        // are blind to whether the stages still hand it one — reverting any
+        // stage call site to the historic 2-arg foreach kept the whole Unit
+        // suite green (reviewer mutant M2). Same doctrine as the shell-S03
+        // n-3 positional pin that closed a probe-only wiring: assert the
+        // CALL SHAPE over the source — three arguments, the third bound to
+        // a closure reading the real state->cancelled field — never line
+        // numbers, so shell-S37's re-indent pass over these regions passes
+        // untouched while any silent probe drop goes red here.
+        foreach ([ClusterStage::class, PreprocessStage::class, RefactorStage::class] as $stageClass) {
+            $short = substr($stageClass, (int)strrpos($stageClass, '\\') + 1);
+            $src   = (string)file_get_contents((string)(new \ReflectionClass($stageClass))->getFileName());
+
+            $open = strpos($src, '->runStreaming(');
+            $this->assertIsInt($open, $short . ': expected a WorkerPool::runStreaming call site');
+            $this->assertFalse(strpos($src, '->runStreaming(', $open + 1),
+                $short . ': this pin watches a single pool call site — update it deliberately if the stage ever gains another');
+            $open += strlen('->runStreaming(');
+
+            [$close, $args] = $this->runStreamingCallArguments($src, $open);
+            $this->assertCount(3, $args, $short . ': the runStreaming call must pass a cancellation probe as its third argument — a 2-arg call silently restores the shell-041 stall-spin (S12 r1 mutant M2)');
+
+            $probe = trim($args[2]);
+            $this->assertNotSame('', $probe, $short . ': third argument may not be empty');
+            $this->assertNotSame('null', strtolower($probe), $short . ': a literal null probe is the stall-spin behind 3-arg clothing');
+
+            if (preg_match('/\A\$[a-zA-Z_]\w*\z/', $probe, $m) === 1) {
+                // Named probe: the variable must be bound — before the
+                // call — to a closure over the state this stage pumps.
+                $assign = strpos($src, $m[0] . ' =');
+                if ($assign === false) {
+                    $assign = strpos($src, $m[0] . '=');
+                }
+                $this->assertIsInt($assign, $short . ': probe ' . $m[0] . ' is never assigned at its call site');
+                $this->assertLessThan($open, $assign, $short . ': probe ' . $m[0] . ' must be assigned before the call');
+                $binding = substr($src, $assign, $close - $assign);
+            } else {
+                $binding = $probe;
+            }
+            $this->assertMatchesRegularExpression('/\bfunction\b|\bfn\b/', $binding, $short . ': the probe must be a closure');
+            $this->assertStringContainsString('$state->cancelled', $binding,
+                $short . ': the probe must read the real state->cancelled field — the SignalHandler/TUI contract the pool is meant to see');
+        }
+    }
+
+    /**
+     * Walk the argument list of a call whose opening paren ends at $open,
+     * tracking bracket depth (string literals skipped whole) and cutting
+     * the raw texts at depth-1 commas. Call-shape framing on purpose:
+     * newlines, re-indents and nested calls cannot confuse it.
+     *
+     * @return array{0:int,1:string[]} closing paren offset, argument texts
+     */
+    private function runStreamingCallArguments(string $src, int $open): array
+    {
+        $args    = [];
+        $current = '';
+        $depth   = 1;
+        $len     = strlen($src);
+        for ($i = $open; $i < $len; $i++) {
+            $c = $src[$i];
+            if ($c === "'" || $c === '"') {
+                $current .= $c;
+                for ($i++; $i < $len; $i++) {
+                    $current .= $src[$i];
+                    if ($src[$i] === '\\' && $i + 1 < $len) {
+                        $current .= $src[++$i];
+                    } elseif ($src[$i] === $c) {
+                        break;
+                    }
+                }
+                continue;
+            }
+            if ($c === '(' || $c === '[' || $c === '{') {
+                $depth++;
+            } elseif ($c === ')' || $c === ']' || $c === '}') {
+                $depth--;
+                if ($depth === 0) {
+                    break;
+                }
+            } elseif ($c === ',' && $depth === 1) {
+                $args[]    = $current;
+                $current   = '';
+                continue;
+            }
+            $current .= $c;
+        }
+        if ($args !== [] || trim($current) !== '') {
+            $args[] = $current;
+        }
+
+        return [$i, $args];
     }
 }
