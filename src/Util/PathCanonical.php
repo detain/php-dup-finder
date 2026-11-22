@@ -32,7 +32,9 @@ namespace Phpdup\Util;
  * name never matched a root-relative anchored exclude before either,
  * and the golden fixtures carry no backslash filenames. Exclusion
  * MATCHING itself stays case-sensitive: case folding governs only the
- * root-strip comparison, so tests/** and Tests/ stay distinct here.
+ * root-strip comparison, so tests/** and Tests/ stay distinct here —
+ * pinned by FileScannerTest::testS40ExclusionMatchingStaysCaseSensitive
+ * (once-S40 fix-round-1: the law was prose-only before it).
  *
  * A path matching no root keeps its form (a synthetic test block, an
  * unrelated absolute path) with separators folded: identity is still

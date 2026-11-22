@@ -1262,6 +1262,18 @@ final class FileScannerTest extends TestCase
         $this->assertFalse($scanner->isExcluded('a\\myvendor\\x.php'), 'the segment-safe guard survives folding');
     }
 
+    public function testS40ExclusionMatchingStaysCaseSensitive(): void
+    {
+        // once-S40 r1 LOW-4: the fold law is prose in the PathCanonical
+        // header — this is its pin. If a future change ever folds the
+        // isExcluded SUBJECT by case (separators() -> fold()), the
+        // Vendor/ assertions below flip to TRUE and this test goes RED.
+        $scanner = new FileScanner(['**/vendor/**'], warnOnSkip: false);
+        $this->assertTrue($scanner->isExcluded('vendor/x.php'), 'the lowercase tree is excluded');
+        $this->assertFalse($scanner->isExcluded('Vendor/x.php'), 'matching stays case-sensitive: Vendor/ is a distinct tree');
+        $this->assertFalse($scanner->isExcluded('SRC/Vendor/x.php'), 'the guard holds at depth too');
+    }
+
     public function testS40BackslashSpelledGlobsCompileCanonical(): void
     {
         $scanner = new FileScanner(['**\\vendor\\**'], warnOnSkip: false);
