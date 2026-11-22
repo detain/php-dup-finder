@@ -646,8 +646,9 @@ final class PreprocessWorkerIsolationTest extends TestCase
             paths: [$this->tmpDir],
             exclude: [],
             minBlockSize: 1,
-            // 'aggressive' is the only mode where CanonicalizingVisitor reaches
-            // the plugin pass (strict/default early-return before it).
+            // Since ee25b84 the plugin pass runs once per node at the tail
+            // of EVERY mode branch (strict/default included; visit() gets
+            // the real mode name) — see Normalizer::enterNode.
             normalizationPlugins: $poisoned ? [SecondCallSitePoisonPlugin::class] : $plugins,
             cacheDir: $this->tmpDir . '/cache',
         );
@@ -697,8 +698,9 @@ final class SecondCallSitePoisonPlugin implements NormalizationPlugin
 /**
  * shell-008 witness: counts every FuncCall site it is shown, across files,
  * through a static so the test can read progress from outside the worker.
- * The plugin pass only runs in aggressive mode (Config default), which is
- * what the shared config() helper selects.
+ * Since ee25b84 the plugin pass runs at the tail of every mode branch;
+ * what the shared config() helper selects anyway is the Config default,
+ * 'aggressive'.
  */
 final class StreamingProbePlugin implements NormalizationPlugin
 {

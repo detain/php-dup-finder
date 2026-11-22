@@ -121,17 +121,31 @@ final class PluginRegistryTest extends TestCase
 
     public function testPluginRunsAfterBuiltInPasses(): void
     {
-        // Two source snippets that differ only by string literal value.
-        // In default mode, built-in literal canonicalisation already
-        // collapses both to '__STR'. The plugin appends '__P' to every
-        // string value as a marker — both should still hash identically.
-        $a = '<?php function f() { return "alpha"; }';
-        $b = '<?php function g() { return "omega"; }';
+        // once-S24 r1 F2: the old two-snippet hash-equality was VACUOUS —
+        // it held even when the plugin never ran at all, because
+        // canonicalizeLiterals collapses every String_ to '__STR' before
+        // any consumer sees it (Normalizer.php:627-632), erasing the case
+        // distinction the plugin could add. Pin the contract the name
+        // claims instead: (a) the plugin's marker survives into the
+        // canonical stream (hash differs from the no-plugin baseline —
+        // the plugin really ran under 'default'), and (b) at plugin time
+        // the literal was ALREADY '__STR' — the built-in pass ran first.
+        $code = '<?php function f() { return "alpha"; }';
+        MarkerAfterBuiltInPlugin::$sawStrings = [];
 
-        $registry = PluginRegistry::fromClassNames([UpperCaseStringsPlugin::class]);
+        $registry = PluginRegistry::fromClassNames([MarkerAfterBuiltInPlugin::class]);
+        $withPlugin = $this->canonicalHash($code, 'default', $registry);
+        $baseline = $this->canonicalHash($code, 'default', null);
+
+        $this->assertNotSame(
+            $baseline,
+            $withPlugin,
+            "the plugin's appended '__P' marker must reach the canonical stream under default mode — a never-running plugin leaves the hash exactly at the no-plugin baseline (the vacuous pre-fix pin)",
+        );
         $this->assertSame(
-            $this->canonicalHash($a, 'default', $registry),
-            $this->canonicalHash($b, 'default', $registry),
+            ['__STR'],
+            MarkerAfterBuiltInPlugin::$sawStrings,
+            'under default the built-in literal pass must collapse the literal to __STR before the plugin visit — built-ins first, plugin last',
         );
     }
 
@@ -154,6 +168,27 @@ final class UpperCaseStringsPlugin implements NormalizationPlugin
     {
         if ($node instanceof Node\Scalar\String_) {
             $node->value = strtoupper($node->value);
+        }
+    }
+}
+
+/**
+ * @internal test fixture — once-S24 r1 F2 discriminator: records every
+ * String_ value it is handed (proving WHICH state the built-ins left it
+ * in) and appends a '__P' marker that survives to the canonical hash
+ * (proving the plugin ran at all — case-only mutation is invisible once
+ * literal canonicalisation has collapsed the value).
+ */
+final class MarkerAfterBuiltInPlugin implements NormalizationPlugin
+{
+    /** @var list<string> values of every String_ node at plugin time */
+    public static array $sawStrings = [];
+
+    public function visit(Node $node, string $mode): void
+    {
+        if ($node instanceof Node\Scalar\String_) {
+            self::$sawStrings[] = (string) $node->value;
+            $node->value .= '__P';
         }
     }
 }
