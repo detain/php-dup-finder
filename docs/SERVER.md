@@ -105,12 +105,26 @@ $ curl -s -X POST http://localhost:8080/analyze \
 ### Default bind
 
 The server binds to `127.0.0.1:8080` by default. Loopback targets —
-`127.0.0.1`, any `127.x.x.x` address, and the name `localhost` — are
-accepted by the guard with no extra flags and no token:
+`127.0.0.1`, any `127.x.x.x` address, the name `localhost`, and the IPv6
+loopback literal `::1` — are accepted by the guard with no extra flags
+and no token:
 
 ```bash
 # Loopback only (default) — no token required
 phpdup serve
+```
+
+An IPv6 bind is spelled in its bracketed form on the socket and on the
+wire (once-S97): `--host ::1` builds `tcp://[::1]:8080`, the `listening
+on` line echoes exactly that, and clients use the RFC 2732 authority too
+— with `curl -g` because the brackets are otherwise glob patterns:
+
+```bash
+$ phpdup serve --host ::1 --port 8080
+phpdup serve: listening on tcp://[::1]:8080
+
+$ curl -g http://[::1]:8080/healthz
+ok
 ```
 
 Anything else is refused **at startup**, before any socket is
@@ -205,6 +219,33 @@ Authorization: Bearer YOUR_SECRET_TOKEN
 Requests without a valid bearer token receive a `401 Unauthorized`
 response before any other processing occurs.
 
+That gate is honest about its own surface: with `--token` set, `GET
+/healthz` is a request too — a liveness probe must carry the bearer
+header like any other client, or it reads 401 and the load balancer
+declares the daemon dead (once-S97; the routes table lists `/healthz`
+with no body because the route takes no *parameters*, not because it
+skips authentication — the sentence above is what gates it). Serve
+token-gated behind anything that can attach the header, or probe
+without a token.
+
+### Error bodies: redacted detail
+
+Error responses never map the server's filesystem (once-S97, following
+the shell-S39 hygiene seam for the results tree): the 400 and 500 wire
+bodies — and the failure reason an async job carries — hold the
+exception's own sentence with **absolute paths reduced to relative
+labels** (`/var/www/private/Config.php` arrives as `Config.php`), via
+one shared seam, `Application::redactMessagePaths()`. The un-redacted
+detail — class, message, file and line — is written to `error_log`,
+the operator channel; `serve` has no configured debug-logger path, so
+that is where a full diagnostic belongs and never on the socket.
+
+The redaction is deliberately absent from the 400 scan-path refusals:
+those echo the paths the client itself submitted (`path is outside the
+served root: …`), which is input feedback, not a leak — the shell-S39
+census says so verbatim, and the posture here keeps one taxonomy per
+door rather than inventing a second.
+
 ### Request trust: Host, Origin and JSON shape
 
 A loopback bind (the default, with no token in play) is not a
@@ -295,6 +336,16 @@ pid — the secrecy is carried by the modes, never by obscurity:
   worker's Unix socket (`/tmp/phpdup-worker-<pid>.sock`) is 0600 at
   bind, with a belt `chmod` right after. Another local uid can see the
   names; it cannot read a byte of either.
+  The reclaim of a stale name at that path is **observed, not
+  predicted** (once-S97): after `serve` proves the leftover has no live
+  listener and unlinks it, the path must actually be gone — one that
+  cannot be cleared (another uid owns the inode) ends the spawn attempt
+  honestly in sync mode, naming the path, and the name is forgotten so
+  no cleanup ever unlinks a foreign inode. Readiness likewise accepts
+  only OUR bind: a socket-type inode (not a regular-file decoy) owned
+  by this uid whose spawned child is still alive to answer for it; a
+  child that dies before binding ends the wait immediately in sync mode
+  instead of polling a corpse for five seconds.
 - **Swept at shutdown.** Every exit path — the shutdown function and
   the SIGINT/SIGTERM handlers — unlinks the result files and removes
   the directory, so results never outlive the process. (The same law
@@ -477,6 +528,28 @@ per-request concurrency to size against.
 | Dev laptop / small team, loopback bind, occasional analyze | the serial server is exactly right; nothing to tune |
 | CI health probe + a few humans | fine — the 64-socket backlog absorbs bursts; keep big analyses on `POST /jobs` so the worker takes them off the HTTP thread |
 | Many users, sustained API traffic, or public-network exposure | do **not** tune this loop toward it — lift `Phpdup\Server\Application` into a capable runtime (FrankenPHP, RoadRunner, php-fpm behind nginx) and front it with TLS + rate limiting (see General advice below) |
+
+**Visible fallbacks (once-S97).** pcntl is not guaranteed everywhere
+`serve` runs, and a degradation that only speaks at `-vvv` is a silent
+degradation. Both pcntl-absent facts print once at **DEFAULT**
+verbosity before the bind, so the operator knows the posture from the
+first second:
+
+```
+phpdup serve: ext-pcntl unavailable — no SIGINT/SIGTERM handlers are installed; a signal kills this process by default disposition (no worker reap, no results sweep). The next startup sweep reclaims what the death strands; see docs/SERVER.md, "Results on disk: /tmp hygiene".
+phpdup serve: auto (CPU-count) worker selection requested but ext-pcntl/pcntl_fork is unavailable — the synchronous analysis falls back to SERIAL in-process scanning; see docs/SERVER.md, "Concurrency posture".
+```
+
+The first is `ServeCommand::signalHandlersAbsentNotice()` — with no
+`pcntl_signal` the graceful SIGINT/SIGTERM shutdown is a deliberate
+no-op and a kill lands on the default disposition; the startup sweep
+(above, "Swept at startup") is what reclaims the stranding. The second
+is `ServeCommand::serialFallbackNotice()` — a raised or auto
+`--serve-workers` silently becoming serial is the substitution the
+sizing table above would otherwise misread. The requested serial
+default (`--serve-workers 1`) is not a fallback and never speaks. The
+existing phar warning already followed this posture; these two join it,
+and none of this changes the serial-loop sizing guidance itself.
 
 ## General advice
 

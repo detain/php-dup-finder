@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Phpdup\Cli;
 
+use Phpdup\Parallel\WorkerPool;
 use Phpdup\Server\AnalysisWorker;
 use Phpdup\Server\Application;
 use Symfony\Component\Console\Command\Command as SymfonyCommand;
@@ -151,6 +152,29 @@ use Symfony\Component\Console\Output\OutputInterface;
  *   the collision, and the worker's own bind refuses to steal a path a
  *   live worker answers. Either way a worker never ends up serving an
  *   unlinked socket forever, and `kill -9` then restart cannot wedge.
+ * - IPv6 binds are bracketed (once-S97, php-dup-finder-once-122 / XP-08):
+ *   `--host ::1` builds the RFC 2732 authority `tcp://[::1]:<port>` —
+ *   the unbracketed `tcp://::1:8080` was unparseable and killed a valid
+ *   loopback boot at the bind leg — and the `listening on` line, the
+ *   trusted Host authorities and `docs/SERVER.md` all speak that one
+ *   bracketed spelling (`curl -g 'http://[::1]:8080/healthz'`).
+ * - pcntl-absent degradations are startup facts, not debug chatter
+ *   (once-S97, php-dup-finder-once-122 / OBS-09): a build without signal
+ *   handling, and a raised `--serve-workers` quietly running serial, each
+ *   print ONE notice at default verbosity before the bind — never
+ *   verbosity-gated, never silent.
+ * - Error bodies never map the filesystem (once-S97,
+ *   php-dup-finder-once-122 / NET-11): 500/400 wire payloads carry the
+ *   exception's sentence with absolute paths reduced to relative labels
+ *   via {@see Application::redactMessagePaths()}; the un-redacted detail
+ *   (class, message, file:line) rides `error_log` for the operator, and
+ *   client-submitted path echoes (the 400 scan-path refusals) are the
+ *   client's own words, not a leak.
+ * - Worker-socket reclaim is observed, not predicted (once-S97): after
+ *   the S44 stale-socket `@unlink` the path must actually be gone, and
+ *   readiness accepts only a socket-type inode owned by this uid whose
+ *   spawned child is still alive — a dead child or an uncleared foreign
+ *   path ends the spawn attempt honestly in sync mode.
  */
 final class ServeCommand extends SymfonyCommand
 {
@@ -296,6 +320,18 @@ final class ServeCommand extends SymfonyCommand
      * @var (callable(string): int|false|null)|null
      */
     public $ownerProbe = null;
+
+    /**
+     * Test seam supplying the OWNER uid of the worker-socket path at
+     * readiness time (once-S97; unit tests cannot chown without root).
+     * Null uses the real `fileowner()` stat; a probe returning a foreign
+     * uid exercises the real comparison and its reject, and `false`
+     * exercises the fail-closed unstatable arm. The socket-type check and
+     * the liveness verdict themselves are never seam-fed.
+     *
+     * @var (callable(string): int|false|null)|null
+     */
+    public $workerSocketOwnerProbe = null;
 
     /**
      * Test seam for how {@see terminateOnSignal()} ends the process (unit
@@ -513,7 +549,19 @@ final class ServeCommand extends SymfonyCommand
         // worker-socket wait reaps what exists and exits 130 — the old code
         // registered cleanup only as a shutdown function, which a
         // default-disposition signal death skips, orphaning the worker.
+        // once-S97 (once-122 / OBS-09): the two pcntl-absent degradations
+        // — no signal handling, and a raised --serve-workers quietly
+        // running serial — are startup facts, printed at DEFAULT
+        // verbosity, never verbosity-gated and never silent. The signal
+        // verdict is the predicate the install guard turns on, spoken
+        // from the other door.
         $this->installSignalHandlers();
+        if (!self::signalHandlingAvailable()) {
+            $output->writeln('<comment>phpdup serve:</comment> ' . self::signalHandlersAbsentNotice());
+        }
+        if ($serveWorkers !== 1 && !WorkerPool::isAvailable()) {
+            $output->writeln('<comment>phpdup serve:</comment> ' . self::serialFallbackNotice($serveWorkers));
+        }
 
         // once-046: a loopback bind carries the request-trust gate — the
         // daemon answers ONLY its own bound authorities, so a DNS-rebound
@@ -558,7 +606,7 @@ final class ServeCommand extends SymfonyCommand
             );
         }
 
-        $address = "tcp://{$host}:{$port}";
+        $address = self::bindAddress($host, $port);
 
         $errno = 0;
         $errstr = '';
@@ -812,11 +860,23 @@ final class ServeCommand extends SymfonyCommand
     /**
      * Encode a Throwable into a JSON error body that can never fail to
      * encode (invalid UTF-8 in exception messages is substituted).
+     *
+     * once-S97 (php-dup-finder-once-122 / NET-11, the same seam docs/S39
+     * draws elsewhere): the wire body keeps the exception's own sentence
+     * with ABSOLUTE PATHS reduced to relative labels — a raw `/home/…`
+     * or `/tmp/…` in a 500 body maps the server's filesystem to any
+     * client. The un-redacted detail (class, message, file:line) rides
+     * `error_log`, the operator channel: `serve` has no configured
+     * debug-logger path, so that channel is exactly where the full
+     * diagnostic belongs and the socket never carries it.
      */
     private function safeErrorBody(\Throwable $e): string
     {
+        error_log('phpdup serve: request failure: ' . get_class($e) . ': ' . $e->getMessage()
+            . ' in ' . $e->getFile() . ':' . $e->getLine());
+
         $body = json_encode(
-            ['error' => 'internal server error: ' . $e->getMessage()],
+            ['error' => 'internal server error: ' . Application::redactMessagePaths($e->getMessage())],
             JSON_INVALID_UTF8_SUBSTITUTE
         );
         return $body === false ? '{"error":"internal server error"}' : $body;
@@ -835,6 +895,67 @@ final class ServeCommand extends SymfonyCommand
             return str_starts_with($host, '127.');
         }
         return false;
+    }
+
+    /**
+     * Build the `stream_socket_server` bind address for one `--host`
+     * value (once-S97, php-dup-finder-once-122 / XP-08): an unbracketed
+     * IPv6 literal is ambiguous against the trailing `:port`, and
+     * `tcp://::1:8080` is exactly the unparseable spelling the finding
+     * named — a valid `--host ::1` boot died at the bind leg while
+     * `isLoopback()` had already admitted it. Bracketed authorities are
+     * the RFC 2732 shape every client (and `docs/SERVER.md`) mirrors:
+     * the `listening on` line reads `tcp://[::1]:8080` and the curl URL
+     * is `http://[::1]:8080` (with `-g` for the bracket globbing).
+     * IPv4 addresses and host names pass through untouched; an
+     * operator who typed the brackets already is taken verbatim.
+     */
+    public static function bindAddress(string $host, int $port): string
+    {
+        $authority = $host;
+        if (str_contains($host, ':') && !str_starts_with($host, '[')) {
+            $authority = '[' . $host . ']';
+        }
+
+        return 'tcp://' . $authority . ':' . $port;
+    }
+
+    /**
+     * The startup line for a build without signal handling (once-S97,
+     * php-dup-finder-once-122 / OBS-09): the pcntl-absent fallback used
+     * to be entirely silent in `serve`, and the sibling serial fallback
+     * historically showed only at `-vvv`/`--stats` posture. Both are
+     * runtime DEGRADATIONS the operator is entitled to see at DEFAULT
+     * verbosity, once, before the first bind. Pure, so the exact
+     * sentence is unit-pinnable and `docs/SERVER.md` can quote it
+     * verbatim (the {@see tokenlessExposureNotice()} pattern).
+     */
+    public static function signalHandlersAbsentNotice(): string
+    {
+        return 'ext-pcntl unavailable — no SIGINT/SIGTERM handlers are installed; '
+            . 'a signal kills this process by default disposition (no worker reap, no '
+            . 'results sweep). The next startup sweep reclaims what the death strands; '
+            . 'see docs/SERVER.md, "Results on disk: /tmp hygiene".';
+    }
+
+    /**
+     * The startup line for a raised `--serve-workers` that cannot get
+     * its forks (once-S97, php-dup-finder-once-122 / OBS-09): WorkerPool
+     * falls back to serial in-process analysis whenever pcntl is absent,
+     * and until now that substitution happened silently at exactly the
+     * verbosity a defaulted-serial serve never prints. Naming happens at
+     * DEFAULT verbosity; `1` is the requested serial posture, not a
+     * fallback, so it never speaks.
+     */
+    public static function serialFallbackNotice(int $serveWorkers): string
+    {
+        $asked = $serveWorkers === 0
+            ? 'auto (CPU-count) worker selection'
+            : '--serve-workers ' . $serveWorkers;
+
+        return $asked . ' requested but ext-pcntl/pcntl_fork is unavailable — the '
+            . 'synchronous analysis falls back to SERIAL in-process scanning; '
+            . 'see docs/SERVER.md, "Concurrency posture".';
     }
 
     /**
@@ -1040,6 +1161,31 @@ final class ServeCommand extends SymfonyCommand
                 return null;
             }
             @unlink($this->workerSocket);
+            // once-S97 (php-dup-finder-once-122, the predict-and-`@unlink`
+            // window): the reclaim above is a prediction about a path, and
+            // `@unlink` swallows the one outcome that matters — a foreign
+            // (other-uid) inode that cannot be cleared would otherwise be
+            // spawned ONTO: the worker's bind answers EADDRINUSE, dies,
+            // and the readiness poll below would have to be the thing
+            // that notices. Observe the reclaim instead. The S44 claim
+            // order makes this the exhaustive remainder: the own-pid
+            // `serve.pid` flock is taken in prepareResultsDir() BEFORE
+            // any spawn attempt (its death-proof oracle is
+            // {@see self::pidFileDeathProof()}), so no live peer daemon
+            // can share this pid-named path — what survives an unlink is
+            // a same-uid race or another uid squatting the name. Either
+            // way the honest answer is sync mode, naming the path, with
+            // the path forgotten so no cleanup ever unlinks a foreign
+            // inode.
+            if (file_exists($this->workerSocket)) {
+                $output->writeln(
+                    '<comment>phpdup serve: could not clear the stale worker socket '
+                        . $this->workerSocket . ' (owned by another uid?); '
+                        . 'running in sync mode</comment>'
+                );
+                $this->workerSocket = '';
+                return null;
+            }
         }
 
         $command = $this->workerCommand($workerBin, $this->workerSocket, $resultDir, $serveRoot);
@@ -1092,20 +1238,62 @@ final class ServeCommand extends SymfonyCommand
             @fclose($pipe);
         }
 
-        // Wait for socket to become available (poll with 5s timeout)
+        // Readiness (once-S97, php-dup-finder-once-122): `file_exists()`
+        // alone accepted ANY inode at the path the instant it appeared —
+        // the poll's second half of the predict-and-`@unlink` window.
+        // Acceptance now means *our worker bound here*: the path must be
+        // a socket (not a regular-file decoy), owned by our uid, and our
+        // spawned child must still be alive to answer for it. The verdict
+        // rides the connect-probe taxonomy nowhere new — liveness of the
+        // child is `proc_get_status()['running']`, the same one fact the
+        // S44/S46 worker terminal-state story speaks; dead-before-ready
+        // is an immediate, explicit sync-mode fallback instead of five
+        // seconds of polling a corpse, and a socket we do not own ends
+        // the wait honestly rather than dispatching jobs into it.
         $timeout = 5;
         $start = microtime(true);
         while (microtime(true) - $start < $timeout) {
-            if (file_exists($this->workerSocket)) {
+            if ($this->workerSocketIsOurs()) {
                 return proc_get_status($this->workerProcess)['pid'];
+            }
+            if (!proc_get_status($this->workerProcess)['running']) {
+                $this->cleanupWorker();
+                $output->writeln('<comment>worker died before binding its socket, running in sync mode</comment>');
+                return null;
             }
             usleep(50000); // 50ms
         }
 
-        // Socket didn't appear, kill the worker
+        // Socket didn't become ours, kill the worker
         $this->cleanupWorker();
         $output->writeln('<comment>worker socket timeout, running in sync mode</comment>');
         return null;
+    }
+
+    /**
+     * True when the worker-socket path currently is a Unix socket owned
+     * by this uid (once-S97). Type + owner are the acceptance facts; the
+     * child's own liveness is checked by the caller, never doubled here.
+     * Fail-closed: an unstatable path or mode answers "not ours".
+     */
+    private function workerSocketIsOurs(): bool
+    {
+        if ($this->workerSocket === '' || !file_exists($this->workerSocket)) {
+            return false;
+        }
+
+        $mode = @fileperms($this->workerSocket);
+        if ($mode === false || ($mode & 0o170000) !== 0o140000) {
+            return false;
+        }
+
+        $probe = $this->workerSocketOwnerProbe;
+        $owner = $probe !== null ? $probe($this->workerSocket) : @fileowner($this->workerSocket);
+        if ($owner === null) {
+            $owner = @fileowner($this->workerSocket);
+        }
+
+        return $owner === getmyuid();
     }
 
     /**
@@ -1139,7 +1327,11 @@ final class ServeCommand extends SymfonyCommand
      * where the async call is disabled. When ext-pcntl is not loaded (or
      * `pcntl_signal` is disabled) this is a deliberate graceful no-op —
      * same posture as WorkerPool's serial fallback when pcntl_fork is
-     * missing — and the pre-fix default dispositions apply.
+     * missing — and the pre-fix default dispositions apply. once-S97
+     * (php-dup-finder-once-122 / OBS-09): the no-op verdict the guard
+     * takes is the exact fact {@see self::signalHandlingAvailable()}
+     * answers, so `execute()` can print the degradation at default
+     * verbosity instead of letting it pass silently.
      */
     private function installSignalHandlers(): void
     {
@@ -1153,6 +1345,19 @@ final class ServeCommand extends SymfonyCommand
 
         pcntl_signal(SIGINT, $this->terminateOnSignal(...));
         pcntl_signal(SIGTERM, $this->terminateOnSignal(...));
+    }
+
+    /**
+     * The one predicate the {@see installSignalHandlers()} guard turns on
+     * (once-S97): false means the graceful SIGINT/SIGTERM shutdown is a
+     * no-op on this build — a fact `execute()` prints at DEFAULT
+     * verbosity, never verbosity-gated. The install method keeps its
+     * literal guard because its shape is structurally pinned; this
+     * answers the same three questions from the other door.
+     */
+    public static function signalHandlingAvailable(): bool
+    {
+        return function_exists('pcntl_signal') && defined('SIGINT') && defined('SIGTERM');
     }
 
     /**

@@ -102,6 +102,16 @@ use Symfony\Component\Console\Output\NullOutput;
  *   mandated by `--bind-public`) keeps the gate unenforced: no
  *   cross-site form can set the bearer header, and the daemon never
  *   sends CORS, so no foreign origin can read a response body.
+ * - Error sentences never map the filesystem (once-S97,
+ *   php-dup-finder-once-122 / NET-11): the 400/500 wire bodies and the
+ *   CHANNEL_FAIL job reason carry their sentence with absolute paths
+ *   reduced to relative labels by {@see self::redactMessagePaths()} —
+ *   one seam, every site — while the un-redacted detail rides
+ *   `error_log` (the operator channel `ServeCommand::safeErrorBody()`
+ *   and the analysis-failure leg share). The 400 scan-path refusals
+ *   echo the CLIENT's own submitted paths ({@see self::scanPathsError()}):
+ *   those are not leaks, and the redaction seam is deliberately not
+ *   applied to them.
  * - Scanned paths are confined to within {@see $serveRoot} via
  *   realpath canonicalization, for BOTH `POST /analyze` and
  *   `POST /jobs`: payload paths that are non-strings, contain NUL bytes,
@@ -336,7 +346,7 @@ final class Application
             try {
                 $payload = $this->jsonBody($body);
             } catch (JsonException $e) {
-                return $this->json(400, ['error' => 'invalid JSON: ' . $e->getMessage()]);
+                return $this->json(400, ['error' => 'invalid JSON: ' . self::redactMessagePaths($e->getMessage())]);
             }
             return $this->runAnalyze($payload);
         }
@@ -344,7 +354,7 @@ final class Application
             try {
                 $payload = $this->jsonBody($body);
             } catch (JsonException $e) {
-                return $this->json(400, ['error' => 'invalid JSON: ' . $e->getMessage()]);
+                return $this->json(400, ['error' => 'invalid JSON: ' . self::redactMessagePaths($e->getMessage())]);
             }
             return $this->enqueueJob($payload);
         }
@@ -386,6 +396,71 @@ final class Application
     public function trustedAuthorities(): array
     {
         return $this->trustedAuthorities;
+    }
+
+    /**
+     * Reduce ABSOLUTE PATHS inside an error sentence to relative labels
+     * (once-S97, php-dup-finder-once-122 / NET-11, the seam shell-S39
+     * draws for the results tree): a raw `/home/…` or `/tmp/…` inside an
+     * exception message that reaches the wire maps the server's
+     * filesystem to any client. The sentence itself survives — its
+     * diagnostic value is the words, not the directories — and every
+     * absolute path token collapses to its final component (so
+     * `/var/www/secret/Config.php` — quoted or bare — reads `Config.php`
+     * and a quoted `"/tmp"` reads `tmp`). Quoted paths
+     * (`open failed for "/x/y/z"`) and bare runs of
+     * two or more slash-leading components (`failed /x/y/z: no such`)
+     * both pass; a short bare token is layout trivia, not a map, and a
+     * no-path message is returned byte-identical. This is the wire-shape
+     * arm of the posture {@see ServeCommand::safeErrorBody()} and the
+     * CHANNEL_FAIL settle share: the un-redacted detail rides
+     * `error_log`, never the socket.
+     */
+    public static function redactMessagePaths(string $message): string
+    {
+        // Quoted-token arm: `"(/…)"` — the shell S39 error strings and
+        // php's own `Failed opening …` shapes quote their paths.
+        $quoted = preg_replace_callback(
+            '#"(/[^"\\n]*[^"]*)"#',
+            static fn(array $m): string => '"' . self::relativeLabel($m[1]) . '"',
+            $message
+        );
+        if ($quoted === null) {
+            return 'error detail unavailable';
+        }
+
+        // Bare-token arm: a path-like run of at least two slash-leading
+        // components, stopping at whitespace, quotes, and the
+        // punctuation that ends a path token in prose. The lookbehind
+        // keeps scheme authorities (`tcp://`, `http://`) out of the
+        // match; the character class excludes `:` so a trailing
+        // `:message` or `:line` never rides inside a match.
+        $bare = preg_replace_callback(
+            '#(?<![\w:/])(/(?:[^\s\\/"\',;:()<>|\[\]{}]+/)+[^\s\\/"\',;:()<>|\[\]{}]+)#',
+            static fn(array $m): string => self::relativeLabel($m[0]),
+            $quoted
+        );
+        if ($bare === null) {
+            return 'error detail unavailable';
+        }
+
+        return $bare;
+    }
+
+    /**
+     * The relative label for one absolute path: its final component
+     * (once-S97). A trailing slash is a separator, not a name; a path
+     * that is only separators labels as `root`.
+     */
+    private static function relativeLabel(string $path): string
+    {
+        $trimmed = rtrim($path, '/');
+        if ($trimmed === '') {
+            return 'root';
+        }
+
+        $slash = strrpos($trimmed, '/');
+        return $slash === false ? $trimmed : substr($trimmed, $slash + 1);
     }
 
     /**
@@ -520,7 +595,14 @@ final class Application
             );
             return $this->json(200, (new JsonReporter())->build($report));
         } catch (\Throwable $e) {
-            return $this->json(500, ['error' => $e->getMessage()]);
+            // once-S97 (php-dup-finder-once-122 / NET-11): the operator
+            // channel gets the full detail (class, message, site); the
+            // wire gets the sentence with absolute paths reduced to
+            // relative labels. One redaction seam, spoken here and at
+            // every other wire-error site — never a second taxonomy.
+            error_log('phpdup serve: analysis failure: ' . get_class($e) . ': ' . $e->getMessage()
+                . ' in ' . $e->getFile() . ':' . $e->getLine());
+            return $this->json(500, ['error' => 'internal analysis failure: ' . self::redactMessagePaths($e->getMessage())]);
         }
     }
 
@@ -611,7 +693,8 @@ final class Application
             try {
                 $configJson = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
             } catch (JsonException $e) {
-                return $this->json(400, ['error' => 'job payload is not wire-encodable: ' . $e->getMessage()]);
+                return $this->json(400, ['error' => 'job payload is not wire-encodable: '
+                    . self::redactMessagePaths($e->getMessage())]);
             }
 
             $id = $this->queue->enqueue($payload);
@@ -853,7 +936,14 @@ final class Application
             return;
         } elseif ($event['kind'] === self::CHANNEL_FAIL) {
             $this->forgetAsyncJob($jobId);
-            $this->queue->markFailed($jobId, $event['reason'] ?? 'worker reported a failure');
+            // once-S97 (php-dup-finder-once-122 / NET-11): the reason
+            // string travels into the job record and out on the wire —
+            // the same redaction seam applies at this single choke,
+            // covering socket-reported and probe-derived reasons alike.
+            // A reason without a path is byte-identical; the failure
+            // taxonomy itself is the worker-side one (once-S46/S44),
+            // unchanged here.
+            $this->queue->markFailed($jobId, self::redactMessagePaths((string) ($event['reason'] ?? 'worker reported a failure')));
             return;
         } elseif ($event['kind'] === self::CHANNEL_GONE) {
             // Observed fact: the worker closed the channel and left no
