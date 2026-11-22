@@ -25,8 +25,16 @@ use Phpdup\Cli\CompletionCommand;
 use Phpdup\Cli\InitCommand;
 use Phpdup\Cli\ServeCommand;
 use Phpdup\Cli\UpdateCommand;
+use Phpdup\Util\Version;
 
-$app = new Application('phpdup', '0.1.0');
+// once-S30 (php-dup-finder-once-034): single-sourced version identity.
+// The launcher, every report payload (Version::STRING via the output-S03
+// family), the phar stub's --version and the phar build metadata all read
+// the ONE constant declared in src/Util/Version.php. The old baked '0.1.0'
+// literal here was exactly the drift the finding named: a constant bump
+// could not reach it, so `--version` and the report emitted by the same
+// run could disagree.
+$app = new Application('phpdup', Version::STRING);
 $cmd = new Command();
 $app->add($cmd);
 // `phpdup init` — bootstrap a phpdup.json in the current directory.

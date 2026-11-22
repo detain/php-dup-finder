@@ -10,6 +10,7 @@ use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
 use Phpdup\Util\Http;
+use Phpdup\Util\Version;
 use Phar;
 
 /**
@@ -1071,7 +1072,12 @@ HELP
         if ($app !== null) {
             return $app->getVersion();
         }
-        return '0.0.0';
+        // once-S30 (php-dup-finder-once-034, REL-11 half): the no-Application
+        // fallback used to fabricate '0.0.0' — a version that exists nowhere,
+        // shipped out onto the wire as the User-Agent. It joins the
+        // single-source family now: the declared Phpdup\Util\Version::STRING
+        // is exactly what a bare-instantiated command of this build is.
+        return Version::STRING;
     }
 
     /** Read GITHUB_TOKEN from env, ignoring the logged-in gh CLI token. */
