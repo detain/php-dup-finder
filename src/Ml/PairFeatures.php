@@ -45,10 +45,12 @@ use Phpdup\Similarity\JaccardSimilarity;
  *     `Block::$kind` verbatim (once-S48: these two were missing from
  *     the prose above until the shape got a single source of truth).
  *
- * The numeric features are bounded; the booleans become `0`/`1` in
- * JSON. Adding, removing or reordering a field is a wire-protocol
- * change: update `WIRE_KEYS` and bump `FEATURE_VERSION` — the unit
- * pins fail loud if the emitted vector and the const drift apart.
+ * The numeric features are bounded; the booleans travel as JSON
+ * `true`/`false` — the MlPairClient wire-contract example shows the
+ * exact spelling. Adding, removing or reordering a field is a
+ * wire-protocol change: update `WIRE_KEYS` and bump `FEATURE_VERSION`
+ * — the unit pins fail loud if the emitted vector and the const
+ * drift apart.
  *
  * **Per-block memoization (engine-033)**
  *
