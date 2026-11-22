@@ -253,6 +253,251 @@ final class FileScannerTest extends TestCase
         return $compile->invoke($scanner, $glob);
     }
 
+    // ── once-095: bounded exclude matching (sugar-ignore UP-01 port) ───────
+
+    /**
+     * Parity table for the bounded compiler + automaton port. Every row here
+     * compiles to a pattern PCRE may not be trusted with (more than two
+     * wildcards, or more than one segment-crossing — {@see testHostileAnd
+     * OverlapGlobsAreDecidedByTheAutomaton} pins that routing), so its
+     * verdicts must come out of the interned DFA, byte-for-byte the language
+     * of the compiled regex. Expectations were taken from the regex-only
+     * implementation, exactly as upstream sugar-ignore ports its
+     * BacktrackingTest; the two explosive-tail rows carry the subjects that
+     * historically returned a silent false (backtrack limit exhausted) from
+     * preg_match at default limits — there the hand expectation IS the fix.
+     *
+     * @return array<string, array{0: string, 1: list<array{string, bool}>}>
+     */
+    public static function boundedGlobParityProvider(): array
+    {
+        return [
+            'shipped vendor prune (SEG + trailing ANY)' => ['**/vendor/**', [
+                ['vendor/x.php', true], ['a/b/vendor/c/d.php', true], ['vendor/', true],
+                ['vendor/x.php' . "\n", true], ['vendor/.' . "\n", true],   // PCRE trailing-newline $ quirk
+                ['myvendor/x.php', false], ['a/b/vendorlib/y.php', false],
+                ['vend', false], ['a/b/vendor', false],
+            ]],
+            'shaped fixtures chain (three crossings)' => ['**/tests/**/**/fixtures/**', [
+                ['tests/fixtures/a.php', true], ['a/tests/b/fixtures/c/d.php', true], ['tests/fixtures/', true],
+                ['mytests/fixtures/a.php', false], ['tests/fixturex/a.php', false],
+            ]],
+            'empty-segment sandwich (the deliberate divergence)' => ['**//**/x', [
+                ['//x', true], ['a//x', true], ['a/b//x', true], ['/x', true],
+                ['a/x', false], ['x', false], ['a/b', false],
+            ]],
+            'classic (a+) style chain, explosive tail' => [str_repeat('*a', 14) . '*c', [
+                ['x' . str_repeat('a', 14) . 'c', true],
+                [str_repeat('a', 20) . 'c', true],
+                ['c' . str_repeat('a', 40) . 'c', true],
+                ['x' . str_repeat('a', 13) . 'c', false],
+                ['c' . str_repeat('a', 40) . '7', false],   // silent false pre-fix
+                ['short.txt', false],
+                [str_repeat('a', 30) . '/c', false],        // silent false pre-fix
+            ]],
+            'unbounded globstar chain separated by literals' => [str_repeat('a/**/', 10) . 'ab', [
+                [str_repeat('a/', 45) . 'ab', true],        // SEG swallows the surplus levels
+                [str_repeat('a/', 10) . 'ab', true],
+                [str_repeat('a/', 12) . 'ab', true],
+                [str_repeat('a/', 45) . 'abab', false],     // silent false pre-fix
+                [str_repeat('a/', 9) . 'ab', false],
+                ['ab', false],
+                [str_repeat('a/', 45) . 'a', false],
+            ]],
+            'residual intra-segment single-star chain' => ['src/*a*b*.*x.php', [
+                ['src/aabzb.qx.php', true],
+                ['src/xx.php', false], ['src/aa/b.php', false], ['src/zz.php', false],
+            ]],
+        ];
+    }
+
+    /**
+     * @param list<array{string, bool}> $verdicts
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('boundedGlobParityProvider')]
+    public function testHostileAndOverlapGlobsAreDecidedByTheAutomaton(string $glob, array $verdicts): void
+    {
+        $record = $this->compileRecord($glob);
+        $this->assertFalse($record['pcre'], "compiler must route {$glob} away from raw PCRE");
+
+        $scanner = new FileScanner([$glob], warnOnSkip: false);
+        foreach ($verdicts as [$path, $expected]) {
+            $this->assertSame(
+                $expected,
+                $scanner->isExcluded($path),
+                "verdict for {$glob} vs " . str_replace("\n", '\n', $path)
+            );
+        }
+        $this->assertSame([], $scanner->skipNotes(), 'everything above is decidable inside budget');
+    }
+
+    /**
+     * The automaton must not merely be fast — it must answer the SAME question
+     * as the compiled regex (upstream's "language equality" leg). Subjects on
+     * which even PCRE is decisive at default limits must agree; the ones it
+     * cannot decide are exactly the rows the fix exists for, pinned by hand
+     * above.
+     */
+    /**
+     * @param list<array{string, bool}> $verdicts
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('boundedGlobParityProvider')]
+    public function testAutomatonVerdictsAgreeWithTheCompiledRegexLanguage(string $glob, array $verdicts): void
+    {
+        $regex = $this->compileGlob($glob);
+        foreach ($verdicts as [$path, $expected]) {
+            $byRegex = preg_match($regex, $path);
+            if ($byRegex === 1 || $byRegex === 0) {
+                $this->assertSame($expected, $byRegex === 1, "regex-language disagrees with table for {$glob}");
+            }
+        }
+    }
+
+    /**
+     * Upstream's starved-pcre twin leg, verbatim in spirit: "which engine
+     * answers must never change the answer". With pcre.backtrack_limit at 1
+     * EVERY regex match fails (returns false), including the safe PCRE-routed
+     * rows — the fall-through in matchesPattern() must keep all verdicts
+     * identical and stay silent, no note, no flip.
+     */
+    public function testVerdictsAreTheSameWhenEveryRegexErrors(): void
+    {
+        $rows = self::boundedGlobParityProvider();
+        // Plus PCRE-routed (backtracks-safely) rows: under starvation these
+        // too must fall through to the automaton and keep the same answers.
+        $rows['safe: root php glob'] = ['*.php', [['main.php', true], ['deep/main.php', false]]];
+        $rows['safe: leading run'] = ['**/x', [['x', true], ['a/x', true], ['ax', false]]];
+        $rows['safe: dir prune'] = ['vendor/**', [['vendor/a', true], ['myvendor/a', false]]];
+
+        $previous = ini_set('pcre.backtrack_limit', '1');
+        $this->assertNotSame(false, $previous, 'cannot starve PCRE on this build');
+        try {
+            foreach ($rows as $row) {
+                [$glob, $verdicts] = $row;
+                $scanner = new FileScanner([$glob], warnOnSkip: false);
+                foreach ($verdicts as [$path, $expected]) {
+                    $this->assertSame(
+                        $expected,
+                        $scanner->isExcluded($path),
+                        "starved PCRE changed the answer for {$glob} (engine must be verdict-neutral)"
+                    );
+                }
+                $this->assertSame([], $scanner->skipNotes());
+            }
+        } finally {
+            ini_set('pcre.backtrack_limit', $previous);
+        }
+    }
+
+    /**
+     * The acceptance probe, one level up from isExcluded(): 2000 adversarial
+     * subjects against the classic chain — every one decisive, the whole
+     * table inside two seconds, zero notes. Pre-fix this shape cost
+     * milliseconds each and answered a silent false.
+     */
+    public function testHostileIntraSegmentChainIsDecidedExactlyAndInsideBudget(): void
+    {
+        $scanner = new FileScanner([str_repeat('*a', 14) . '*c'], warnOnSkip: false);
+
+        $t0 = hrtime(true);
+        for ($i = 0; $i < 2000; $i++) {
+            $this->assertFalse($scanner->isExcluded('c' . str_repeat('a', 40) . $i), 'non-matching tail stays excluded-free');
+        }
+        $this->assertTrue($scanner->isExcluded('c' . str_repeat('a', 40) . 'c'));
+        $elapsed = (hrtime(true) - $t0) / 1e9;
+
+        $this->assertLessThan(2.0, $elapsed, "2000 hostile checks took {$elapsed}s (budget: 2s)");
+        $this->assertSame(PREG_NO_ERROR, preg_last_error());
+        $this->assertSame([], $scanner->skipNotes());
+    }
+
+    /**
+     * The unbounded-`**`-chain half of the acceptance probe: the 45-level
+     * near-miss used to detonate the coalesced-but-still-PCRE engine too;
+     * through the automaton the whole three-verdict set stays sub-frame and
+     * exact (hit true, lookalike false, dangling segment false).
+     */
+    public function testDeepGlobstarChainSeparatedByLiteralsIsDecided(): void
+    {
+        $scanner = new FileScanner([str_repeat('a/**/', 10) . 'ab'], warnOnSkip: false);
+
+        $t0 = hrtime(true);
+        $this->assertFalse($scanner->isExcluded(str_repeat('a/', 45) . 'abab'), 'one byte off the tail is not a match');
+        $elapsedMs = (hrtime(true) - $t0) / 1e6;
+        $this->assertTrue($scanner->isExcluded(str_repeat('a/', 45) . 'ab'));
+        $this->assertFalse($scanner->isExcluded(str_repeat('a/', 45) . 'a'));
+
+        $this->assertLessThan(10.0, $elapsedMs, "45-level near-miss took {$elapsedMs}ms (budget: 10ms)");
+        $this->assertSame([], $scanner->skipNotes());
+    }
+
+    /**
+     * Over budget means "refuse to answer", never "assume no": the monster
+     * pattern plus a 615-byte path exceeds MATCH_BUDGET
+     * (n × (tokens+1) > 1_000_000), so the path is treated as EXCLUDED
+     * (fail-closed, a hostile pattern can never smuggle files back in), one
+     * loud skip note is recorded per pattern (deduped across paths), and
+     * short paths beside it are still decided exactly.
+     */
+    public function testOverBudgetHostilePatternFailsClosedWithOneNote(): void
+    {
+        $scanner = new FileScanner([str_repeat('*a', 1000) . '*c'], warnOnSkip: false);
+
+        $this->assertTrue($scanner->isExcluded(str_repeat('x', 300) . '/' . str_repeat('y', 300) . '/one.php'));
+        $this->assertTrue($scanner->isExcluded(str_repeat('x', 300) . '/' . str_repeat('y', 300) . '/two.php'));
+        $this->assertFalse($scanner->isExcluded('short.txt'), 'decidable paths are still decided exactly');
+
+        $notes = $scanner->skipNotes();
+        $this->assertCount(1, $notes, 'one note per pattern, deduped across paths');
+        $this->assertStringContainsString('too costly to evaluate', $notes[0]);
+        $this->assertStringContainsString('treated as excluded', $notes[0]);
+        $this->assertStringContainsString('… is too costly', $notes[0], 'note carries the clipped pattern');
+    }
+
+    /**
+     * End-to-end scanner leg of the acceptance check: a scratch tree of 150
+     * files whose basenames are the explosive shape ("c" + 40 a's + digits +
+     * ".php"), scanned with BOTH hostile chains plus a routine prune in the
+     * exclude list. Before the fix every file cost a backtrack blowout and a
+     * silent false; now the whole scan finishes well inside the five-second
+     * box with nothing excluded and nothing noted.
+     */
+    public function testScanCompletesUnderBudgetWithHostileExcludes(): void
+    {
+        $dir = sys_get_temp_dir() . '/phpdup-redos-' . getmypid() . '-' . spl_object_id($this);
+        for ($i = 0; $i < 150; $i++) {
+            $sub = $dir . '/sub' . intdiv($i, 50);
+            if (!is_dir($sub)) {
+                mkdir($sub, 0777, true);
+            }
+            file_put_contents($sub . '/c' . str_repeat('a', 40) . $i . '.php', "<?php\nfunction p{$i}() { return {$i}; }\n");
+        }
+
+        $scanner = new FileScanner([
+            str_repeat('*a', 14) . '*c',
+            str_repeat('a/**/', 10) . 'ab',
+            '**/never-match/**',
+        ], warnOnSkip: false);
+
+        $t0 = hrtime(true);
+        $files = iterator_to_array($scanner->scan($dir), false);
+        $elapsed = (hrtime(true) - $t0) / 1e9;
+
+        $this->assertCount(150, $files, 'hostile excludes must neither wedge the scan nor swallow files');
+        $this->assertLessThan(5.0, $elapsed, "hostile scan took {$elapsed}s (budget: 5s)");
+        $this->assertSame([], $scanner->skipNotes());
+    }
+
+    /**
+     * @return array{source: string, regex: string, tokens: list<array{0: int, 1: string}>, pcre: bool}
+     */
+    private function compileRecord(string $glob): array
+    {
+        $scanner = new FileScanner([], warnOnSkip: false);
+        $compile = new \ReflectionMethod(FileScanner::class, 'compilePattern');
+        return $compile->invoke($scanner, $glob);
+    }
+
     // ── Item 5.2 / NN2: unreadable trees skip loudly instead of hard-dying ──
 
     public function testUnreadableScanRootIsSkippedNotFatal(): void
@@ -493,6 +738,9 @@ final class FileScannerTest extends TestCase
             }
         }
         foreach (glob(sys_get_temp_dir() . '/phpdup-symlink-' . getmypid() . '-*') ?: [] as $dir) {
+            self::purgeTree($dir);
+        }
+        foreach (glob(sys_get_temp_dir() . '/phpdup-redos-' . getmypid() . '-*') ?: [] as $dir) {
             self::purgeTree($dir);
         }
     }

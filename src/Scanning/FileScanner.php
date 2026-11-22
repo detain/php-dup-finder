@@ -24,11 +24,55 @@ namespace Phpdup\Scanning;
  * to in-root targets keep working. This complements — not replaces — the
  * serve-root confinement in {@see \Phpdup\Server\Application}: belt AND
  * braces.
+ *
+ * Bounded matching (once-095, sugar-ignore UP-01 port): an exclude pattern
+ * is hostile input — it arrives from a scanned repository's .phpdup.json
+ * as readily as from the user's own flags. Patterns whose wildcards PCRE
+ * cannot safely retry are decided by a backtrack-free automaton instead of
+ * preg_match, a PCRE resource-limit error on any other pattern falls
+ * through to the SAME automaton rather than reading as a silent "no
+ * match", and a pattern too large even for the automaton's step budget is
+ * resolved toward EXCLUDING (fail CLOSED) and reported once through
+ * skipNotes(). A hostile config can hide paths behind a visible note; it
+ * can neither wedge the scan nor silently void its own excludes.
  */
 final class FileScanner
 {
-    /** @var list<string> */
-    private array $excludeRegexes;
+    /** Token kinds of the compiled glob dialect (see {@see globToRegex()}). */
+    private const TOKEN_LITERAL = 0; // a literal byte
+    private const TOKEN_ONE = 1;     // [^/]
+    private const TOKEN_STAR = 2;    // [^/]*  (within one segment)
+    private const TOKEN_SEG = 3;     // (?:[^/]*/)*  (zero or more whole segments)
+    private const TOKEN_ANY = 4;     // .*  (trailing **, crosses segments)
+
+    /**
+     * Upper bound on path length × pattern tokens one automaton match may
+     * cost. Sized so no plausible rule reaches it — a 200-token pattern
+     * against a PATH_MAX (4,096-byte) path is 820k — while a pathological
+     * line, which is all that can, is refused before any work rather than
+     * after it (ported, like the whole budget, from sugar-ignore).
+     */
+    public const MATCH_BUDGET = 1_000_000;
+
+    /** DFA states one pattern's automaton may intern before it is rebuilt. */
+    private const STATE_CAP = 4096;
+
+    /** How much of one undecidable pattern the skip note quotes. */
+    private const NOTE_PATTERN_MAX_BYTES = 80;
+
+    /** @var list<array{source: string, regex: string, tokens: list<array{0: int, 1: string}>, pcre: bool}> */
+    private array $patterns;
+
+    /**
+     * Interned DFAs, keyed by compiled regex so twenty copies of one hostile
+     * pattern share one automaton.
+     *
+     * @var array<string, array{ids: array<string, int>, sets: list<list<int>>, accepts: list<bool>, next: array<int, array<string, int>>}>
+     */
+    private array $automata = [];
+
+    /** @var array<string, true> regexes already reported as undecidable (report-once) */
+    private array $undecidableNoted = [];
 
     /** @var list<string> human-readable notes for every skipped path */
     private array $skipNotes = [];
@@ -41,7 +85,30 @@ final class FileScanner
      */
     public function __construct(array $excludeGlobs, private readonly bool $warnOnSkip = true)
     {
-        $this->excludeRegexes = array_map([$this, 'globToRegex'], $excludeGlobs);
+        $this->patterns = array_map([$this, 'compilePattern'], $excludeGlobs);
+    }
+
+    /**
+     * Compile one exclude glob to its full matcher record: the anchored
+     * regex, the token list the automaton walks, and the verdict on whether
+     * PCRE may run this shape at all (see {@see backtracksSafely()}).
+     *
+     * @return array{source: string, regex: string, tokens: list<array{0: int, 1: string}>, pcre: bool}
+     */
+    private function compilePattern(string $glob): array
+    {
+        $tokens = self::tokenizeGlob($glob);
+        // The regex goes through the canonical compiler entry — the same
+        // function the shell-S21 compile pins reflect into — so the seam
+        // and production can never drift. Re-deriving the token list here
+        // costs microseconds at construction, never per path.
+        $regex = $this->globToRegex($glob);
+        return [
+            'source' => $glob,
+            'regex' => $regex,
+            'tokens' => $tokens,
+            'pcre' => self::backtracksSafely($tokens),
+        ];
     }
 
     /**
@@ -216,12 +283,259 @@ final class FileScanner
 
     public function isExcluded(string $relPath): bool
     {
-        foreach ($this->excludeRegexes as $re) {
-            if (preg_match($re, $relPath) === 1) {
+        foreach ($this->patterns as $pattern) {
+            if ($this->matchesPattern($pattern, $relPath)) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * Does one compiled pattern exclude $relPath? Exact — never a silent
+     * "no" from a resource limit (once-095).
+     *
+     * @param array{source: string, regex: string, tokens: list<array{0: int, 1: string}>, pcre: bool} $pattern
+     */
+    private function matchesPattern(array $pattern, string $relPath): bool
+    {
+        if ($pattern['pcre']) {
+            $result = preg_match($pattern['regex'], $relPath);
+            if ($result === 1) {
+                return true;
+            }
+            if ($result === 0) {
+                return false;
+            }
+            // $result === false: a PCRE backtrack/JIT-stack limit fired. That
+            // is NOT an answer — reading it as "no match" is the fail-OPEN
+            // that sugar-ignore's incident turned one hostile line into a
+            // silently-dead exclude rule. Fall through to the automaton,
+            // which decides the same language without backtracking.
+        }
+
+        $verdict = $this->automatonMatch($pattern, $relPath);
+        if ($verdict === null) {
+            $this->noteUndecidable($pattern);
+            return true; // fail CLOSED, loudly (see class docblock)
+        }
+        return $verdict;
+    }
+
+    /**
+     * Whole-string match through the pattern's interned DFA: subset
+     * construction over the token list, every (state, byte) transition
+     * cached, so a fresh byte costs one step over the live NFA set and a
+     * repeat costs one array lookup — no input can force backtracking work.
+     * Returns null only when the path × pattern product exceeds
+     * {@see MATCH_BUDGET}: refusing to evaluate, not answering "no".
+     *
+     * The DFA accepts exactly the language of the pattern's `#^…$#` regex,
+     * quirks included: TOKEN_ANY does not cross "\n", and a final "\n" still
+     * reaches PCRE's end anchor. The SEG state additionally loops on a bare
+     * "/" because phpdup's `(?:[^/]*\/)*` allows empty segments (the
+     * language-preservation clause of shell-030); sugar-ignore's
+     * `(?:[^/]+/)*` group does not, which is the one place this port
+     * deliberately diverges from the upstream Automaton.
+     *
+     * @param array{source: string, regex: string, tokens: list<array{0: int, 1: string}>, pcre: bool} $pattern
+     */
+    private function automatonMatch(array $pattern, string $subject): ?bool
+    {
+        $tokens = $pattern['tokens'];
+        $m = count($tokens);
+        $n = strlen($subject);
+        if ($n * ($m + 1) > self::MATCH_BUDGET) {
+            return null;
+        }
+
+        $key = $pattern['regex'];
+        $automaton = $this->automata[$key] ?? null;
+        if ($automaton === null || $automaton['sets'] === [] || count($automaton['sets']) > self::STATE_CAP) {
+            // A cap rather than an unbounded cache: the subsets are at most
+            // exponential in the pattern, and starting over loses only speed.
+            $automaton = ['ids' => [], 'sets' => [], 'accepts' => [], 'next' => []];
+            $start = [];
+            self::closeEpsilon($start, 0, $tokens, $m);
+            self::intern($automaton, $start, $m);
+        }
+
+        $walk = self::walkAutomaton($automaton, $subject, $tokens, $m);
+        $this->automata[$key] = $walk[1];
+        return $walk[0];
+    }
+
+    /**
+     * Step one subject through the automaton, interning newly seen state
+     * sets as the walk goes. The possibly-grown automaton travels back in
+     * the return value: PHP hands arrays over by refcount (copy-on-write),
+     * so the round trip is cheap, and it keeps the walk free of a
+     * reference into a property — which psalm (321) refuses to analyze.
+     *
+     * @param array{ids: array<string, int>, sets: list<list<int>>, accepts: list<bool>, next: array<int, array<string, int>>} $automaton
+     * @param list<array{0: int, 1: string}> $tokens
+     * @return array{0: bool, 1: array{ids: array<string, int>, sets: list<list<int>>, accepts: list<bool>, next: array<int, array<string, int>>}}
+     */
+    private static function walkAutomaton(array $automaton, string $subject, array $tokens, int $m): array
+    {
+        $n = strlen($subject);
+        $state = 0;
+        for ($i = 0; $i < $n; $i++) {
+            $byte = $subject[$i];
+            if ($i === $n - 1 && $byte === "\n" && $automaton['accepts'][$state]) {
+                return [true, $automaton];
+            }
+            if (!isset($automaton['next'][$state][$byte])) {
+                $live = self::stepAutomaton($automaton['sets'][$state], $byte, $tokens, $m);
+                $automaton['next'][$state][$byte] = self::intern($automaton, $live, $m);
+            }
+            $state = $automaton['next'][$state][$byte];
+            if ($automaton['sets'][$state] === []) {
+                return [false, $automaton];
+            }
+        }
+
+        return [$automaton['accepts'][$state], $automaton];
+    }
+
+    /**
+     * The NFA states live after consuming $byte from the live set $states.
+     *
+     * NFA state k means "before token k" (k === m is accept), and m+1+k is
+     * "inside a name of the SEG group at k" — a name may only close on the
+     * "/" that completes an iteration, so it has no epsilon edge.
+     *
+     * @param list<int> $states
+     * @param list<array{0: int, 1: string}> $tokens
+     * @return array<int, true>
+     */
+    private static function stepAutomaton(array $states, string $byte, array $tokens, int $m): array
+    {
+        $next = [];
+        foreach ($states as $state) {
+            if ($state === $m) {
+                continue;
+            }
+            if ($state > $m) {
+                // Inside one segment-name iteration: more name, or the "/"
+                // that closes it and returns to the group's boundary.
+                if ($byte === '/') {
+                    self::closeEpsilon($next, $state - $m - 1, $tokens, $m);
+                } else {
+                    $next[$state] = true;
+                }
+                continue;
+            }
+
+            [$type, $payload] = $tokens[$state];
+            if ($type === self::TOKEN_SEG) {
+                if ($byte === '/') {
+                    // Empty-name iteration: the group stays live at its own
+                    // boundary (phpdup-dialect leg, see automatonMatch()).
+                    self::closeEpsilon($next, $state, $tokens, $m);
+                } else {
+                    $next[$m + 1 + $state] = true;
+                }
+                continue;
+            }
+            $advance = match ($type) {
+                self::TOKEN_LITERAL => $byte === $payload ? $state + 1 : null,
+                self::TOKEN_ONE => $byte !== '/' ? $state + 1 : null,
+                self::TOKEN_STAR => $byte !== '/' ? $state : null,
+                self::TOKEN_ANY => $byte !== "\n" ? $state : null,
+                default => null,
+            };
+            if ($advance !== null) {
+                self::closeEpsilon($next, $advance, $tokens, $m);
+            }
+        }
+
+        return $next;
+    }
+
+    /**
+     * Add $state and every state reachable from it without consuming a byte:
+     * a zero-length `*`, a zero-run `**`/ group, or a trailing `**` steps
+     * straight to the next token.
+     *
+     * @param array<int, true> $set
+     * @param list<array{0: int, 1: string}> $tokens
+     */
+    private static function closeEpsilon(array &$set, int $state, array $tokens, int $m): void
+    {
+        while (!isset($set[$state])) {
+            $set[$state] = true;
+            if ($state >= $m) {
+                return;
+            }
+            $type = $tokens[$state][0];
+            if ($type !== self::TOKEN_STAR && $type !== self::TOKEN_SEG && $type !== self::TOKEN_ANY) {
+                return;
+            }
+            $state++;
+        }
+    }
+
+    /**
+     * The DFA state id for NFA set $set, creating it on first sight.
+     *
+     * @param array{ids: array<string, int>, sets: list<list<int>>, accepts: list<bool>, next: array<int, array<string, int>>} $automaton
+     * @param array<int, true> $set
+     */
+    private static function intern(array &$automaton, array $set, int $m): int
+    {
+        $states = array_keys($set);
+        sort($states);
+        $key = implode(',', $states);
+        if (isset($automaton['ids'][$key])) {
+            return $automaton['ids'][$key];
+        }
+
+        $id = count($automaton['sets']);
+        $automaton['ids'][$key] = $id;
+        $automaton['sets'][] = $states;
+        $automaton['accepts'][] = isset($set[$m]);
+
+        return $id;
+    }
+
+    /**
+     * Report an over-budget pattern once (regex-keyed, so duplicates in the
+     * merged exclude list note together). The note text is the pattern as
+     * sanitized for stderr: a hostile pattern must not steer the terminal
+     * that reports it.
+     *
+     * @param array{source: string, regex: string, tokens: list<array{0: int, 1: string}>, pcre: bool} $pattern
+     */
+    private function noteUndecidable(array $pattern): void
+    {
+        if (isset($this->undecidableNoted[$pattern['regex']])) {
+            return;
+        }
+        $this->undecidableNoted[$pattern['regex']] = true;
+        $this->addSkipNote(
+            'exclude pattern ' . self::printablePattern($pattern['source'])
+            . ' is too costly to evaluate; paths are treated as excluded by it'
+        );
+    }
+
+    /**
+     * $text with control bytes shown as "?", cut to
+     * {@see NOTE_PATTERN_MAX_BYTES} on a UTF-8 boundary and marked with "…".
+     */
+    private static function printablePattern(string $text): string
+    {
+        $text = (string) preg_replace('/[\x00-\x1F\x7F]/', '?', $text);
+        if (strlen($text) <= self::NOTE_PATTERN_MAX_BYTES) {
+            return $text;
+        }
+
+        $cut = self::NOTE_PATTERN_MAX_BYTES;
+        while ($cut > 0 && (ord($text[$cut]) & 0xC0) === 0x80) {
+            $cut--;
+        }
+
+        return substr($text, 0, $cut) . '…';
     }
 
     /**
@@ -262,11 +576,45 @@ final class FileScanner
      * silent false, the pattern stops matching anything, and `vendor`-style
      * protection evaporates without an error. One group per maximal run is
      * immune; the compiled form needs no raised limits.
+     *
+     * Coalescing adjacent runs is, however, only the first half of the
+     * bound. Beyond it the compiler is BOUNDED (once-095, ported from
+     * sugar-ignore after its ReDoS incident): every pattern also keeps a
+     * token list, {@see backtracksSafely()} classifies whether PCRE may
+     * retry its wildcard shape at all, hostile shapes are decided by the
+     * backtrack-free automaton in {@see automatonMatch()}, and a PCRE limit
+     * error anywhere falls through to that automaton instead of going
+     * quiet. Compiled bytes are unchanged for every shape the old compiler
+     * accepted — the dialect table above still governs, byte-identical,
+     * including the coalescing this file has already pinned.
+     *
+     * This stays the canonical compile entry: the constructor routes every
+     * pattern through it, exactly as the shell-S21 test seam does.
      */
     private function globToRegex(string $glob): string
     {
+        return self::regexFor(self::tokenizeGlob($glob));
+    }
+
+    /**
+     * Split one exclude glob into matcher tokens — the single source of
+     * truth both for the regex ({@see regexFor()}) and for the automaton
+     * ({@see automatonMatch()}), so the two matchers cannot drift.
+     *
+     * Star-run folding (`***` behaves as `**`), the trailing-`**`/
+     * segment-boundary/ mid-segment trichotomy, and the one-group-per-
+     * maximal-run coalescing mirror the legacy emit branch for branch;
+     * the adjacency test here is collision-proof for the same reason the
+     * legacy suffix test was (shell-030): only a TOKEN_SEG emit can put
+     * that exact text on the end, and every literal byte goes through
+     * preg_quote.
+     *
+     * @return list<array{0: int, 1: string}>
+     */
+    private static function tokenizeGlob(string $glob): array
+    {
         $glob = ltrim($glob, '/');
-        $re = '';
+        $tokens = [];
         $i = 0;
         $len = strlen($glob);
         while ($i < $len) {
@@ -279,39 +627,93 @@ final class FileScanner
                         $i++;
                     }
                     if ($i >= $len) {
-                        $re .= '.*';            // trailing ** → everything below
+                        $tokens[] = [self::TOKEN_ANY, ''];    // trailing ** → everything below
                     } elseif ($glob[$i] === '/') {
-                        $i++;                   // consume the boundary slash
+                        $i++; // consume the boundary slash
                         // shell-030: coalesce an adjacent '**/' chain into ONE
-                        // segment group. Only the group emitted by this branch
-                        // can end $re with that exact text (literal chars go
-                        // through preg_quote, which back-escapes ( ? : [ ] * )
-                        // and /), so this suffix test is collision-proof.
-                        $group = '(?:[^/]*/)*'; // zero or more whole segments
-                        if (!str_ends_with($re, $group)) {
-                            $re .= $group;
+                        // segment group (token-adjacency form of the legacy
+                        // regex-suffix test — see the docblock above).
+                        $lastType = $tokens === [] ? null : $tokens[count($tokens) - 1][0];
+                        if ($lastType !== self::TOKEN_SEG) {
+                            $tokens[] = [self::TOKEN_SEG, ''];
                         }
                     } else {
-                        $re .= '[^/]*';         // ** mid-segment → one '*'
+                        $tokens[] = [self::TOKEN_STAR, ''];   // ** mid-segment → one '*'
                     }
                 } else {
-                    $re .= '[^/]*';
+                    $tokens[] = [self::TOKEN_STAR, ''];
                     $i++;
                 }
             } elseif ($c === '?') {
-                $re .= '[^/]';
-                $i++;
-            } elseif ($c === '.') {
-                $re .= '\.';
-                $i++;
-            } elseif ($c === '/') {
-                $re .= '/';
+                $tokens[] = [self::TOKEN_ONE, ''];
                 $i++;
             } else {
-                $re .= preg_quote($c, '#');
+                // Every other byte — '.', '/', and anything preg_quote'd —
+                // is a literal. regexFor() reproduces the legacy per-byte
+                // emits exactly ('\.' and the bare '/').
+                $tokens[] = [self::TOKEN_LITERAL, $c];
                 $i++;
             }
         }
-        return '#^' . $re . '$#';
+        return $tokens;
+    }
+
+    /**
+     * The anchored regex for $tokens, byte-identical to what the legacy
+     * per-character compiler emitted: '/' stays a bare slash and every
+     * other literal byte goes through preg_quote with the '#' delimiter
+     * (which renders '.' as '\.', exactly as the legacy '.' branch did).
+     *
+     * @param list<array{0: int, 1: string}> $tokens
+     */
+    private static function regexFor(array $tokens): string
+    {
+        $out = '';
+        foreach ($tokens as [$type, $payload]) {
+            $out .= match ($type) {
+                self::TOKEN_LITERAL => $payload === '/' ? '/' : preg_quote($payload, '#'),
+                self::TOKEN_ONE => '[^/]',
+                self::TOKEN_STAR => '[^/]*',
+                self::TOKEN_SEG => '(?:[^/]*/)*',
+                self::TOKEN_ANY => '.*',
+                default => throw new \LogicException('unknown glob token kind ' . $type),
+            };
+        }
+
+        return '#^' . $out . '$#';
+    }
+
+    /**
+     * Can PCRE run this pattern without catastrophic backtracking?
+     *
+     * Backtracking explodes when unbounded wildcards can trade the same
+     * text between them: `[^/]*a[^/]*a[^/]*c` tries every split of the
+     * path among its stars, and chained `**`/ groups split the segment
+     * sequence the same way — measured on the current compiler at 42 ms
+     * and 24 ms per path (then a silent false) for the 14-wildcard and
+     * 10-group shapes respectively. Allowed: at most two wildcards, at
+     * most one of which crosses `/` (TOKEN_SEG or trailing `**`). That
+     * keeps every real-world shape — `*.php`, `vendor/**`, `**`/*.php,
+     * `**`/build — on the fast path with a worst case PCRE's limits
+     * bound; anything more goes straight to the exact automaton rather
+     * than paying the limit first on every path (sugar-ignore's
+     * classification, ported).
+     *
+     * @param list<array{0: int, 1: string}> $tokens
+     */
+    private static function backtracksSafely(array $tokens): bool
+    {
+        $wildcards = 0;
+        $crossing = 0;
+        foreach ($tokens as [$type]) {
+            if ($type === self::TOKEN_STAR) {
+                $wildcards++;
+            } elseif ($type === self::TOKEN_SEG || $type === self::TOKEN_ANY) {
+                $wildcards++;
+                $crossing++;
+            }
+        }
+
+        return $wildcards <= 2 && $crossing <= 1;
     }
 }
