@@ -694,8 +694,8 @@ HELP;
         // --min-safety merely printed and kept going. All three now pass
         // through ConfigLoader's coercion boundary (the same trim policy,
         // int64-overflow guard and key-named rejection the NUMERIC_KEYS
-        // family uses); Symfony's --limit default '50' is itself a string,
-        // which the boundary parses like any other.
+        // family uses); the --limit default is a native int 50, while the
+        // string shapes a CLI value arrives in stay accepted for robustness.
         try {
             $limit = ConfigLoader::coerceRuntimeInt('limit', $input->getOption('limit'), 0);
             $maxMemoryMb = $input->getOption('max-memory') !== null
