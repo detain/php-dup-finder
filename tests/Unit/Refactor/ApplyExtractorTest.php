@@ -481,4 +481,106 @@ final class ApplyExtractorTest extends TestCase
         $this->assertStringContainsString('function notifyA', (string) file_get_contents($file),
             'the member file keeps its original bytes');
     }
+
+    /**
+     * One file, an outer function whose BODY DECLARES a second member
+     * function — the overlap class the count-verify exists for. Both spans
+     * are located in the single plan parse (distinct nodes, distinct
+     * claimants), but the replacement pass never re-enters the outer
+     * subtree it just replaced, so the inner target is unreachable: the
+     * only honest outcome is a loud refusal.
+     *
+     * @return array{0: string, 1: list<Block>} [file path, blocks] outer-first
+     */
+    private function nestedMemberFile(string $dir): array
+    {
+        $src = "<?php\n"
+            . "function outerFn(\$u, \$s) {\n"
+            . "    if (\$s > 10) {\n"
+            . "        send(\"admin\", \$u);\n"
+            . "    }\n"
+            . "    function innerFn(\$u, \$s) {\n"
+            . "        return \$u;\n"
+            . "    }\n"
+            . "}\n";
+        $file = $dir . '/nested.php';
+        file_put_contents($file, $src);
+
+        $stmts = (new AstParser())->parseCode($src);
+        $this->assertNotNull($stmts);
+        $blocks = [];
+        foreach ((new BlockExtractor(minSize: 1))->extract($file, $stmts) as $block) {
+            if ($block->kind === 'function') {
+                $blocks[] = $block;
+            }
+        }
+        $this->assertCount(2, $blocks);
+        [$outer, $inner] = $blocks;
+        $this->assertLessThan($inner->range->start, $outer->range->start);
+        $this->assertGreaterThan($inner->range->end, $outer->range->end);
+        return [$file, [$outer, $inner]];
+    }
+
+    public function testNestedMemberUnderAnotherRefusesTheCluster(): void
+    {
+        // LOW-2 pin (r1): the count-verify nested arm. r1 proved by mutant
+        // that without it the composed file ships with the inner clone
+        // silently ERASED — the exact partial-application class half A
+        // kills. The r1 manual probe now rides an automated pin.
+        $dir = $this->makeScratchDir();
+        [$file, $members] = $this->nestedMemberFile($dir);
+
+        try {
+            (new ApplyExtractor())->apply($this->applyReadyCluster('S44N', $members), $dir . '/out');
+            $this->fail('expected a loud refusal for the member nested under another member');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('refusing cluster S44N', $e->getMessage());
+            $this->assertStringContainsString('only 1 of 2 collected member nodes', $e->getMessage());
+            $this->assertStringContainsString('nested under another member', $e->getMessage());
+            $this->assertStringContainsString($file, $e->getMessage());
+            $this->assertStringContainsString('no files were written', $e->getMessage());
+        }
+
+        $contents = (string) file_get_contents($file);
+        $this->assertStringContainsString('function outerFn', $contents);
+        $this->assertStringContainsString('function innerFn', $contents,
+            'the inner clone survives intact — no silent erasure');
+        $this->assertStringNotContainsString('Refactored\\notifyByThreshold(', $contents);
+        $this->assertFileDoesNotExist($dir . '/out/Refactored/S44N.php');
+    }
+
+    public function testMkdirRefusalThrowsWithAFreshDiagnostic(): void
+    {
+        // LOW-2 pin (r1): the mkdir-refusal throw (the r1 audit's one
+        // unpinned replacement arm). The plan itself succeeds — member
+        // files are readable and parseable — but the output tree cannot be
+        // created under a read-only parent, and the loud arm must carry a
+        // FRESH diagnostic (LOW-1 clears the slot before the attempt).
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            $this->markTestSkipped('root bypasses DAC: a chmod-0555 directory stays writable');
+        }
+        $dir = $this->makeScratchDir();
+        [$file, $blocks] = $this->twoMemberFile($dir);
+
+        $locked = $this->makeScratchDir();
+        chmod($locked, 0o555);
+        $refactoredDir = $locked . '/out/Refactored';
+
+        try {
+            (new ApplyExtractor())->apply($this->applyReadyCluster('S44D', $blocks), $locked . '/out');
+            $this->fail('expected a loud failure when the Refactored dir cannot be created');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('refusing cluster S44D', $e->getMessage());
+            $this->assertStringContainsString('could not create ' . $refactoredDir, $e->getMessage());
+            $this->assertStringContainsString('Permission denied', $e->getMessage(),
+                'the suppressed mkdir diagnostic rides the refusal, fresh');
+            $this->assertStringContainsString('no files were written', $e->getMessage());
+        } finally {
+            chmod($locked, 0o775);
+        }
+
+        $this->assertStringContainsString('function notifyA', (string) file_get_contents($file),
+            'the member file keeps its original bytes');
+        $this->assertDirectoryDoesNotExist($refactoredDir);
+    }
 }

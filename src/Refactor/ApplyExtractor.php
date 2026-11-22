@@ -89,15 +89,21 @@ final class ApplyExtractor
         // 4. Build and write the function file (loud: no @-swallow).
         $functionFile = $this->buildFunctionFile($funcName, $modifiedAst, $cluster);
         $refactoredDir = $outDir . '/Refactored';
-        if (!is_dir($refactoredDir) && !@mkdir($refactoredDir, 0o775, true) && !is_dir($refactoredDir)) {
-            // The @ keeps the raw warning off the user's stream; the throw
-            // carries it, so the failure is reported, never swallowed.
-            throw new \RuntimeException(sprintf(
-                'ApplyExtractor: refusing cluster %s — could not create %s (%s); no files were written.',
-                $cluster->id,
-                $refactoredDir,
-                self::describeLastFailure($refactoredDir),
-            ));
+        if (!is_dir($refactoredDir)) {
+            // Sibling arms run error_clear_last() immediately before their
+            // @-guarded call so describeLastFailure reports THIS attempt —
+            // never a stale diagnostic from an earlier arm (fix r1 LOW-1).
+            error_clear_last();
+            if (!@mkdir($refactoredDir, 0o775, true) && !is_dir($refactoredDir)) {
+                // The @ keeps the raw warning off the user's stream; the throw
+                // carries it, so the failure is reported, never swallowed.
+                throw new \RuntimeException(sprintf(
+                    'ApplyExtractor: refusing cluster %s — could not create %s (%s); no files were written.',
+                    $cluster->id,
+                    $refactoredDir,
+                    self::describeLastFailure($refactoredDir),
+                ));
+            }
         }
         $safeId = Slug::safe($cluster->id);
         $this->writeFileLoud($cluster, $refactoredDir . "/{$safeId}.php", $functionFile);
