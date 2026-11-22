@@ -5,6 +5,9 @@ namespace Phpdup\Tests\Unit\Server;
 
 use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\ServeCommand;
+use Symfony\Component\Console\Application as ConsoleApplication;
+use Symfony\Component\Console\Input\ArrayInput;
+use Symfony\Component\Console\Output\BufferedOutput;
 
 /**
  * once-S71 (php-dup-finder-once-085): the startup stale-results sweep and
@@ -22,6 +25,16 @@ use Phpdup\Cli\ServeCommand;
  * (4194304) as the provably-dead arm: such a pid cannot exist, so no
  * liveness race can resurrect the directory between the probe and the
  * assertion. The live arm runs a real `sleep` child.
+ *
+ * Fix-round-1 (r1 MEDIUM-1): the two startup legs inside `execute()` — the
+ * sweep call and the SECURITY notice writeln — were unpinned (the r1 `mw`
+ * mutant neutered both call sites and the whole file stayed green). The
+ * pins added here close that gap through the repo's two precedent shapes:
+ * a pre-bind output pin (a tokenless run forced to fail at the bind
+ * refusal, pattern tests/Unit/Cli/ServeCommandTest.php:373) and a
+ * zero-race source-order pin (pattern tests/Unit/Server/ServeCommandTest.php:336).
+ * No real-/tmp litter is planted and the sweep COUNT line is never
+ * asserted from a run: sibling serve boots sweep the same shared /tmp.
  */
 final class ServeCommandSweepTest extends TestCase
 {
@@ -36,7 +49,7 @@ final class ServeCommandSweepTest extends TestCase
     /** Live child pid spawned for the liveness arm (killed in tearDown). */
     private ?int $livePid = null;
 
-    /** A results dir under the REAL temp dir created by the 0700 recheck. */
+    /** A results dir under the REAL temp dir (created by the 0700 recheck or the run-to-bind pin). */
     private string $realResultsDir = '';
 
     protected function tearDown(): void
@@ -223,6 +236,105 @@ final class ServeCommandSweepTest extends TestCase
             sys_get_temp_dir() . '/' . ServeCommand::RESULTS_DIR_PREFIX . getmypid(),
             ServeCommand::resultDirPath()
         );
+    }
+
+    // ------------------------------------------------------------------
+    // once-S71 fix1 (r1 MEDIUM-1): the execute() startup call sites
+    // ------------------------------------------------------------------
+
+    /**
+     * Pre-bind output pin (pattern: ServeCommandTest::
+     * testServeExitsOneBeforeBindOnNonNumericServeWorkers). A tokenless
+     * run is forced to fail at the bind refusal by occupying the port with
+     * our own listener first: execute() must have walked the whole startup
+     * block (stale sweep, then the SECURITY notice) BEFORE it can print
+     * "bind failed" — if the notice call site is ever neutered (r1 mutant
+     * `mw`) or the block moved after the bind, the SECURITY line never
+     * reaches the output and this goes red. The sweep COUNT line is
+     * deliberately not asserted: it would mean planting litter in the
+     * shared /tmp, which sibling serve boots sweep too (r1 fix-brief).
+     */
+    public function testTokenlessStartupNoticeRidesExecuteBeforeTheBindRefusal(): void
+    {
+        $errno = 0;
+        $errstr = '';
+        // Port 0: the kernel picks a free one — no fixed-port collision
+        // with sibling lanes, no reservation race to lose.
+        $listener = @stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
+        if ($listener === false) {
+            $this->markTestSkipped("cannot occupy a local port to force the bind refusal: {$errstr}");
+        }
+        $name = (string) stream_socket_get_name($listener, false);
+        $port = (int) substr($name, (int) strrpos($name, ':') + 1);
+        $this->assertGreaterThan(0, $port, 'the occupied listener must report its port');
+
+        $command = new ServeCommand();
+        $command->setApplication(new ConsoleApplication('phpdup', '1.0.0'));
+        // shell-S35 seam: the phar posture makes spawnWorker return null
+        // (sync mode), so every startup leg up to the bind is reached for
+        // real without ever forking a worker child out of the test run.
+        $command->pharRunningOverride = '/tmp/anywhere/phpdup.phar';
+
+        $output = new BufferedOutput();
+        $exit = $command->run(
+            new ArrayInput(['--host' => '127.0.0.1', '--port' => (string) $port]),
+            $output
+        );
+        fclose($listener);
+        // execute()'s prepare leg created the real pid-named results dir;
+        // tearDown unlinks its contents and removes the directory itself.
+        $this->realResultsDir = ServeCommand::resultDirPath();
+
+        $text = $output->fetch();
+        $this->assertSame(1, $exit, 'an occupied port must refuse startup at the bind leg');
+        $this->assertStringContainsString(
+            'SECURITY: serving without --token',
+            $text,
+            'execute() must print the tokenless exposure notice through its startup call site'
+        );
+        $this->assertStringContainsString('phpdup: bind failed', $text, 'the refusal itself must be reported');
+        $this->assertStringNotContainsString('listening on', $text, 'a refused startup must never claim a listener');
+
+        // Socket-proven "the command never bound" (the :388-399 shape):
+        // the only listener this port ever had was ours, now closed.
+        $probe = @stream_socket_client('tcp://127.0.0.1:' . $port, $errno, $errstr, 2.0);
+        if ($probe !== false) {
+            fclose($probe);
+            $this->fail('a bind-refused serve must leave no listener on the port');
+        }
+        $this->assertStringContainsStringIgnoringCase('refused', $errstr);
+    }
+
+    /**
+     * Source-order pin (pattern: Server/ServeCommandTest::
+     * testSignalWiringRidesTheRealCallSites). Positional read of the real
+     * execute() body: the sweep and the notice must sit on a textual path
+     * to the bind, BEFORE the spawn — zero /tmp race, zero timing, and the
+     * exact call-site strings are the ones the r1 `mw` mutant rewrites to
+     * constants, so neutering either leg makes the matching strpos return
+     * false and this test goes red with it.
+     */
+    public function testStartupSweepAndNoticeCallSitesSitBeforeTheSpawnAndBindLegs(): void
+    {
+        $src = (string) file_get_contents(
+            (new \ReflectionClass(ServeCommand::class))->getFileName()
+        );
+
+        $execStart = strpos($src, 'protected function execute(InputInterface');
+        $this->assertIsInt($execStart, 'execute() must exist');
+        $bindPos = strpos($src, '@stream_socket_server(', $execStart);
+        $this->assertIsInt($bindPos, 'execute() must reach the bind leg');
+        $preBind = substr($src, $execStart, $bindPos - $execStart);
+
+        $sweep = strpos($preBind, '$this->sweepStaleResultsDirs();');
+        $this->assertIsInt($sweep, 'the startup sweep must ride execute() before any bind');
+        $notice = strpos($preBind, 'self::tokenlessExposureNotice(');
+        $this->assertIsInt($notice, 'the tokenless notice must ride execute() before any bind');
+        $spawn = strpos($preBind, '$this->spawnWorker($output');
+        $this->assertIsInt($spawn, 'execute() must attempt the worker spawn before the bind');
+
+        $this->assertLessThan($spawn, $sweep, 'stale dirs are swept before a worker could write any');
+        $this->assertLessThan($spawn, $notice, 'the exposure notice precedes the first route that could answer');
     }
 
     // ------------------------------------------------------------------
