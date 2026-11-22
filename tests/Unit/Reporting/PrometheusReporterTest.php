@@ -30,21 +30,26 @@ final class PrometheusReporterTest extends TestCase
         $this->assertStringContainsString('# TYPE phpdup_clusters_total gauge', $text);
         $this->assertStringContainsString("phpdup_clusters_total 0", $text);
         $this->assertStringContainsString("phpdup_files_scanned 0", $text);
+        $this->assertStringContainsString("phpdup_duplicates_total 0", $text);
+        // Bounded-vocabulary families stay out of the exposition entirely
+        // when the corpus contributes no values (the pattern-tag posture).
+        $this->assertStringNotContainsString('phpdup_severity_clusters', $text);
+        $this->assertStringNotContainsString('phpdup_kind_blocks', $text);
     }
 
     public function testFixtureReportEmitsNonZeroClusterCount(): void
     {
         $report = $this->buildReport();
-        $text = (new PrometheusReporter())->build($report);
+        $text   = (new PrometheusReporter())->build($report);
 
         $this->assertStringContainsString('# HELP phpdup_clusters_total', $text);
         $this->assertMatchesRegularExpression('/^phpdup_clusters_total \d+$/m', $text);
         $this->assertMatchesRegularExpression('/^phpdup_total_impact \d+$/m', $text);
 
-        // Per-cluster gauge lines, with a tag/kind label
-        if (count($report->clusters) > 0) {
-            $this->assertMatchesRegularExpression('/^phpdup_cluster_impact\{id="[^"]+",kind="[^"]*"\} \d+$/m', $text);
-        }
+        // Aggregate replacements for the retired per-cluster series (output-026)
+        $this->assertMatchesRegularExpression('/^phpdup_duplicates_total \d+$/m', $text);
+        $this->assertMatchesRegularExpression('/^phpdup_severity_clusters\{severity="[^"]+"\} \d+$/m', $text);
+        $this->assertMatchesRegularExpression('/^phpdup_kind_blocks\{kind="[^"]+"\} \d+$/m', $text);
     }
 
     public function testTextEndsWithNewline(): void
@@ -55,26 +60,89 @@ final class PrometheusReporterTest extends TestCase
         $this->assertStringEndsWith("\n", $text);
     }
 
+    // ── output-026: high-cardinality per-cluster series retired ────────────
+
+    /**
+     * Metric-name change, pinned: the content-hash-labeled per-cluster
+     * `phpdup_cluster_impact{id="<hash>",kind="..."}` series is GONE —
+     * ids are content-derived and churn on every edit, an unbounded
+     * cardinality load on a cron-fed TSDB. `phpdup_duplicates_total` plus
+     * the by-severity/by-kind aggregates replace it; per-cluster detail
+     * lives in JSON/HTML instead, and NO flag re-enables the id series
+     * (the plan ruling recorded on output-S20).
+     */
+    public function testPerClusterIdSeriesReplacedByBoundedAggregates(): void
+    {
+        $report = $this->buildReport();
+        $text   = (new PrometheusReporter())->build($report);
+
+        $this->assertStringNotContainsString('phpdup_cluster_impact', $text);
+        $this->assertStringNotContainsString('{id=', $text);
+        $this->assertMatchesRegularExpression('/^phpdup_duplicates_total \d+$/m', $text);
+
+        // Severity tiers label only the four forImpact() names, and the
+        // kind family sums to duplicates_total — bounded label sets.
+        $severity = $this->labelValues($text, 'phpdup_severity_clusters');
+        $this->assertNotEmpty($severity);
+        $this->assertSame([], array_diff(array_keys($severity), ['High', 'Medium', 'Low', 'Info']));
+        $duplicates = $this->scalarGauge($text, 'phpdup_duplicates_total');
+        $kindSum    = 0;
+        foreach ($this->labelValues($text, 'phpdup_kind_blocks') as $n) {
+            $kindSum += $n;
+        }
+        $this->assertSame($duplicates, $kindSum, 'kind_blocks sum equals duplicates_total');
+    }
+
+    public function testAggregatesCarryExactCountsAndSeverityTiers(): void
+    {
+        $clusters = [
+            // impact 150 → High, members method×2
+            $this->cluster('hi', 150, ['method', 'method'], ['sql-builder']),
+            // impact 10 → Info, members function×1 + method×1
+            $this->cluster('lo', 10, ['function', 'method'], []),
+        ];
+        $text = (new PrometheusReporter())->build(
+            new Report(files: 4, blocks: 3, parseErrors: 0, clusters: $clusters, config: Config::defaults([])),
+        );
+
+        $this->assertSame(2, $this->scalarGauge($text, 'phpdup_clusters_total'));
+        $this->assertSame(4, $this->scalarGauge($text, 'phpdup_duplicates_total'));
+        $this->assertSame(160, $this->scalarGauge($text, 'phpdup_total_impact'));
+
+        $this->assertSame(
+            ['High' => 1, 'Info' => 1],
+            $this->labelValues($text, 'phpdup_severity_clusters'),
+        );
+        $this->assertSame(
+            ['function' => 1, 'method' => 3],
+            $this->labelValues($text, 'phpdup_kind_blocks'),
+        );
+        $this->assertSame(
+            ['sql-builder' => 1],
+            $this->labelValues($text, 'phpdup_pattern_tag_clusters'),
+        );
+    }
+
     // ── output-047: label escaping (the Go-client escape set + sweeps) ─────
 
-    public function testCarriageReturnInLabelIsEscapedNotRaw(): void
+    public function testCarriageReturnInKindLabelIsEscapedNotRaw(): void
     {
-        $report = $this->syntheticReport("id\rforger");
+        $report = $this->syntheticReport(kind: "k\rforger");
         $text   = (new PrometheusReporter())->build($report);
 
         // Raw CR would break line framing on tolerant readers; the value
         // must arrive as the two-char \r escape on ONE exposition line.
         $this->assertStringNotContainsString("\r", $text);
-        $this->assertStringContainsString('id="id\rforger"', $text);
+        $this->assertStringContainsString('kind="k\rforger"', $text);
         $this->assertMatchesRegularExpression(
-            '/^phpdup_cluster_impact\{id="id\\\\rforger",kind="method"\} \d+$/',
-            $this->sampleLine($text, 'id="id\rforger"'),
+            '/^phpdup_kind_blocks\{kind="k\\\\rforger"\} \d+$/',
+            $this->sampleLine($text, 'kind="k\rforger"'),
         );
     }
 
     public function testUnescapableBytesAreSubstitutedInLabels(): void
     {
-        $report = $this->syntheticReport("nul\x00and\x1besc");
+        $report = $this->syntheticReport(tag: "nul\x00and\x1besc");
         $text   = (new PrometheusReporter())->build($report);
 
         $this->assertStringNotContainsString("\x00", $text);
@@ -82,9 +150,9 @@ final class PrometheusReporterTest extends TestCase
         $this->assertSame(2, substr_count($text, ControlText::SUBSTITUTE));
     }
 
-    public function testLineFeedInLabelStaysEscapedNoStatementSplit(): void
+    public function testLineFeedInTagLabelStaysEscapedNoStatementSplit(): void
     {
-        $report = $this->syntheticReport("id\nphpdup_forged_metric 1");
+        $report = $this->syntheticReport(tag: "t\nphpdup_forged_metric 1");
         $text   = (new PrometheusReporter())->build($report);
 
         // The classic forgery: an LF label value minting a second metric
@@ -92,7 +160,7 @@ final class PrometheusReporterTest extends TestCase
         $this->assertMatchesRegularExpression('/^phpdup_\w+ /m', $text);
         $this->assertStringNotContainsString("\nphpdup_forged_metric 1", $text);
         $this->assertStringNotContainsString("\r", $text);
-        $this->assertStringContainsString('id="id\nphpdup_forged_metric 1"', $text);
+        $this->assertStringContainsString('tag="t\nphpdup_forged_metric 1"', $text);
     }
 
     /** @return string the single exposition line carrying $needle */
@@ -106,7 +174,51 @@ final class PrometheusReporterTest extends TestCase
         $this->fail("no line carries {$needle}");
     }
 
-    private function syntheticReport(string $id): Report
+    /** Read one unlabeled scalar gauge value out of the exposition. */
+    private function scalarGauge(string $text, string $name): int
+    {
+        $this->assertSame(1, preg_match('/^' . preg_quote($name, '/') . ' (\d+)$/m', $text, $m));
+        return (int) $m[1];
+    }
+
+    /** @return array<string,int> label value => gauge value */
+    private function labelValues(string $text, string $name): array
+    {
+        $out = [];
+        foreach (explode("\n", $text) as $line) {
+            if (preg_match('/^' . preg_quote($name, '/') . '\{[^=]+="([^"]*)"\} (\d+)$/', $line, $m)) {
+                $out[$m[1]] = (int) $m[2];
+            }
+        }
+        return $out;
+    }
+
+    private function cluster(string $id, int $impact, array $kinds, array $tags): Cluster
+    {
+        $stmts   = (new AstParser())->parseCode('<?php $x;');
+        $members = [];
+        $i       = 0;
+        foreach ($kinds as $kind) {
+            $members[] = new Block(
+                file: 'member-' . $i++ . '.php',
+                range: new LineRange(1, 1),
+                kind: $kind,
+                namespace: null, class: null, name: null,
+                ast: $stmts[0],
+            );
+        }
+        $cluster            = new Cluster($id, $members, 1.0, false);
+        $cluster->impact    = $impact;
+        $cluster->patternTags = $tags;
+        return $cluster;
+    }
+
+    /**
+     * One-cluster report whose only label-bearing surfaces are the member
+     * kind and the single pattern tag — the surviving hostile-input paths
+     * since output-026 retired the id label.
+     */
+    private function syntheticReport(string $kind = 'method', string $tag = ''): Report
     {
         $stmts   = (new AstParser())->parseCode('<?php $x;');
         $members = [];
@@ -114,14 +226,18 @@ final class PrometheusReporterTest extends TestCase
             $members[] = new Block(
                 file: $f,
                 range: new LineRange(1, 1),
-                kind: 'method',
+                kind: $kind,
                 namespace: null, class: null, name: null,
                 ast: $stmts[0],
             );
         }
+        $cluster = new Cluster('synthetic-id', $members, 1.0, false);
+        if ($tag !== '') {
+            $cluster->patternTags = [$tag];
+        }
         return new Report(
             files: 2, blocks: 2, parseErrors: 0,
-            clusters: [new Cluster($id, $members, 1.0, false)],
+            clusters: [$cluster],
             config: Config::defaults([]),
         );
     }
