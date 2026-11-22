@@ -577,6 +577,11 @@ final class WorkerPoolTest extends TestCase
         putenv('NUMBER_OF_PROCESSORS');
         try {
             $this->withProbeFixtures([], function (): void {
+                // once-S77 r1 LOW-1: pin the VALUE as well as the chain answer —
+                // the constant-relative assert below is tautological on its own,
+                // so without this line flipping the constant keeps the suite
+                // green while docs/CLI.md "Fallback `4`" silently drifts.
+                $this->assertSame(4, WorkerPool::CPU_FALLBACK_COUNT);
                 $this->assertSame(WorkerPool::CPU_FALLBACK_COUNT, WorkerPool::detectCpuCount());
             });
         } finally {
