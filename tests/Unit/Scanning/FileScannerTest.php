@@ -455,22 +455,27 @@ final class FileScannerTest extends TestCase
     }
 
     /**
-     * End-to-end scanner leg of the acceptance check: a scratch tree of 150
-     * files whose basenames are the explosive shape ("c" + 40 a's + digits +
-     * ".php"), scanned with BOTH hostile chains plus a routine prune in the
-     * exclude list. Before the fix every file cost a backtrack blowout and a
-     * silent false; now the whole scan finishes well inside the five-second
-     * box with nothing excluded and nothing noted.
+     * End-to-end scanner leg of the acceptance check: a FLAT scratch tree of
+     * 150 files whose names are the explosive classic-chain subject ("c" +
+     * 40 a's + digits + ".php"), scanned with BOTH hostile chains plus a
+     * routine prune in the exclude list. The flat layout is load-bearing:
+     * the relPath then IS the explosive shape, so on the pre-fix compiler
+     * every file paid a backtrack blowout and a silent false (parent leg:
+     * ~65 ms per check — this pin runs red on it). Nesting the files one
+     * segment down lets both chains fail early on the slash-bounded
+     * leading segment, decides in microseconds, and blinds the timer — the
+     * r1 review caught the old sub-dir shape claiming exactly what it
+     * could not measure. Now the whole scan finishes well inside the
+     * five-second box with nothing excluded and nothing noted.
      */
     public function testScanCompletesUnderBudgetWithHostileExcludes(): void
     {
         $dir = sys_get_temp_dir() . '/phpdup-redos-' . getmypid() . '-' . spl_object_id($this);
+        if (!is_dir($dir)) {
+            mkdir($dir, 0777, true);
+        }
         for ($i = 0; $i < 150; $i++) {
-            $sub = $dir . '/sub' . intdiv($i, 50);
-            if (!is_dir($sub)) {
-                mkdir($sub, 0777, true);
-            }
-            file_put_contents($sub . '/c' . str_repeat('a', 40) . $i . '.php', "<?php\nfunction p{$i}() { return {$i}; }\n");
+            file_put_contents($dir . '/c' . str_repeat('a', 40) . $i . '.php', "<?php\nfunction p{$i}() { return {$i}; }\n");
         }
 
         $scanner = new FileScanner([
