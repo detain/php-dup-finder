@@ -987,20 +987,61 @@ final class UpdateCommandTest extends TestCase
         $this->assertSame(1200, strlen((string)file_get_contents($dest)), 'torn residue exists for the caller to unlink — success was not claimed');
     }
 
-    public function testPartialContentReplyIsRefusedEvenWithAHonestLength(): void
+    /**
+     * once-S91 r1 LOW-1: the 206/Content-Range refusal is a two-term OR, so
+     * each term gets a fixture that carries ONLY that signal. One fixture
+     * with both signals lets a refactor drop either leg and stay green; with
+     * the split, removing the status term reddens the 206-without-header case
+     * (and the header phrase the both-signals case's message assertion
+     * expects), and removing the header term reddens the 200-laundering case.
+     *
+     * @return array<string, array{0: string, 1: string, 2: string}>
+     */
+    public static function partialContentReplyCases(): array
     {
-        // The declared-length trap in its lying form: a 206 whose
+        return [
+            // The realistic laundering shape: a range slice served behind a
+            // plain 200 with an honest length — only the header term can see it.
+            'range slice laundered behind a plain 200' => [
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n"
+                . "Content-Length: 1200\r\nContent-Range: bytes 0-1199/5000\r\n\r\n" . str_repeat('r', 1200),
+                'a Content-Range header',
+                'partial-200-with-range-header.bin',
+            ],
+            // The status term alone: a bare 206 with an honest range length
+            // and no Content-Range header to lean on.
+            'bare 206 with no Content-Range header' => [
+                "HTTP/1.1 206 Partial Content\r\nContent-Type: application/octet-stream\r\n"
+                . "Content-Length: 1200\r\n\r\n" . str_repeat('r', 1200),
+                'HTTP 206',
+                'partial-206-without-range-header.bin',
+            ],
+            // The original both-signals fixture, kept for its refusal-message
+            // precedence pin (a surviving 206 must be named HTTP 206).
+            '206 with an honest-length Content-Range slice' => [
+                "HTTP/1.1 206 Partial Content\r\nContent-Type: application/octet-stream\r\n"
+                . "Content-Length: 1200\r\nContent-Range: bytes 0-1199/5000\r\n\r\n" . str_repeat('r', 1200),
+                'HTTP 206',
+                'partial-over-the-wire.bin',
+            ],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('partialContentReplyCases')]
+    public function testPartialContentReplyIsRefusedEvenWithAHonestLength(
+        string $raw,
+        string $expectedTrigger,
+        string $destName,
+    ): void {
+        // The declared-length trap in its lying form: a partial reply whose
         // Content-Length matches the served RANGE completes a slice of the
         // artifact. This client never sends a Range request, so the partial
         // reply is refused on sight — before the destination file is even
         // opened (asserted by the file never existing).
-        $raw = "HTTP/1.1 206 Partial Content\r\nContent-Type: application/octet-stream\r\n"
-            . "Content-Length: 1200\r\nContent-Range: bytes 0-1199/5000\r\n\r\n" . str_repeat('r', 1200);
-
         [$pid, $port, $server] = $this->forkHttpServer(static fn(string $request): string => $raw);
         try {
             $command = $this->s91Command('http://127.0.0.1:' . $port . '/phpdup.phar');
-            $dest = $this->scratchFile('partial-over-the-wire.bin');
+            $dest = $this->scratchFile($destName);
             $io = $this->style($buffer);
 
             $ok = $command->download('http://127.0.0.1:' . $port . '/phpdup.phar', $dest, $io);
@@ -1012,7 +1053,7 @@ final class UpdateCommandTest extends TestCase
 
         $this->assertFalse($ok, 'a partial-content reply must never count as the whole artifact');
         $this->assertStringContainsString('Download refused', $messages);
-        $this->assertStringContainsString('HTTP 206', $messages);
+        $this->assertStringContainsString($expectedTrigger, $messages);
         $this->assertStringContainsString('partial content', $messages);
         $this->assertFileDoesNotExist($dest, 'refusal happens before any bytes are written to the destination');
     }
