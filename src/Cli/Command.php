@@ -20,6 +20,7 @@ use Phpdup\Pipeline\Stages\RefactorStage;
 use Phpdup\Pipeline\Stages\ReportStage;
 use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Reporting\BaselineStore;
+use Phpdup\Scanning\FileScanner;
 use Symfony\Component\Console\Command\Command as SymfonyCommand;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
@@ -239,6 +240,86 @@ HELP;
             }
         }
 
+        // once-S34 (php-dup-finder-once-038): resolve the --diff-base cohort
+        // HERE, before the pipeline exists — named roots, repo-relative git,
+        // unicode paths, honest empty-cohort refusal. Old posture: the
+        // stage-level probe joined repo-relative git paths under the scan
+        // root (only correct for toplevel roots), so a subdir/file root
+        // silently collected nothing and ClusterStage's "no changes" rule
+        // turned the gate premise into a FULL unscoped scan. Now:
+        //  • FileScanner::resolveDiffCohort maps git output against the
+        //    real toplevel (git -C … rev-parse --show-toplevel), filters to
+        //    the named roots, and runs diff with -c core.quotePath=false so
+        //    non-ASCII changed paths match disk (XP-03);
+        //  • a git refusal exits 2 here, before any discovery (same shell-
+        //    S23 early-abort posture, one probe earlier, message wording
+        //    preserved);
+        //  • an empty cohort — the misconfiguration case the finding was
+        //    about — exits 2 with a message instead of the silent fallback;
+        //  • a resolved cohort is threaded to dispatch and pre-set on every
+        //    PipelineState, while the pipeline's OWN config re-loads with
+        //    diff_base explicitly null: ScanningStage probes only when that
+        //    key is set, so the legacy join never double-probes and never
+        //    prints a count its broken mapping discarded. The single
+        //    truthful count line below is emitted by this admission, in the
+        //    shell-S23 message shape (same position in the output order).
+        $diffCohort = null;
+        $pipelineConfig = $config;
+        if ($config->diffBase !== null) {
+            $cohort = FileScanner::resolveDiffCohort($config->paths, $config->diffBase);
+            if ($cohort['error'] !== null) {
+                $output->writeln('<error>' . $cohort['error'] . '</error>');
+                return 2;
+            }
+            if ($cohort['paths'] === []) {
+                $output->writeln(sprintf(
+                    '<error>phpdup: --diff-base %s: no changed files match the named scan root(s); refusing the unscoped full scan%s</error>',
+                    $config->diffBase,
+                    $cohort['unmatched'] === []
+                        ? ''
+                        : ' — ' . count($cohort['unmatched']) . ' changed path(s) in range are not on disk under the roots',
+                ));
+                return 2;
+            }
+            $diffCohort = $cohort['paths'];
+            $output->writeln(sprintf(
+                "<info>phpdup</info> diff-base %s: %d changed file(s) from git diff --name-only %s..HEAD",
+                $config->diffBase,
+                count($diffCohort),
+                $config->diffBase,
+            ));
+            if ($cohort['unmatched'] !== []) {
+                // XP-03's "report unmatched" leg: changed-but-gone paths
+                // under a named root are disclosed, never silently dropped.
+                $output->writeln(sprintf(
+                    '<comment>phpdup: --diff-base: %d changed path(s) under the named root(s) are no longer on disk (deleted or renamed away); excluded from the cohort: %s</comment>',
+                    count($cohort['unmatched']),
+                    implode(', ', $cohort['unmatched']),
+                ));
+            }
+            // Re-load with an explicit null so BOTH sources of diff_base
+            // (CLI flag and config file — OverrideResolver checks the
+            // overrides key first) vacate the pipeline config. Admission
+            // already consumed the value; the pipeline must not re-derive
+            // the cohort through the legacy mapping.
+            $tryConfig    = $overrides;
+            $tryConfig['diff_base'] = null;
+            try {
+                $pipelineConfig = (new ConfigLoader())->load(
+                    paths: $paths,
+                    configFile: $input->getOption('config'),
+                    overrides: $tryConfig,
+                    profileExclude: $profileExclude,
+                );
+            } catch (\RuntimeException | \InvalidArgumentException $e) {
+                // Same friendly exit-2 posture as the first load; in
+                // practice nothing can newly fail here — the inputs differ
+                // only in the key this block just consumed.
+                $output->writeln('<error>phpdup: ' . $e->getMessage() . '</error>');
+                return 2;
+            }
+        }
+
         $runtimeOptions = $this->parseRuntimeOptions($input, $output, $autoTuneExactOnly);
 
         // buildPipelineFactory only needs a subset of runtimeOptions
@@ -252,7 +333,7 @@ HELP;
         ];
         $buildPipeline = $this->buildPipelineFactory($pipelineOpts);
 
-        return $this->dispatch($input, $output, $config, $buildPipeline, $runtimeOptions);
+        return $this->dispatch($input, $output, $pipelineConfig, $buildPipeline, $runtimeOptions, $diffCohort);
     }
 
     /**
@@ -623,6 +704,10 @@ HELP;
 
     /**
      * @param array{useCache: bool, exactOnly: bool, showStats: bool, limit: int, cliVerbosity: string, maxMemoryMb: int, stopAfter: Stage|null, watchMode: bool, tuiMode: bool, themeName: string, reportArgs: array<string, mixed>} $opts
+     * @param list<string>|null $diffCohort once-S34: the authoritative --diff-base
+     *                                      cohort resolved at admission (realpaths),
+     *                                      pre-set on every PipelineState this
+     *                                      driver creates; null without --diff-base
      */
     private function dispatch(
         InputInterface $input,
@@ -630,13 +715,17 @@ HELP;
         Config $config,
         \Closure $buildPipeline,
         array $opts,
+        ?array $diffCohort = null,
     ): int {
         $tuiRunner = new TuiRunner();
 
         if ($opts['tuiMode']) {
             $modelRef = null;
-            $iteratorFactory = static function () use (&$modelRef, $buildPipeline, $config, $output): array {
+            $iteratorFactory = static function () use (&$modelRef, $buildPipeline, $config, $output, $diffCohort): array {
                 $state = new PipelineState($config);
+                if ($diffCohort !== null) {
+                    $state->diffBaseFiles = $diffCohort;
+                }
                 /** @var ProgressListener|null $listener */
                 $listener = $modelRef;
                 $gen = $buildPipeline($listener)->iter($state, $output);
@@ -652,13 +741,25 @@ HELP;
 
         if ($opts['watchMode']) {
             $pipeline = $buildPipeline(null);
-            $rebuild  = static fn(): PipelineState => new PipelineState($config);
+            $rebuild  = static function () use ($config, $diffCohort): PipelineState {
+                $state = new PipelineState($config);
+                if ($diffCohort !== null) {
+                    $state->diffBaseFiles = $diffCohort;
+                }
+                return $state;
+            };
             $scanRoot = $config->paths[0] ?? getcwd();
             $logger = new \Psr\Log\NullLogger();
             return (new WatchRunner($pipeline, $rebuild, $output, $logger, $scanRoot))->run();
         }
 
         $state    = new PipelineState($config);
+        if ($diffCohort !== null) {
+            // once-S34: the admission-resolved cohort rides the state from
+            // the start; ScanningStage cannot overwrite it (the pipeline
+            // config's diff_base was explicitly nulled at admission).
+            $state->diffBaseFiles = $diffCohort;
+        }
         SignalHandler::install($state);
         $pipeline = $buildPipeline(null);
         // shell-S23 (php-dup-finder-shell-040): drive the cooperative

@@ -716,4 +716,185 @@ final class FileScanner
 
         return $wildcards <= 2 && $crossing <= 1;
     }
+
+    // ── once-S34 — authoritative --diff-base cohort for named roots ───────
+    //    (php-dup-finder-once-038: named roots, repo-relative git, unicode,
+    //    empty cohort; the consumer entry lives in Cli\Command).
+
+    /**
+     * Resolve the changed-file cohort of `git diff <ref>..HEAD` for the
+     * configured scan roots — the named-root precision leg once-S34 added
+     * on top of shell-S23's argv-safe per-root probing posture.
+     *
+     * The stage-level probe joins every repo-relative git line under the
+     * scan root, which is only correct when a root IS the repo toplevel;
+     * a subdir or file root silently collected nothing and the pipeline
+     * fell back to a FULL unscoped scan (QA-H4). This resolver instead
+     * asks git for the real toplevel, maps each changed path onto disk
+     * from there, and keeps only paths lying under one of the named
+     * roots — repo-relative git, named-root-correct mapping.
+     *
+     * Honesty guarantees, each carrying over a shell-040 / XP-03 law:
+     *  • argv-only invocation (proc_open array form: no shell layer;
+     *    `--end-of-options` pins the rev position so an option-shaped ref
+     *    is refused by git instead of being parsed as an option);
+     *  • git stderr never enters the filename stream (scratch file);
+     *  • `-c core.quotePath=false` keeps non-ASCII changed paths as the
+     *    raw bytes that exist on disk, never octal-escaped quotes that
+     *    could not match (the XP-03 under-inclusive cohort);
+     *  • paths changed in range but absent now (deleted or renamed away
+     *    under a root) are reported in `unmatched`, never guessed at.
+     *
+     * Cohort paths are realpaths — the same key form ScanningStage/
+     * ClusterStage already match, so scan roots should be given in the
+     * form that resolves onto the scanned files (the pre-once-S34
+     * posture; a literal-yet-canonical root keeps working byte-exact).
+     *
+     * A git failure on ANY root aborts the whole probe: `error` names the
+     * directory git could not satisfy, and `paths`/`unmatched` come back
+     * empty (fail fast — the CLI renders the exit-2 line; there is no
+     * partial cohort to distrust).
+     *
+     * @param list<string> $roots    scan roots as configured (dir or file)
+     * @param string       $diffBase git rev for the <diffBase>..HEAD range
+     * @return array{error: ?string, paths: list<string>, unmatched: list<string>}
+     */
+    public static function resolveDiffCohort(array $roots, string $diffBase): array
+    {
+        $revSpec = $diffBase . '..HEAD';
+
+        /** @var array<string, true> $cohort realpath-keyed; dedups across roots */
+        $cohort = [];
+        /** @var list<string> $unmatched changed paths (git-relative) under a root that are no longer on disk */
+        $unmatched = [];
+
+        foreach ($roots as $root) {
+            $isDirRoot = is_dir($root);
+            $rootReal  = realpath($root);
+            if ($rootReal === false) {
+                // A root that does not exist cannot host changed files.
+                // ScanningStage already skips such roots during discovery;
+                // here the fact is surfaced, never silently cohort-emptying.
+                $unmatched[] = 'scan root ' . $root . ' does not exist';
+                continue;
+            }
+            $probeDir = $isDirRoot ? $rootReal : dirname($rootReal);
+
+            [$topOut, $topErr, $topCode] = self::runGitProcess([
+                'git', '-C', $probeDir, 'rev-parse', '--show-toplevel',
+            ]);
+            $toplevel = rtrim($topOut, "\r\n");
+            if ($topCode !== 0 || $toplevel === '') {
+                return self::diffProbeError($probeDir, $topErr, $topCode, 'git rev-parse --show-toplevel');
+            }
+            $topReal = realpath($toplevel);
+            if ($topReal === false) {
+                return self::diffProbeError($probeDir, 'git printed a repository root that does not exist: ' . $toplevel, 0, 'git rev-parse --show-toplevel');
+            }
+
+            [$diffOut, $diffErr, $diffCode] = self::runGitProcess([
+                'git', '-C', $topReal,
+                '-c', 'core.quotePath=false',
+                'diff', '--name-only', '--no-ext-diff',
+                '--end-of-options', $revSpec, '--',
+            ]);
+            if ($diffCode !== 0) {
+                return self::diffProbeError($probeDir, $diffErr, $diffCode, 'git diff');
+            }
+
+            foreach (explode("\n", $diffOut) as $line) {
+                $line = rtrim($line, "\r");
+                if ($line === '') {
+                    continue;
+                }
+                // git output is repo-root relative and never absolute;
+                // map it onto disk, then keep only what lies under THIS
+                // root. A changed path outside every named root is a
+                // scope decision, not a miss — it is not "unmatched".
+                $abs = $topReal . '/' . $line;
+                $inside = $isDirRoot
+                    ? str_starts_with($abs, $rootReal . '/')
+                    : $abs === $rootReal;
+                if (!$inside) {
+                    continue;
+                }
+                $real = realpath($abs);
+                if ($real === false) {
+                    // Changed in range, lies under a named root, but is
+                    // gone now (deleted or renamed away by a later commit
+                    // in the range). Report it, do not pretend.
+                    $unmatched[] = $line;
+                    continue;
+                }
+                $cohort[$real] = true;
+            }
+        }
+
+        $paths = array_keys($cohort);
+        sort($paths);
+
+        return ['error' => null, 'paths' => $paths, 'unmatched' => $unmatched];
+    }
+
+    /**
+     * The one abort shape of {@see resolveDiffCohort}: the `--diff-base`
+     * git probe failed at a directory the user named. The wording keeps
+     * shell-S23's substrings intact ('--diff-base git diff failed in') so
+     * command-level assertions about the refusal class stay stable across
+     * the move; the concrete git verb distinguishes the two stages.
+     */
+    private static function diffProbeError(string $probeDir, string $stderr, int $code, string $verb): array
+    {
+        $reason = trim($stderr) !== '' ? trim($stderr) : ($verb . ' exited with status ' . $code);
+
+        return [
+            'error'     => 'phpdup: --diff-base git diff failed in ' . $probeDir . ': ' . $reason,
+            'paths'     => [],
+            'unmatched' => [],
+        ];
+    }
+
+    /**
+     * Shell-free git invocation — the proc_open array form shell-S23
+     * introduced in ScanningStage, so FileScanner owns its probe
+     * end-to-end: stdout comes back in full, stderr lands in a scratch
+     * file and can neither poison the filename stream nor deadlock a
+     * huge stdout against a full stderr pipe.
+     *
+     * @param list<string> $argv
+     * @return array{0: string, 1: string, 2: int} [stdout, stderr, exit code]
+     */
+    private static function runGitProcess(array $argv): array
+    {
+        $errPath = tempnam(sys_get_temp_dir(), 'phpdup-git-stderr-');
+        if ($errPath === false) {
+            return ['', 'could not create a scratch file for git stderr', 127];
+        }
+
+        $pipes = [];
+        $proc  = proc_open($argv, [
+            0 => ['file', '/dev/null', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['file', $errPath, 'w'],
+        ], $pipes);
+        if (!is_resource($proc)) {
+            $stderr = 'could not launch ' . $argv[0];
+            @unlink($errPath);
+            return ['', $stderr, 127];
+        }
+        if (!isset($pipes[1]) || !is_resource($pipes[1])) {
+            proc_terminate($proc);
+            proc_close($proc);
+            @unlink($errPath);
+            return ['', 'git stdout pipe unavailable', 127];
+        }
+
+        $stdout = (string) stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        $code   = proc_close($proc);
+        $stderr = (string) @file_get_contents($errPath);
+        @unlink($errPath);
+
+        return [$stdout, $stderr, $code];
+    }
 }

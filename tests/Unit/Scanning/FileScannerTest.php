@@ -5,6 +5,9 @@ namespace Phpdup\Tests\Unit\Scanning;
 
 use PHPUnit\Framework\TestCase;
 use Phpdup\Scanning\FileScanner;
+use Phpdup\Cli\Command;
+use Symfony\Component\Console\Application;
+use Symfony\Component\Console\Tester\CommandTester;
 
 final class FileScannerTest extends TestCase
 {
@@ -748,7 +751,19 @@ final class FileScannerTest extends TestCase
         foreach (glob(sys_get_temp_dir() . '/phpdup-redos-' . getmypid() . '-*') ?: [] as $dir) {
             self::purgeTree($dir);
         }
+        // once-S34: tmp git repos built by the diff-cohort tests.
+        foreach ($this->s34Dirs as $dir) {
+            if (is_dir($dir)) {
+                self::purgeTree($dir);
+            }
+        }
+        $this->s34Dirs = [];
     }
+
+    /** scratch dirs built by the once-S34 cohort tests */
+    private array $s34Dirs = [];
+
+    private int $s34Seq = 0;
 
     /** @return array{base: string, root: string} */
     private function symlinkTree(): array
@@ -824,5 +839,364 @@ final class FileScannerTest extends TestCase
         if (file_exists($path)) {
             unlink($path);
         }
+    }
+
+    // ── once-S34 — php-dup-finder-once-038: --diff-base named roots ──────
+    //    cohort mapping against the real repo toplevel, core.quotePath
+    //    unicode, honest exit-2 on an empty changed cohort. Unit pins hit
+    //    FileScanner::resolveDiffCohort directly; the acceptance shapes
+    //    (scoped run, exit 2) ride the analyze command end-to-end.
+
+    public function testS34NamedRootCohortIsUnderThatRootOnly(): void
+    {
+        $repo = $this->s34Repo();
+        $this->s34Commit($repo, [
+            'code/c1.php' => "<?php\nfunction c1() { return 1; }\n",
+            'code/c2.php' => "<?php\nfunction c2() { return 2; }\n",
+            'other/o.php' => "<?php\nfunction o() { return 3; }\n",
+        ]);
+
+        $result = FileScanner::resolveDiffCohort([$repo . '/code'], 'HEAD~1');
+
+        $this->assertNull($result['error']);
+        $this->assertSame(
+            [realpath($repo . '/code/c1.php'), realpath($repo . '/code/c2.php')],
+            $result['paths'],
+            'cohort = the changed files under the named root, sorted, nothing from sibling roots'
+        );
+        $this->assertSame([], $result['unmatched']);
+    }
+
+    public function testS34FileRootCohortIsTheChangedFileItself(): void
+    {
+        $repo = $this->s34Repo();
+        $this->s34Commit($repo, [
+            'code/c1.php' => "<?php\nfunction c1() { return 1; }\n",
+            'code/c2.php' => "<?php\nfunction c2() { return 2; }\n",
+        ]);
+
+        $result = FileScanner::resolveDiffCohort([$repo . '/code/c1.php'], 'HEAD~1');
+
+        $this->assertNull($result['error']);
+        $this->assertSame([realpath($repo . '/code/c1.php')], $result['paths'],
+            'a file root takes part in the cohort only via itself');
+        $this->assertSame([], $result['unmatched']);
+    }
+
+    public function testS34UnicodeChangedPathMapsRawBytes(): void
+    {
+        $repo = $this->s34Repo();
+        $name = 'café.php'; // raw UTF-8: git would quote this path without core.quotePath=false
+        $this->s34Commit($repo, [$name => "<?php\nfunction cafe() { return 1; }\n"]);
+
+        // Premise pin: THIS git really quotes the name by default, so the
+        // pre-fix posture (parse default-format output) dropped it.
+        $quoted = $this->s34Git($repo, ['diff', '--name-only', '--no-ext-diff', '--end-of-options', 'HEAD~1..HEAD', '--']);
+        $this->assertStringContainsString('\\303\\251', $quoted[0],
+            'git quotes the non-ASCII name by default — the test would pass vacuously otherwise');
+
+        $result = FileScanner::resolveDiffCohort([$repo], 'HEAD~1');
+
+        $this->assertNull($result['error']);
+        $this->assertSame([realpath($repo . '/' . $name)], $result['paths']);
+        $this->assertStringContainsString('café.php', $result['paths'][0],
+            'the cohort carries the raw on-disk bytes, never an octal-escape form');
+        $this->assertSame([], $result['unmatched']);
+    }
+
+    public function testS34UnchangedRangeYieldsEmptyCohort(): void
+    {
+        $repo = $this->s34Repo();
+        $this->s34Commit($repo, ['a.php' => "<?php\nfunction a() { return 1; }\n"]);
+
+        $result = FileScanner::resolveDiffCohort([$repo], 'HEAD'); // HEAD..HEAD: clean range
+
+        $this->assertNull($result['error'], 'a well-formed empty range is not a git failure');
+        $this->assertSame([], $result['paths']);
+        $this->assertSame([], $result['unmatched']);
+    }
+
+    public function testS34ChangesOutsideNamedRootYieldEmptyCohort(): void
+    {
+        $repo = $this->s34Repo();
+        $this->s34Commit($repo, ['other/o.php' => "<?php\nfunction o() { return 3; }\n"]);
+
+        $result = FileScanner::resolveDiffCohort([$repo . '/code'], 'HEAD~1');
+
+        $this->assertNull($result['error']);
+        $this->assertSame([], $result['paths'], 'out-of-root changes are a scope decision, not a miss');
+        $this->assertSame([], $result['unmatched'], 'the QA-H4 misconfiguration shape: empty, and the CLI must refuse it');
+    }
+
+    public function testS34DeletedInRangeReportedUnmatched(): void
+    {
+        $repo = $this->s34Repo();
+        $this->s34Commit($repo, [
+            'code/gone.php' => "<?php\nfunction gone() { return 1; }\n",
+            'code/keep.php' => "<?php\nfunction keep() { return 1; }\n",
+        ], 'seed');
+        $this->s34Commit($repo, [
+            'code/gone.php' => null,
+            'code/keep.php' => "<?php\nfunction keep() { return 2; }\n",
+        ], 'change');
+
+        $result = FileScanner::resolveDiffCohort([$repo], 'HEAD~1');
+
+        $this->assertNull($result['error']);
+        $this->assertSame([realpath($repo . '/code/keep.php')], $result['paths']);
+        $this->assertSame(['code/gone.php'], $result['unmatched'],
+            'XP-03 leg: changed-but-absent paths under a root are reported, never guessed at');
+    }
+
+    public function testS34NonRepoRootFailsHonestly(): void
+    {
+        $dir = sys_get_temp_dir() . '/phpdup-s34-nonrepo-' . (++$this->s34Seq) . '-' . getmypid();
+        mkdir($dir, 0777, true);
+        $this->s34Dirs[] = $dir;
+        file_put_contents($dir . '/seen.php', "<?php\nfunction seen() { return 1; }\n");
+
+        $result = FileScanner::resolveDiffCohort([$dir], 'HEAD~1');
+
+        $this->assertNotNull($result['error'], 'a non-repo root must abort, not pretend');
+        $this->assertStringContainsString('--diff-base git diff failed in ' . $dir, $result['error']);
+        $this->assertSame([], $result['paths']);
+        $this->assertSame([], $result['unmatched']);
+    }
+
+    public function testS34HostileRefIsRefusedByGitAndWritesNothing(): void
+    {
+        $repo = $this->s34Repo();
+        $this->s34Commit($repo, ['m1.php' => "<?php\nfunction m1() { return 1; }\n"]);
+
+        // Same shell-003 payload shell-S23 pinned at stage level, now
+        // against this resolver: --end-of-options pins the token into the
+        // rev position, git refuses it, nothing is written.
+        $hostile = '--output=' . $repo . '/PWNED';
+        $result  = FileScanner::resolveDiffCohort([$repo], $hostile);
+
+        $this->assertNotNull($result['error'], 'git must refuse the option-shaped ref');
+        $this->assertStringContainsString('--diff-base git diff failed in ' . $repo, $result['error']);
+        clearstatcache();
+        $this->assertFileDoesNotExist($repo . '/PWNED');
+        $this->assertFileDoesNotExist($repo . '/PWNED..HEAD');
+    }
+
+    public function testS34AmbiguousRefStderrNeverBecomesFilenames(): void
+    {
+        $repo = $this->s34Repo();
+        $this->s34Git($repo, ['tag', 'amb']);
+        $this->s34Git($repo, ['branch', 'amb']);
+        $this->s34Commit($repo, ['amb1.php' => "<?php\nfunction amb1() { return 1; }\n"]);
+
+        // M-2 posture: a REAL untracked file named exactly the warning
+        // line git prints on stderr. The resolver parses only stdout, so
+        // the decoy can never enter the cohort through a file_exists gate.
+        $decoy = $repo . "/warning: refname 'amb' is ambiguous.";
+        $this->assertNotFalse(file_put_contents($decoy, ''));
+
+        $result = FileScanner::resolveDiffCohort([$repo], 'amb');
+
+        $this->assertNull($result['error'], 'a warning-bearing ref must not fail the run');
+        $this->assertContains(realpath($repo . '/amb1.php'), $result['paths']);
+        foreach ($result['paths'] as $f) {
+            $this->assertStringNotContainsString('warning', $f);
+            $this->assertStringNotContainsString('ambiguous', $f);
+        }
+        clearstatcache();
+        $this->assertNotContains(realpath($decoy), $result['paths']);
+    }
+
+    public function testS34DuplicateRootsCollapseAndMissingRootIsNoted(): void
+    {
+        $repo = $this->s34Repo();
+        $this->s34Commit($repo, ['code/c1.php' => "<?php\nfunction c1() { return 1; }\n"]);
+
+        $result = FileScanner::resolveDiffCohort(
+            [$repo, $repo . '//', $repo . '/nope'],
+            'HEAD~1'
+        );
+
+        $this->assertNull($result['error']);
+        $this->assertSame([realpath($repo . '/code/c1.php')], $result['paths'],
+            'realpath dedup across roots: one changed file yields one cohort entry');
+        $this->assertSame(
+            ['scan root ' . $repo . '/nope does not exist'],
+            $result['unmatched'],
+            'a missing root is surfaced, not silently empty'
+        );
+    }
+
+    // ── end-to-end acceptance (analyze command) ───────────────────────────
+
+    public function testS34CommandNamedRootRunsScopedNotFullScan(): void
+    {
+        $repo = $this->s34Repo();
+        $clone = "<?php\nfunction twinBody() { \$a = 1; \$b = \$a + 41; return \$b; }\n";
+        $this->s34Commit($repo, [
+            'code/a1.php' => $clone,
+            'code/a2.php' => $clone,
+            'other/uniq.php' => "<?php\nfunction loneHatter(string \$s): array\n{\n    \$out = [];\n    foreach (explode('|', \$s) as \$k => \$v) {\n        switch (strlen(\$v)) {\n            case 0:\n                \$out[] = \$k;\n                break;\n            default:\n                \$out[\$k] = trim(\$v, \"\\0\");\n        }\n    }\n    return array_filter(\$out);\n}\n",
+        ]);
+
+        $tester = $this->s34CommandTester();
+        $exit   = $tester->execute(['paths' => [$repo . '/code'], '--diff-base' => 'HEAD~1']);
+
+        $display = $tester->getDisplay();
+        $this->assertSame(0, $exit, 'scoped named-root run exits 0 (findings ride 0); display was: ' . $display);
+        $this->assertStringContainsString(
+            'diff-base HEAD~1: 2 changed file(s) from git diff --name-only HEAD~1..HEAD',
+            $display, 'authoritative admission line — was 0 under the broken join'
+        );
+        $this->assertStringContainsString(
+            'clone cohort: 2 changed + 0 related = 2 files total',
+            $display, 'ClusterStage must SEE the cohort — its absence was the silent FULL-scan tell'
+        );
+        $this->assertMatchesRegularExpression(
+            '/diff-base HEAD~1: 2 changed file\(s\).*\n.*scanning/s',
+            $display, 'cohort line keeps its shell-S23 position ahead of discovery'
+        );
+    }
+
+    public function testS34CommandRepoRootHappyPathStillGreen(): void
+    {
+        // Regression pin for the takeover: what used to be ScanningStage's
+        // command-path output must still appear, byte-same in shape.
+        $repo = $this->s34Repo();
+        $this->s34Commit($repo, ['hp2.php' => "<?php\nfunction hp2() { return 2; }\n"]);
+
+        $tester = $this->s34CommandTester();
+        $exit   = $tester->execute(['paths' => [$repo], '--diff-base' => 'HEAD~1']);
+
+        $this->assertSame(0, $exit, 'display was: ' . $tester->getDisplay());
+        $this->assertStringContainsString(
+            'diff-base HEAD~1: 1 changed file(s) from git diff --name-only HEAD~1..HEAD',
+            $tester->getDisplay()
+        );
+        $this->assertStringContainsString('clone cohort: 1 changed', $tester->getDisplay());
+    }
+
+    public function testS34CommandUnicodeCohortEndToEnd(): void
+    {
+        $repo = $this->s34Repo();
+        $this->s34Commit($repo, ['sub/naïve.php' => "<?php\nfunction naiveOne() { return 1; }\n"]);
+
+        $tester = $this->s34CommandTester();
+        $exit   = $tester->execute(['paths' => [$repo . '/sub'], '--diff-base' => 'HEAD~1']);
+
+        $display = $tester->getDisplay();
+        $this->assertSame(0, $exit, 'display was: ' . $display);
+        $this->assertStringContainsString('diff-base HEAD~1: 1 changed file(s)', $display,
+            'the quotePath-escaped name mapped into the cohort end-to-end');
+        $this->assertStringContainsString('clone cohort: 1 changed', $display);
+    }
+
+    public function testS34CommandEmptyCohortExitsTwoWithMessage(): void
+    {
+        $repo = $this->s34Repo();
+        $this->s34Commit($repo, ['other/o.php' => "<?php\nfunction o() { return 3; }\n"]);
+
+        $tester = $this->s34CommandTester();
+        $exit   = $tester->execute(
+            ['paths' => [$repo . '/code'], '--diff-base' => 'HEAD~1'],
+            ['capture_stderr_separately' => true],
+        );
+
+        $combined = $tester->getErrorOutput() . $tester->getDisplay();
+        $this->assertSame(2, $exit, 'empty changed cohort is exit 2 (docs contract: invalid invocation); ' . $combined);
+        $this->assertStringContainsString('no changed files match the named scan root(s)', $combined);
+        $this->assertStringNotContainsString('scanning ', $combined, 'the refusal precedes any pipeline output');
+        $this->assertStringNotContainsString('clone cohort', $combined);
+    }
+
+    public function testS34CommandGitFailureExitsTwoWithoutContinuation(): void
+    {
+        $dir = sys_get_temp_dir() . '/phpdup-s34-nonrepo-' . (++$this->s34Seq) . '-' . getmypid();
+        mkdir($dir, 0777, true);
+        $this->s34Dirs[] = $dir;
+        file_put_contents($dir . '/seen.php', "<?php\nfunction seen() { return 1; }\n");
+
+        $tester = $this->s34CommandTester();
+        $exit   = $tester->execute(
+            ['paths' => [$dir], '--diff-base' => 'HEAD~1'],
+            ['capture_stderr_separately' => true],
+        );
+
+        $combined = $tester->getErrorOutput() . $tester->getDisplay();
+        $this->assertSame(2, $exit, 'display was: ' . $combined);
+        $this->assertStringContainsString('--diff-base git diff failed in ' . $dir, $combined);
+        // shell-S23 no-continuation posture, now at admission timing:
+        $this->assertStringNotContainsString('scanning ', $combined);
+        $this->assertStringNotContainsString('changed file(s)', $combined);
+        $this->assertStringNotContainsString('block kinds', $combined);
+        $this->assertStringNotContainsString('clusters', $combined);
+        $this->assertStringNotContainsString('reused', $combined);
+    }
+
+    // ── once-S34 git fixture helpers ──────────────────────────────────────
+
+    /** init an empty-history git repo in a fresh /tmp scratch dir */
+    private function s34Repo(): string
+    {
+        $dir = sys_get_temp_dir() . '/phpdup-s34-' . (++$this->s34Seq) . '-' . getmypid() . '-' . spl_object_id($this);
+        $this->assertNotFalse(mkdir($dir, 0777, true));
+        $this->s34Dirs[] = $dir;
+        $this->s34Git($dir, ['init', '-q', '-b', 'main']);
+        $this->s34Git($dir, ['commit', '-q', '--allow-empty', '-m', 'init']);
+
+        return $dir;
+    }
+
+    /**
+     * Stage + commit one HEAD delta.
+     *
+     * @param array<string,string|null> $changes rel path => contents, null to delete
+     */
+    private function s34Commit(string $dir, array $changes, string $msg = 'change'): void
+    {
+        foreach ($changes as $rel => $contents) {
+            if ($contents === null) {
+                $this->s34Git($dir, ['rm', '-q', '--', $rel]);
+                continue;
+            }
+            $abs = $dir . '/' . $rel;
+            if (!is_dir(dirname($abs))) {
+                $this->assertNotFalse(mkdir(dirname($abs), 0777, true));
+            }
+            $this->assertNotFalse(file_put_contents($abs, $contents));
+            $this->s34Git($dir, ['add', '--', $rel]);
+        }
+        $this->s34Git($dir, ['commit', '-q', '-m', $msg]);
+    }
+
+    /**
+     * Run git inside $dir with the test identity pinned.
+     *
+     * @param list<string> $args
+     * @return array{0: string, 1: int} merged output, exit code
+     */
+    private function s34Git(string $dir, array $args): array
+    {
+        $argv = ['git', '-C', $dir,
+            '-c', 'user.email=test@phpdup.invalid',
+            '-c', 'user.name=phpdup-test',
+            '-c', 'commit.gpgsign=false',
+            '-c', 'core.hooksPath=/dev/null',
+            ...$args,
+        ];
+        $cmd = implode(' ', array_map('escapeshellarg', $argv)) . ' 2>&1';
+        $out = [];
+        $code = 0;
+        exec($cmd, $out, $code);
+        $this->assertSame(0, $code, 'git ' . implode(' ', $args) . ' failed: ' . implode("\n", $out));
+
+        return [implode("\n", $out), $code];
+    }
+
+    private function s34CommandTester(): CommandTester
+    {
+        $app = new Application('phpdup');
+        $app->add(new Command());
+
+        return new CommandTester($app->find('analyze'));
     }
 }
