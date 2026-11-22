@@ -10,6 +10,7 @@ use Phpdup\Ml\MlPairClient;
 use Phpdup\Ml\PairFeatures;
 use Phpdup\Parsing\AstParser;
 use Phpdup\Util\LineRange;
+use Phpdup\Util\Http;
 
 final class MlPairClientTest extends TestCase
 {
@@ -1089,5 +1090,449 @@ final class MlPairClientTest extends TestCase
         posix_kill($pid, SIGKILL);
         pcntl_waitpid($pid, $status);
         self::fail("forked HTTP server $pid never finished — client stalled or never connected");
+    }
+
+    // =====================================================================
+    // once-S92 — php-dup-finder-once-115: deadline honesty on the stream
+    // transport + ONE shared size cap feeding both legs.
+    //
+    // The size-cap half was fenced by the engine-S19b-era tests above
+    // (4 MiB refused, memory_get_usage delta); this section adds the
+    // water-mark twin those delta probes cannot see (delta measured
+    // AFTER the call is blind to bounded-but-freed transient buffers —
+    // memory_get_peak_usage since a reset is not), pins the cap boundary
+    // at exactly MAX_RESPONSE_BYTES / +1 on BOTH transports through this
+    // client's own seams, censes that both seams thread the SAME
+    // MlClient constant (the twin-drift class once-112 punished), and
+    // exercises the new total-deadline machinery: the branch-independent
+    // reader seam directly over socketpair fixtures (which runs on every
+    // supported PHP), plus the streamPost refusals end-to-end — the late
+    // drip refused at return granularity on the pre-8.4 arm and the
+    // declared-length cross-check turning a stalled partial read into a
+    // protocol refusal (probe-verified red shapes pre-fix).
+    // Hermetic: loopback fork servers + unix socketpairs, poll-until-
+    // deadline reaping, no live network, no fixed sleep above a fixture.
+    // =====================================================================
+
+    public function testSharedCapConstantFeedsBothTransportLegs(): void
+    {
+        $file   = dirname(__DIR__, 3) . '/src/Ml/MlPairClient.php';
+        $tokens = token_get_all((string) file_get_contents($file));
+        $owners = [];
+        $consts = 0;
+        $count  = count($tokens);
+        for ($i = 0; $i < $count; $i++) {
+            $token = $tokens[$i];
+            if (is_array($token) && $token[0] === T_CONST) {
+                $consts++;
+            }
+            if (!is_array($token) || $token[0] !== T_STRING || $token[1] !== 'MAX_RESPONSE_BYTES') {
+                continue; // docblock mentions are T_DOC_COMMENT — invisible here
+            }
+            $owner = null;
+            for ($j = $i - 1; $j >= 0; $j--) {
+                if (is_array($tokens[$j]) && $tokens[$j][0] === T_DOUBLE_COLON) {
+                    continue;
+                }
+                if (is_array($tokens[$j]) && $tokens[$j][0] === T_STRING) {
+                    $owner = $tokens[$j][1];
+                }
+                break; // bare use or unexpected shape — owner stays null
+            }
+            $owners[] = $owner;
+        }
+        self::assertSame(
+            ['MlClient', 'MlClient'],
+            $owners,
+            'both seam legs must thread MlClient::MAX_RESPONSE_BYTES — exactly twice, and MlPairClient itself owns no ceiling (once-112 twin-drift class)'
+        );
+        self::assertSame(0, $consts, 'MlPairClient must not mint any constant of its own');
+    }
+
+    public function testBothTransportsAcceptBodyExactlyAtSharedCap(): void
+    {
+        $at       = str_repeat('E', MlClient::MAX_RESPONSE_BYTES);
+        $response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " . strlen($at) . "\r\n\r\n" . $at;
+        [$pid, $port, $server] = $this->forkHttpServer(
+            static fn(string $request): string => $response,
+            5,
+            2
+        );
+        try {
+            $client   = new MlPairClient('http://127.0.0.1', timeoutSec: 5);
+            $decision = ['host' => '127.0.0.1', 'port' => $port, 'addresses' => ['127.0.0.1']];
+            $curl     = (new \ReflectionMethod($client, 'postJsonCurl'))
+                ->invoke($client, "http://127.0.0.1:$port/score-batch", '{}', $decision);
+            $stream   = (new \ReflectionMethod($client, 'postJsonStream'))
+                ->invoke($client, "http://127.0.0.1:$port/score-batch", '{}', $decision);
+            foreach (['curl' => $curl, 'stream' => $stream] as $leg => $resp) {
+                self::assertIsString($resp, "$leg leg refused a body AT the shared cap — boundary must accept");
+                self::assertSame(MlClient::MAX_RESPONSE_BYTES, strlen($resp), "$leg leg altered the body length");
+                self::assertSame(md5($at), md5($resp), "$leg leg corrupted the exactly-at-cap body");
+            }
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    public function testBothTransportsRefuseBodyOneByteOverSharedCap(): void
+    {
+        $over     = str_repeat('F', MlClient::MAX_RESPONSE_BYTES + 1);
+        $response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " . strlen($over) . "\r\n\r\n" . $over;
+        [$pid, $port, $server] = $this->forkHttpServer(
+            static fn(string $request): string => $response,
+            5,
+            2
+        );
+        try {
+            $client   = new MlPairClient('http://127.0.0.1', timeoutSec: 5);
+            $decision = ['host' => '127.0.0.1', 'port' => $port, 'addresses' => ['127.0.0.1']];
+            self::assertNull(
+                (new \ReflectionMethod($client, 'postJsonCurl'))
+                    ->invoke($client, "http://127.0.0.1:$port/score-batch", '{}', $decision),
+                'one byte over the shared cap must refuse on the curl leg'
+            );
+            self::assertNull(
+                (new \ReflectionMethod($client, 'postJsonStream'))
+                    ->invoke($client, "http://127.0.0.1:$port/score-batch", '{}', $decision),
+                'one byte over the shared cap must refuse on the stream leg, whole — never truncated-and-returned'
+            );
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    public function testOversizedStreamReplyKeepsMemoryHighWaterBounded(): void
+    {
+        if (!function_exists('memory_reset_peak_usage')) {
+            self::markTestSkipped('water-mark probe needs PHP >= 8.2 memory_reset_peak_usage; the era delta pin above covers 8.1');
+        }
+        $big      = str_repeat('X', 8 * MlClient::MAX_RESPONSE_BYTES);
+        $response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " . strlen($big) . "\r\n\r\n" . $big;
+        [$pid, $port, $server] = $this->forkHttpServer(
+            static fn(string $request): string => $response,
+            5
+        );
+        try {
+            $client   = new MlPairClient('http://127.0.0.1', timeoutSec: 5);
+            $decision = ['host' => '127.0.0.1', 'port' => $port, 'addresses' => ['127.0.0.1']];
+            // $big/$response are ALIVE when the peak resets, so they are
+            // outside the measurement; the high-water counted from here
+            // is what the transport itself may allocate. A bounded read
+            // stays at cap + realloc transient; the pre-engine-015 shape
+            // (read whole reply) would cross 8 MiB — and the post-call
+            // DELTA probes stay blind to it because the buffer is freed
+            // before they run. That blindness is why this test exists.
+            memory_reset_peak_usage();
+            $mark  = memory_get_peak_usage();
+            $resp  = (new \ReflectionMethod($client, 'postJsonStream'))
+                ->invoke($client, "http://127.0.0.1:$port/score-batch", '{}', $decision);
+            $peak  = memory_get_peak_usage();
+            self::assertNull($resp, 'an 8x-cap sidecar reply must be refused whole');
+            self::assertLessThan(
+                $mark + 3 * MlClient::MAX_RESPONSE_BYTES,
+                $peak,
+                'memory high-water during the 8 MiB refusal crossed 3x the cap — the read was not bounded'
+            );
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    public function testStreamTransportRefusesBodyTruncatedAgainstDeclaredLength(): void
+    {
+        $response = "HTTP/1.1 200 OK\r\nContent-Length: 40\r\n\r\nPARTI";
+        [$pid, $port, $server] = $this->forkHttpServer(
+            static fn(string $request): string => $response,
+            5,
+            2
+        );
+        try {
+            $client   = new MlPairClient('http://127.0.0.1', timeoutSec: 5);
+            $decision = ['host' => '127.0.0.1', 'port' => $port, 'addresses' => ['127.0.0.1']];
+            // Stream leg: pre-once-S92 the helper returned the 5-byte
+            // partial as if it were the body (probe A on 8.3) — the
+            // declared-length cross-check now refuses it as protocol
+            // error instead of leaving truncation to be caught (maybe)
+            // by a downstream json_decode.
+            self::assertNull(
+                (new \ReflectionMethod($client, 'postJsonStream'))
+                    ->invoke($client, "http://127.0.0.1:$port/score-batch", '{}', $decision),
+                'a 5-byte body under a declared Content-Length of 40 must never surface as a response'
+            );
+            // Curl leg: libcurl's own partial-file abort covers the
+            // same shape natively (the cross-check is stream-only by
+            // design — the curl leg never parses raw headers here).
+            self::assertNull(
+                (new \ReflectionMethod($client, 'postJsonCurl'))
+                    ->invoke($client, "http://127.0.0.1:$port/score-batch", '{}', $decision),
+                'curl must abort a transfer the server ends before its declared length'
+            );
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    public function testStreamTransportRefusesAmbiguousDeclaredLength(): void
+    {
+        $response = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\n12345";
+        [$pid, $port, $server] = $this->forkHttpServer(
+            static fn(string $request): string => $response,
+            5
+        );
+        try {
+            $client   = new MlPairClient('http://127.0.0.1', timeoutSec: 5);
+            $decision = ['host' => '127.0.0.1', 'port' => $port, 'addresses' => ['127.0.0.1']];
+            self::assertNull(
+                (new \ReflectionMethod($client, 'postJsonStream'))
+                    ->invoke($client, "http://127.0.0.1:$port/score-batch", '{}', $decision),
+                'two Content-Length lines are a framing lie (smuggling class) — refuse, never pick a winner'
+            );
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    public function testStreamTransportRefusesDripThatOvershootsTotalDeadline(): void
+    {
+        $body  = '{"similarity":0.5,"confidence":0.5}';
+        $first = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " . strlen($body) . "\r\n\r\n";
+        $slices = array_merge([$first], str_split($body, 2));
+        [$pid, $port, $server] = $this->forkDribbleHttpServer($slices, 0.3);
+        try {
+            $client   = new MlPairClient('http://127.0.0.1', timeoutSec: 1);
+            $decision = ['host' => '127.0.0.1', 'port' => $port, 'addresses' => ['127.0.0.1']];
+            $start    = microtime(true);
+            // Once-115's exact hole: every drip gap is shorter than the
+            // wrapper's per-read window, so pre-fix this completed as a
+            // VALID full body at ~5.5s (probe B). Post-fix the >= 8.4
+            // arm refuses it in-call at the deadline and the pre-8.4
+            // arm refuses it at return granularity — on either arm the
+            // late reply never becomes a verdict.
+            self::assertNull(
+                (new \ReflectionMethod($client, 'postJsonStream'))
+                    ->invoke($client, "http://127.0.0.1:$port/score-batch", '{}', $decision),
+                'a drip that outruns the total deadline must be refused even though it completes'
+            );
+            self::assertLessThan(
+                9.0,
+                microtime(true) - $start,
+                'the deadline refusal must not itself wait on the 5.5s fixture beyond one grace window'
+            );
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    public function testStreamTransportAcceptsTheSameBodyWhenItDripCompletesInTime(): void
+    {
+        $body   = '{"similarity":0.5,"confidence":0.5}';
+        $first  = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " . strlen($body) . "\r\n\r\n";
+        $slices = array_merge([$first], str_split($body, 2));
+        [$pid, $port, $server] = $this->forkDribbleHttpServer($slices, 0.02);
+        try {
+            $client   = new MlPairClient('http://127.0.0.1', timeoutSec: 5);
+            $decision = ['host' => '127.0.0.1', 'port' => $port, 'addresses' => ['127.0.0.1']];
+            // Positive control for the test above: the refusal there is
+            // the DEADLINE, not the drip shape — the same slices under a
+            // generous deadline must return the full body.
+            $resp = (new \ReflectionMethod($client, 'postJsonStream'))
+                ->invoke($client, "http://127.0.0.1:$port/score-batch", '{}', $decision);
+            self::assertSame($body, $resp);
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    // ----- readStreamWithDeadline seam (branch-independent) ----------
+
+    public function testDeadlineReaderRefusesDrippingStreamInCall(): void
+    {
+        [$pid, $stream] = $this->socketpairDrip(array_fill(0, 20, 'x'), 0.3);
+        try {
+            $start  = microtime(true);
+            $buffer = Http::readStreamWithDeadline($stream, 4096, 1);
+            self::assertNull($buffer, 'a stream still dripping at the deadline must be refused, never returned partial');
+            self::assertLessThan(3.0, microtime(true) - $start, 'the reader must abort IN-CALL (the 6s fixture must not be waited out)');
+        } finally {
+            fclose($stream);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    public function testDeadlineReaderRefusesStalledStream(): void
+    {
+        [$pid, $stream] = $this->socketpairDrip(['AB'], 0.0, 3.0);
+        try {
+            $start  = microtime(true);
+            $buffer = Http::readStreamWithDeadline($stream, 4096, 1);
+            self::assertNull($buffer, '"AB" received then silence is a stall, not a 2-byte body (probe A/D)');
+            self::assertLessThan(3.0, microtime(true) - $start, 'the stalled read must bound at the deadline');
+        } finally {
+            fclose($stream);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    public function testDeadlineReaderAcceptsCompleteStream(): void
+    {
+        [$pid, $stream] = $this->socketpairDrip(['AB', 'CD', 'EF'], 0.05);
+        try {
+            self::assertSame('ABCDEF', Http::readStreamWithDeadline($stream, 4096, 5));
+        } finally {
+            fclose($stream);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    public function testDeadlineReaderStopsAtCapPlusOneAndLeavesTheRefusalToTheCaller(): void
+    {
+        [$pid, $stream] = $this->socketpairDrip([str_repeat('G', 200)], 0.0);
+        try {
+            $buffer = Http::readStreamWithDeadline($stream, 64, 5);
+            self::assertIsString($buffer);
+            self::assertSame(
+                65,
+                strlen($buffer),
+                'the reader may surface cap+1 bytes — that one byte is what the caller\'s strlen>cap check refuses, distinguishing over-cap from exactly-at-cap'
+            );
+        } finally {
+            fclose($stream);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    public function testDeadlineReaderWithoutDeadlineBehavesLikeTheBoundedRead(): void
+    {
+        [$pid, $stream] = $this->socketpairDrip(['HIJ'], 0.0);
+        try {
+            self::assertSame('HIJ', Http::readStreamWithDeadline($stream, 64, 0));
+        } finally {
+            fclose($stream);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    /**
+     * Loopback HTTP server that dribbles the response: request is read
+     * like forkHttpServer reads it, then each $slices entry is written
+     * $gapSec apart before the connection closes. forkHttpServer's single
+     * fwrite cannot express the once-115 drip shape.
+     *
+     * @param list<string> $slices
+     * @return array{0: int, 1: int, 2: resource} [pid, port, listener]
+     */
+    private function forkDribbleHttpServer(array $slices, float $gapSec, int $acceptTimeoutSec = 8): array
+    {
+        if (!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid')) {
+            self::markTestSkipped('forked HTTP server requires pcntl_fork/pcntl_waitpid');
+        }
+        if (!function_exists('posix_kill')) {
+            self::markTestSkipped('forked HTTP server reaper requires posix_kill');
+        }
+        $server = @stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
+        if ($server === false) {
+            self::markTestSkipped("loopback bind unavailable: $errstr");
+        }
+        $name = (string)stream_socket_get_name($server, false);
+        $port = (int)substr($name, (int)strrpos($name, ':') + 1);
+        self::assertGreaterThan(0, $port);
+
+        $pid = pcntl_fork();
+        if ($pid === -1) {
+            fclose($server);
+            self::markTestSkipped('pcntl_fork failed');
+        }
+        if ($pid === 0) {
+            while (ob_get_level() > 0) {
+                ob_end_clean();
+            }
+            $conn = @stream_socket_accept($server, $acceptTimeoutSec);
+            if ($conn === false) {
+                fclose($server);
+                exit(1);
+            }
+            stream_set_timeout($conn, $acceptTimeoutSec);
+            $request = '';
+            while (!str_contains($request, "\r\n\r\n")) {
+                $chunk = fread($conn, 8192);
+                if ($chunk === false || $chunk === '') {
+                    break;
+                }
+                $request .= $chunk;
+            }
+            $served = 1;
+            foreach ($slices as $slice) {
+                if ($gapSec > 0.0) {
+                    usleep((int)($gapSec * 1e6));
+                }
+                if (@fwrite($conn, $slice) === false) {
+                    break; // client refused early and hung up: job done
+                }
+                @fflush($conn);
+            }
+            fclose($conn);
+            fclose($server);
+            exit($served > 0 ? 0 : 1);
+        }
+        return [$pid, $port, $server];
+    }
+
+    /**
+     * Socketpair drip fixture for the reader seam: the child writes one
+     * slice per $gapSec (then optionally holds $holdSec before exiting,
+     * which is the stall shape), the parent reads the other end. Unix
+     * pair, not TCP — the reader mechanism is transport-agnostic on
+     * purpose, so these pins run on every supported PHP including the
+     * arm that the http wrapper cannot reach on 8.3.
+     *
+     * @param list<string> $slices
+     * @return array{0: int, 1: resource} [pid, reader]
+     */
+    private function socketpairDrip(array $slices, float $gapSec, float $holdSec = 0.0): array
+    {
+        if (!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid')) {
+            self::markTestSkipped('forked drip fixture requires pcntl_fork/pcntl_waitpid');
+        }
+        if (!function_exists('posix_kill')) {
+            self::markTestSkipped('drip reaper requires posix_kill');
+        }
+        $pair = @stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        if ($pair === false) {
+            self::markTestSkipped('stream_socket_pair unavailable');
+        }
+        [$reader, $writer] = $pair;
+        $pid = pcntl_fork();
+        if ($pid === -1) {
+            fclose($reader);
+            fclose($writer);
+            self::markTestSkipped('pcntl_fork failed');
+        }
+        if ($pid === 0) {
+            fclose($reader);
+            foreach ($slices as $slice) {
+                if ($gapSec > 0.0) {
+                    usleep((int)($gapSec * 1e6));
+                }
+                if (@fwrite($writer, $slice) === false) {
+                    break;
+                }
+                @fflush($writer);
+            }
+            if ($holdSec > 0.0) {
+                sleep((int)$holdSec);
+            }
+            fclose($writer);
+            exit(0);
+        }
+        fclose($writer);
+        return [$pid, $reader];
     }
 }

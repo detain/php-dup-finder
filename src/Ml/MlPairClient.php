@@ -101,7 +101,11 @@ use Phpdup\Util\Http;
  * once-S89 both Ml clients run their POST legs through the single
  * shared transport in {@see \Phpdup\Util\Http}, so the curl/stream
  * mechanics that had drifted apart between the twins cannot drift
- * again. Callers
+ * again; and since once-S92 both transports enforce the instance's
+ * timeout as a TOTAL transfer deadline (php-dup-finder-once-115) —
+ * a stalled, dripping, or length-lying sidecar reply is refused
+ * whole, falling back to the AST tiers instead of being waited on
+ * indefinitely or laundered upward as a short body. Callers
  * wanting tighter policy should prefilter the URL.
  *
  * **Per-instance economics (engine-S21, php-dup-finder-engine-032)**
@@ -125,6 +129,21 @@ use Phpdup\Util\Http;
  */
 final class MlPairClient implements PairScorer
 {
+    /**
+     * @param string $baseUrl Sidecar URL prefix ('' = disabled).
+     * @param int    $timeoutSec TOTAL transfer deadline per endpoint call,
+     *        enforced by BOTH transports (php-dup-finder-once-115,
+     *        landed by once-S92): natively in-call on curl
+     *        (CURLOPT_TIMEOUT) and on the stream leg by
+     *        {@see \Phpdup\Util\Http::streamPost()}'s deadline
+     *        machinery — in-call body-read loop on the PHP >= 8.4
+     *        arm, refusal-granularity total + declared-length
+     *        cross-check on every arm. A reply that is late or cut
+     *        short therefore yields a null verdict (fallback to the
+     *        AST tiers), never a slow-but-successful or truncated
+     *        one. <= 0 keeps the transports' own per-operation
+     *        defaults with no total bound.
+     */
     public function __construct(
         private readonly string $baseUrl,
         private readonly int $timeoutSec = 5,
@@ -777,7 +796,14 @@ final class MlPairClient implements PairScorer
      * Uses ext-curl when available (richer error reporting and easier
      * to harden) and falls back to streams when not. Returns null on
      * any transport-level failure, non-2xx HTTP response, pinning
-     * refusal, or a response larger than MlClient::MAX_RESPONSE_BYTES.
+     * refusal, or a response larger than MlClient::MAX_RESPONSE_BYTES
+     * — and, since once-S92 (php-dup-finder-once-115), on any
+     * transfer that misses the instance's total deadline or whose
+     * body does not answer its declared Content-Length: a late or
+     * cut-short reply refuses whole instead of decoding into a
+     * half-truth. Both seams thread the SAME MlClient::MAX_RESPONSE_
+     * BYTES ceiling; this class owns no second cap constant (pinned
+     * by token census in MlPairClientTest).
      * The pinning and cap policy is shared with MlClient (engine-S19b)
      * and since once-S89 the transport MECHANICS are too — both seam
      * methods below are thin delegations onto Util\Http, this client
@@ -796,7 +822,9 @@ final class MlPairClient implements PairScorer
     /**
      * curl seam: pin-computation policy via MlClient (engine-S19b),
      * transport mechanics via Util\Http, connection economics via the
-     * one shared handle below (engine-S21 keep-alive).
+     * one shared handle below (engine-S21 keep-alive). The total
+     * deadline is native on this leg: CURLOPT_TIMEOUT bounds the
+     * whole transfer in-call (once-S92 wording pin).
      *
      * @param array{host: string, port: int, addresses: list<string>} $decision
      */
@@ -816,6 +844,10 @@ final class MlPairClient implements PairScorer
      * variable COMPILED read out of every file loaded on >= 8.5 (the
      * CI-85 leg-5 lesson, and the divergence php-dup-finder-once-112
      * caught between the twins) — live once in Util\Http::streamPost().
+     * That is also where the total-deadline conversion of this leg's
+     * historically per-read-inactivity timeout lives (once-S92,
+     * php-dup-finder-once-115; see the streamPost docblock for the
+     * per-arm granularities).
      *
      * @param array{host: string, port: int, addresses: list<string>} $decision
      */

@@ -44,7 +44,23 @@ use Phpdup\Ml\LegacyStreamPost;
  * The response ceiling is a parameter, not a constant here, so the cap
  * policy stays single-sourced with the callers' shared MAX_RESPONSE_
  * BYTES (engine-015) and a later lane can move the constant without
- * touching transport code.
+ * touching transport code. Both legs of each client thread the SAME
+ * constant — a token census in tests/Unit/Ml/MlPairClientTest.php
+ * pins that the pair client can never mint a second ceiling.
+ *
+ * Deadline honesty (php-dup-finder-once-115, landed by once-S92): the
+ * finding's first half was that curl's timeout option is TOTAL while
+ * the stream wrapper's 'timeout' is per-read inactivity, so a "total"
+ * docblock claim was false whenever ext-curl is absent. Both legs now
+ * treat $timeoutSec as a total transfer deadline — curl natively
+ * (CURLOPT_TIMEOUT), the stream leg by construction: an in-call
+ * deadline loop over the body read where this class owns the handle
+ * ({@see self::readStreamWithDeadline()}, PHP >= 8.4 arm), and on
+ * every arm a total check that refuses a transfer finishing after the
+ * deadline plus a declared-length cross-check that turns an
+ * inactivity-aborted partial read into a protocol refusal. A late or
+ * cut-short sidecar reply is therefore never surfaced as a plausible
+ * verdict (once-S46 honest-fail doctrine).
  */
 final class Http
 {
@@ -54,7 +70,7 @@ final class Http
      *
      * @param list<string>|null   $pins      CURLOPT_RESOLVE entries from curlPinEntries(); null = pinning refusal (engine-012 hole c)
      * @param \CurlHandle|null    $curlHandle reused keep-alive handle (pair tier, engine-S21); null = fresh handle for this call
-     * @param int                 $timeoutSec total-transfer curl timeout (CURLOPT_TIMEOUT; the stream leg's wrapper 'timeout' has different semantics — deadline honesty is php-dup-finder-once-115, landed by once-S92)
+     * @param int                 $timeoutSec total-transfer deadline, enforced in-call by CURLOPT_TIMEOUT on this leg (the stream leg converts the same value at streamPost's documented granularities — once-115, once-S92); <= 0 keeps libcurl's own no-total-bound behavior
      *
      * @return string|null raw response body, or null on refusal/transport error/non-2xx/over-cap
      */
@@ -129,15 +145,50 @@ final class Http
      * analogue), carrying the original authority in the pin's explicit
      * Host header and https identity in ssl.peer_name.
      *
-     * @param null|array{url: string, header: string, peer_name: string|null} $pin pinnedStreamRequest() shape; null = refusal, dial nothing
+     * Total-deadline conversion (php-dup-finder-once-115, once-S92).
+     * The wrapper's context 'timeout' bounds each socket operation —
+     * connect, and every individual read — NOT the transfer as a
+     * whole; a sidecar that drips bytes faster than that window could
+     * previously hold a score() call open far past the caller's
+     * configured deadline (and a stalled read yielded a PARTIAL body
+     * that the checks below used to wave through — probed on PHP 8.3
+     * before this change landed). $timeoutSec is therefore enforced
+     * here at three granularities:
      *
-     * @return string|null raw response body, or null on refusal/transport error/non-2xx/over-cap
+     * - the PHP >= 8.4 arm hands its own handle to {@see
+     *   self::readStreamWithDeadline()}, which aborts the body read
+     *   IN-CALL the moment the deadline (or a per-read window) passes;
+     * - the pre-8.4 arm runs its single bounded read inside
+     *   LegacyStreamPost::post(), whose scope the CI-85 magic-variable
+     *   isolation pins closed — a drip there still costs wall-clock
+     *   time up to the size cap, but the post-arm total check refuses
+     *   anything that COMPLETES after the deadline, so the late reply
+     *   never surfaces as a verdict (in-call enforcement on this arm
+     *   needs a deadline loop inside the helper: reported as a
+     *   follow-up by once-S92; the helper is not writable from this
+     *   lane);
+     * - both arms cross-check the body against the declared
+     *   Content-Length after the read, so an inactivity-aborted
+     *   partial becomes an explicit protocol refusal (mirrors
+     *   once-S91's length/partial refusal on the update transport).
+     *
+     * @param null|array{url: string, header: string, peer_name: string|null} $pin pinnedStreamRequest() shape; null = refusal, dial nothing
+     * @param int $timeoutSec total-transfer deadline per this method's docblock; <= 0 disables the total bound and keeps the wrapper's per-operation behavior
+     *
+     * @return string|null raw response body, or null on refusal/transport error/non-2xx/over-cap/truncated/late
      */
     public static function streamPost(?array $pin, string $body, int $timeoutSec, int $maxResponseBytes): ?string
     {
         if ($pin === null) {
             return null;
         }
+        // once-S92: the deadline starts at dial time, before the
+        // fopen/header phase, so a sidecar that dribbles response
+        // headers cannot stack its header dribble on top of a total it
+        // already missed.
+        $deadlineNs = $timeoutSec > 0
+            ? (int) hrtime(true) + $timeoutSec * 1_000_000_000
+            : null;
         $ctxOpts = [
             'http' => [
                 'method'          => 'POST',
@@ -159,14 +210,14 @@ final class Http
             if ($fh === false) {
                 return null;
             }
-            // engine-015 (bounded read): pull at most $maxResponseBytes + 1
-            // bytes; a longer body is refused without ever being buffered
-            // whole. fopen+stream_get_contents replaces file_get_contents
-            // purely to pass that length bound — the request itself is the
-            // same wrapper operation.
-            $resp = stream_get_contents($fh, $maxResponseBytes + 1);
+            // engine-015 (bounded read) + once-S92 (total deadline):
+            // pull at most $maxResponseBytes + 1 bytes through a chunk
+            // loop that REFUSES — never truncates — when the deadline
+            // passes or a read stalls; a longer body is still refused
+            // whole by the caller-side over-cap check below.
+            $resp = self::readStreamWithDeadline($fh, $maxResponseBytes, $timeoutSec);
             fclose($fh);
-            if ($resp === false) {
+            if ($resp === null) {
                 return null;
             }
             $headers = (array) http_get_last_response_headers();
@@ -193,6 +244,13 @@ final class Http
                 return null;
             }
         }
+        if ($deadlineNs !== null && (int) hrtime(true) >= $deadlineNs) {
+            // The transfer finished after the total deadline. On the
+            // >= 8.4 arm the read loop refused in-call already; this
+            // is the refusal-granularity net that catches the pre-8.4
+            // arm's late-but-complete drip.
+            return null;
+        }
         $httpCode = self::parseStatusCode($headers);
         if ($httpCode < 200 || $httpCode >= 300) {
             return null;
@@ -200,7 +258,97 @@ final class Http
         if (strlen($resp) > $maxResponseBytes) {
             return null;
         }
+        if (self::declaredLengthMismatch($resp, $headers)) {
+            return null;
+        }
         return $resp;
+    }
+
+    /**
+     * Chunked bounded read with a total wall-clock deadline: read
+     * until EOF (a complete body — at most $maxResponseBytes + 1
+     * bytes, so the caller's over-cap check still distinguishes
+     * exactly-at-cap from larger), and REFUSE — never truncate — when
+     * the deadline passes, a read aborts, or a blocking read returns
+     * nothing without EOF. $timeoutSec <= 0 disables the deadline;
+     * the loop then behaves like the pre-once-S92 bounded read,
+     * governed only by socket defaults.
+     *
+     * Live in streamPost's PHP >= 8.4 arm, where this class owns the
+     * handle; exposed as a seam (and pinned directly by
+     * tests/Unit/Ml/MlPairClientTest.php over socketpair fixtures)
+     * because the pre-8.4 arm's read lives inside LegacyStreamPost,
+     * so the mechanism must stay testable branch-independently until
+     * the helper gains its own deadline loop (once-S92 report row).
+     *
+     * @param resource $stream
+     * @internal
+     */
+    public static function readStreamWithDeadline($stream, int $maxResponseBytes, int $timeoutSec): ?string
+    {
+        $limit      = $maxResponseBytes + 1;
+        $deadlineNs = $timeoutSec > 0
+            ? (int) hrtime(true) + $timeoutSec * 1_000_000_000
+            : null;
+        $buffer = '';
+        while (strlen($buffer) < $limit) {
+            if ($deadlineNs !== null) {
+                $remainingNs = $deadlineNs - (int) hrtime(true);
+                if ($remainingNs <= 0) {
+                    return null;
+                }
+                stream_set_timeout($stream, intdiv($remainingNs, 1_000_000_000), intdiv($remainingNs % 1_000_000_000, 1_000));
+            }
+            $chunk = fread($stream, min(8192, $limit - strlen($buffer)));
+            if ($chunk === false) {
+                return null;
+            }
+            if ($chunk === '') {
+                if (feof($stream)) {
+                    break;
+                }
+                // A blocking read that returned nothing without EOF
+                // stalled (probe on 8.3: the http wrapper surfaces
+                // timed-out reads as false or ''-with-timed-out;
+                // either shape means no progress to wait for).
+                return null;
+            }
+            $buffer .= $chunk;
+        }
+        return $buffer;
+    }
+
+    /**
+     * Protocol-error verdict for a body that does not answer its own
+     * declared length (php-dup-finder-once-115, once-S92):
+     *
+     * - two Content-Length lines, or a non-numeric one, is a framing
+     *   lie (request-smuggling class) — mismatch, refuse;
+     * - exactly one numeric line must equal the bytes actually read:
+     *   an inactivity-aborted stream read returns a short partial,
+     *   and that is precisely the shape this check turns into null
+     *   instead of a body whose JSON might happen to decode;
+     * - absent (chunked/HTTP-1.0-style sidecars) — nothing to
+     *   cross-check; status, the size cap and the deadline legs still
+     *   apply unchanged.
+     *
+     * @param array<string> $headers
+     */
+    private static function declaredLengthMismatch(string $resp, array $headers): bool
+    {
+        $seen     = 0;
+        $declared = 0;
+        foreach ($headers as $header) {
+            if (preg_match('/^content-length\s*:\s*(.*)$/i', $header, $m) !== 1) {
+                continue;
+            }
+            $seen++;
+            if ($seen > 1 || preg_match('/^\d+$/', trim($m[1])) !== 1) {
+                return true;
+            }
+            $declared = (int) $m[1];
+        }
+        return $seen === 1 && $declared !== strlen($resp);
     }
 
     /**
