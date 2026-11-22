@@ -29,11 +29,26 @@ use Phpdup\Util\IdentifierIds;
  * coercion as before, so bag bytes, candidate streams and persisted
  * blobs are unchanged; the int-keyed compact bag under --low-memory
  * keeps its masked-positive 63-bit keyspace (engine-042) untouched.
+ *
+ * The gram loop is a roll-window over one joined stream, and the stream
+ * itself is shared with SubtreeHasher rather than re-walked — both legs
+ * of php-dup-finder-engine-034, landed value-preserving in engine-S33;
+ * see fingerprint() for the byte-algebra argument and the handoff law.
  */
 final class NgramFingerprint
 {
+    /**
+     * Gram width. Declared (not promoted) so the type can carry the
+     * constructor's own floor: every window arithmetic in fingerprint()
+     * indexes with `$i + $this->n`, and only a proven non-negative
+     * offset is a legal list index.
+     *
+     * @var int<2, max>
+     */
+    private readonly int $n;
+
     public function __construct(
-        private readonly int $n = 5,
+        int $n = 5,
         private readonly bool $lowMemory = false,
         // Item 1.1 (§5a): drop the `__V1`/`__CALL5`-style first-occurrence
         // counters from tokens before bagging. MUST be flipped in lockstep
@@ -47,6 +62,7 @@ final class NgramFingerprint
         if ($n < 2) {
             throw new \InvalidArgumentException('n must be >= 2');
         }
+        $this->n = $n;
     }
 
     /**
@@ -129,7 +145,16 @@ final class NgramFingerprint
      */
     public function fingerprint(Node $node): array
     {
-        $tokens = AstSerializer::tokens($node);
+        // engine-S33 (php-dup-finder-engine-034): the stream this method
+        // windows is the one stream the block needs. In the preprocess
+        // hot order (normalize → hash → fingerprint) SubtreeHasher just
+        // walked the node and parked its stream, so take it — the walk
+        // behind a block's two fingerprints becomes ONE walk. Anywhere
+        // else (this call stands alone, or the park belongs to another
+        // node) the take misses and the walk below is exactly the
+        // pre-S33 path: the same list<string> from the same serializer.
+        $tokens = SubtreeHasher::takeCanonicalStream($node)
+            ?? AstSerializer::tokens($node);
         // Engine-S02a name stamps (`__CALL_send`) carry identifier
         // identity, not tier information: aggressive mode's similarity
         // contract has always been vocabulary-agnostic, so the fold
@@ -150,17 +175,49 @@ final class NgramFingerprint
             $tokens = array_pad($tokens, $this->n, '<EOS>');
             $count = $this->n;
         }
-        // Bulk-build ngrams with implode() — about 2× faster than the
-        // previous element-wise concatenation loop on large blocks
-        // because PHP can vectorise the joiner. The hash itself
-        // dominates anyway; we pay one fewer concat per ngram.
+        // Roll-window gram minting (engine-S33, engine-034's second
+        // half): join the stream ONCE and cut every window out of it,
+        // instead of paying an array_slice plus an n-element implode per
+        // gram. The bytes are identical by pure byte algebra —
+        //   substr(implode($sep, $tokens), $start[$i],
+        //        $start[$i + $n] - $start[$i] - $sepLen)
+        //     === implode($sep, array_slice($tokens, $i, $n))
+        // holds for any token content, because $start[$k] is the byte
+        // offset where token k begins and $start[$k + 1] - $sepLen is
+        // where it ends, so the substring is exactly the tokens of the
+        // window joined by the same single separator the old implode
+        // wrote. Digests, insertion order and counts therefore do not
+        // move: that is the acceptance claim, fenced against the
+        // slice/implode replica oracle in
+        // {@see \Phpdup\Tests\Unit\Fingerprint\NgramFingerprintTest::legacyBag()}
+        // over the fixtures and a seeded generated corpus.
+        //
+        // What this removes is the per-gram overhead: one n-slot array
+        // allocation (n zval copies) plus implode's element walk, G
+        // times per block, replaced by one O(1)-per-token offset pass
+        // and one memcpy per gram. The hash() call still dominates the
+        // loop; the win is the walk-sharing above and these G dropped
+        // allocations — measured and disclosed in the step's report
+        // (engine-034's 20-40% preprocess-CPU estimate is a claim to
+        // check, not to assert).
+        $sep    = Delimiters::NGRAM_SEP;
+        $sepLen = strlen($sep);
+        $stream = implode($sep, $tokens);
+        /** @var list<int> $start byte offset of token $k; sentinel at index $count */
+        $start  = [];
+        $offset = 0;
+        foreach ($tokens as $token) {
+            $start[]  = $offset;
+            $offset  += strlen($token) + $sepLen;
+        }
+        $start[] = $offset;
+
         $bag   = [];
-        $sep   = Delimiters::NGRAM_SEP;
         $upper = $count - $this->n;
         for ($i = 0; $i <= $upper; $i++) {
             $key = hash(
                 'xxh64',
-                implode($sep, array_slice($tokens, $i, $this->n)),
+                substr($stream, $start[$i], $start[$i + $this->n] - $start[$i] - $sepLen),
             );
             // Intern through the master gram dictionary: the fresh hash()
             // output above dies after the lookup, and the bag slot points

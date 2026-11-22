@@ -7,9 +7,12 @@ use PHPUnit\Framework\TestCase;
 use Phpdup\Extraction\BlockExtractor;
 use Phpdup\Fingerprint\FingerprintIdMode;
 use Phpdup\Fingerprint\NgramFingerprint;
+use Phpdup\Fingerprint\SubtreeHasher;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Parsing\AstParser;
 use Phpdup\Similarity\JaccardSimilarity;
+use Phpdup\Util\AstSerializer;
+use Phpdup\Util\Delimiters;
 
 final class NgramFingerprintTest extends TestCase
 {
@@ -312,5 +315,196 @@ final class NgramFingerprintTest extends TestCase
         // the generation, it does not re-key honest code — so its only
         // job from here is that the store lanes stamp toward it.
         $this->assertStringStartsWith('cachekey-v', FingerprintIdMode::CACHE_IDENTITY);
+    }
+
+    // ------------------------------------------------------------------
+    // engine-S33 — roll-window gram minting + shared canonical walk
+    // (php-dup-finder-engine-034)
+    // ------------------------------------------------------------------
+
+    /**
+     * Shapes the live fingerprinter runs: n with both numbering modes,
+     * plus the low-memory compact key space of engine-042/S32.
+     *
+     * @return list<array{0:int,1:bool,2:bool}> [n, unnumbered, lowMemory]
+     */
+    private static function bagShapes(): array
+    {
+        $shapes = [];
+        foreach ([2, 3, 5, 7] as $n) {
+            foreach ([false, true] as $unnumbered) {
+                foreach ([false, true] as $lowMemory) {
+                    $shapes[] = [$n, $unnumbered, $lowMemory];
+                }
+            }
+        }
+        return $shapes;
+    }
+
+    public function testRollWindowBagsAreByteIdenticalToTheSliceImplodeBuild(): void
+    {
+        // The acceptance differential: the pre-S33 gram loop (slice +
+        // implode per window — replicated in legacyBag(), the very
+        // oracle engine-S18b froze) vs the roll-window build, over the
+        // fixture corpus and the generated adversarial corpus, in every
+        // shape the pipeline constructs. A window cut that drifted by a
+        // single byte — the trailing-separator arithmetic, the <EOS>
+        // pad edge, a multibyte token — reddens here, long before any
+        // golden could notice.
+        $checked = 0;
+        foreach ($this->s33CorpusNodes() as $node) {
+            foreach (self::bagShapes() as [$n, $unnumbered, $lowMemory]) {
+                $fp     = new NgramFingerprint($n, $lowMemory, $unnumbered);
+                $legacy = $this->legacyBag($node, $n, $unnumbered);
+                $want   = $lowMemory ? \Phpdup\Fingerprint\CompactNgramBag::compact($legacy) : $legacy;
+                $this->assertSame(
+                    $want,
+                    $fp->fingerprint($node),
+                    "bag moved under the roll-window (n={$n} unnumbered=" . var_export($unnumbered, true)
+                        . ' lowMemory=' . var_export($lowMemory, true) . ')',
+                );
+                ++$checked;
+            }
+        }
+        $this->assertGreaterThan(400, $checked, 'differential corpus collapsed');
+    }
+
+    public function testHandoffServedBagsMatchWalkedBagsAcrossTheCorpus(): void
+    {
+        // Same differential, but with the preprocess hot order exercised:
+        // hash() first parks the walk, fingerprint() takes it. The bag
+        // the served path mints must be identical to the bag the walked
+        // path mints for the same tree (and to the slice/implode
+        // oracle), so sharing the walk cannot change a fingerprint.
+        $checked = 0;
+        foreach ($this->s33CorpusNodes() as $node) {
+            foreach ([[5, false], [3, true]] as [$n, $unnumbered]) {
+                $hasher = new SubtreeHasher();
+                $hasher->hash($node);                       // mint + park
+                $served = (new NgramFingerprint($n, false, $unnumbered))->fingerprint($node);
+                $this->assertSame(
+                    $this->legacyBag($node, $n, $unnumbered),
+                    $served,
+                    'a handoff-served bag differs from the walked build',
+                );
+                // The park is drained: this second call walks on its own
+                // and must land on the very same bag.
+                $walked = (new NgramFingerprint($n, false, $unnumbered))->fingerprint($node);
+                $this->assertSame($served, $walked, 'served and walked bags diverged');
+                ++$checked;
+            }
+        }
+        $this->assertGreaterThan(200, $checked);
+    }
+
+    public function testWindowByteAlgebraHoldsForAnyTokenContent(): void
+    {
+        // The roll-window rewrite rides one identity: cutting the
+        // pre-joined stream at token byte offsets yields the same bytes
+        // as joining the slice. Seeded fuzz over adversarial token lists
+        // (control bytes, frame headers, invalid UTF-8, empties, a
+        // multi-byte tail) replaying fingerprint()'s own pad step — the
+        // offsets are byte-based, so the equivalence cannot depend on
+        // the tokens being well-formed text.
+        $sep    = Delimiters::NGRAM_SEP;
+        $sepLen = strlen($sep);
+        $pool   = [
+            'a', '', 'notify@x.org', 'x' . $sep . 'y', 'x' . "\x1F" . 'y',
+            'x' . "\x00" . 'y', AstSerializer::FRAME_MARK . '3:q', "\xC3\x28",
+            str_repeat('t', 70), 'i:7', 'id:__V2', '<EOS>', '🌯tail',
+        ];
+        mt_srand(20261122);
+        for ($case = 0; $case < 400; $case++) {
+            $tokens = [];
+            $len    = mt_rand(1, 12);
+            for ($k = 0; $k < $len; $k++) {
+                $tokens[] = $pool[mt_rand(0, count($pool) - 1)];
+            }
+            foreach ([2, 3, 5, 7] as $n) {
+                $windowed = $tokens;
+                $count    = count($windowed);
+                if ($count < $n) {
+                    $windowed = array_pad($windowed, $n, '<EOS>');
+                    $count    = $n;
+                }
+                $stream = implode($sep, $windowed);
+                $start  = [];
+                $offset = 0;
+                foreach ($windowed as $token) {
+                    $start[]  = $offset;
+                    $offset  += strlen($token) + $sepLen;
+                }
+                $start[] = $offset;
+                for ($i = 0; $i <= $count - $n; $i++) {
+                    $this->assertSame(
+                        implode($sep, array_slice($windowed, $i, $n)),
+                        substr($stream, $start[$i], $start[$i + $n] - $start[$i] - $sepLen),
+                        'window byte algebra broke',
+                    );
+                }
+            }
+        }
+    }
+
+    /**
+     * Canonical blocks for the S33 differential: the fixture trees
+     * (three normalizer modes) plus the seeded adversarial generator.
+     *
+     * @return list<\PhpParser\Node>
+     */
+    private function s33CorpusNodes(): array
+    {
+        $nodes = [];
+        $root  = dirname(__DIR__, 3) . '/tests/Fixtures';
+        $files = [];
+        if (is_dir($root)) {
+            $it = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS));
+            foreach ($it as $f) {
+                if ($f->isFile() && strtolower($f->getExtension()) === 'php') {
+                    $files[] = $f->getPathname();
+                }
+            }
+            sort($files);
+        }
+        self::assertGreaterThanOrEqual(20, count($files), 'the fixture corpus vanished');
+        foreach ($files as $path) {
+            $stmts = (new AstParser())->parseFile($path);
+            if ($stmts === null) {
+                continue;
+            }
+            foreach (['strict', 'aggressive'] as $mode) {
+                foreach ((new BlockExtractor(minSize: 1))->extract($path, $stmts) as $block) {
+                    (new Normalizer($mode))->normalize($block);
+                    $nodes[] = $block->canonical;
+                }
+            }
+        }
+        foreach ([
+            '<?php function tiny() { return 1; }',
+            '<?php function pad() { $a = ""; }',
+            '<?php function forged() { return "a\x1f)\x1fArg#false#false(\x1fScalar_String_|s:b"; }',
+            '<?php function framed($v) { return preg_replace(["/a/", "/b/"], [$v, "x{$v}y"], "semi;colon"); }',
+            '<?php function nested($x) { return array_map(fn($y) => $y + self::CONST_A, ($x ? ["k" => "\\u{1F3AF}"] : [])); }',
+        ] as $code) {
+            foreach (['strict', 'default', 'aggressive'] as $mode) {
+                foreach ($this->treesInMode($code, $mode) as $node) {
+                    $nodes[] = $node;
+                }
+            }
+        }
+        return $nodes;
+    }
+
+    /** @return list<\PhpParser\Node> */
+    private function treesInMode(string $code, string $mode): array
+    {
+        $stmts = (new AstParser())->parseCode($code);
+        self::assertNotNull($stmts, 'fixture code must parse');
+        $out = [];
+        foreach ((new BlockExtractor(minSize: 1))->extract('t.php', $stmts) as $block) {
+            (new Normalizer($mode))->normalize($block);
+            $out[] = $block->canonical;
+        }
+        return $out;
     }
 }
