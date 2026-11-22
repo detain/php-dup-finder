@@ -45,6 +45,12 @@ use Symfony\Component\Console\Output\OutputInterface;
  * - Request handling is crash-proof: an unexpected throw inside the
  *   application fails the single request with 500 and the daemon keeps
  *   serving (verified: /healthz stays up after a poisoned /analyze body).
+ * - Every connection carries a per-client read deadline
+ *   ({@see self::CLIENT_READ_TIMEOUT_SECONDS}, shell-007): a client that
+ *   opens the socket and sends bytes but never completes its request is
+ *   answered 408 Request Timeout once a single read goes silent past the
+ *   deadline — checked in BOTH raw-read loops (header and body), so the
+ *   serial accept loop is never frozen by one stalled client.
  * - The results directory (`/tmp/phpdup-results-<pid>`) is created 0700 at
  *   startup and never adopted from a foreign owner: a pre-existing
  *   directory of that name owned by another user refuses the whole
@@ -99,6 +105,16 @@ final class ServeCommand extends SymfonyCommand
      */
     public const WORKER_PID_ENV = 'PHPDUP_SERVE_PID';
 
+    /**
+     * Per-client read deadline in seconds (shell-007). The daemon serves
+     * requests serially, so any single read that blocks forever blocks
+     * every later client; this bounds it. The window restarts on every
+     * chunk that arrives, so a slow-but-live client is never cut off —
+     * only a silent one. `docs/SERVER.md` documents the constant in the
+     * shell-S09 pass.
+     */
+    public const CLIENT_READ_TIMEOUT_SECONDS = 5;
+
     /** SIGINT/SIGKILL as raw POSIX numbers: reaping must not depend on ext-pcntl constants. */
     private const SIGNAL_INT = 2;
     private const SIGNAL_KILL = 9;
@@ -142,6 +158,15 @@ final class ServeCommand extends SymfonyCommand
      */
     public $signalTerminator = null;
 
+    /**
+     * Test seam for the per-client read deadline in seconds (shell-007):
+     * null uses {@see self::CLIENT_READ_TIMEOUT_SECONDS}; a probe lowers
+     * the window so the stalled-stream unit pins stay hermetic (no
+     * wall-clock waits beyond 2 s). Only the number is seamed — the
+     * timed_out detection and the 408 path run unseamed.
+     */
+    public ?int $readTimeoutSeconds = null;
+
     /** Why the last {@see prepareResultsDir()} refused startup ('' = none). */
     private string $resultsDirRefusal = '';
 
@@ -153,6 +178,7 @@ final class ServeCommand extends SymfonyCommand
         400 => 'Bad Request',
         401 => 'Unauthorized',
         404 => 'Not Found',
+        408 => 'Request Timeout',
         413 => 'Payload Too Large',
         431 => 'Request Header Fields Too Large',
         500 => 'Internal Server Error',
@@ -328,6 +354,13 @@ final class ServeCommand extends SymfonyCommand
      */
     private function handleClient($client, Application $app): void
     {
+        // shell-007: bound every read on this connection. The accept loop
+        // is serial, so a stalled client (bytes started, request never
+        // completed) used to park the whole daemon until the client itself
+        // closed. One silent read past the deadline answers 408 and the
+        // loop moves on to the next client.
+        stream_set_timeout($client, $this->readTimeoutSeconds ?? self::CLIENT_READ_TIMEOUT_SECONDS);
+
         $raw = '';
         // Read until end of headers, but cap headers to keep a single
         // misbehaving client from exhausting memory.
@@ -335,6 +368,10 @@ final class ServeCommand extends SymfonyCommand
         while (!feof($client)) {
             $chunk = @fread($client, 4096);
             if ($chunk === false || $chunk === '') {
+                if (self::readTimedOut($client)) {
+                    $this->writeStatus($client, 408, 'Request Timeout');
+                    return;
+                }
                 break;
             }
             $raw .= $chunk;
@@ -370,6 +407,10 @@ final class ServeCommand extends SymfonyCommand
             while (strlen($body) < $expected && !feof($client)) {
                 $chunk = @fread($client, 4096);
                 if ($chunk === false || $chunk === '') {
+                    if (self::readTimedOut($client)) {
+                        $this->writeStatus($client, 408, 'Request Timeout');
+                        return;
+                    }
                     break;
                 }
                 $body .= $chunk;
@@ -500,6 +541,23 @@ final class ServeCommand extends SymfonyCommand
     private function writeStatus($client, int $code, string $reason): void
     {
         @fwrite($client, "HTTP/1.1 {$code} {$reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    }
+
+    /**
+     * True when the last read on `$client` ended because the per-client
+     * read deadline fired (shell-007). The socket layer raises
+     * `timed_out` in the stream metadata when a blocking read returns
+     * empty on the deadline (an EOF close raises `eof` instead, which is
+     * NOT a timeout — it keeps the pre-existing short-request path).
+     * Consulted in BOTH raw-read loops, so a stall while sending headers
+     * and a stall mid-body take the same 408 road.
+     *
+     * @param resource $client
+     */
+    private static function readTimedOut($client): bool
+    {
+        $meta = @stream_get_meta_data($client);
+        return is_array($meta) && ($meta['timed_out'] ?? false) === true;
     }
 
     /**

@@ -622,4 +622,185 @@ final class ServeCommandTest extends TestCase
         );
         $this->assertFalse(@posix_kill($pid, 0), 'the stubborn worker tree must be gone after cleanup');
     }
+
+    // ------------------------------------------------------------------
+    // shell-S04 (shell-007): one stalled client must not freeze the
+    // daemon. handleClient installs a per-client read deadline and
+    // checks stream_get_meta_data()['timed_out'] in BOTH raw-read loops
+    // (header and body); the silent client is answered 408 Request
+    // Timeout (that is the pinned choice over a bare close) and the
+    // accept loop moves on to the next connection.
+    // ------------------------------------------------------------------
+
+    /**
+     * Drive one handleClient() call over a real socketpair whose far end
+     * stays OPEN after $request was written — the exact stall the finding
+     * describes: bytes arrived, the request never completed, the client
+     * never closes. Returns the raw response and the wall-clock seconds
+     * handleClient needed (hermetic via the deadline seam: the stalled
+     * legs cost about one seam second each, never the real 5 s default).
+     *
+     * @param \Phpdup\Server\Application $app
+     * @return array{0:string,1:float}
+     */
+    private function driveClient(ServeCommand $command, string $request, object $app): array
+    {
+        $pair = @stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        if ($pair === false) {
+            $this->markTestSkipped('stream_socket_pair unavailable');
+        }
+        [$client, $peer] = $pair;
+
+        $this->assertNotFalse(@fwrite($client, $request));
+
+        $start = microtime(true);
+        (new \ReflectionMethod(ServeCommand::class, 'handleClient'))->invoke($command, $peer, $app);
+        $elapsed = microtime(true) - $start;
+
+        // handleClient has returned and its response is buffered on the
+        // socket; closing the daemon end delivers it to EOF on $client.
+        fclose($peer);
+        $raw = stream_get_contents($client);
+        fclose($client);
+        $this->assertIsString($raw);
+
+        return [$raw, $elapsed];
+    }
+
+    public function testStalledHeaderLegIsAnswered408AtTheDeadline(): void
+    {
+        // Client A sends a partial request line + headers (no terminating
+        // blank line) and then goes silent with the socket open. Before
+        // shell-007 this blocked the serial loop until A closed; now the
+        // first silent read releases at the deadline with 408.
+        $command = new ServeCommand();
+        $command->readTimeoutSeconds = 1;
+        $app = new \Phpdup\Server\Application(new \Phpdup\Server\JobQueue());
+
+        [$raw, $elapsed] = $this->driveClient(
+            $command,
+            "GET /healthz HTTP/1.1\r\nHost: x\r\n",
+            $app
+        );
+
+        $this->assertStringStartsWith('HTTP/1.1 408 Request Timeout', $raw);
+        // Bounded, not instant: far enough below 2 s to keep CI honest,
+        // far enough above 0 to prove the deadline really fired (an
+        // immediate-break mutant would answer 400 in microseconds).
+        $this->assertGreaterThanOrEqual(0.5, $elapsed);
+        $this->assertLessThan(2.0, $elapsed, 'a stalled header read must release at the deadline, not at close');
+    }
+
+    public function testStalledBodyLegIsAnswered408AtTheDeadline(): void
+    {
+        // The other loop the finding names: complete headers claim a 500-byte
+        // body, the client sends a partial body and stalls. The header loop
+        // exits happily on \r\n\r\n; the stall surfaces mid body-loop and
+        // must take the same 408 road.
+        $command = new ServeCommand();
+        $command->readTimeoutSeconds = 1;
+        $app = new \Phpdup\Server\Application(new \Phpdup\Server\JobQueue());
+
+        [$raw, $elapsed] = $this->driveClient(
+            $command,
+            "POST /analyze HTTP/1.1\r\nHost: x\r\nContent-Length: 500\r\n\r\n{\"paths\":[",
+            $app
+        );
+
+        $this->assertStringStartsWith('HTTP/1.1 408 Request Timeout', $raw);
+        $this->assertGreaterThanOrEqual(0.5, $elapsed);
+        $this->assertLessThan(2.0, $elapsed, 'a stalled body read must release at the deadline, not at close');
+    }
+
+    public function testCompletedRequestNeverWaitsOnTheDeadline(): void
+    {
+        // Belt for honest framing: the deadline arms per READ, so a request
+        // that arrives complete is answered immediately and the 408 leg
+        // never fires on healthy traffic.
+        $command = new ServeCommand();
+        $command->readTimeoutSeconds = 1;
+        $app = new \Phpdup\Server\Application(new \Phpdup\Server\JobQueue());
+
+        [$raw, $elapsed] = $this->driveClient(
+            $command,
+            "GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n",
+            $app
+        );
+
+        $this->assertStringStartsWith('HTTP/1.1 200', $raw);
+        $this->assertStringEndsWith('ok', $raw);
+        $this->assertLessThan(0.5, $elapsed, 'a completed request must never spend the read deadline');
+    }
+
+    public function testNextClientIsServedAfterATimedOutOne(): void
+    {
+        // "the loop continues" acceptance at the request layer: the SAME
+        // command instance that 408'd a stalled client serves a fresh
+        // healthz immediately — no wedged state survives handleClient.
+        // (The accept loop itself is the S03-pinned top-dispatch shape;
+        // it simply calls handleClient per accepted connection.)
+        $command = new ServeCommand();
+        $command->readTimeoutSeconds = 1;
+        $app = new \Phpdup\Server\Application(new \Phpdup\Server\JobQueue());
+
+        [$stalled] = $this->driveClient($command, "GET /healthz HTTP/1.1\r\nHost: x\r\n", $app);
+        $this->assertStringStartsWith('HTTP/1.1 408', $stalled);
+
+        [$next, $nextElapsed] = $this->driveClient(
+            $command,
+            "GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n",
+            $app
+        );
+        $this->assertStringStartsWith('HTTP/1.1 200', $next);
+        $this->assertLessThan(0.5, $nextElapsed);
+    }
+
+    public function testDeadlineIsArmedAndCheckedInBothRawReadLoops(): void
+    {
+        // Code-inspection pin for the acceptance wording: stream_set_timeout
+        // must be installed before the first read, and the timed_out check
+        // must live inside BOTH the header loop and the body loop — not
+        // just one of them.
+        $src = (string)file_get_contents(
+            (new \ReflectionClass(ServeCommand::class))->getFileName()
+        );
+        $start = strpos($src, 'private function handleClient($client, Application $app): void');
+        $this->assertIsInt($start, 'handleClient must exist');
+        $method = substr($src, $start, strpos($src, "\n    }", $start) - $start);
+
+        $arm = strpos($method, 'stream_set_timeout($client,');
+        $headerLoop = strpos($method, 'while (!feof($client))');
+        $bodyLoop = strpos($method, 'while (strlen($body) < $expected');
+        $this->assertIsInt($arm, 'the deadline must be armed in handleClient');
+        $this->assertIsInt($headerLoop);
+        $this->assertIsInt($bodyLoop);
+        $this->assertLessThan($headerLoop, $arm, 'the deadline must be armed before the first read');
+
+        $headerRegion = substr($method, $headerLoop, $bodyLoop - $headerLoop);
+        $bodyRegion = substr($method, $bodyLoop);
+        $this->assertStringContainsString('self::readTimedOut($client)', $headerRegion);
+        $this->assertStringContainsString('self::readTimedOut($client)', $bodyRegion);
+        $this->assertStringContainsString('408', $headerRegion);
+        $this->assertStringContainsString('408', $bodyRegion);
+
+        // The 408 reason phrase is the one pinned by the stream tests.
+        $this->assertStringContainsString("408 => 'Request Timeout',", $src);
+    }
+
+    public function testReadDeadlineConstantIsTheUnseamedDefault(): void
+    {
+        // The number shell-S09 documents in docs/SERVER.md, and the seam's
+        // fallback: only $readTimeoutSeconds may override the constant;
+        // the default is unconditionally the class constant itself.
+        $this->assertSame(5, ServeCommand::CLIENT_READ_TIMEOUT_SECONDS);
+
+        $src = (string)file_get_contents(
+            (new \ReflectionClass(ServeCommand::class))->getFileName()
+        );
+        $this->assertStringContainsString(
+            '$this->readTimeoutSeconds ?? self::CLIENT_READ_TIMEOUT_SECONDS',
+            $src,
+            'handleClient must fall back to the documented constant'
+        );
+    }
 }
