@@ -150,7 +150,8 @@ stalling client returns 200 with sub-second worst-case latency (verified live ag
 running `phpdup serve` — see the probe transcript in
 `reviews/exec/once-S43.impl.md`); a client that starts a request and
 dribbles is released with 408 at the 5 s read deadline. Fresh sockets
-are never refused in either window — they ride the backlog.
+are never refused in either window — they ride the backlog while at
+most 64 are queued.
 
 **Known-serial limitation + sizing guidance.** The bounds limit
 *stalled clients*, not *busy handlers*: exactly one request is in
@@ -162,9 +163,9 @@ per-request concurrency to size against.
 |------------|----------|
 | Dev laptop / small team, loopback bind, occasional analyze | the serial server is exactly right; nothing to tune |
 | CI health probe + a few humans | fine — the 64-socket backlog absorbs bursts; keep big analyses on `POST /jobs` so the worker takes them off the HTTP thread |
-| Many users, sustained API traffic, or public-network exposure | do **not** tune this loop toward it — lift `Phpdup\Server\Application` into a capable runtime (FrankenPHP, RoadRunner, php-fpm behind nginx) and front it with TLS + rate limiting (see Security below) |
+| Many users, sustained API traffic, or public-network exposure | do **not** tune this loop toward it — lift `Phpdup\Server\Application` into a capable runtime (FrankenPHP, RoadRunner, php-fpm behind nginx) and front it with TLS + rate limiting (see General advice below) |
 
-### General advice
+## General advice
 
 For non-localhost deployments, put a reverse proxy (nginx / Caddy)
 in front and apply the usual hardening: TLS termination, rate

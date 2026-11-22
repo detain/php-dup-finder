@@ -423,12 +423,12 @@ final class ServeCommand extends SymfonyCommand
         // once-S43 + shell-007, one two-tier read bound per connection:
         // while NO byte has arrived the socket rides the short first-byte
         // deadline — an accepted-but-silent slow-loris client (netcat with
-        // the connection half-open) is released with 408 after one second,
-        // so it can never hold the serial accept loop past the /healthz
-        // probe budget. The first byte that does arrive hands the
-        // connection to the shell-S04 read deadline below: it restarts on
-        // every chunk, so a slow-but-live client is still never cut off
-        // mid-request.
+        // the connection half-open) is released with 408 after the 500 ms
+        // first-byte grace, so it can never hold the serial accept loop
+        // past the /healthz probe budget. The first byte that does arrive
+        // hands the connection to the shell-S04 read deadline below: it
+        // restarts on every chunk, so a slow-but-live client is still
+        // never cut off mid-request.
         $firstByteGraceMs = $this->firstByteTimeoutMs ?? self::CLIENT_FIRST_BYTE_TIMEOUT_MS;
         stream_set_timeout($client, intdiv($firstByteGraceMs, 1000), $firstByteGraceMs % 1000 * 1000);
 
