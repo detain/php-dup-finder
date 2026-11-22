@@ -20,8 +20,25 @@ use Symfony\Component\Console\Output\NullOutput;
  *
  * Wire protocol (all messages newline-terminated):
  *   - Received: RUN <jobId> <configJson>\n
- *   - Sent on success: OK <jobId>\n
- *   - Sent on failure: FAIL <jobId> <error>\n
+ *   - Sent the moment the frame is admitted (BEFORE the job runs):
+ *     OK <jobId>\n — the ACCEPT-ack (shell-032). It reports admission,
+ *     not completion; the job is still about to run.
+ *   - Sent when the frame cannot be admitted at all (bad id, oversize,
+ *     malformed/invalid JSON, refused keys, path escape):
+ *     FAIL <jobId|0> <error>\n — no accept-ack, nothing written or run.
+ *   - Sent when a job is admitted and accepted but then fails during the
+ *     pipeline or while publishing its result:
+ *     ERR <jobId> <error>\n — advisory; the dispatcher that already read
+ *     the accept-ack closes the socket, so a real server learns of this
+ *     failure from the result file's absence past its deadline, not from
+ *     this frame (the socketpair unit harness reads it because it drives
+ *     the handler inline).
+ *
+ * Completion is signalled by the result file `<result-dir>/<jobId>.json`
+ * ATOMICALLY appearing (temp write + rename), never by a post-work socket
+ * line — the historic bug this leg fixes was the server blocking on an
+ * after-the-fact `OK` and false-failing any job slower than its ack
+ * timeout while the worker silently produced the result anyway.
  *
  * The received line is size-bounded by {@see AnalysisWorker::MAX_REQUEST_BYTES};
  * a frame past the cap answers {@see AnalysisWorker::REQUEST_TOO_LONG_ACK}
@@ -383,25 +400,52 @@ final class AnalysisWorker
             }
             if (!is_array($configData)) {
                 // Scalars and null decode fine but are not job frames — reject
-                // here instead of letting processJob's array parameter raise a
+                // here instead of letting admitFrame's array parameter raise a
                 // TypeError through the wire.
                 $this->writeFail($client, $jobId, 'config JSON must decode to an object');
                 return;
             }
 
             /** @var array<string,mixed> $configData */
-            $result = $this->processJob($configData);
-            if ($result['status'] === 200) {
-                $encoded = json_encode($result['body'], JSON_THROW_ON_ERROR);
-                $resultFile = $this->resultDir . '/' . $jobId . '.json';
-                if (@file_put_contents($resultFile, $encoded) === false) {
-                    $this->writeFail($client, $jobId, 'failed to write result file');
-                    return;
-                }
-                @fwrite($client, "OK {$jobId}\n");
-            } else {
-                $this->writeFail($client, $jobId, $result['error'] ?? 'job failed');
+            // shell-032: admission and execution are split. Everything that
+            // can be decided BEFORE running the pipeline — path confinement
+            // against the spawn-time serve root, and the refused RUN-frame
+            // keys — is resolved first and answered with a FAIL frame, so a
+            // frame the worker would reject never gets a misleading accept.
+            $admission = $this->admitFrame($configData);
+            if ($admission !== null) {
+                $this->writeFail($client, $jobId, $admission['error'] ?? 'frame refused');
+                return;
             }
+
+            // Admitted: answer the ACCEPT-ack immediately, before running the
+            // job. This is the whole fix — the dispatcher reads this line and
+            // returns 202 without blocking on the analysis, so a job that
+            // takes longer than any socket timeout is no longer mistaken for
+            // a dispatch failure. Completion is the result file, not a second
+            // ack.
+            @fwrite($client, "OK {$jobId}\n");
+
+            $result = $this->executeJob($configData);
+            if ($result['status'] !== 200) {
+                $this->writeErr($client, $jobId, $result['error'] ?? 'job failed');
+                return;
+            }
+            try {
+                $encoded = json_encode($result['body'], JSON_THROW_ON_ERROR);
+            } catch (JsonException $e) {
+                $this->writeErr($client, $jobId, 'failed to encode result: ' . $e->getMessage());
+                return;
+            }
+            if (!$this->publishResult($jobId, $encoded)) {
+                // Accepted and ran, but the result never landed. The server
+                // fails it via the result-file absence-deadline; the ERR
+                // frame is the socket-visible reason for a reader that kept
+                // the connection open (the unit harness).
+                $this->writeErr($client, $jobId, 'failed to write result file');
+            }
+            // Success is the atomic appearance of `<id>.json`; no post-work
+            // line is written, because the dispatcher has already left.
         } catch (\Throwable $e) {
             // Crash-proof dispatch: a poisoned frame or an unexpected
             // pipeline error fails this job only — the worker stays alive.
@@ -422,31 +466,88 @@ final class AnalysisWorker
     }
 
     /**
-     * Process an analysis job by running the full pipeline.
+     * Write a single-line ERR frame — the post-accept failure signal (the
+     * frame was admitted and `OK` acked, then the pipeline or the result
+     * publish failed). Same newline-strip discipline as
+     * {@see self::writeFail()}. Best-effort: a dispatcher that already read
+     * the accept-ack and closed the socket simply never sees it; the
+     * authoritative signal there is the result file's absence (deadline),
+     * not this line.
+     *
+     * @param resource $client
+     */
+    private function writeErr($client, string $jobId, string $error): void
+    {
+        $error = str_replace(["\r", "\n"], ' ', $error);
+        @fwrite($client, "ERR {$jobId} {$error}\n");
+    }
+
+    /**
+     * Publish a job's result atomically (shell-032): write to a sibling temp
+     * file then rename. A rename within one directory is atomic, so the
+     * server-side reconcile — which treats "the file is present" as
+     * completion — can never observe a half-written result and build a
+     * summary from truncated bytes. Returns false when neither the write nor
+     * the rename could land the file.
+     */
+    private function publishResult(string $jobId, string $encoded): bool
+    {
+        $resultFile = $this->resultDir . '/' . $jobId . '.json';
+        $tmp = $resultFile . '.tmp.' . getmypid();
+        if (@file_put_contents($tmp, $encoded) === false) {
+            @unlink($tmp);
+            return false;
+        }
+        if (!@rename($tmp, $resultFile)) {
+            @unlink($tmp);
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * RUN-frame admission: every check decidable before the pipeline runs.
+     * Returns null when the frame is accepted, or a `{status, error}` array
+     * answering the refusal. No filesystem write and no analysis happen here.
+     *
+     * The dispatch handler calls this directly (so the accept-ack can fire
+     * only once the frame is admitted); the reflection unit pins exercise
+     * this leg in isolation, without a live pipeline.
+     *
+     * @param array<string,mixed> $configData
+     * @return array{status:int, error:string}|null
+     */
+    private function admitFrame(array $configData): ?array
+    {
+        // Defence in depth (once-001): the worker re-validates the paths
+        // against its spawn-time serve root, so a job that bypassed HTTP
+        // admission (or an operator feeding the socket by hand) still
+        // cannot scan outside the confinement boundary.
+        $violation = Application::scanPathsError($this->serveRoot, $configData['paths'] ?? null);
+        if ($violation !== null) {
+            return ['status' => $violation['status'], 'error' => $violation['error']];
+        }
+
+        // Refuse config fields that must never enter through the wire (see
+        // class docblock; the list itself is the one HTTP `POST /jobs`
+        // admission shares).
+        $refused = Application::refusedPayloadKeys($configData);
+        if ($refused !== []) {
+            return ['status' => 400, 'error' => 'RUN frame must not set: ' . implode(', ', $refused)];
+        }
+
+        return null;
+    }
+
+    /**
+     * Run the full analysis pipeline for an already-admitted frame.
      *
      * @param array<string,mixed> $configData
      * @return array{status:int, body?:array<string,mixed>, error?:string}
      */
-    private function processJob(array $configData): array
+    private function executeJob(array $configData): array
     {
         try {
-            // Defence in depth (once-001): the worker re-validates the paths
-            // against its spawn-time serve root, so a job that bypassed HTTP
-            // admission (or an operator feeding the socket by hand) still
-            // cannot scan outside the confinement boundary.
-            $violation = Application::scanPathsError($this->serveRoot, $configData['paths'] ?? null);
-            if ($violation !== null) {
-                return ['status' => $violation['status'], 'error' => $violation['error']];
-            }
-
-            // RUN-frame admission: refuse config fields that must never enter
-            // through the wire (see class docblock for the full enumeration;
-            // the list itself is the one HTTP `POST /jobs` admission shares).
-            $refused = Application::refusedPayloadKeys($configData);
-            if ($refused !== []) {
-                return ['status' => 400, 'error' => 'RUN frame must not set: ' . implode(', ', $refused)];
-            }
-
             /** @var list<string> $paths */
             $paths = $configData['paths'];
             $config = Config::defaults($paths);

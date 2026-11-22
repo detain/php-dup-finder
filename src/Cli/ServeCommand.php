@@ -276,6 +276,23 @@ final class ServeCommand extends SymfonyCommand
                 null,
                 InputOption::VALUE_REQUIRED,
                 'Bearer token required for all requests when set. Required when --bind-public is used.'
+            )
+            ->addOption(
+                'serve-cache',
+                null,
+                InputOption::VALUE_NONE,
+                'Let the synchronous /analyze pipeline reuse AST/cluster caches '
+                    . '(off by default: the historic serve posture re-parses fresh every request).'
+            )
+            ->addOption(
+                'serve-workers',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'Worker count for the synchronous /analyze pipeline. Default 1 (serial) '
+                    . 'prevents a per-request fork storm on many-core boxes; raise to opt '
+                    . 'into parallel analysis (still capped by the WorkerPool ceiling). '
+                    . '0 restores automatic CPU-count workers.',
+                '1'
             );
     }
 
@@ -311,6 +328,15 @@ final class ServeCommand extends SymfonyCommand
         $bindPublic = (bool)$input->getOption('bind-public');
         $serveRoot = (string)$input->getOption('serve-root');
         $token = $input->getOption('token');
+        // shell-032: the sync-mode cache + worker posture becomes operator-
+        // selectable instead of hard-coded. --serve-cache defaults OFF (the
+        // historic no-cache serve behaviour); --serve-workers defaults to 1
+        // (serial) so a many-core box no longer forks detectCpuCount()
+        // children to answer one small /analyze. Both only ever affect the
+        // synchronous /analyze (and worker-less /jobs) pipeline; the async
+        // background worker keeps its own per-job parallelism.
+        $useCache = (bool)$input->getOption('serve-cache');
+        $serveWorkers = (int)$input->getOption('serve-workers');
 
         $error = $this->validateConfig($bindPublic, $token, $host);
         if ($error !== null) {
@@ -352,7 +378,11 @@ final class ServeCommand extends SymfonyCommand
             $app = new Application(
                 new \Phpdup\Server\JobQueue(),
                 $serveRoot !== '' ? $serveRoot : null,
-                $token ?: null
+                $token ?: null,
+                null,
+                null,
+                $useCache,
+                $serveWorkers
             );
         } else {
             $output->writeln("<info>phpdup serve</info> worker spawned (pid {$workerPid})");
@@ -361,7 +391,9 @@ final class ServeCommand extends SymfonyCommand
                 $serveRoot !== '' ? $serveRoot : null,
                 $token ?: null,
                 $this->workerSocket,
-                $this->resultDir
+                $this->resultDir,
+                $useCache,
+                $serveWorkers
             );
         }
 

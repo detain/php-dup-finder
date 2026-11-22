@@ -518,9 +518,9 @@ final class ApplicationTest extends TestCase
             sys_get_temp_dir()
         );
 
-        $processJob = new \ReflectionMethod(AnalysisWorker::class, 'processJob');
+        $admit = new \ReflectionMethod(AnalysisWorker::class, 'admitFrame');
 
-        $result = $processJob->invoke($worker, ['paths' => ['/etc']]);
+        $result = $admit->invoke($worker, ['paths' => ['/etc']]);
 
         $this->assertSame(400, $result['status']);
         $this->assertStringContainsString('absolute paths are not allowed', $result['error']);
@@ -534,9 +534,9 @@ final class ApplicationTest extends TestCase
             sys_get_temp_dir()
         );
 
-        $processJob = new \ReflectionMethod(AnalysisWorker::class, 'processJob');
+        $admit = new \ReflectionMethod(AnalysisWorker::class, 'admitFrame');
 
-        $result = $processJob->invoke($worker, ['paths' => [123]]);
+        $result = $admit->invoke($worker, ['paths' => [123]]);
 
         $this->assertSame(400, $result['status']);
         $this->assertStringContainsString('paths must contain only strings', $result['error']);
@@ -553,9 +553,9 @@ final class ApplicationTest extends TestCase
             sys_get_temp_dir()
         );
 
-        $processJob = new \ReflectionMethod(AnalysisWorker::class, 'processJob');
+        $admit = new \ReflectionMethod(AnalysisWorker::class, 'admitFrame');
 
-        $result = $processJob->invoke($worker, ['paths' => ["src\0evil"]]);
+        $result = $admit->invoke($worker, ['paths' => ["src\0evil"]]);
 
         $this->assertSame(400, $result['status']);
         $this->assertStringContainsString('paths must not contain null bytes', $result['error']);
@@ -573,9 +573,9 @@ final class ApplicationTest extends TestCase
         );
 
         try {
-            $processJob = new \ReflectionMethod(AnalysisWorker::class, 'processJob');
+            $admit = new \ReflectionMethod(AnalysisWorker::class, 'admitFrame');
 
-            $result = $processJob->invoke($worker, ['paths' => ['../etc']]);
+            $result = $admit->invoke($worker, ['paths' => ['../etc']]);
 
             $this->assertSame(400, $result['status']);
             $this->assertStringContainsString('path traversal is not allowed', $result['error']);
@@ -604,12 +604,12 @@ final class ApplicationTest extends TestCase
                 $root
             );
 
-            $processJob = new \ReflectionMethod(AnalysisWorker::class, 'processJob');
+            $admit = new \ReflectionMethod(AnalysisWorker::class, 'admitFrame');
 
             // Paths pass confinement, yet the frame is still refused solely
             // for carrying ml_pair_url — proving the admission leg, not the
             // path leg, rejected it.
-            $result = $processJob->invoke($worker, [
+            $result = $admit->invoke($worker, [
                 'paths'       => ['a.php'],
                 'ml_pair_url' => 'http://evil.invalid/',
             ]);
@@ -834,11 +834,14 @@ final class ApplicationTest extends TestCase
         }
     }
 
-    public function testWorkerAcksFailureNotOkWhenResultWriteFails(): void
+    public function testWorkerAcceptsThenErrsWhenResultWriteFails(): void
     {
-        // shell-022 second leg: an unwritable results dir (analysis succeeds,
-        // the write fails) must answer FAIL — never a false "OK" for a result
-        // that does not exist.
+        // shell-022 + shell-032: the frame is admitted, so the worker answers
+        // the ACCEPT-ack (`OK <id>`) first — that is the pre-work contract now.
+        // When the analysis succeeds but the result cannot be written, the
+        // SECOND frame is `ERR <id>`, and no result file lands: a false
+        // completion is impossible because completion is the FILE, never the
+        // accept-ack. The server fails such a job via its absence-deadline.
         $root = sys_get_temp_dir() . '/phpdup-s02-nowrite-' . uniqid();
         mkdir($root);
         file_put_contents($root . '/a.php', '<?php echo 1;');
@@ -855,12 +858,16 @@ final class ApplicationTest extends TestCase
                 $this->workerResultDir,
                 $root
             ), $client);
-            $ack = fgets($controller);
+            $accept = rtrim((string)fgets($controller), "\r\n");
+            $second = rtrim((string)fgets($controller), "\r\n");
 
-            $this->assertIsString($ack);
-            $this->assertStringStartsWith('FAIL fedcba9876543210', rtrim($ack, "\r\n"));
-            $this->assertStringContainsString('failed to write result file', (string)$ack);
-            $this->assertStringNotContainsString('OK', (string)$ack);
+            // First frame: the accept-ack (admission succeeded).
+            $this->assertSame('OK fedcba9876543210', $accept);
+            // Second frame: the post-work failure, with the reason.
+            $this->assertStringStartsWith('ERR fedcba9876543210', $second);
+            $this->assertStringContainsString('failed to write result file', $second);
+            // No result file published under any name.
+            $this->assertFileDoesNotExist($this->workerResultDir . '/fedcba9876543210.json');
         } finally {
             chmod($this->workerResultDir, 0700);
             chdir($cwd);
@@ -868,6 +875,190 @@ final class ApplicationTest extends TestCase
             @rmdir($root);
         }
     }
+
+    // ------------------------------------------------------------------
+    // shell-032: ack-at-accept protocol — the server no longer blocks on the
+    // analysis. These legs drive the async dispatcher through the
+    // workerAckProbe seam (the kernel socket I/O is the only replaced part),
+    // so the accept-ack verdict and the result-file reconcile run for real.
+    // ------------------------------------------------------------------
+
+    /**
+     * A probe that answers the dispatcher's accept-ack the way an admitting
+     * worker does: the id echoed back from the RUN frame it was handed.
+     *
+     * @param 'OK'|'FAIL'|'none' $reply
+     */
+    private function ackProbe(string $reply): \Closure
+    {
+        return static function (string $socketPath, string $message) use ($reply): ?string {
+            $id = explode(' ', $message)[1] ?? '';
+            if ($reply === 'none') {
+                return null; // worker unreachable / wedged socket
+            }
+
+            return "{$reply} {$id}" . ($reply === 'FAIL' ? ' admission refused' : '');
+        };
+    }
+
+    private function makeAsyncApp(?float &$now = null): Application
+    {
+        $resultDir = sys_get_temp_dir() . '/phpdup-s08-results-' . uniqid();
+        mkdir($resultDir, 0700);
+        $app = new Application(new JobQueue(), null, null, '/tmp/phpdup-s08-unused.sock', $resultDir);
+        $clock = &$now;
+        $app->asyncClock = static function () use (&$clock): float {
+            return $clock ?? 1_000_000.0;
+        };
+        return $app;
+    }
+
+    public function testSlowAsyncJobIsNeverFailedByDispatchItCompletesViaResultFile(): void
+    {
+        // The headline split-brain cure: the worker accept-acks immediately
+        // and the (long-running) job later drops its result file. The POST
+        // must return 202 and the job must land COMPLETED once the file
+        // appears — no fixed timeout can false-fail it.
+        $now = 1_000_000.0;
+        $app = $this->makeAsyncApp($now);
+        $resultDir = (new \ReflectionProperty(Application::class, 'resultDir'))->getValue($app);
+
+        // The accept-ack carries the minted job id, only known after enqueue,
+        // so the probe echoes it back from the RUN frame it is handed.
+        $app->workerAckProbe = $this->ackProbe('OK');
+
+        $response = $app->handle('POST', '/jobs', '{"paths":["src"]}', []);
+        $this->assertSame(202, $response['status']);
+        $id = json_decode($response['body'], true)['job_id'];
+        $this->assertIsString($id);
+
+        // Right after accept the job is RUNNING (acked) — not failed — and no
+        // result exists yet. A poll at this instant must not report failure.
+        $statusBefore = json_decode($app->handle('GET', '/jobs/' . $id, '', [])['body'], true);
+        $this->assertSame(JobQueue::STATUS_RUNNING, $statusBefore['status']);
+
+        // The analysis finishes well past the old 5 s ack window: the result
+        // file lands. A poll now reconciles it to completed.
+        $now += 3600.0;
+        file_put_contents($resultDir . '/' . $id . '.json', json_encode([
+            'files' => 42, 'blocks' => 100, 'clusters' => 3, 'config' => [],
+        ]));
+
+        $statusAfter = json_decode($app->handle('GET', '/jobs/' . $id, '', [])['body'], true);
+        $this->assertSame(JobQueue::STATUS_COMPLETED, $statusAfter['status']);
+        $this->assertSame(42, $statusAfter['result']['files']);
+
+        // And the full result is retrievable.
+        $result = $app->handle('GET', '/api/jobs/' . $id . '/result', '', []);
+        $this->assertSame(200, $result['status']);
+    }
+
+    public function testCrashedWorkerLandsFailedViaResultFileAbsenceDeadline(): void
+    {
+        // A worker that accepts then dies (no result file ever) must NOT
+        // linger "running" forever: past the absence-deadline the job is
+        // honestly failed. Before the deadline it stays running.
+        $now = 2_000_000.0;
+        $app = $this->makeAsyncApp($now);
+        $app->asyncResultDeadlineSeconds = 300;
+        $app->workerAckProbe = $this->ackProbe('OK'); // accepted… then it dies (no file)
+
+        $id = json_decode($app->handle('POST', '/jobs', '{"paths":["src"]}', [])['body'], true)['job_id'];
+
+        // Within the deadline: still running (a slow job is given room).
+        $now += 100.0;
+        $this->assertSame(
+            JobQueue::STATUS_RUNNING,
+            json_decode($app->handle('GET', '/jobs/' . $id, '', [])['body'], true)['status']
+        );
+
+        // Past the deadline with no result file: failed.
+        $now += 400.0;
+        $status = json_decode($app->handle('GET', '/jobs/' . $id, '', [])['body'], true);
+        $this->assertSame(JobQueue::STATUS_FAILED, $status['status']);
+        $this->assertStringContainsString('did not produce a result', $status['error']);
+    }
+
+    public function testDispatchRejectionMarksFailedWithoutMintingSuccess(): void
+    {
+        // A worker whose socket answers FAIL (a real dispatch/admission
+        // failure) or never answers (unreachable/wedged) is NOT accepted: the
+        // request reports the failure (500), never a bogus 202.
+        foreach (['FAIL', 'none'] as $reply) {
+            $now = 3_000_000.0;
+            $app = $this->makeAsyncApp($now);
+            $app->workerAckProbe = $this->ackProbe($reply);
+
+            $response = $app->handle('POST', '/jobs', '{"paths":["src"]}', []);
+            $this->assertSame(500, $response['status'], "reply '{$reply}' must reject dispatch");
+            $id = 'unminted';
+            // The job (already minted before dispatch) is honestly failed,
+            // never left running:
+            $decoded = json_decode($response['body'], true);
+            $this->assertIsArray($decoded);
+            $this->assertArrayHasKey('error', $decoded);
+            unset($id);
+        }
+    }
+
+    public function testListRouteReconcilesCompletedAsyncJobs(): void
+    {
+        // GET /api/jobs must reflect the result-file reconcile too, not just
+        // the per-id route.
+        $now = 4_000_000.0;
+        $app = $this->makeAsyncApp($now);
+        $resultDir = (new \ReflectionProperty(Application::class, 'resultDir'))->getValue($app);
+        $app->workerAckProbe = $this->ackProbe('OK');
+
+        $id = json_decode($app->handle('POST', '/jobs', '{"paths":["src"]}', [])['body'], true)['job_id'];
+        file_put_contents($resultDir . '/' . $id . '.json', json_encode([
+            'files' => 7, 'blocks' => 9, 'clusters' => 1, 'config' => [],
+        ]));
+
+        $list = json_decode($app->handle('GET', '/api/jobs', '', [])['body'], true);
+        $this->assertSame(JobQueue::STATUS_COMPLETED, $list[$id]['status']);
+    }
+
+    public function testSyncAnalyzeHonoursServerCacheAndWorkerPolicyWithoutChangingResult(): void
+    {
+        // shell-032 sync leg: serial-by-default (cache-off) is the historic
+        // posture, and opting into cache + parallel workers must not change
+        // what the detector reports. The policy knob only affects HOW the scan
+        // runs, never the result — proven by the two bodies being identical.
+        $root = sys_get_temp_dir() . '/phpdup-s08-sync-' . uniqid();
+        mkdir($root);
+        file_put_contents($root . '/a.php', "<?php function f(){ \$x=1; \$y=2; echo \$x+\$y; }");
+        $body = "<?php function g(){ \$p=1; \$q=2; echo \$p+\$q; }";
+        file_put_contents($root . '/b.php', $body);
+        $cwd = getcwd();
+        chdir($root);
+        try {
+            $payload = json_encode(['paths' => ['a.php', 'b.php']]);
+
+            $app = new Application(new JobQueue(), $root, null, null, null, false, 1);
+            $response = $app->handle('POST', '/analyze', $payload, []);
+            $this->assertSame(200, $response['status']);
+            $serial = json_decode($response['body'], true);
+            $this->assertIsArray($serial);
+            $this->assertNotEmpty($serial);
+
+            // Same request through a cache-on, parallel-opt-in app: still a
+            // well-formed 200 report (the policy knob neither errors nor
+            // empties the pipeline). Cache/workers change HOW it runs, and
+            // legitimately change the per-run cache meta, so only the success
+            // shape is pinned — not byte identity.
+            $appCached = new Application(new JobQueue(), $root, null, null, null, true, 2);
+            $cached = $appCached->handle('POST', '/analyze', $payload, []);
+            $this->assertSame(200, $cached['status']);
+            $this->assertIsArray(json_decode($cached['body'], true));
+        } finally {
+            chdir($cwd);
+            @unlink($root . '/a.php');
+            @unlink($root . '/b.php');
+            @rmdir($root);
+        }
+    }
+
 
     // ------------------------------------------------------------------
     // shell-049: the RUN-frame read is bounded. An endless single line

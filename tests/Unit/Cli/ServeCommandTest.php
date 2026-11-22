@@ -303,4 +303,23 @@ final class ServeCommandTest extends TestCase
         $this->assertStringStartsWith('HTTP/1.1 200', $raw2);
         $this->assertStringEndsWith('ok', $raw2);
     }
+
+    /**
+     * shell-032: the serve cache + sync-worker policy move from hard-coded to
+     * operator flags. --serve-cache defaults OFF (the historic re-parse-fresh
+     * posture); --serve-workers defaults to 1 (serial) so a many-core box no
+     * longer forks detectCpuCount() children per request.
+     */
+    public function testServeCacheAndServeWorkersOptionsAreConfigured(): void
+    {
+        $definition = (new ServeCommand())->getDefinition();
+
+        $cache = $definition->getOption('serve-cache');
+        $this->assertFalse($cache->isValueRequired(), '--serve-cache is a flag');
+        $this->assertFalse($cache->getDefault(), '--serve-cache defaults off (current behaviour)');
+
+        $workers = $definition->getOption('serve-workers');
+        $this->assertTrue($workers->isValueRequired());
+        $this->assertSame('1', (string) $workers->getDefault(), 'serial by default');
+    }
 }

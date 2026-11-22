@@ -32,7 +32,17 @@ use Symfony\Component\Console\Output\NullOutput;
  *   GET  /api/jobs/{id}/result  → fetch job result file
  *
  * When a worker socket is configured (async mode), POST /jobs dispatches
- * to the background worker and returns 202 immediately. Without a worker
+ * to the background worker and returns 202 immediately. The dispatch only
+ * waits for the worker's ACCEPT-ack (shell-032: the worker answers `OK
+ * <jobId>` the instant it admits the frame, before running the job), never
+ * for the analysis itself — so a job that takes longer than any socket
+ * timeout is no longer mistaken for a dispatch failure. Completion is
+ * signalled by the result file appearing: every status/result read first
+ * reconciles the queue row against the results directory, transitioning the
+ * job to completed the moment its result file is present, and to failed once
+ * the {@see self::ASYNC_RESULT_DEADLINE_SECONDS} absence-deadline lapses
+ * without one (a crashed worker leaves no file — the lane-pinned choice for
+ * the mid-job failure signal, over an explicit ERR frame). Without a worker
  * socket, analysis runs synchronously (sync mode for dev/demo).
  *
  * Security notes
@@ -76,11 +86,58 @@ final class Application
     public const REFUSED_PAYLOAD_KEYS = ['ml_pair_url'];
 
     /**
-     * @param JobQueue       $queue        Job queue used by the /jobs routes.
-     * @param string|null    $serveRoot    Absolute path to which scanning is confined.
-     * @param string|null    $token        Bearer token required for all requests when set.
-     * @param string|null    $workerSocket Path to the Unix socket for async job dispatch.
-     * @param string|null    $resultDir    Directory where result files are written by the worker.
+     * Serial worker count for the synchronous `/analyze` (and worker-less
+     * `/jobs`) pipeline (shell-032).
+     *
+     * The serve process handles requests serially; running the analysis
+     * "auto" would spawn `detectCpuCount()` forked children for EVERY
+     * request — a fork storm on a many-core box (a 64-core machine forked
+     * 64 children to scan a handful of posted paths). Forcing the sync path
+     * to a single worker keeps small payloads cheap while producing a
+     * byte-identical report; an operator who wants parallel analysis on the
+     * sync route opts in with `--serve-workers N` (still clamped by the
+     * shell-S10 `WorkerPool::clampWorkers()` ceiling). The async worker
+     * keeps its own auto-parallelism because it runs one job at a time in a
+     * dedicated background process, so its fan-out is not a per-request cost.
+     */
+    public const SERVE_WORKERS_SERIAL = 1;
+
+    /**
+     * Absence-deadline for an async job's result file (shell-032, lane
+     * choice pinned: deadline over an explicit ERR frame).
+     *
+     * After the worker's accept-ack the server never blocks on the analysis;
+     * completion is the result file appearing. A worker that crashes
+     * mid-job leaves no file, so a still-pending/running job whose result
+     * has not shown up within this window is honestly failed on the next
+     * status read. 300 s is generous enough that a slow-but-successful
+     * analysis on a large fixture corpus is never mistaken for a dead
+     * worker, yet bounded so a crashed one does not linger as "running"
+     * forever. Tests shrink it via {@see self::$asyncResultDeadlineSeconds}.
+     */
+    public const ASYNC_RESULT_DEADLINE_SECONDS = 300;
+
+    /**
+     * Bound on how long the dispatcher waits for the worker's ACCEPT-ack
+     * (shell-032). The ack is written the instant the frame is admitted, so
+     * this bounds a wedged socket — not the analysis. A second or two is
+     * ample; the whole point of the change is that this number no longer
+     * caps how long a job may run.
+     */
+    public const DISPATCH_ACK_TIMEOUT_SECONDS = 5;
+
+    /**
+     * @param JobQueue       $queue         Job queue used by the /jobs routes.
+     * @param string|null    $serveRoot     Absolute path to which scanning is confined.
+     * @param string|null    $token         Bearer token required for all requests when set.
+     * @param string|null    $workerSocket  Path to the Unix socket for async job dispatch.
+     * @param string|null    $resultDir     Directory where result files are written by the worker.
+     * @param bool           $useCache      Sync-pipeline cache posture (shell-032); default false
+     *                                      preserves the historic no-cache serve behaviour,
+     *                                      surfaced as the `--serve-cache` flag.
+     * @param int            $serveWorkers  Sync-pipeline worker count (shell-032); default
+     *                                      {@see self::SERVE_WORKERS_SERIAL} (serial), opt up
+     *                                      with `--serve-workers`.
      */
     public function __construct(
         private readonly JobQueue $queue = new JobQueue(),
@@ -88,8 +145,46 @@ final class Application
         private readonly ?string $token = null,
         private readonly ?string $workerSocket = null,
         private readonly ?string $resultDir = null,
+        private readonly bool $useCache = false,
+        private readonly int $serveWorkers = self::SERVE_WORKERS_SERIAL,
     ) {
     }
+
+    /**
+     * Test seam for the async accept-ack exchange (shell-032): null performs
+     * the real socket handshake against {@see $workerSocket}; a probe returns
+     * the worker's first reply line (the trimmed accept-ack, a `FAIL …`, or
+     * null for an unreachable/timed-out socket) so the ack parsing, the
+     * accepted/rejected verdict and every queue transition below run
+     * unseamed — only the kernel socket I/O, which a single-threaded unit
+     * cannot reproduce the async ordering of, is replaced. Mirrors how
+     * ServeCommand seams its read deadline rather than its parsing.
+     *
+     * @var (callable(string, string): (?string))|null
+     */
+    public $workerAckProbe = null;
+
+    /**
+     * Test seam for the async absence-deadline in seconds (shell-032): null
+     * uses {@see self::ASYNC_RESULT_DEADLINE_SECONDS}; a probe (0 or a tiny
+     * window) lets units pin the crashed-worker FAILED leg without a wall
+     * clock wait. Only the number is seamed; the deadline comparison and the
+     * file-absence verdict run unseamed.
+     */
+    public ?int $asyncResultDeadlineSeconds = null;
+
+    /**
+     * Test seam for the reconcile clock (shell-032): null uses
+     * `microtime(true)`; a probe returns a fixed/advanced timestamp so the
+     * deadline legs are deterministic. Only the timestamp read is seamed; the
+     * elapsed comparison, result-file lookup and queue writes run unseamed.
+     *
+     * @var (callable(): float)|null
+     */
+    public $asyncClock = null;
+
+    /** @var array<string, float> dispatch timestamp per async job id, for the absence-deadline. */
+    private array $asyncDispatchedAt = [];
 
     /**
      * Dispatch a single HTTP request to the appropriate route handler.
@@ -131,6 +226,7 @@ final class Application
             return $this->enqueueJob($payload);
         }
         if ($method === 'GET' && preg_match('#^/jobs/([0-9a-f]+)$#', $path, $m) === 1) {
+            $this->reconcileAsyncResult($m[1]);
             $job = $this->queue->get($m[1]);
             if ($job === null) {
                 return $this->json(404, ['error' => 'job not found']);
@@ -139,9 +235,11 @@ final class Application
         }
         // Async API routes
         if ($method === 'GET' && $path === '/api/jobs') {
+            $this->reconcileAllAsyncResults();
             return $this->json(200, $this->queue->list());
         }
         if ($method === 'GET' && preg_match('#^/api/jobs/([0-9a-f]+)$#', $path, $m) === 1) {
+            $this->reconcileAsyncResult($m[1]);
             $status = $this->queue->status($m[1]);
             if ($status === null) {
                 return $this->json(404, ['error' => 'job not found']);
@@ -149,6 +247,7 @@ final class Application
             return $this->json(200, $status);
         }
         if ($method === 'GET' && preg_match('#^/api/jobs/([0-9a-f]+)/result$#', $path, $m) === 1) {
+            $this->reconcileAsyncResult($m[1]);
             return $this->getJobResult($m[1]);
         }
         return $this->json(404, ['error' => 'unknown route']);
@@ -170,13 +269,13 @@ final class Application
         /** @var list<string> $paths */
         $paths = $payload['paths'];
         try {
-            $config = Config::defaults($paths);
+            $config = $this->buildAnalyzeConfig($paths);
             $state = new PipelineState($config);
             $out   = new NullOutput();
             (new ScanningStage())->run($state, $out);
-            (new PreprocessStage(useCache: false))->run($state, $out);
-            (new ClusterStage(exactOnly: true, useClusterCache: false))->run($state, $out);
-            (new RefactorStage(useCache: false))->run($state, $out);
+            (new PreprocessStage(useCache: $this->useCache))->run($state, $out);
+            (new ClusterStage(exactOnly: true, useClusterCache: $this->useCache))->run($state, $out);
+            (new RefactorStage(useCache: $this->useCache))->run($state, $out);
             $report = new \Phpdup\Reporting\Report(
                 files: count($state->files),
                 blocks: count($state->blocks),
@@ -254,11 +353,19 @@ final class Application
             }
 
             $id = $this->queue->enqueue($payload);
-            $dispatched = $this->dispatchToWorker($id, $configJson);
-            if (!$dispatched) {
+            if (!$this->dispatchToWorker($id, $configJson)) {
                 $this->queue->markFailed($id, 'failed to dispatch to worker');
                 return $this->json(500, ['error' => 'failed to dispatch job to worker']);
             }
+            // shell-032: the worker's ACCEPT-ack (`OK <id>` written before it
+            // runs the pipeline) proves the frame was admitted — it does NOT
+            // mean the analysis finished. The job is now running in the
+            // background process; its terminal state is reconciled from the
+            // result file on later status reads, so this request returns 202
+            // without ever blocking on the work. Record the dispatch instant
+            // that anchors the crashed-worker absence-deadline.
+            $this->queue->markRunning($id);
+            $this->asyncDispatchedAt[$id] = $this->asyncNow();
             return $this->json(202, ['job_id' => $id]);
         }
 
@@ -283,11 +390,16 @@ final class Application
     /**
      * Dispatch a job to the background worker via Unix socket.
      *
-     * Wire protocol: RUN <jobId> <configJson>\n
+     * Wire protocol: `RUN <jobId> <configJson>\n` in; the worker answers
+     * `OK <jobId>\n` as an ACCEPT-ack the instant it admits the frame
+     * (shell-032) — before running the pipeline. This method therefore
+     * returns as soon as the frame is accepted: it never waits for (or
+     * false-fails) a job that simply takes a while. A `FAIL` reply or no
+     * reply (unreachable/wedged socket) is a genuine dispatch failure.
      *
      * @param string               $jobId
      * @param string               $configJson Pre-encoded payload frame (JSON string).
-     * @return bool True if successfully dispatched.
+     * @return bool True if the worker accepted the job.
      */
     private function dispatchToWorker(string $jobId, string $configJson): bool
     {
@@ -295,27 +407,166 @@ final class Application
             return false;
         }
 
+        $message = "RUN {$jobId} {$configJson}\n";
+        $ack = $this->exchangeAck($message);
+
+        return is_string($ack) && str_starts_with($ack, 'OK ' . $jobId);
+    }
+
+    /**
+     * Write a RUN frame and read the worker's single accept-ack line.
+     *
+     * The worker answers `OK <jobId>` the instant it admits the frame —
+     * before running the pipeline — so this exchange is bounded by
+     * {@see self::DISPATCH_ACK_TIMEOUT_SECONDS} for a wedged socket only,
+     * never for the analysis itself. Returns the trimmed first line, or null
+     * when the socket is unreachable, the write is short, or no line arrives.
+     */
+    private function exchangeAck(string $message): ?string
+    {
+        $probe = $this->workerAckProbe;
+        if ($probe !== null) {
+            $acked = $probe($this->workerSocket ?? '', $message);
+
+            return $acked === null ? null : trim($acked);
+        }
+
         $socket = @stream_socket_client('unix://' . $this->workerSocket, $errno, $errstr, 1);
         if ($socket === false) {
-            return false;
+            return null;
         }
 
         try {
-            $message = "RUN {$jobId} {$configJson}\n";
             $written = @fwrite($socket, $message);
             if ($written === false || $written !== strlen($message)) {
-                return false;
+                return null;
             }
-            // Read response (non-blocking with 5s timeout)
-            stream_set_timeout($socket, 5);
+            stream_set_timeout($socket, self::DISPATCH_ACK_TIMEOUT_SECONDS);
             $response = @fgets($socket);
             if ($response === false || $response === '') {
-                return false;
+                return null;
             }
-            return str_starts_with(trim($response), 'OK ' . $jobId);
+
+            return trim($response);
         } finally {
             @fclose($socket);
         }
+    }
+
+    /**
+     * Build the Config for a synchronous `/analyze`/`/jobs` pipeline run.
+     *
+     * Defaults-derived, then the shell-032 serve worker policy is applied:
+     * `workers` is a root-only field that {@see Config::withOverrides()}
+     * deliberately never replaces, so the copy is rebuilt through the
+     * constructor with every other defaults field preserved. The default
+     * {@see self::SERVE_WORKERS_SERIAL} keeps a per-request serve scan from
+     * forking `detectCpuCount()` children; an explicit `--serve-workers`
+     * value rides straight through (and is still clamped by the shell-S10
+     * ceiling inside WorkerPool).
+     *
+     * @param list<string> $paths
+     */
+    private function buildAnalyzeConfig(array $paths): Config
+    {
+        $config = Config::defaults($paths);
+        if ($config->workers === $this->serveWorkers) {
+            return $config;
+        }
+
+        $constructor = (new \ReflectionClass(Config::class))->getConstructor();
+        $args = [];
+        foreach ($constructor?->getParameters() ?? [] as $param) {
+            $name = $param->getName();
+            $args[$name] = $name === 'workers' ? $this->serveWorkers : $config->{$name};
+        }
+
+        return new Config(...$args);
+    }
+
+    /**
+     * Reconcile one async job's queue row against the results directory
+     * (shell-032: completion is the result file appearing).
+     *
+     * A pending/running job whose result file has landed is acked completed
+     * (reduced to the retained summary, exactly as the sync path does); one
+     * whose absence has outlived {@see self::ASYNC_RESULT_DEADLINE_SECONDS}
+     * is honestly failed — the pinned signal for a worker that died mid-job
+     * (a crashed worker never writes the file, and there is no post-work ack
+     * left to read). Already-terminal rows are never touched, and the
+     * method is a no-op in sync mode (the inline run settled the row).
+     */
+    private function reconcileAsyncResult(string $jobId): void
+    {
+        if ($this->workerSocket === null || $this->resultDir === null) {
+            return;
+        }
+
+        $job = $this->queue->get($jobId);
+        if ($job === null) {
+            return;
+        }
+        $status = $job['status'];
+        if ($status !== JobQueue::STATUS_PENDING && $status !== JobQueue::STATUS_RUNNING) {
+            return;
+        }
+
+        $resultFile = $this->resultDir . '/' . $jobId . '.json';
+        if (is_file($resultFile)) {
+            unset($this->asyncDispatchedAt[$jobId]);
+            $content = @file_get_contents($resultFile);
+            if ($content === false) {
+                $this->queue->markFailed($jobId, 'failed to read result file');
+                return;
+            }
+            try {
+                $decoded = json_decode($content, true, 512, JSON_THROW_ON_ERROR);
+            } catch (JsonException) {
+                // The worker publishes atomically (temp+rename), so a present
+                // file that will not decode is corrupt, not in-flight.
+                $this->queue->markFailed($jobId, 'result file is not valid JSON');
+                return;
+            }
+            $this->queue->ack($jobId, $this->buildSummary(is_array($decoded) ? $decoded : null));
+            return;
+        }
+
+        $dispatchedAt = $this->asyncDispatchedAt[$jobId] ?? null;
+        if ($dispatchedAt === null) {
+            return; // not dispatched by this process — the worker owns it
+        }
+        $deadline = $this->asyncResultDeadlineSeconds ?? self::ASYNC_RESULT_DEADLINE_SECONDS;
+        if ($this->asyncNow() - $dispatchedAt > $deadline) {
+            unset($this->asyncDispatchedAt[$jobId]);
+            $this->queue->markFailed($jobId, 'worker did not produce a result within ' . $deadline . 's');
+        }
+    }
+
+    /**
+     * Reconcile every still-live async job (used by the `/api/jobs` list
+     * route, which reports the whole queue). No-op in sync mode.
+     */
+    private function reconcileAllAsyncResults(): void
+    {
+        if ($this->workerSocket === null || $this->resultDir === null) {
+            return;
+        }
+        foreach ($this->queue->list() as $id => $row) {
+            $status = $row['status'] ?? null;
+            if ($status === JobQueue::STATUS_PENDING || $status === JobQueue::STATUS_RUNNING) {
+                $this->reconcileAsyncResult((string) $id);
+            }
+        }
+    }
+
+    /**
+     * Reconcile clock (shell-032): the seamed read, defaulting to wall time.
+     * Only the timestamp source is seamable; every comparison on it is not.
+     */
+    private function asyncNow(): float
+    {
+        $clock = $this->asyncClock;
+        return $clock !== null ? $clock() : microtime(true);
     }
 
     /**
