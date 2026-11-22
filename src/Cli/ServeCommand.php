@@ -50,7 +50,19 @@ use Symfony\Component\Console\Output\OutputInterface;
  *   opens the socket and sends bytes but never completes its request is
  *   answered 408 Request Timeout once a single read goes silent past the
  *   deadline — checked in BOTH raw-read loops (header and body), so the
- *   serial accept loop is never frozen by one stalled client.
+ *   serial accept loop is never frozen by one stalled client. The shell
+ *   only ever bounds reads that follow traffic; this class completes the
+ *   posture (once-S43) with a first-byte grace
+ *   ({@see self::CLIENT_FIRST_BYTE_TIMEOUT_MS}): an accepted client
+ *   that sends NOTHING is answered 408 after the 500 ms window, so a
+ *   half-open slow-loris socket costs the queue at most that window and
+ *   `GET /healthz` keeps answering while it stalls.
+ * - The listener's accept queue is bounded explicitly
+ *   ({@see self::LISTEN_BACKLOG}, once-S43) instead of inheriting PHP's
+ *   default backlog, and the server is a documented KEEP-SERIAL design
+ *   (one connection at a time, no worker-per-connection): see
+ *   `docs/SERVER.md` "Concurrency posture" for the decision, the
+ *   known-serial limitation and the sizing guidance.
  * - The results directory (`/tmp/phpdup-results-<pid>`) is created 0700 at
  *   startup and never adopted from a foreign owner: a pre-existing
  *   directory of that name owned by another user refuses the whole
@@ -115,6 +127,37 @@ final class ServeCommand extends SymfonyCommand
      */
     public const CLIENT_READ_TIMEOUT_SECONDS = 5;
 
+    /**
+     * First-byte grace in milliseconds (once-S43): how long an ACCEPTED
+     * client may stay completely silent — not one byte of a request —
+     * before it is answered 408 and the connection is released. The
+     * shell-S04 window only restarts once bytes start flowing, so a
+     * half-open slow-loris socket (netcat connected, nothing sent)
+     * would otherwise hold the serial accept loop for the full
+     * {@see self::CLIENT_READ_TIMEOUT_SECONDS} per stalled connection.
+     * 500 ms is the immune posture: a stalling client can keep a queued
+     * `GET /healthz` from being served for at most this window, which
+     * keeps the probe's worst-case latency under the one-second
+     * acceptance bound, while remaining far above a real client's
+     * post-connect first byte. It applies to the FIRST byte only: once
+     * any request byte arrives the shell-S04 deadline takes over, so a
+     * slow-but-live client is still never cut off mid-request.
+     * `docs/SERVER.md` documents the posture and its sizing guidance.
+     */
+    public const CLIENT_FIRST_BYTE_TIMEOUT_MS = 500;
+
+    /**
+     * Explicit `listen()` backlog for the server socket (once-S43):
+     * connections that arrive while the serial loop is busy with one
+     * client complete their handshake and queue here instead of being
+     * refused. PHP's no-context default on this box measured 32
+     * (`ss -ltn` Send-Q); the explicit 64 doubles the small-team
+     * headroom and — the point of the constant — makes the queue
+     * depth a decision, not an accident. `docs/SERVER.md` carries the
+     * sizing guidance row.
+     */
+    public const LISTEN_BACKLOG = 64;
+
     /** SIGINT/SIGKILL as raw POSIX numbers: reaping must not depend on ext-pcntl constants. */
     private const SIGNAL_INT = 2;
     private const SIGNAL_KILL = 9;
@@ -166,6 +209,17 @@ final class ServeCommand extends SymfonyCommand
      * timed_out detection and the 408 path run unseamed.
      */
     public ?int $readTimeoutSeconds = null;
+
+    /**
+     * Test seam for the first-byte grace in milliseconds (once-S43):
+     * null uses {@see self::CLIENT_FIRST_BYTE_TIMEOUT_MS}; a probe
+     * raises or lowers the window so units can pin the silent-client
+     * 408 arm (and its interaction with the shell-S04 deadline) without
+     * wall-clock waits. Only the number is seamed — the silent-408 and
+     * flow-then-upgrade paths run unseamed, mirroring how
+     * {@see $readTimeoutSeconds} treats the read deadline.
+     */
+    public ?int $firstByteTimeoutMs = null;
 
     /** Why the last {@see prepareResultsDir()} refused startup ('' = none). */
     private string $resultsDirRefusal = '';
@@ -305,7 +359,19 @@ final class ServeCommand extends SymfonyCommand
 
         $errno = 0;
         $errstr = '';
-        $server = @stream_socket_server($address, $errno, $errstr);
+        // once-S43: explicit listen() backlog via the socket context — the
+        // queue that absorbs fresh connections while the serial loop is
+        // busy with one client. Passing it makes the depth a documented
+        // decision (self::LISTEN_BACKLOG) instead of PHP's ambient default;
+        // posture + sizing live in docs/SERVER.md.
+        $serverContext = stream_context_create(['socket' => ['backlog' => self::LISTEN_BACKLOG]]);
+        $server = @stream_socket_server(
+            $address,
+            $errno,
+            $errstr,
+            STREAM_SERVER_BIND | STREAM_SERVER_LISTEN,
+            $serverContext
+        );
         if ($server === false) {
             $output->writeln("<error>phpdup: bind failed: {$errstr}</error>");
             return 1;
@@ -354,12 +420,17 @@ final class ServeCommand extends SymfonyCommand
      */
     private function handleClient($client, Application $app): void
     {
-        // shell-007: bound every read on this connection. The accept loop
-        // is serial, so a stalled client (bytes started, request never
-        // completed) used to park the whole daemon until the client itself
-        // closed. One silent read past the deadline answers 408 and the
-        // loop moves on to the next client.
-        stream_set_timeout($client, $this->readTimeoutSeconds ?? self::CLIENT_READ_TIMEOUT_SECONDS);
+        // once-S43 + shell-007, one two-tier read bound per connection:
+        // while NO byte has arrived the socket rides the short first-byte
+        // deadline — an accepted-but-silent slow-loris client (netcat with
+        // the connection half-open) is released with 408 after one second,
+        // so it can never hold the serial accept loop past the /healthz
+        // probe budget. The first byte that does arrive hands the
+        // connection to the shell-S04 read deadline below: it restarts on
+        // every chunk, so a slow-but-live client is still never cut off
+        // mid-request.
+        $firstByteGraceMs = $this->firstByteTimeoutMs ?? self::CLIENT_FIRST_BYTE_TIMEOUT_MS;
+        stream_set_timeout($client, intdiv($firstByteGraceMs, 1000), $firstByteGraceMs % 1000 * 1000);
 
         $raw = '';
         // Read until end of headers, but cap headers to keep a single
@@ -373,6 +444,12 @@ final class ServeCommand extends SymfonyCommand
                     return;
                 }
                 break;
+            }
+            if ($raw === '') {
+                // shell-007: the connection is live — from here the full
+                // per-client read deadline governs every later read
+                // (including the body loop below).
+                stream_set_timeout($client, $this->readTimeoutSeconds ?? self::CLIENT_READ_TIMEOUT_SECONDS);
             }
             $raw .= $chunk;
             if (strlen($raw) > $headerCap) {

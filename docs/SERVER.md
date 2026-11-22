@@ -119,6 +119,51 @@ swap `JobQueue` for a persistent backend (e.g. Redis) you retain the
 same interface but the capacity/TTL semantics depend on your storage
 choice.
 
+## Concurrency posture
+
+`phpdup serve` is a **single-process, serial accept loop**: it handles
+one connection at a time, with the background `phpdup-worker` process
+taking async jobs (`POST /jobs`) off the HTTP thread. The alternatives
+were fork-per-connection / worker-per-connection and an event loop;
+both were evaluated and rejected here (once-S43, php-dup-finder-once-047):
+the pipeline already has one warm worker for the heavy path, this
+daemon is built for dev / small-team use, and per-connection forks
+would multiply PHP process lifetimes without adding throughput to the
+one place that is actually expensive (the analysis). The serial
+posture is a decision — its knobs and its limits are below.
+
+Because the loop is serial, every inbound socket is bounded so a single
+bad client cannot starve the others:
+
+| Knob | Value | Home |
+|------|-------|------|
+| Listen backlog (kernel accept queue for connections arriving while a client is being served) | 64 | `ServeCommand::LISTEN_BACKLOG` |
+| First-byte grace — an accepted client that sends **no request byte at all** (netcat half-open, classic slow-loris) is released with 408 | 500 ms | `ServeCommand::CLIENT_FIRST_BYTE_TIMEOUT_MS` |
+| Per-read deadline — bytes started then stalled; the window restarts on every chunk, so a slow-but-live client is never cut off mid-request | 5 s | `ServeCommand::CLIENT_READ_TIMEOUT_SECONDS` |
+| Header size cap | 64 KiB → 431 | `ServeCommand::handleClient()` |
+| Body size cap | 16 MiB → 413 | `Application::MAX_BODY_BYTES` |
+
+**Slow-loris immunity (`/healthz`).** A health probe keeps answering
+while other clients stall: a half-open connection holds the loop for at
+most the 500 ms first-byte grace, so a `GET /healthz` fired behind a
+stalling client returns 200 with sub-second worst-case latency (verified live against a
+running `phpdup serve` — see the probe transcript in
+`reviews/exec/once-S43.impl.md`); a client that starts a request and
+dribbles is released with 408 at the 5 s read deadline. Fresh sockets
+are never refused in either window — they ride the backlog.
+
+**Known-serial limitation + sizing guidance.** The bounds limit
+*stalled clients*, not *busy handlers*: exactly one request is in
+flight at a time, so a slow `/analyze` (a mid-size tree takes seconds)
+delays every queued client behind it until it completes — there is no
+per-request concurrency to size against.
+
+| Deployment | Guidance |
+|------------|----------|
+| Dev laptop / small team, loopback bind, occasional analyze | the serial server is exactly right; nothing to tune |
+| CI health probe + a few humans | fine — the 64-socket backlog absorbs bursts; keep big analyses on `POST /jobs` so the worker takes them off the HTTP thread |
+| Many users, sustained API traffic, or public-network exposure | do **not** tune this loop toward it — lift `Phpdup\Server\Application` into a capable runtime (FrankenPHP, RoadRunner, php-fpm behind nginx) and front it with TLS + rate limiting (see Security below) |
+
 ### General advice
 
 For non-localhost deployments, put a reverse proxy (nginx / Caddy)
