@@ -146,9 +146,11 @@ bad client cannot starve the others:
 **Slow-loris immunity (`/healthz`).** A health probe keeps answering
 while other clients stall: a half-open connection holds the loop for at
 most the 500 ms first-byte grace, so a `GET /healthz` fired behind a
-stalling client returns 200 with sub-second worst-case latency (verified live against a
-running `phpdup serve` — see the probe transcript in
-`reviews/exec/once-S43.impl.md`); a client that starts a request and
+stalling client returns 200 with sub-second worst-case latency — verified
+live against a running `phpdup serve` in this step's exec-phase
+acceptance probe (hold one socket accepted-but-silent, fire a fresh
+`GET /healthz` inside the ≤500 ms grace window, time the reply: 200 in
+under a second); a client that starts a request and
 dribbles is released with 408 at the 5 s read deadline. Fresh sockets
 are never refused in either window — they ride the backlog while at
 most 64 are queued.
