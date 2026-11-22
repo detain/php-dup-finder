@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Phpdup\Tests\Unit\Cli;
 
 use PHPUnit\Framework\TestCase;
+use Phpdup\Cli\Command;
 use Phpdup\Cli\ProfileRegistry;
 use Phpdup\Cli\ProjectProfileDetector;
 
@@ -318,6 +319,76 @@ final class ProjectProfileDetectorTest extends TestCase
         ) {
             $this->assertContains($orphan, $known, "the $orphan pack must be registered");
         }
+    }
+
+    /**
+     * once-S16 (php-dup-finder-once-019): every static surface that names the
+     * profile roster — profiles/*.json on disk, KNOWN_PROFILES, the --profile
+     * option description printed in help, and the docs/CLI.md table row —
+     * must be the same set. The disk list is re-derived here with its own
+     * glob (never via ProfileRegistry) so the registry cannot vouch for
+     * itself: a pack shipped but unregistered, or a name in docs/help with no
+     * file behind it, fails loudly instead of becoming an exit-2 ghost.
+     */
+    public function testProfileSurfacesAgreeWithDisk(): void
+    {
+        $disk = [];
+        foreach (glob(dirname(__DIR__, 3) . '/profiles/*.json') ?: [] as $file) {
+            $disk[] = basename($file, '.json');
+        }
+        sort($disk);
+
+        // Ghost-pack ratchet: the myadmin marker is detector-resolvable AND
+        // ships a pack (the php-dup-finder-once-019 adjudication — add the
+        // pack, do not drop the entry). Adding or removing a profile must
+        // bump this count on purpose, alongside the set-equalities below.
+        $this->assertCount(35, $disk, 'profiles/*.json files on disk');
+
+        $known = ProjectProfileDetector::knownProfiles();
+        sort($known);
+        $this->assertSame($disk, $known, 'KNOWN_PROFILES must equal the disk roster exactly');
+
+        $expected = $disk;
+        $expected[] = 'auto';
+        sort($expected);
+
+        $description = (new Command())->getDefinition()->getOption('profile')->getDescription();
+        if (preg_match('/^Apply a project profile \(([^)]*)\)/', $description, $hm) !== 1) {
+            $this->fail('the --profile help text no longer carries the roster parenthetical: ' . $description);
+        }
+        $helpNames = explode('|', $hm[1]);
+        sort($helpNames);
+        $this->assertSame($expected, $helpNames, 'the --profile help roster must equal disk plus auto');
+
+        $docs = file_get_contents(dirname(__DIR__, 3) . '/docs/CLI.md');
+        $this->assertIsString($docs);
+        if (preg_match('/\| `--profile NAME`.*?Apply a project profile \(([^)]*)\)/s', $docs, $dm) !== 1) {
+            $this->fail('docs/CLI.md no longer carries the --profile NAME roster row');
+        }
+        preg_match_all('/`([^`]+)`/', $dm[1], $tokens);
+        $docsNames = $tokens[1];
+        sort($docsNames);
+        $this->assertSame($expected, $docsNames, 'the docs/CLI.md --profile roster must equal disk plus auto');
+    }
+
+    /**
+     * once-S16 (php-dup-finder-once-019): 'myadmin' was detector-resolvable
+     * (the include/Orm / vendor/detain/db_abstraction markers) while shipping
+     * no profiles/myadmin.json — a ghost the fatal shell-S25 load turned into
+     * an exit-2 dead end on exactly the marker projects the detector answers
+     * for. The pack exists now; this pins marker -> answer -> loadable.
+     */
+    public function testMyadminMarkerDetectsProfileAndPackLoads(): void
+    {
+        $root = $this->mkproject(['include/Orm/.keep' => '', 'vendor/detain/db_abstraction/.keep' => '']);
+        $this->assertSame('myadmin', (new ProjectProfileDetector())->detect([$root]));
+        $this->assertContains('myadmin', ProjectProfileDetector::knownProfiles());
+
+        $profile = ProfileRegistry::bundled()->load('myadmin');
+        $this->assertIsArray($profile);
+        $this->assertArrayHasKey('exclude', $profile);
+        $this->assertArrayHasKey('min_block_size', $profile);
+        $this->assertArrayNotHasKey('_description', $profile, 'profile loader strips the human description');
     }
 
     /** @param array<string,string> $files */

@@ -1,0 +1,15 @@
+{
+    "_description": "MyAdmin — auto-applied when the include/Orm/ tree or a vendor/detain/db_abstraction install (the panel's house ORM layer) is present. The panel carries a lot of service-CRUD boilerplate (per-module Api/*.php status/ownership wrappers); min_block_size is bumped so thin glue stays under the reporting floor.",
+    "exclude": [
+        "vendor/**",
+        "node_modules/**",
+        "local/**",
+        "logs/**",
+        "public_html/cache/**",
+        "include/templates_c/**",
+        "**/.phpdup-cache/**"
+    ],
+    "kinds": ["method", "function", "if", "foreach", "switch", "match"],
+    "min_block_size": 7,
+    "min_cluster_impact": 20
+}
