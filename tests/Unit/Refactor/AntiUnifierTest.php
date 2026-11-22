@@ -481,6 +481,205 @@ final class AntiUnifierTest extends TestCase
         );
     }
 
+    // ── output-S26 (php-dup-finder-output-018): hole-row contract ────────────
+    //
+    // observedValues is ONE ROW PER CLUSTER MEMBER, in cluster order. A row
+    // the walk could not honestly fill is the explicit structural gap
+    // (Hole::MISSING — '') and degrades the hole; it is never silently
+    // back-filled with the seed's repr, and never '<absent>'-stamped into a
+    // hole that is not an optional segment. The seed-remap swap runs
+    // unconditionally over those placeholder rows.
+
+    public function testHoleBornAfterDivergenceKeepsOneRowPerMemberWithExplicitGaps(): void
+    {
+        // The seed's first statement becomes a value hole for members t/c
+        // (a(1) vs a(3)), so a hole born later for the b-segment is never
+        // reached by t/c — their rows must be explicit gaps, not the old
+        // seed-repr back-record that claimed agreement where none was seen
+        // (output-018 leg a1).
+        $cluster = $this->clusterFor([
+            'function s26_d($x) { a(3); b(1); }',
+            'function s26_t($x) { a(1); b(1); }',
+            'function s26_c($x) { a(2); b(1); }',
+            'function s26_r($x) { return 7; }',
+        ]);
+
+        $antiUnifier = new AntiUnifier();
+        $antiUnifier->unify($cluster);
+
+        $holes = [];
+        foreach ($cluster->holes as $h) {
+            $holes[] = [$h->placeholder, $h->kind, $h->observedValues, $h->isDegraded()];
+        }
+
+        $this->assertSame([
+            ['__P0', 'literal',        ['3', '1', '2', ''],         true],
+            ['__O1', 'optional_block', ['a(3);', '', '', '<absent>'], true],
+            ['__O2', 'optional_block', ['b(1);', 'b(1);', 'b(1);', '<absent>'], true],
+        ], $holes);
+
+        // Density: every hole carries a row for every member.
+        $count = count($cluster->members);
+        foreach ($cluster->holes as $h) {
+            $this->assertCount($count, $h->observedValues, $h->placeholder . ' must stay dense');
+        }
+
+        // ApplyExtractor wire shape unchanged: holeId => template-relative path.
+        $this->assertSame([
+            '__P0' => ['stmts', 0, 'expr', 'args', 0, 'value'],
+            '__O1' => ['stmts', 0],
+            '__O2' => ['stmts', 1],
+        ], $antiUnifier->getLastHolePaths());
+    }
+
+    public function testMemberExtrasDegriveNewlyBornHolesWithoutTouchingRows(): void
+    {
+        // The middle member's `return 7;` is behavior the optional-segment
+        // alignment silently drops — the hole born beside it degrades, but
+        // its rows stay purely '<absent>' evidence (no gap row is invented
+        // for what the template simply never aligned to).
+        $cluster = $this->clusterFor([
+            'function s26_e0($x) { a(1); b(1); c(1); }',
+            'function s26_e1($x) { return 7; }',
+            'function s26_e2($x) { a(2); b(1); c(1); }',
+        ]);
+
+        $antiUnifier = new AntiUnifier();
+        $antiUnifier->unify($cluster);
+
+        $this->assertCount(1, $cluster->holes);
+        $hole = $cluster->holes[0];
+        $this->assertSame('__O0', $hole->placeholder);
+        $this->assertSame('optional_block', $hole->kind);
+        $this->assertSame(['<absent>', 'return 7;', '<absent>'], $hole->observedValues);
+        $this->assertTrue($hole->isDegraded(), 'silently dropped member statement must be observable as degradation');
+        $this->assertNotContains('', $hole->observedValues, 'degrade-without-a-row: the rows are complete evidence, the claim is not');
+    }
+
+    public function testAbsentNeverStampedIntoValueHoleAtCollisionPath(): void
+    {
+        // A subtree hole born at stmts/1 (return 5; vs m();); the short
+        // last member has no statement there and its slot content is
+        // unrecoverable — the row is an explicit gap, NOT '<absent>'
+        // masquerading as this hole's native value language (output-018
+        // leg 4). The short member ranks out of the seed-candidate pool
+        // (top 3 by size), so the collision genuinely lands on a
+        // non-optional hole.
+        $cluster = $this->clusterFor([
+            'function s26_h0($x) { k(); m(); }',
+            'function s26_h1($x) { k(); return 5; }',
+            'function s26_h2($x) { k(); q(); }',
+            'function s26_h3($x) { k(); }',
+        ]);
+
+        $antiUnifier = new AntiUnifier();
+        $antiUnifier->unify($cluster);
+
+        $this->assertCount(1, $cluster->holes);
+        $hole = $cluster->holes[0];
+        $this->assertSame('__P0', $hole->placeholder);
+        $this->assertSame('subtree', $hole->kind);
+        $this->assertSame(['m();', 'return 5;', 'q();', ''], $hole->observedValues);
+        $this->assertNotContains('<absent>', $hole->observedValues, "'<absent>' is an optional-segment row, never a value-hole row");
+        $this->assertTrue($hole->isDegraded());
+        $this->assertSame(['__P0' => ['stmts', 1]], $antiUnifier->getLastHolePaths());
+    }
+
+    public function testOptionalHoleKeepsAbsentAsItsNativeRow(): void
+    {
+        // Mirror of the collision pin: when the hole IS an optional
+        // segment, '<absent>' remains the honest, existing representation
+        // (its string-side retirement is output-S27 territory).
+        $cluster = $this->clusterFor([
+            'function s26_i0($x) { k(); }',
+            'function s26_i1($x) { k(); m(); }',
+            'function s26_i2($x) { k(); return 5; }',
+            'function s26_i3($x) { k(); q(); }',
+        ]);
+
+        $antiUnifier = new AntiUnifier();
+        $antiUnifier->unify($cluster);
+
+        $this->assertCount(1, $cluster->holes);
+        $hole = $cluster->holes[0];
+        $this->assertSame('__O0', $hole->placeholder);
+        $this->assertSame('optional_block', $hole->kind);
+        $this->assertSame(['<absent>', 'm();', 'return 5;', 'q();'], $hole->observedValues);
+        $this->assertFalse($hole->isDegraded(), 'every member was honestly observed at this path');
+    }
+
+    public function testSeedRemapSwapRunsUnconditionallyWithPlaceholderRows(): void
+    {
+        // Seed is the LAST member (index 4). The old isset() guard skipped
+        // the remap whenever a short hole list left the seed's counterpart
+        // missing, pairing every row beside the wrong member. With density
+        // guaranteed, the swap must run and land the seed's rows at index
+        // 4 — and pass-aware backfill keeps m1's clean visit faithful
+        // ('k(1);'), while the never-honestly-observed members read '<absent>'.
+        $codes = [
+            'function s26_m0($x) { k(7); }',
+            'function s26_m1($x) { k(1); }',
+            'function s26_m2($x) { k(2); }',
+            'function s26_m3($x) { y(3); }',
+            'function s26_m4($x) { k(1); g(); }',
+        ];
+        $cluster = $this->clusterFor($codes);
+
+        $antiUnifier = new AntiUnifier();
+        $antiUnifier->unify($cluster);
+
+        // Carry-forward invariant (output-014/S25): the winning seed IS the
+        // generalized template — here the last member.
+        $printer = new Standard();
+        $this->assertNotNull($cluster->generalizedAst);
+        $this->assertNotNull($cluster->members[4]->ast);
+        $this->assertSame(
+            trim($printer->prettyPrint([$cluster->members[4]->ast])),
+            trim($printer->prettyPrint([$cluster->generalizedAst])),
+        );
+
+        $holes = [];
+        foreach ($cluster->holes as $h) {
+            $holes[] = [$h->placeholder, $h->kind, $h->observedValues, $h->isDegraded()];
+        }
+        $this->assertSame([
+            ['__O0', 'optional_block', ['<absent>', '<absent>', '<absent>', '<absent>', 'g();'],   false],
+            ['__O1', 'optional_block', ['<absent>', 'k(1);', '<absent>', '<absent>', 'k(1);'], true],
+        ], $holes);
+
+        // Rows are positionally dense: index i always describes member i —
+        // the seed row sits at index 4 exactly where the swap put it.
+        $count = count($cluster->members);
+        foreach ($cluster->holes as $h) {
+            $this->assertCount($count, $h->observedValues, $h->placeholder . ' must stay dense');
+        }
+    }
+
+    public function testFaithfulDeepHolesKeepOwnValuesAndStayNonDegraded(): void
+    {
+        // A member that diverges in a SIBLING hole still records its own
+        // value in every hole it genuinely visits — the passed-model must
+        // not smear gaps or degradation over faithfully observed rows.
+        $cluster = $this->clusterFor([
+            'function s26_b0($x) { k(7); }',
+            'function s26_b1($x) { k(1); }',
+            'function s26_b2($x) { y(3); }',
+            'function s26_b3($x) { k(2); }',
+        ]);
+
+        $antiUnifier = new AntiUnifier();
+        $antiUnifier->unify($cluster);
+
+        $holes = [];
+        foreach ($cluster->holes as $h) {
+            $holes[] = [$h->placeholder, $h->kind, $h->observedValues, $h->isDegraded()];
+        }
+        $this->assertSame([
+            ['__P0', 'literal', ['7', '1', '3', '2'], false],
+            ['__P1', 'name',    ['k', 'k', 'y', 'k'], false],
+        ], $holes, 'member b2 (y(3)) observes its own value in both holes — no gap, no degradation');
+    }
+
     /**
      * Measured on master BEFORE the carry-forward refactor (output-014
      * rebase): seed pick + hole set as they were BEFORE the carry-forward

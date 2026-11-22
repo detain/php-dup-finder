@@ -20,17 +20,29 @@ namespace Phpdup\Refactor;
  * like a PHP fragment and was indistinguishable from data. Reporters
  * surface a gap as JSON null plus the `degraded` flag on the hole — a
  * placeholder is a structural fact, not text.
+ *
+ * Since output-S26 (php-dup-finder-output-018) the gap row carries a
+ * second, wider meaning: it is also the explicit placeholder for any
+ * member whose observation at this path was NEVER GATHERED — a hole
+ * born while earlier subnodes diverged, or a presence claim about a
+ * member that never cleanly visited the path. Either way the value set
+ * is incomplete evidence, which is exactly what `degraded` says; the
+ * row count always equals the cluster's member count.
  */
 final class Hole
 {
-    /** Observed-value marker for "this member had no node at the hole path". */
+    /** Observed-value marker for "this member had no node at — or was
+     *  never observed at — the hole path". */
     public const MISSING = '';
 
     public string $inferredType = 'mixed';
     public string $suggestedName = '';
 
     /**
-     * @param list<string>           $observedValues '' entries are structural gaps (item 5.4).
+     * @param list<string>           $observedValues one row per cluster member,
+     *                                               in cluster order; '' entries
+     *                                               are structural gaps (item 5.4,
+     *                                               row contract from output-S26).
      * @param bool                   $degraded       true once any observation was recorded as a
      *                                                 structural gap — the value set is incomplete
      *                                                 evidence and reporters say so instead of
@@ -54,6 +66,23 @@ final class Hole
     {
         $this->observedValues[] = self::MISSING;
         $this->degraded         = true;
+    }
+
+    /**
+     * Flag the value set as incomplete evidence WITHOUT adding a row —
+     * for degradations the row list itself cannot express (output-018:
+     * an optional-segment alignment that silently drops member-side
+     * statements the template has no path for).
+     */
+    public function markDegraded(): void
+    {
+        $this->degraded = true;
+    }
+
+    /** Read accessor for the degraded flag (output-S26 acceptance surface). */
+    public function isDegraded(): bool
+    {
+        return $this->degraded;
     }
 
     public function uniqueValueCount(): int

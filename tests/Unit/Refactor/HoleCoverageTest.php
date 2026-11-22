@@ -9,6 +9,7 @@ use Phpdup\Extraction\Block;
 use Phpdup\Extraction\BlockExtractor;
 use Phpdup\Parsing\AstParser;
 use Phpdup\Refactor\AntiUnifier;
+use Phpdup\Refactor\Hole;
 use Phpdup\Refactor\HoleCoverage;
 
 /**
@@ -118,6 +119,60 @@ final class HoleCoverageTest extends TestCase
         // root would yield []) — exercise the empty path:
         $cluster->generalizedAst = null;
         $this->assertSame([], HoleCoverage::rootStmts($cluster));
+    }
+
+    // ── output-S26 (php-dup-finder-output-018): degraded surface ─────────────
+
+    public function testDegradedSurfaceReportsNothingOnCleanEvidence(): void
+    {
+        $cluster = $this->clusterFor([
+            'function a() { x(); y(); }',
+            'function a() { x(); y(); }',
+        ]);
+        (new AntiUnifier())->unify($cluster);
+
+        $cluster->holes = [
+            new Hole('__A', 'literal', ['1', '2'], false),
+        ];
+
+        $this->assertFalse(HoleCoverage::isDegraded($cluster));
+        $this->assertSame([], HoleCoverage::degradedHoles($cluster));
+    }
+
+    public function testDegradedSurfaceListsExactlyTheDegradedHoles(): void
+    {
+        $cluster = $this->clusterFor([
+            'function a() { x(); y(); }',
+            'function a() { x(); y(); }',
+        ]);
+
+        $clean  = new Hole('__A', 'literal', ['1', '2'], false);
+        $broken = new Hole('__B', 'subtree', ['m();', ''], true);
+        $cluster->holes = [$clean, $broken];
+
+        $this->assertTrue(HoleCoverage::isDegraded($cluster));
+        // Object identity: reporters get the very holes to annotate, not copies.
+        $this->assertSame([$broken], HoleCoverage::degradedHoles($cluster));
+    }
+
+    public function testDegradedSurfaceFromRealUnificationOfMisrecordClass(): void
+    {
+        // End-to-end: the collision shape from output-018 (a value hole at
+        // stmts/1 plus a short member whose slot content is unrecoverable)
+        // must be discoverable through this surface alone.
+        $cluster = $this->clusterFor([
+            'function h($x) { k(); m(); }',
+            'function h($x) { k(); return 5; }',
+            'function h($x) { k(); q(); }',
+            'function h($x) { k(); }',
+        ]);
+        (new AntiUnifier())->unify($cluster);
+
+        $this->assertTrue(HoleCoverage::isDegraded($cluster));
+        $degraded = HoleCoverage::degradedHoles($cluster);
+        $this->assertCount(1, $degraded);
+        $this->assertSame('__P0', $degraded[0]->placeholder);
+        $this->assertSame(['m();', 'return 5;', 'q();', ''], $degraded[0]->observedValues);
     }
 
     /** @param list<string> $functions */

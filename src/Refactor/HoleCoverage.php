@@ -141,6 +141,43 @@ final class HoleCoverage
     }
 
     /**
+     * output-S26 (php-dup-finder-output-018): does any hole in this
+     * cluster carry degraded evidence — a row that is a structural gap
+     * or an unverifiable presence claim, rather than an observation?
+     *
+     * Apply-side consumers gate on this before trusting a hole's value
+     * set (the S45 apply-args / S51 refusal chain): with the pad
+     * invariant (every hole has one row per member) the desync lies can
+     * no longer hide as SHORT lists — they surface here as flagged
+     * placeholder rows.
+     */
+    public static function isDegraded(Cluster $cluster): bool
+    {
+        foreach ($cluster->holes as $hole) {
+            if ($hole->isDegraded()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The cluster's degraded holes, in cluster hole order.
+     *
+     * @return list<Hole>
+     */
+    public static function degradedHoles(Cluster $cluster): array
+    {
+        $out = [];
+        foreach ($cluster->holes as $hole) {
+            if ($hole->isDegraded()) {
+                $out[] = $hole;
+            }
+        }
+        return $out;
+    }
+
+    /**
      * @param list<int|string>    $path
      * @param array<string, true> $holes
      * @return array{int,int} [total units, units inside holes]
