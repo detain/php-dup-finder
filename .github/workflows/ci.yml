@@ -208,3 +208,192 @@ jobs:
         # pass/fail gate; the fail-hard posture (exit non-zero on any advisory)
         # is unchanged.
         run: composer audit --no-dev
+
+  # once-S56 (php-dup-finder-once-062) — CI artifact gate: the BUILT phar runs.
+  # Before this job nothing in CI ever executed the shipped artifact (ci.yml
+  # carried zero phar build/exec steps — the "phantom pass" the finding
+  # names: a phar that cannot run would still ship green). This job builds the
+  # phar the way release.yml does, then — with phar.readonly at its DEFAULT
+  # (no -d flag on any exec leg; reading a phar needs no override) — runs
+  # `php phpdup.phar --version`, analyzes /tmp copies of the three golden
+  # corpora through the artifact and JSON-compares the reports against
+  # tests/Golden/*.json READ-ONLY (never UPDATE_SNAPSHOTS: the snapshots are
+  # the reference, the artifact is the suspect), and pins the once-S31-r1 F-2
+  # cure (shipped at 79e0ea3, Command-boundary absolutize) in its shipped
+  # form: a relative scan root through the built phar must analyze files > 0
+  # AND actually write its report — pre-cure that cell was `rc=0 ·
+  # 1 path(s) → 0 files · no report`, invisible to an rc-only check, which is
+  # why the assertion reads the JSON summary, not the exit code.
+  # Measured CI budget (once-S28-r1 reviewer + this lane, lean --no-dev
+  # vendor): first phar build ~2m41s, legs below are seconds — well inside
+  # the timeout-minutes ceiling.
+  artifact-smoke:
+    name: Built-artifact phar smoke (phpdup.phar)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          # `phar` stated explicitly like release.yml's builder job; the exec
+          # legs below never pass -d phar.readonly=0 — only WRITING a phar
+          # needs that override.
+          extensions: phar, hash, mbstring, gmp
+          coverage: none
+          tools: composer:v2
+
+      - name: Install production dependencies (release/lean shape)
+        # The builder header mandates this vendor shape: its ~18 MB size note
+        # is a --no-dev --optimize-autoloader build. A dev vendor would smoke
+        # an artifact nobody ships.
+        run: composer install --no-interaction --no-progress --prefer-dist --no-dev --optimize-autoloader
+
+      - name: Build the phar (the only step that writes one)
+        # Same invocation release.yml uses. A missing/stub-sized artifact
+        # fails HERE — the old phantom pass was possible precisely because no
+        # leg ever looked for the file.
+        run: |
+          php -d phar.readonly=0 build-phar.php
+          test -f phpdup.phar
+          php -r 'exit((filesize("phpdup.phar") ?: 0) > 1000000 ? 0 : 1);' || { echo "::error::phpdup.phar missing or implausibly small — build produced no shippable artifact"; exit 1; }
+
+      - name: Exec the artifact with phar.readonly at its default
+        # php-form (the plan's letter) plus the chmod'ed direct-exec form the
+        # README's PATH-install posture ships. --version output is pinned
+        # against src/Util/Version.php so stub, artifact and reports cannot
+        # disagree on identity (once-S30 chain).
+        run: |
+          php phpdup.phar --version
+          ./phpdup.phar --version
+          test "$(php phpdup.phar --version)" = "phpdup $(php -r 'require "src/Util/Version.php"; echo Phpdup\Util\Version::STRING;')"
+
+      - name: Golden corpora through the artifact — JSON-compare vs tests/Golden (read-only)
+        # /tmp fixture copies per the finding's release-side posture (the
+        # drop-anywhere artifact must analyze a tree OUTSIDE the checkout).
+        # Full-payload compare after the same path-normalization
+        # tests/Golden/GoldenTest.php applies (drop config.paths; rebase
+        # member/template/evidence paths onto the golden's repo-relative
+        # form) — the artifact reproducing a golden byte-for-byte in that
+        # normalised view is the strongest statement the snapshots support
+        # without re-running UPDATE_SNAPSHOTS anywhere.
+        env:
+          PHPDUP_SMOKE: ${{ runner.temp }}/phpdup-artifact-smoke
+        run: |
+          set -euo pipefail
+          rm -rf "$PHPDUP_SMOKE"; mkdir -p "$PHPDUP_SMOKE"
+          cp -r tests/Fixtures/notify "$PHPDUP_SMOKE/notify"
+          cp -r tests/Fixtures/sql "$PHPDUP_SMOKE/sql"
+          cp -r tests/Fixtures/optional "$PHPDUP_SMOKE/optional"
+          printf '{"cache_dir":"%s"}' "$PHPDUP_SMOKE/.cache" > "$PHPDUP_SMOKE/cfg.json"
+          php phpdup.phar analyze "$PHPDUP_SMOKE/notify" --exact-only --no-cache --no-lazy-ast -c "$PHPDUP_SMOKE/cfg.json" --json "$PHPDUP_SMOKE/notify.json"
+          php phpdup.phar analyze "$PHPDUP_SMOKE/sql" --exact-only --no-cache --no-lazy-ast -c "$PHPDUP_SMOKE/cfg.json" --json "$PHPDUP_SMOKE/sql.json"
+          php phpdup.phar analyze "$PHPDUP_SMOKE/optional" --no-cache --no-lazy-ast -c "$PHPDUP_SMOKE/cfg.json" --json "$PHPDUP_SMOKE/optional.json"
+          cat > "$PHPDUP_SMOKE/compare.php" <<'PHP'
+          <?php
+          declare(strict_types=1);
+          // argv: <run.json> <golden.json> <temp-corpus-base> <golden-path-prefix>
+          [$run, $gold, $base, $pre] = [$argv[1], $argv[2], $argv[3], $argv[4]];
+          $r = json_decode((string)file_get_contents($run), true);
+          $g = json_decode((string)file_get_contents($gold), true);
+          if (!is_array($r) || !is_array($g)) { fwrite(STDERR, "artifact-smoke: unparseable JSON\n"); exit(1); }
+          $base = rtrim($base, '/') . '/';
+          unset($r['config']['paths']);
+          foreach ($r['clusters'] as &$c) {
+              foreach ($c['members'] as &$m) {
+                  if (isset($m['file']) && is_string($m['file']) && str_starts_with($m['file'], $base)) {
+                      $m['file'] = $pre . substr($m['file'], strlen($base));
+                  }
+              }
+              unset($m);
+              foreach (['template', 'evidence_diff'] as $k) {
+                  if (isset($c[$k]['file']) && is_string($c[$k]['file']) && str_starts_with($c[$k]['file'], $base)) {
+                      $c[$k]['file'] = $pre . substr($c[$k]['file'], strlen($base));
+                  }
+                  if (isset($c[$k]['diff']) && is_string($c[$k]['diff'])) {
+                      $c[$k]['diff'] = str_replace($base, $pre, $c[$k]['diff']);
+                  }
+              }
+              unset($c);
+          }
+          $diffs = [];
+          $cmp = function ($a, $b, string $path) use (&$cmp, &$diffs): void {
+              if (is_array($a) && is_array($b)) {
+                  foreach (array_unique(array_merge(array_keys($a), array_keys($b))) as $k) {
+                      $cmp($a[$k] ?? ['__missing__' => true], $b[$k] ?? ['__missing__' => true], $path . '.' . $k);
+                  }
+                  return;
+              }
+              if ($a !== $b) { $diffs[] = $path; }
+          };
+          $cmp($r, $g, '');
+          if ($diffs !== []) {
+              fwrite(STDERR, 'artifact-smoke: ' . basename($gold) . ' drifted at ' . count($diffs) . " path(s):\n  " . implode("\n  ", array_slice($diffs, 0, 20)) . "\n");
+              exit(1);
+          }
+          $s = $r['summary'];
+          echo 'artifact-smoke ok: ' . basename($gold) . " reproduced exactly ({$s['files_scanned']} files, {$s['clusters']} clusters, {$s['duplicated_lines']} dup lines)\n";
+          PHP
+          php "$PHPDUP_SMOKE/compare.php" "$PHPDUP_SMOKE/notify.json" tests/Golden/notify-exact.json "$PHPDUP_SMOKE/notify" "tests/Fixtures/notify/"
+          php "$PHPDUP_SMOKE/compare.php" "$PHPDUP_SMOKE/sql.json" tests/Golden/sql-exact.json "$PHPDUP_SMOKE/sql" "tests/Fixtures/sql/"
+          php "$PHPDUP_SMOKE/compare.php" "$PHPDUP_SMOKE/optional.json" tests/Golden/optional-near-dups.json "$PHPDUP_SMOKE/optional" "tests/Fixtures/optional/"
+
+      - name: Relative-root smoke — the once-S31 F-2 shipped-form pin (files_analyzed > 0)
+        # The form README §install-as-PATH-tool documents (`phpdup analyze
+        # <relative>/`), run from a scratch cwd through the BUILT artifact.
+        # Positive half: files_scanned > 0 and the report file exists.
+        # Discriminator half (what makes this pin non-vacuous): with the
+        # parent's Command.php (pre-79e0ea3) this same cell on a real rebuild
+        # returns rc=0, "1 path(s) → 0 files" and NEVER writes the report —
+        # proven twice live (once-S31-r1, shell-S28-r1, and this lane's own
+        # dual rebuild). An rc-only check cannot see that failure; this one
+        # reads the JSON summary the way a user's results would.
+        env:
+          PHPDUP_PROBE: ${{ runner.temp }}/phpdup-artifact-probe
+        run: |
+          set -euo pipefail
+          rm -rf "$PHPDUP_PROBE"; mkdir -p "$PHPDUP_PROBE/dup/src"
+          cat > "$PHPDUP_PROBE/dup/src/A.php" <<'PHP'
+          <?php
+          class A {
+              public function render(string $label, array $items): string {
+                  $out = $label . PHP_EOL;
+                  foreach ($items as $key => $value) {
+                      if ($value === null) {
+                          $out .= $key . ": empty\n";
+                          continue;
+                      }
+                      $out .= $key . ': ' . htmlspecialchars((string) $value, ENT_QUOTES) . "\n";
+                  }
+                  return $out;
+              }
+          }
+          PHP
+          cat > "$PHPDUP_PROBE/dup/src/B.php" <<'PHP'
+          <?php
+          class B {
+              public function display(string $title, array $rows): string {
+                  $text = $title . PHP_EOL;
+                  foreach ($rows as $name => $cell) {
+                      if ($cell === null) {
+                          $text .= $name . ": empty\n";
+                          continue;
+                      }
+                      $text .= $name . ': ' . htmlspecialchars((string) $cell, ENT_QUOTES) . "\n";
+                  }
+                  return $text;
+              }
+          }
+          PHP
+          printf '{"cache_dir":"%s"}' "$PHPDUP_PROBE/.cache" > "$PHPDUP_PROBE/cfg.json"
+          cd "$PHPDUP_PROBE"
+          "$GITHUB_WORKSPACE/phpdup.phar" analyze dup --exact-only --no-cache --no-lazy-ast \
+            -c "$PHPDUP_PROBE/cfg.json" --json "$PHPDUP_PROBE/rel.json"
+          test -f "$PHPDUP_PROBE/rel.json" || { echo "::error::relative-root scan wrote no report — the F-2 silent-zero shipped form is back"; exit 1; }
+          php -r '
+            $s = json_decode((string) file_get_contents(getenv("PHPDUP_PROBE") . "/rel.json"), true)["summary"] ?? [];
+            if (($s["files_scanned"] ?? 0) < 1) { fwrite(STDERR, "artifact-smoke: relative-root scan analyzed 0 files (F-2 silent-zero)\n"); exit(1); }
+            if (($s["clusters"] ?? 0) < 1) { fwrite(STDERR, "artifact-smoke: planted relative-root dup pair disappeared (clusters=0)\n"); exit(1); }
+            echo "artifact-smoke ok: relative-root scan through the built phar analyzed {$s["files_scanned"]} files, {$s["clusters"]} clusters\n";
+          '
