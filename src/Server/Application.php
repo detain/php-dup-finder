@@ -75,6 +75,14 @@ use Symfony\Component\Console\Output\NullOutput;
  * - When a token is configured, all requests must present a matching
  *   `Authorization: Bearer <token>` header. Missing or mismatched
  *   tokens result in a 401 response.
+ * - The shipped `serve` posture is documented-local (once-S71): the
+ *   default bind carries no token — an Application built without one
+ *   authenticates nothing, and a loopback address confines the network,
+ *   not the other users of the machine — so `ServeCommand` prints the
+ *   exposure warning at startup and docs/SERVER.md "Security" owns the
+ *   full contract. An embedded host that needs authentication supplies
+ *   the token here; every route, health probe included, then gates
+ *   behind the bearer header.
  * - When {@see $trustedAuthorities} is non-empty — the loopback `serve`
  *   posture once-S42 wires — every request passes the
  *   Host/Origin/Content-Type trust gate ({@see self::requestTrustViolation()}):

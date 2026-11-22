@@ -99,6 +99,21 @@ use Symfony\Component\Console\Output\OutputInterface;
  *   `serve` startup with exit 1 (runtime posture) instead of silently
  *   writing job results into an attacker-visible tree. The shutdown
  *   handler sweeps the directory so results never outlive the process.
+ *   The sweep runs in reverse at STARTUP too (once-S71): results
+ *   directories owned by this uid whose pid is provably dead are removed
+ *   before the bind, so crashed and `kill -9` runs cannot strand pid
+ *   directories in `/tmp` forever. Live-pid, foreign-owner, symlinked and
+ *   unparseable directories are never touched; with no pid-liveness
+ *   oracle available (no ext-posix and no `/proc`) the sweep does nothing
+ *   at all — it may miss cleanup, never misfire a deletion.
+ * - Security posture of the default bind (once-S71, docs/SERVER.md
+ *   "Security"): a tokenless serve is reachable by EVERY user on this
+ *   machine — loopback confines the network, not the uid — and such a run
+ *   now prints an explicit SECURITY warning line at startup naming that
+ *   fact, the serve-root confinement, and the `--token` remedy. The
+ *   posture itself is unchanged (documented-local): tokenless loopback
+ *   stays the default, and authentication stays mandatory for any public
+ *   bind (`--bind-public` refuses to start without `--token`).
  * - SIGINT/SIGTERM terminate cleanly (shell-016): the installed handler
  *   runs the same `cleanupWorker()` the shutdown function uses — reaping
  *   the spawned worker, unlinking the worker socket and sweeping the
@@ -116,6 +131,16 @@ use Symfony\Component\Console\Output\OutputInterface;
  */
 final class ServeCommand extends SymfonyCommand
 {
+    /**
+     * Base name prefix of the per-process results directory shared with
+     * the worker: `/tmp/phpdup-results-<pid>`. Named (once-S71) so the
+     * path builder and the startup stale sweep speak one token.
+     */
+    public const RESULTS_DIR_PREFIX = 'phpdup-results-';
+
+    /** Matches a results-directory base name, capturing its owning pid. */
+    private const RESULTS_DIR_PATTERN = '/^' . self::RESULTS_DIR_PREFIX . '([0-9]+)$/';
+
     /** Allow-list of `METHOD<space>PATH-PATTERN` routes (paths matched by regex). */
     private const ROUTE_ALLOW_LIST = [
         'GET /healthz',
@@ -405,6 +430,25 @@ final class ServeCommand extends SymfonyCommand
             return 1;
         }
         $this->resultDir = $prepared;
+
+        // once-S71 (once-085): /tmp hygiene and exposure honesty, both
+        // before anything can answer a request. Stale results directories
+        // left by dead serve runs are swept here — without this step the
+        // pid-named directories accumulated across restarts forever, a
+        // silent on-disk growth the bounded-memory docs never spoke of.
+        $staleSwept = $this->sweepStaleResultsDirs();
+        if ($staleSwept > 0) {
+            $word = $staleSwept === 1 ? 'directory' : 'directories';
+            $output->writeln("<comment>phpdup serve:</comment> swept {$staleSwept} stale results {$word}");
+        }
+
+        // The loopback default carries the tokenless posture; "local" has
+        // always meant every user on this machine, and silence about it
+        // was the finding. Say so loudly once, then serve as documented.
+        $notice = self::tokenlessExposureNotice($token, $serveRoot);
+        if ($notice !== '') {
+            $output->writeln("<comment>phpdup serve:</comment> {$notice}");
+        }
 
         // Register shutdown handler to clean up worker process, socket and
         // results directory. Registered before the spawn so every early
@@ -1216,7 +1260,7 @@ final class ServeCommand extends SymfonyCommand
      */
     public static function resultDirPath(): string
     {
-        return sys_get_temp_dir() . '/phpdup-results-' . getmypid();
+        return sys_get_temp_dir() . '/' . self::RESULTS_DIR_PREFIX . getmypid();
     }
 
     /**
@@ -1296,5 +1340,147 @@ final class ServeCommand extends SymfonyCommand
                 . getmyuid() . '); refusing to adopt a foreign directory';
         }
         return null;
+    }
+
+    /**
+     * The startup warning text for a tokenless bind (once-S71) — pure, so
+     * the exact sentence is unit-pinned and docs/SERVER.md can quote it
+     * verbatim. Returns '' when a token is set (there is nothing to warn
+     * about: every route then answers 401 to unauthenticated callers).
+     *
+     * The honesty the finding asked for: "keep it local" historically
+     * meant "reachable by every user on this machine", and an empty
+     * `--serve-root` disables path confinement entirely, so that arm is
+     * named differently instead of claiming a confine that is not there.
+     */
+    public static function tokenlessExposureNotice(?string $token, string $serveRoot): string
+    {
+        if ($token !== null && $token !== '') {
+            return '';
+        }
+
+        $confine = $serveRoot === ''
+            ? 'scans are NOT confined (--serve-root is empty: any path this uid can read is scannable)'
+            : 'scans are confined to serve root ' . $serveRoot;
+
+        return 'SECURITY: serving without --token — every user on this machine can reach this '
+            . 'server unauthenticated (loopback confines the network, not the other users). '
+            . $confine . '. Pass --token to require a bearer header on every route, or run '
+            . 'behind a proxy that authenticates. See docs/SERVER.md, "Security".';
+    }
+
+    /**
+     * Startup hygiene for the pid-derived results directories (once-S71):
+     * the shutdown sweep only ever fires for processes that reach it, so
+     * a crashed or `kill -9`'d serve strands `/tmp/phpdup-results-<pid>`
+     * with its 0600 result files forever. Before binding, this method
+     * removes the directories of this uid whose owning pid is provably
+     * dead, and returns the number of directories fully removed.
+     *
+     * Containment law, deliberately as tight as the shutdown sweep's:
+     * only `RESULTS_DIR_PREFIX<digits>` names are considered; this
+     * process's own directory, symlinks, foreign-owned or unstatable
+     * directories, and anything with a live pid are skipped untouched;
+     * inside a dead directory only plain files are unlinked (a stray
+     * subdirectory is never ours to delete — it makes the rmdir fail,
+     * and a directory we could not fully remove is NOT counted). With no
+     * pid-liveness oracle (no ext-posix and no /proc) nothing can be
+     * proven dead, so nothing is removed: the sweep may miss cleanup,
+     * never misfire a deletion.
+     */
+    public function sweepStaleResultsDirs(?string $tempDir = null): int
+    {
+        $tempDir ??= sys_get_temp_dir();
+        $candidates = glob($tempDir . '/' . self::RESULTS_DIR_PREFIX . '*');
+        if ($candidates === false) {
+            return 0;
+        }
+
+        $ownPid = getmypid();
+        $removed = 0;
+        foreach ($candidates as $path) {
+            if (preg_match(self::RESULTS_DIR_PATTERN, basename($path), $digits) !== 1) {
+                continue; // not a results directory — a foreign name sharing the prefix
+            }
+            $pid = (int)$digits[1];
+            if ($pid === $ownPid) {
+                continue; // ours: prepareResultsDir adopted it, cleanupWorker owns its removal
+            }
+            if (is_link($path) || !is_dir($path)) {
+                continue; // never traverse or delete through a symlink
+            }
+            if (!$this->staleDirOwnedByUs($path)) {
+                continue; // another uid's tree (or unstatable): not ours to touch
+            }
+            if (self::pidStillAlive($pid)) {
+                continue; // live process: its directory is in play, not stale
+            }
+            if (self::removeDeadResultsDir($path)) {
+                $removed++;
+            }
+        }
+
+        return $removed;
+    }
+
+    /**
+     * Ownership gate for the startup sweep, riding the SAME seam as
+     * {@see defaultOwnershipCheck()}: the probe supplies the owner uid,
+     * the comparison is unseamed, and unstatable counts as foreign
+     * (fail-closed — the sweep skips what it cannot prove is ours).
+     */
+    private function staleDirOwnedByUs(string $dir): bool
+    {
+        $probe = $this->ownerProbe;
+        $owner = $probe !== null ? ($probe)($dir) : @fileowner($dir);
+
+        return $owner !== false && $owner !== null && $owner === getmyuid();
+    }
+
+    /**
+     * Is this pid in use? `posix_kill(0)` answers for any uid — a foreign
+     * live process yields EPERM, which still means "alive" (the
+     * conservative direction for a deletion gate). Falls back to Linux's
+     * /proc; with neither oracle available, every pid is treated as alive
+     * so the sweep becomes a no-op rather than an unverified deletion.
+     */
+    private static function pidStillAlive(int $pid): bool
+    {
+        if ($pid <= 0) {
+            return true; // digits but no plausible pid: never risk the delete
+        }
+        if (function_exists('posix_kill')) {
+            return @posix_kill($pid, 0) === true;
+        }
+        if (is_dir('/proc')) {
+            return is_dir('/proc/' . $pid);
+        }
+
+        return true;
+    }
+
+    /**
+     * Remove a proven-dead, proven-ours results directory. Same rule as
+     * the shutdown sweep: unlink only plain files, never recurse, and let
+     * a stray subdirectory defeat the rmdir — the honest false answer
+     * that keeps it out of the removed count.
+     */
+    private static function removeDeadResultsDir(string $dir): bool
+    {
+        $entries = @scandir($dir);
+        if ($entries === false) {
+            return false;
+        }
+        foreach ($entries as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            $path = $dir . '/' . $entry;
+            if (!is_dir($path) || is_link($path)) {
+                @unlink($path);
+            }
+        }
+
+        return @rmdir($dir) === true;
     }
 }

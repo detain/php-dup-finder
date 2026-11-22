@@ -155,6 +155,45 @@ to be able to scan, and treat `--token` as non-negotiable: with a
 token set, every request without a matching bearer header is
 answered `401` before any other processing.
 
+The flip side of that guard is the default it guards: a loopback
+server runs with **no token**, and "keep it local" has never meant
+"private to you". Loopback confines the *network* reach of the daemon,
+not the *users* — every account on this machine can connect to
+`127.0.0.1`, and requests then read and scan files with the privileges
+of whoever runs `phpdup serve`. Path confinement (see
+[Path confinement](#path-confinement) below and the `--serve-root`
+paragraph above) limits **what** a caller can scan — absolute paths,
+`..` traversal and symlink escapes are answered `400` before a job is
+minted — but nothing in the tokenless posture limits **who** may ask.
+What follows is the shipped honesty for that choice, three parts:
+
+1. **The server says it out loud.** A tokenless boot prints this line
+   before serving its first request (verbatim from `ServeCommand`):
+
+   ```text
+   phpdup serve: SECURITY: serving without --token — every user on this machine can reach this server unauthenticated (loopback confines the network, not the other users). scans are confined to serve root <the --serve-root value>. Pass --token to require a bearer header on every route, or run behind a proxy that authenticates. See docs/SERVER.md, "Security".
+   ```
+
+   An empty `--serve-root` disables path confinement, and the notice
+   says so instead of claiming a confine that is not there: the middle
+   clause then reads `scans are NOT confined (--serve-root is empty:
+   any path this uid can read is scannable)`. Opt out of confinement
+   knowingly.
+
+2. **The disk posture is private by construction.** Results live in a
+   0700 directory that no other uid can read, and the whole `/tmp`
+   footprint is swept at shutdown and again at startup — see
+   [Results on disk: /tmp hygiene](#results-on-disk--tmp-hygiene)
+   below.
+
+3. **On a shared machine, use the token anyway.** `--token` is only
+   *mandatory* for public binds, but the bearer gate covers every
+   route — `/healthz` included — so on any box other users can log
+   into, run the loopback server with a token too (or behind a proxy
+   that authenticates). The tokenless default is a convenience for
+   single-user workstations, and the warning line exists precisely so
+   it is never mistaken for authentication.
+
 ### Bearer token authentication
 
 When `--token` is set, every request must include:
@@ -239,6 +278,40 @@ path in `paths[]` is validated:
 This prevents phpdup from reading arbitrary filesystem paths through
 the HTTP API, even if a client bypasses the above checks.
 
+### Results on disk: /tmp hygiene
+
+Job results are not only queue rows in RAM: the worker writes each
+finished result as `<jobid>.json` into the daemon's private results
+directory, `/tmp/phpdup-results-<pid>`. That name embeds a guessable
+pid — the secrecy is carried by the modes, never by obscurity:
+
+- **0700, this uid only, fail-closed.** The directory is created 0700
+  at startup (`chmod` defeats the umask, then the mode is re-read and
+  doubted = refused). If the pid-derived name already exists and is
+  owned by another user, or is a symlink, `serve` refuses to start at
+  all rather than write results into a tree someone else can read.
+- **0600 files and socket.** The worker is spawned under `umask 0177`
+  and re-applies the mode itself: result files land 0600 and the
+  worker's Unix socket (`/tmp/phpdup-worker-<pid>.sock`) is 0600 at
+  bind, with a belt `chmod` right after. Another local uid can see the
+  names; it cannot read a byte of either.
+- **Swept at shutdown.** Every exit path — the shutdown function and
+  the SIGINT/SIGTERM handlers — unlinks the result files and removes
+  the directory, so results never outlive the process. (The same law
+  that bounds memory says nothing about the disk inside a run: each
+  completed job adds a file, and TTL/eviction prune the queue rows,
+  not the files — the shutdown sweep is the reclamation point.)
+- **Swept at startup** (once-S71). Crashes and `kill -9` skip shutdown
+  handlers, and a pid-derived directory that no longer has a server is
+  invisible litter that used to accumulate forever. Before binding,
+  `serve` now removes results directories owned by this uid whose
+  owning pid is provably dead — plain files unlinked, directory
+  removed, count reported on the startup line
+  (`phpdup serve: swept N stale results directories`). Live-pid,
+  foreign-owned and symlinked directories are never touched, and where
+  the platform offers no pid-liveness oracle at all the sweep is a
+  no-op: it may miss a cleanup, it never misfires a deletion.
+
 ### Bounded job queue & memory management
 
 The in-memory job queue (`JobQueue`) is bounded to prevent unbounded
@@ -270,6 +343,13 @@ memory growth during sustained use:
   clusters, config}` summaries extracted from the full report. The raw
   JsonReporter output is discarded immediately after the summary is
   extracted, keeping per-job memory usage small and predictable.
+
+- **Disk growth is swept, not capped** — the bounds above are about
+  RAM. Finished results also land as files under
+  `/tmp/phpdup-results-<pid>` and are not reclaimed mid-run; the
+  startup and shutdown sweeps of
+  [Results on disk: /tmp hygiene](#results-on-disk--tmp-hygiene) are
+  the on-disk counterpart to these guarantees.
 
 These guarantees apply to the built-in single-process server. If you
 swap `JobQueue` for a persistent backend (e.g. Redis) you retain the
