@@ -46,6 +46,10 @@ final class DeclaredTwinAnalyzerTest extends TestCase
         // occurrence-aware line calc must number the two rows 3 and 4,
         // not 3 and 3.
         file_put_contents($this->tmp . '/iota.php', sprintf($nearBody, "/**\n * @phpdup-ignore Fdup1234567890ab vendored copy\n * @phpdup-ignore Fdup1234567890ab vendored copy\n */", 'report_iota'));
+        // output-S34 (output-017): the harvest is token-level, so a claim
+        // inside a function body is reached too — while a string LITERAL
+        // wearing the same shape must never mint a row.
+        file_put_contents($this->tmp . '/kappa.php', "<?php\nfunction report_kappa(array \$rows): float\n{\n    // Mirror of beta.php - a body-level claim.\n    \$note = 'Mirror of nowhere.php';\n    \$sum = 0.0;\n    foreach (\$rows as \$row) {\n        \$sum += \$row['amount'] * \$row['rate'];\n    }\n    return round(\$sum, 2);\n}\n");
     }
 
     protected function tearDown(): void
@@ -91,6 +95,7 @@ final class DeclaredTwinAnalyzerTest extends TestCase
             $this->block('eta.php', 'report_eta', self::NEAR_A),
             $theta,
             $this->block('iota.php', 'report_iota', self::FAR),
+            $this->block('kappa.php', 'report_kappa', self::NEAR_A),
         ] as $b) {
             $index->add($b);
         }
@@ -272,5 +277,74 @@ final class DeclaredTwinAnalyzerTest extends TestCase
 
         $this->assertNotNull($row);
         $this->assertSame('F01234567890abcd', $row['cluster_id']);
+    }
+
+    /**
+     * output-S34 (php-dup-finder-output-017): the claim harvest reads
+     * comments off the token stream, so a claim inside a function body
+     * is reached — and a string literal wearing the claim shape is NOT,
+     * because it is no comment. (The old statement-tree read missed the
+     * former and the naive raw-text read would mint the latter.)
+     */
+    public function testBodyCommentClaimIsHarvestedAndStringLiteralIsNot(): void
+    {
+        $kappa = array_values(array_filter(
+            $this->analyzeNoClusters(),
+            static fn (array $row): bool => basename((string) $row['file']) === 'kappa.php',
+        ));
+
+        $this->assertCount(1, $kappa, 'the body comment mints one row; the mirrored string literal mints none');
+        $row = $kappa[0];
+        $this->assertSame('claim', $row['kind']);
+        $this->assertSame('beta.php', $row['reference']);
+        $this->assertSame(4, $row['line'], 'token start line of the body comment');
+        $this->assertStringEndsWith('/beta.php', (string) $row['target_file']);
+        $this->assertSame('holds', $row['verdict']);
+    }
+
+    /**
+     * The --no-cache witness for php-dup-finder-output-017, pinned
+     * structurally because the parse path is not merely skipped on cold
+     * runs — it is gone: the analyzer carries no cache input and its
+     * source contains no whole-file parse or tree-deserialize call sites
+     * at all (a counting subclass could only prove one run; this pin
+     * proves every run and fails loud if a tree load ever returns).
+     */
+    public function testAnalyzerCarriesNoTreeLoadOrCachePath(): void
+    {
+        $reflection = new \ReflectionClass(DeclaredTwinAnalyzer::class);
+        $source = (string) file_get_contents((string) $reflection->getFileName());
+
+        foreach (['parseFile', 'AstParser', 'AstCache', 'loadStatements'] as $forbidden) {
+            $this->assertStringNotContainsString($forbidden, $source,
+                "the token-level harvest must never regain a whole-file tree load via '$forbidden' (output-017)");
+        }
+
+        foreach ($reflection->getConstructor()->getParameters() as $param) {
+            $this->assertNotSame('cacheDir', $param->getName(),
+                'no disk-cache input: a cold run is the only run (output-017)');
+        }
+    }
+
+    /**
+     * output-S34 (php-dup-finder-output-028): reference resolution reads
+     * shared per-run maps — one index pass lives in analyze(), and the
+     * resolvers themselves scan no corpus.
+     */
+    public function testReferenceResolutionIsMapLookupNotPerClaimScan(): void
+    {
+        $file = (string) (new \ReflectionClass(DeclaredTwinAnalyzer::class))->getFileName();
+        $source = (string) file_get_contents($file);
+        $this->assertSame(1, substr_count($source, '$this->index->all()'),
+            'exactly one corpus pass per run (the fileBlocks grouping)');
+
+        $method = new \ReflectionMethod(DeclaredTwinAnalyzer::class, 'resolveReference');
+        $body = implode('', array_slice(
+            (array) file($file),
+            $method->getStartLine() - 1,
+            $method->getEndLine() - $method->getStartLine() + 1,
+        ));
+        $this->assertStringNotContainsString('$this->index->all()', $body,
+            'the resolver answers from the shared maps, never by rescanning the index (output-028)');
     }
 }

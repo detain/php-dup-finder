@@ -171,12 +171,16 @@ final class ReportStage implements StageInterface
         // rides the Report as `declared_twins`. Needs the block index;
         // without one (library-invoked ReportStage on hand-built state)
         // the pass is honestly empty, never faked.
+        //
+        // output-S34 (php-dup-finder-output-017): the pass is comment-
+        // token level — it loads no parsed trees and needs no disk cache,
+        // so no cacheDir seam is wired and a --no-cache run pays the same
+        // one lex pass per corpus file as a warm one.
         $declaredTwins = [];
         if ($state->index !== null) {
             $twinAnalyzer = new DeclaredTwinAnalyzer(
                 index: $state->index,
                 similarityThreshold: $config->similarityThreshold,
-                cacheDir: is_dir($config->cacheDir) ? $config->cacheDir : null,
             );
             $declaredTwins = $twinAnalyzer->analyze($clusters);
             $twinAnalyzer->annotateClusters($clusters, $declaredTwins);

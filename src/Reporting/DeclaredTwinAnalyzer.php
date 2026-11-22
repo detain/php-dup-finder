@@ -7,10 +7,6 @@ use Phpdup\Architecture\Finding;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
 use Phpdup\Index\BlockIndex;
-use Phpdup\Parsing\AstCache;
-use Phpdup\Parsing\AstParser;
-use PhpParser\Node\Stmt;
-use PhpParser\Node\Stmt\Namespace_;
 use Phpdup\Similarity\JaccardSimilarity;
 use Phpdup\Util\Num;
 
@@ -37,19 +33,27 @@ use Phpdup\Util\Num;
  * comment was written).
  *
  * The [f11]§4.3-trap: a file-header comment attaches to the file's
- * FIRST statement (namespace or class declaration) — never an extracted
- * Block — so the scan reads whole-file statement comment lists
- * (top-level statements and namespace children), not Block ranges.
- * Comments survive both AST cache round-trips (AstCache keys are
- * content hashes, so a hit is the identical file); the cache is
- * honoured read-only.
+ * FIRST statement — never an extracted Block — so the scan must read
+ * comments off the whole file, not off Block ranges. output-S34
+ * (php-dup-finder-output-017) moved that read to the token level: PHP's
+ * own tokenizer hands over the comment stream directly, so a report run
+ * deserializes no cached trees and re-parses nothing, with or without a
+ * disk cache — one lex pass per corpus file, and claims are strictly
+ * comment-sourced (a string literal that spells a claim declares
+ * nothing).
  *
- * Measurement rides the RETAINED ngram bags (no per-pair AST reload):
+ * Measurement rides the RETAINED ngram bags (no per-pair reload):
  * the claimant file's blocks against the referenced file's blocks,
  * pairwise Jaccard, best score wins. structuralHash equality is an
  * exact 1.0 hold. Below the run's similarity threshold the claim has
  * DRIFTED; an unresolvable reference is reported 'unresolved', never
  * silently dropped.
+ *
+ * Reference resolution shares two maps built ONCE per run
+ * (php-dup-finder-output-028): lowercase-path-basename => files for the
+ * path branch, and lowercased symbol => files (file basenames plus
+ * retained block names/classes) for the symbol branch. Claims stay rare
+ * without costing O(corpus) each.
  *
  * Drifted claimants that are themselves clustered receive a
  * `declared-twin-drift` warning Finding (renders through the existing
@@ -78,7 +82,6 @@ final class DeclaredTwinAnalyzer
     public function __construct(
         private readonly BlockIndex $index,
         private readonly float $similarityThreshold = 0.8,
-        private readonly ?string $cacheDir = null,
     ) {
     }
 
@@ -96,20 +99,34 @@ final class DeclaredTwinAnalyzer
             $fileBlocks[$block->file][] = $block;
         }
         ksort($fileBlocks);
+        $files = array_keys($fileBlocks);
+
+        // output-028: the two resolution indexes ride the same single
+        // pass over the corpus that groups the blocks by file — built
+        // once, consulted per claim.
+        $pathIndex = [];
+        $symbolIndex = [];
+        foreach ($files as $file) {
+            $pathIndex[basename(strtr($file, '\\', '/'))][$file] = true;
+            $symbolIndex[strtolower(basename($file, '.php'))][$file] = true;
+        }
+        foreach ($fileBlocks as $blocks) {
+            foreach ($blocks as $block) {
+                if ($block->name !== null) {
+                    $symbolIndex[strtolower($block->name)][$block->file] = true;
+                }
+                if ($block->class !== null) {
+                    $symbolIndex[strtolower($block->class)][$block->file] = true;
+                }
+            }
+        }
 
         $fileCluster = $this->fileClusterMap($clusters);
 
-        $parser = new AstParser();
-        $cache = $this->cacheDir !== null && is_dir($this->cacheDir) ? new AstCache($this->cacheDir) : null;
-
         $rows = [];
-        foreach (array_keys($fileBlocks) as $file) {
-            $statements = $this->loadStatements($parser, $cache, $file);
-            if ($statements === null) {
-                continue; // unparseable here — the pipeline already reports parse errors
-            }
-            foreach ($this->harvestClaims($file, $statements) as $claim) {
-                $rows[] = $this->evaluate($claim, $fileBlocks, $fileCluster);
+        foreach ($files as $file) {
+            foreach ($this->harvestClaims($file) as $claim) {
+                $rows[] = $this->evaluate($claim, $fileBlocks, $fileCluster, $pathIndex, $symbolIndex);
             }
         }
 
@@ -185,92 +202,57 @@ final class DeclaredTwinAnalyzer
         return $map;
     }
 
-    /** @return list<Stmt>|null */
-    private function loadStatements(AstParser $parser, ?AstCache $cache, string $file): ?array
-    {
-        if ($cache !== null) {
-            $cached = $cache->get($file);
-            if ($cached !== null) {
-                return $cached;
-            }
-        }
-        if (!is_file($file) || !is_readable($file)) {
-            return null;
-        }
-        // Read-only use: the pipeline owns cache writes (PreprocessStage);
-        // this pass never repopulates.
-        return $parser->parseFile($file);
-    }
-
     /**
-     * The [f11]§4.3-trap cure: comment lists come off whole-file
-     * statements — top-level statements, namespace children, and class
-     * declarations — never off Block ranges (the namespace/class decl a
-     * header comment attaches to is not an extracted kind).
+     * Token-level comment harvest (php-dup-finder-output-017): the
+     * analyzer reads every comment the tokenizer yields — file headers,
+     * declarations, and body comments alike — never a statement tree.
+     * Multi-line comments keep occurrence-aware line numbering
+     * (output-055): the row line is the comment's start line plus the
+     * newlines before the match's byte offset inside it.
      *
-     * @param list<Stmt> $statements
      * @return list<array{file: string, kind: string, keyword: string, reference: string, line: int, comment: string, finding_id: string|null}>
      */
-    private function harvestClaims(string $file, array $statements): array
+    private function harvestClaims(string $file): array
     {
         $claims = [];
-        $seenComments = [];
-
-        $surfaces = [];
-        foreach ($statements as $stmt) {
-            $surfaces[] = $stmt;
-            if ($stmt instanceof Namespace_) {
-                foreach ($stmt->stmts as $inner) {
-                    $surfaces[] = $inner;
-                }
-            }
+        if (!is_file($file) || !is_readable($file)) {
+            return $claims; // vanished/raced file — the pipeline already reports it
+        }
+        $code = @file_get_contents($file);
+        if ($code === false) {
+            return $claims;
         }
 
-        foreach ($surfaces as $surface) {
-            $comments = $surface->getComments();
-            $doc = $surface->getDocComment();
-            if ($doc !== null) {
-                $comments[] = $doc;
+        foreach ($this->commentTokens($code) as [$line0, $text]) {
+            if (preg_match_all(self::IGNORE_PATTERN, $text, $ignores, PREG_SET_ORDER | PREG_OFFSET_CAPTURE)) {
+                foreach ($ignores as $match) {
+                    // Occurrence-aware, mirroring the claim branch below
+                    // (output-055): strpos() always reports the FIRST
+                    // occurrence, so duplicate directive lines inside
+                    // one comment all minted rows at the first line.
+                    $claims[] = [
+                        'file' => $file,
+                        'kind' => 'directive',
+                        'keyword' => '@phpdup-ignore',
+                        'reference' => trim($match[2][0]),
+                        'line' => $line0 + substr_count(substr($text, 0, (int) $match[0][1]), "\n"),
+                        'comment' => $this->firstLine($text),
+                        'finding_id' => $match[1][0],
+                    ];
+                }
             }
-            foreach ($comments as $comment) {
-                $text = $comment->getText();
-                $dedupe = $comment->getStartLine();
-                if (isset($seenComments[$dedupe])) {
-                    continue; // getDocComment() duplicates the trailing getComments() entry
-                }
-                $seenComments[$dedupe] = true;
-                $line0 = $comment->getStartLine();
 
-                if (preg_match_all(self::IGNORE_PATTERN, $text, $ignores, PREG_SET_ORDER | PREG_OFFSET_CAPTURE)) {
-                    foreach ($ignores as $match) {
-                        // Occurrence-aware, mirroring the claim branch below
-                        // (output-055): strpos() always reports the FIRST
-                        // occurrence, so duplicate directive lines inside
-                        // one comment all minted rows at the first line.
-                        $claims[] = [
-                            'file' => $file,
-                            'kind' => 'directive',
-                            'keyword' => '@phpdup-ignore',
-                            'reference' => trim($match[2][0]),
-                            'line' => $line0 + substr_count(substr($text, 0, (int) $match[0][1]), "\n"),
-                            'comment' => $this->firstLine($text),
-                            'finding_id' => $match[1][0],
-                        ];
-                    }
-                }
-
-                if (preg_match_all(self::CLAIM_PATTERN, $text, $matches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE)) {
-                    foreach ($matches as $match) {
-                        $claims[] = [
-                            'file' => $file,
-                            'kind' => 'claim',
-                            'keyword' => strtolower(preg_replace('/\s+/u', ' ', $match[1][0]) ?? $match[1][0]),
-                            'reference' => $match[2][0],
-                            'line' => $line0 + substr_count(substr($text, 0, (int) $match[2][1]), "\n"),
-                            'comment' => $this->firstLine($text),
-                            'finding_id' => null,
-                        ];
-                    }
+            if (preg_match_all(self::CLAIM_PATTERN, $text, $matches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE)) {
+                foreach ($matches as $match) {
+                    $claims[] = [
+                        'file' => $file,
+                        'kind' => 'claim',
+                        'keyword' => strtolower(preg_replace('/\s+/u', ' ', $match[1][0]) ?? $match[1][0]),
+                        'reference' => $match[2][0],
+                        'line' => $line0 + substr_count(substr($text, 0, (int) $match[2][1]), "\n"),
+                        'comment' => $this->firstLine($text),
+                        'finding_id' => null,
+                    ];
                 }
             }
         }
@@ -278,12 +260,44 @@ final class DeclaredTwinAnalyzer
     }
 
     /**
+     * The comment stream of one file as [startLine, text] pairs. The
+     * tokenizer itself never throws on syntactically broken code (it
+     * only classifies bytes); the catch is a belt for hostile inputs,
+     * and "no claims" is its honest degradation — parsing is the
+     * pipeline's job, reported elsewhere.
+     *
+     * @return list<array{0: int, 1: string}>
+     */
+    private function commentTokens(string $code): array
+    {
+        try {
+            $tokens = @token_get_all($code);
+        } catch (\Throwable) {
+            return [];
+        }
+
+        $comments = [];
+        foreach ($tokens as $token) {
+            if (!is_array($token)) {
+                continue;
+            }
+            if ($token[0] !== T_COMMENT && $token[0] !== T_DOC_COMMENT) {
+                continue;
+            }
+            $comments[] = [(int) $token[2], (string) $token[1]];
+        }
+        return $comments;
+    }
+
+    /**
      * @param array{file: string, kind: string, keyword: string, reference: string, line: int, comment: string, finding_id: string|null} $claim
-     * @param array<string, list<Block>> $fileBlocks
-     * @param array<string, string>      $fileCluster
+     * @param array<string, list<Block>>               $fileBlocks
+     * @param array<string, string>                    $fileCluster
+     * @param array<string, array<string, true>>       $pathIndex
+     * @param array<string, array<string, true>>       $symbolIndex
      * @return array<string, mixed>
      */
-    private function evaluate(array $claim, array $fileBlocks, array $fileCluster): array
+    private function evaluate(array $claim, array $fileBlocks, array $fileCluster, array $pathIndex, array $symbolIndex): array
     {
         $row = [
             'file' => $claim['file'],
@@ -305,7 +319,7 @@ final class DeclaredTwinAnalyzer
             return $row;
         }
 
-        $targetFile = $this->resolveReference($claim['reference'], array_keys($fileBlocks));
+        $targetFile = $this->resolveReference($claim['reference'], $pathIndex, $symbolIndex);
         if ($targetFile === null) {
             return $row;
         }
@@ -322,21 +336,21 @@ final class DeclaredTwinAnalyzer
      * Path references match corpus files exactly or by (unique) suffix;
      * symbol references match block names / class names / file basenames
      * through the same unique-hit rule. Ambiguity stays honest as
-     * 'unresolved'.
+     * 'unresolved'. Both branches are map lookups over the shared
+     * per-run indexes (php-dup-finder-output-028) — the path branch only
+     * touches same-basename candidates, never the whole corpus.
      *
-     * @param list<string> $files
+     * @param array<string, array<string, true>> $pathIndex
+     * @param array<string, array<string, true>> $symbolIndex
      */
-    private function resolveReference(string $reference, array $files): ?string
+    private function resolveReference(string $reference, array $pathIndex, array $symbolIndex): ?string
     {
         if (str_ends_with($reference, '.php')) {
             $needle = ltrim(strtr($reference, '\\', '/'), '/');
-            $needleBase = basename($needle);
+            $candidates = $pathIndex[basename($needle)] ?? [];
             $suffixHits = [];
-            foreach ($files as $file) {
+            foreach (array_keys($candidates) as $file) {
                 $normalized = strtr($file, '\\', '/');
-                if (basename($normalized) !== $needleBase) {
-                    continue;
-                }
                 if ($normalized === $needle || str_ends_with($normalized, '/' . $needle)) {
                     return $file;
                 }
@@ -345,7 +359,7 @@ final class DeclaredTwinAnalyzer
             // A bare "X.php" mention: unique basename hit resolves; a
             // pathed mention whose directories differ does not.
             if (count($suffixHits) === 1 && !str_contains($needle, '/')) {
-                return array_key_first($suffixHits);
+                return (string) array_key_first($suffixHits);
             }
             return null;
         }
@@ -357,19 +371,7 @@ final class DeclaredTwinAnalyzer
 
         $lastSlash = strrpos($needle, '\\');
         $lastSegment = $lastSlash === false ? $needle : substr($needle, $lastSlash + 1);
-        $haystacks = [];
-        foreach ($files as $file) {
-            $haystacks[strtolower(basename($file, '.php'))][$file] = true;
-        }
-        foreach ($this->index->all() as $block) {
-            if ($block->name !== null && strtolower($block->name) === $lastSegment) {
-                $haystacks[$lastSegment][$block->file] = true;
-            }
-            if ($block->class !== null && strtolower($block->class) === $lastSegment) {
-                $haystacks[$lastSegment][$block->file] = true;
-            }
-        }
-        $hits = $haystacks[$lastSegment] ?? [];
+        $hits = $symbolIndex[$lastSegment] ?? [];
         return count($hits) === 1 ? (string) array_key_first($hits) : null;
     }
 
