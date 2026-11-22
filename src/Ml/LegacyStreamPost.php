@@ -37,7 +37,10 @@ final class LegacyStreamPost
             return [null, []];
         }
         $resp = stream_get_contents($fh, $maxReadBytes);
-        $headers = $http_response_header;
+        // The (array) cast mirrors MlPairClient's original inline pattern:
+        // it pins the value to a definite list<string> for psalm's
+        // possibly-undefined modelling of the magic variable.
+        $headers = (array) $http_response_header;
         fclose($fh);
         if ($resp === false) {
             return [null, $headers];
