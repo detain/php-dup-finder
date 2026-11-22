@@ -244,6 +244,209 @@ final class CliDefaultShadowingTest extends TestCase
         $this->assertFalse(is_file($tree . '/phpdup.json'), 'InitCommand must NOT have run — the ./init token reached analyze as a path');
     }
 
+    // ------------------------------------------------------------------
+    // shell-S28 (php-dup-finder-shell-039 / shell-055 / once-S31-r1 F-2):
+    // --dry-run is no longer a registered-but-never-read phantom, the
+    // grouped help no longer drifts from the option surface, and argv scan
+    // roots are absolutized at the Command boundary so a relative root
+    // resolves against the invocation CWD — never the phar archive root.
+
+    public function testGroupedHelpListsEveryRegisteredOption(): void
+    {
+        // shell-055: the help cheat-sheet had drifted (--pager/--debug-log
+        // missing). Pinned as a set relation, not a string grep, so ANY new
+        // option without a grouped-help home fails here, not in a user's
+        // terminal.
+        $command = new Command();
+        $help = $command->getHelp();
+        $this->assertNotEmpty($help);
+
+        $missing = [];
+        foreach ($command->getDefinition()->getOptions() as $name => $option) {
+            if (!str_contains($help, '--' . $name)) {
+                $missing[] = $name;
+            }
+        }
+        $this->assertSame([], $missing, 'every registered option must appear in the grouped help');
+    }
+
+    public function testDryRunDefaultKeepsThePreviewPosture(): void
+    {
+        // shell-039: --dry-run used to be invisible to execute() —
+        // applyDryRun was hardcoded true regardless. The DEFAULT posture is
+        // still preview (F1a's safe direction), pinned here so the wiring
+        // cannot regress to "flag parsed, value dropped".
+        $reportArgs = $this->runtimeReportArgs(['--apply' => true]);
+
+        $this->assertTrue($reportArgs['applyDir'] === 'refactored', '--apply engages the apply posture');
+        $this->assertTrue($reportArgs['applyDryRun'], 'absent --dry-run keeps the preview posture (apply.diff)');
+    }
+
+    public function testDryRunFalseFlipsToTheRealApplyPosture(): void
+    {
+        $reportArgs = $this->runtimeReportArgs(['--apply' => true, '--dry-run' => 'false']);
+
+        $this->assertSame('refactored', $reportArgs['applyDir']);
+        $this->assertFalse($reportArgs['applyDryRun'], '--dry-run=false must open the F1b branch');
+    }
+
+    public function testDryRunAcceptsTheDocumentedBooleanSpellings(): void
+    {
+        $truthy = ['true', '1', 'yes', 'on', 'TRUE', 'Yes'];
+        $falsy = ['false', '0', 'no', 'off', 'FALSE', 'No'];
+        foreach ($truthy as $raw) {
+            $reportArgs = $this->runtimeReportArgs(['--apply' => true, '--dry-run' => $raw]);
+            $this->assertTrue($reportArgs['applyDryRun'], "--dry-run={$raw} must read preview");
+        }
+        foreach ($falsy as $raw) {
+            $reportArgs = $this->runtimeReportArgs(['--apply' => true, '--dry-run' => $raw]);
+            $this->assertFalse($reportArgs['applyDryRun'], "--dry-run={$raw} must read real-apply");
+        }
+
+        // The bare native-true form (what a post-normalizer --dry-run=true
+        // binds as, and what ArrayInput callers pass directly) reads preview.
+        $reportArgs = $this->runtimeReportArgs(['--apply' => true, '--dry-run' => true]);
+        $this->assertTrue($reportArgs['applyDryRun'], 'native bool true must flow, not fall through the door');
+    }
+
+    public function testDryRunRejectsNonBooleanWithoutRunning(): void
+    {
+        // shell-S24 door idiom: null means refused (exit 2), never run-on.
+        $this->assertNull($this->parseRuntime(['--apply' => true, '--dry-run' => 'maybe']));
+    }
+
+    public function testDryRunNeverLeaksIntoOverrides(): void
+    {
+        // render-only flag (presentation posture, not a Config key) — the
+        // NN1 shadowing family applies.
+        $overrides = $this->parseCliOverrides(['--dry-run' => 'false']);
+
+        $this->assertSame([], $overrides, '--dry-run must never reach the override dict');
+    }
+
+    public function testArgvScanRootsAreAbsolutizedAtTheBoundary(): void
+    {
+        // once-S31-r1 F-2 cure seam. Inside an executed phar, relative file
+        // calls resolve against the ARCHIVE (is_dir('dup') false, getcwd()
+        // normal), so the shipped form scanned 0 files at exit 0. The cure
+        // anchors every argv spelling on the invocation CWD once, here, at
+        // the Command boundary — FileScanner below never sees a relative
+        // token again. Chdir into a scratch tree so the anchor is a
+        // different directory than the repo: a leak through realpath of
+        // the repo would still "work" and hide the bug, so this pins the
+        // CWD-anchoring property directly.
+        $tree = $this->makeS19ScratchDir();
+        mkdir($tree . '/dup', 0o777, true);
+        $original = getcwd();
+        $this->assertIsString($original);
+        chdir($tree);
+        try {
+            $roots = $this->absolutize(['dup', './dup/', 'missing/rel', $tree . '/dup', '', '.', '..']);
+
+            $this->assertSame($tree . '/dup', $roots[0], 'a bare relative root absolutizes on the invocation CWD');
+            $this->assertSame($tree . '/dup', $roots[1], './x/ and x arrive at the same absolute');
+            $this->assertSame($tree . '/missing/rel', $roots[2], 'a not-yet-existing relative root keeps a real-filesystem absolute spelling (never phar://)');
+            $this->assertStringNotContainsString('phar://', $roots[2]);
+            $this->assertSame($tree . '/dup', $roots[3], 'an absolute root passes through canonical');
+            $this->assertSame('', $roots[4], 'the empty-string entry keeps its pass-through posture');
+            $this->assertSame($tree, $roots[5], "'.` anchors on the CWD");
+            $this->assertSame(dirname($tree), $roots[6], "'..' walks above the CWD");
+            foreach ($roots as $i => $root) {
+                if ($root === '') {
+                    continue;
+                }
+                $this->assertStringStartsWith('/', $root, "root #{$i} must be absolute at admission");
+                $this->assertFalse(str_starts_with($root, 'phar://'), "root #{$i} must never resolve into the archive");
+            }
+        } finally {
+            chdir($original);
+        }
+    }
+
+    public function testBareDryRunFlagBeforeAPathStillScansItThroughTheRealLauncher(): void
+    {
+        // The VALUE_OPTIONAL registration has the token-swallow hazard
+        // (ArgvInput would bind "src" as --dry-run's value and analyze would
+        // die at the path door). The run() normalizer is the only cure; a
+        // subprocess through the REAL launcher is the only honest proof.
+        $tree = $this->makeS19DupTree();
+        $cwd = $this->makeS19ScratchDir();
+        $json = $cwd . '/bare-dry-run.json';
+
+        [$code, , $err] = $this->runPhpDup(['--dry-run', $tree, '--json', $json], $cwd);
+
+        $this->assertSame(0, $code, '--dry-run must not swallow the path argument; stderr was: ' . $err);
+        $this->assertTrue(is_file($json));
+        $report = json_decode((string) file_get_contents($json), true);
+        $this->assertIsArray($report);
+        $this->assertGreaterThanOrEqual(1, (int) $report['summary']['clusters']);
+    }
+
+    public function testApplyDryRunPosturesSwitchTheArtifactEndToEnd(): void
+    {
+        // shell-039 acceptance with real behavior, through the real
+        // launcher: preview posture lands refactored/apply.diff and leaves
+        // sources untouched; --dry-run=false lands refactored/apply-summary.md
+        // instead (the F1b branch that used to be unreachable). The
+        // artifact-name switch is the observable — whether F1b rewrites a
+        // given pair is the apply extractor's per-cluster safety business,
+        // not this flag's contract.
+        $prev = $this->makeS19DupTree();
+        $real = $this->makeS19DupTree();
+
+        [$codeA] = $this->runPhpDup(['--apply', $prev, '--json', $prev . '/a.json'], $prev);
+        $this->assertSame(0, $codeA);
+        $this->assertTrue(is_file($prev . '/refactored/apply.diff'), 'default posture must preview via apply.diff');
+        $this->assertFalse(is_file($prev . '/refactored/apply-summary.md'), 'preview posture must not run F1b');
+
+        [$codeB] = $this->runPhpDup(['--apply', '--dry-run=false', $real, '--json', $real . '/b.json'], $real);
+        $this->assertSame(0, $codeB);
+        $this->assertTrue(is_file($real . '/refactored/apply-summary.md'), '--dry-run=false must land the F1b summary artifact');
+        $this->assertFalse(is_file($real . '/refactored/apply.diff'), 'real-apply posture must not emit the preview diff');
+    }
+
+    /**
+     * @param array<string,mixed> $params
+     * @return array<string,mixed>
+     */
+    private function runtimeReportArgs(array $params): array
+    {
+        $parsed = $this->parseRuntime($params);
+        $this->assertIsArray($parsed, 'the input must be accepted by the runtime door');
+
+        return $parsed['reportArgs'];
+    }
+
+    /**
+     * @param array<string,mixed> $params
+     * @return array<string,mixed>|null
+     */
+    private function parseRuntime(array $params): ?array
+    {
+        $command = new Command();
+        $input = new ArrayInput($params, $command->getDefinition());
+
+        $method = new \ReflectionMethod(Command::class, 'parseRuntimeOptions');
+
+        /** @var array<string,mixed>|null $parsed */
+        $parsed = $method->invoke($command, $input, new NullOutput(), false);
+        return $parsed;
+    }
+
+    /**
+     * @param list<string> $paths
+     * @return list<string>
+     */
+    private function absolutize(array $paths): array
+    {
+        $command = new Command();
+        $method = new \ReflectionMethod(Command::class, 'absoluteArgvScanRoots');
+
+        /** @var list<string> $roots */
+        $roots = $method->invoke($command, $paths);
+        return $roots;
+    }
+
     protected function tearDown(): void
     {
         foreach ($this->s19ScratchDirs as $dir) {

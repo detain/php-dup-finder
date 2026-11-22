@@ -166,7 +166,7 @@ final class Command extends SymfonyCommand
             ->addOption('diff', null, InputOption::VALUE_REQUIRED, 'Write per-cluster unified diffs into DIR')
             ->addOption('patch', null, InputOption::VALUE_REQUIRED, 'Write a single cumulative patch file containing every cluster diff')
             ->addOption('apply', null, InputOption::VALUE_NONE, 'Write a cumulative apply.diff containing all cluster refactor patches')
-            ->addOption('dry-run', null, InputOption::VALUE_NONE, 'With --apply: preview the refactor patch without modifying any files (default for --apply in F1a; F1b will make this explicit)')
+            ->addOption('dry-run', null, InputOption::VALUE_OPTIONAL, 'With --apply: preview the refactor patch instead of rewriting member files. Bare --dry-run or the default (true) keeps the preview posture (refactored/apply.diff, sources untouched); --dry-run=false runs the real apply path (member files rewritten, refactored/apply-summary.md lands instead). A value outside the boolean shapes true|false|1|0|yes|no|on|off is rejected with exit 2. Inert without an apply posture (--apply or config "apply": true).', true)
             ->addOption('baseline', null, InputOption::VALUE_REQUIRED, 'CI baseline file. If file exists: compare and exit 4 if new clusters found. If file does not exist: write baseline and exit 0 (first-run auto-baseline).')
             ->addOption('baseline-out', null, InputOption::VALUE_REQUIRED, 'Write current clusters as a baseline snapshot to FILE (overwrites existing).')
             ->addOption('limit', null, InputOption::VALUE_REQUIRED, 'Show at most N clusters in CLI output: 0 prints NO detail cards (unlike the --candidate-budget / --max-clusters family it is NOT the 0=unlimited sentinel — pass a large N to see every cluster), file sinks such as --json/--html always carry every cluster regardless of N, and a negative or non-numeric N is rejected with exit 2', 50)
@@ -181,7 +181,7 @@ final class Command extends SymfonyCommand
         // ── Performance / runtime ──────────────────────────────────────────
         $this
             ->addOption('workers', 'j', InputOption::VALUE_REQUIRED, 'Worker count for parallel preprocess + pair scoring. 0 = auto-detect CPU count (portable probe chain, PHPDUP_WORKERS seeds it); 1 = serial. Above the pool ceiling (4 x detected CPUs) the run is admitted with a warning and the pool clamps.')
-            ->addOption('no-cache', null, InputOption::VALUE_NONE, 'Disable AST cache for this run')
+            ->addOption('no-cache', null, InputOption::VALUE_NONE, 'Disable the per-file disk caches for this run: the AST parser blob cache is neither read NOR written (fresh parse), and the per-file index (IndexStore) is not reused. The cluster cache (clusters.* under cache_dir) is governed by --no-incremental, not by this flag.')
             ->addOption('no-incremental', null, InputOption::VALUE_NONE, 'Disable per-file index reuse')
             ->addOption('no-lazy-ast', null, InputOption::VALUE_NONE, 'Keep all original ASTs in memory (higher RSS, faster anti-unification)')
             ->addOption('max-memory', null, InputOption::VALUE_REQUIRED, 'Soft memory ceiling in MB. When peak RSS exceeds this mid-pipeline, phpdup logs a warning and suggests --exact-only.')
@@ -228,7 +228,7 @@ Options grouped by category:
     --graphviz, --plantuml,
     --refactor-patch, --refactor-tests,
     --diff, --patch, --apply, --dry-run, --limit, --sort, --stats,
-    --summary-only, --clusters, --scope
+    --summary-only, --clusters, --scope, --pager, --debug-log
 
   <comment>CI / Baseline</comment>
     --baseline, --baseline-out
@@ -277,6 +277,19 @@ HELP;
     {
         $this->mergeApplicationDefinition();
 
+        // shell-S28 (php-dup-finder-shell-039): --dry-run is VALUE_OPTIONAL so
+        // both the bare flag and --dry-run=false reach execute(); a
+        // VALUE_OPTIONAL token written bare would otherwise SWALLOW the next
+        // argv token (ArgvInput probes it as the value whenever none was
+        // attached), so `phpdup analyze --dry-run src` would lose src and die
+        // at the path door. Attaching the value BEFORE the first bind turns
+        // the bare token into its explicit form; '--dry-run=' (empty value,
+        // same consumption hazard) lands in the same shape. Everything past
+        // a '--' end-of-options marker is an argument token and stays typed.
+        if ($input instanceof \Symfony\Component\Console\Input\ArgvInput) {
+            $this->attachBareDryRunValue($input);
+        }
+
         try {
             $input->bind($this->getDefinition());
         } catch (ConsoleRuntimeException $e) {
@@ -308,6 +321,44 @@ HELP;
             : null;
     }
 
+    /**
+     * Rewrite bare `--dry-run` / empty-value `--dry-run=` argv tokens into
+     * the explicit `--dry-run=true` form. See run() for the WHY: a
+     * VALUE_OPTIONAL token without an attached value peeks at the next
+     * token, which would turn `analyze --dry-run src/` into dry-run='src/'.
+     * Tokens after the '--' end-of-options marker are argument values and
+     * are left exactly as typed.
+     */
+    private function attachBareDryRunValue(\Symfony\Component\Console\Input\ArgvInput $input): void
+    {
+        $tokens = $input->getRawTokens();
+        $changed = false;
+        foreach ($tokens as $i => $token) {
+            if ($token === '--') {
+                break;
+            }
+            if ($token === '--dry-run' || $token === '--dry-run=') {
+                $tokens[$i] = '--dry-run=true';
+                $changed = true;
+            }
+        }
+        if (!$changed) {
+            return;
+        }
+
+        // setTokens() is protected in the vendored Symfony line; Input::bind()
+        // re-runs parse() over the `tokens` property on EVERY bind, and this
+        // command binds (run() pre-bind + parent rebind) strictly after this
+        // point, so writing the property pre-bind is the whole contract. If a
+        // future Symfony renames the property the write fails loudly instead
+        // of silently skipping normalization — and the bare-flag subprocess
+        // pin in CliDefaultShadowingTest turns red on any drift (an
+        // attached-value-less --dry-run would eat the next token there).
+        $property = new \ReflectionProperty($input, 'tokens');
+        $property->setAccessible(true);
+        $property->setValue($input, $tokens);
+    }
+
     #[\Override]
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
@@ -322,6 +373,14 @@ HELP;
             $output->writeln('Example: <info>phpdup src/ --html=build/dup-report</info>');
             return 2;
         }
+
+        // shell-S28 (once-S31-r1 F-2, routed through shell-S27-r1 §(b)):
+        // absolutize the argv scan roots at this boundary — every consumer
+        // below (profile auto-detect, auto-tune probe, Config load, diff-base
+        // cohort, cache-trust gate, FileScanner walk) then walks the real
+        // filesystem, and the shipped-artifact silent-zero dies at its root
+        // instead of at each stat site. See the method for the phar story.
+        $paths = $this->absoluteArgvScanRoots($paths);
 
         $overrides = $this->parseCliOverrides($input, $output);
         if ($overrides === null) {
@@ -560,6 +619,67 @@ HELP;
         if ($real !== false) {
             return $real;
         }
+        return self::lexicalJoin($path, $cwd);
+    }
+
+    /**
+     * shell-S28 (once-S31-r1 F-2 / shell-S27-r1 §(b)): absolutize every argv
+     * scan root at the Command boundary so a relative root resolves against
+     * the invocation CWD — never the phar archive root. Inside an executed
+     * phar, PHP's stream layer resolves RELATIVE file calls against the
+     * archive regardless of Phar::interceptFileFuncs() (once-S31's micro-phar
+     * evidence: is_dir('dup') false, is_dir('.') false, is_dir('/abs/dup')
+     * true, getcwd() normal), so the README-documented shipped form
+     * `phpdup analyze <rel>/` silently printed "1 path(s) → 0 files" at exit
+     * 0 while the checkout analyzed the same pair. Anchoring the spellings
+     * on getcwd() at admission fixes it at the root for EVERY consumer
+     * (profile auto-detect, auto-tune probe, Config load, diff-base cohort,
+     * cache-trust gate, FileScanner walk) without touching the walk itself:
+     * once-S28's prune/re-root + skipNotes contract and once-S87's
+     * disk-identity dedupe receive already-absolute paths and stay exactly
+     * as written. Per-directory config discovery is unaffected by design —
+     * its keys are realpath() answers (ConfigLoader) and Config::effectiveFor
+     * realpath-matches — relative vs absolute argv cannot shift which
+     * .phpdup.json wins (once-S27-r1 §(b) probe + this lane's pin).
+     *
+     * A phar:// answer from realpath() (if the wrapper ever resolves a
+     * relative spelling INSIDE the archive) is re-anchored on the invocation
+     * cwd by lexical join — an archive path is useless to FileScanner.
+     * An empty-string element passes through untouched: it is falsy at the
+     * admission door above only in list position, and every existing
+     * consumer treats '' as a no-op root (cacheResidesInScanRoot skips it).
+     *
+     * @param list<string> $paths argv path spellings as typed
+     * @return list<string> absolute real-filesystem roots
+     */
+    private function absoluteArgvScanRoots(array $paths): array
+    {
+        $cwd = getcwd();
+        if ($cwd === false) {
+            return $paths; // cannot anchor — keep the typed spellings (same fail-open posture as the cache-trust gate)
+        }
+
+        $roots = [];
+        foreach ($paths as $root) {
+            if ($root === '') {
+                $roots[] = $root;
+                continue;
+            }
+            $abs = self::toAbsolutePath($root, $cwd);
+            if (str_starts_with($abs, 'phar://')) {
+                $abs = self::lexicalJoin($root, $cwd);
+            }
+            $roots[] = $abs;
+        }
+        return $roots;
+    }
+
+    /**
+     * Lexical half of {@see self::toAbsolutePath()}: join $path on $cwd and
+     * strip `.` / `..` / empty segments without touching the filesystem.
+     */
+    private static function lexicalJoin(string $path, string $cwd): string
+    {
         $absolute = $path !== '' && $path[0] === '/' ? $path : $cwd . '/' . $path;
         $segments = [];
         foreach (explode('/', $absolute) as $segment) {
@@ -948,10 +1068,14 @@ HELP;
      */
     private function parseRuntimeOptions(InputInterface $input, OutputInterface $output, bool $autoTuneExactOnly, ?bool $applyMode = null): ?array
     {
-        // --no-cache silences INDEX reuse (the per-file IndexStore lookup in
-        // PreprocessStage and the cached AST reload in RefactorStage). It does
-        // NOT stop the on-disk parser cache: PreprocessWorker always writes
-        // AstCache entries under config->cache_dir during a run. See docs/CLI.md.
+        // --no-cache silences the per-file disk caches for this run, READS AND
+        // WRITES alike: the per-file IndexStore is not built (PreprocessStage
+        // skips reuse), the worker's on-disk AST parser cache is disabled
+        // (engine-S26 / engine-019 — astDiskCache=false gives the worker an
+        // empty cache dir, so no blobs are parsed from or written to disk),
+        // and RefactorStage does not reload cached ASTs. The cluster cache
+        // (clusters.* under cache_dir) is governed by --no-incremental, not
+        // by this flag. See docs/CLI.md.
         $useCache  = !$input->getOption('no-cache');
         $exactOnly = (bool)$input->getOption('exact-only') || $autoTuneExactOnly;
         $showStats = (bool)$input->getOption('stats');
@@ -1017,6 +1141,49 @@ HELP;
             return null; // shell-S24: was print-and-continue
         }
 
+        // shell-S28 (php-dup-finder-shell-039): --dry-run used to be registered,
+        // documented in the grouped help, and NEVER READ — applyDryRun below
+        // was hardcoded true (F1a's safe-direction stand-in for the F1b
+        // feature). The apply plumbing one layer below always honored a
+        // dryRun arg (RefactorPatchReporter::writeTo(apply: true, dryRun:
+        // ...)); this leg wires the option to that arg. The value arrives
+        // native bool from a bare flag or the Option default (true), or as
+        // the literal string an explicit --dry-run=<value> attached. Only the
+        // boolean shapes the flag's own help lists are admitted; a bogus
+        // value is a usage refusal (null => exit 2), the shell-S24 door.
+        $dryRunRaw = $input->getOption('dry-run');
+        if ($dryRunRaw === null) {
+            $dryRun = true; // option absent — F1a preview posture is the default
+        } elseif ($dryRunRaw === true) {
+            $dryRun = true; // bare --dry-run (VALUE_OPTIONAL with no attached value)
+        } elseif (is_bool($dryRunRaw)) {
+            $dryRun = $dryRunRaw;
+        } elseif (is_string($dryRunRaw)) {
+            switch (strtolower(trim($dryRunRaw))) {
+                case '1':
+                case 'true':
+                case 'yes':
+                case 'on':
+                    $dryRun = true;
+                    break;
+                case '0':
+                case 'false':
+                case 'no':
+                case 'off':
+                    $dryRun = false;
+                    break;
+                default:
+                    $output->writeln(
+                        '<error>phpdup: --dry-run must be a boolean'
+                        . ' (true|false|1|0|yes|no|on|off)</error>'
+                    );
+                    return null; // shell-S24 posture: refuse the run at admission
+            }
+        } else {
+            $output->writeln('<error>phpdup: --dry-run must be a boolean</error>');
+            return null;
+        }
+
         $reportArgs = [
             'limit'          => $limit,
             'showStats'      => $showStats,
@@ -1028,7 +1195,13 @@ HELP;
             // Config-folded flag OR file value (execute() always passes
             // $applyMode; the ?? keeps pre-S27 reflection callers honest).
             'applyDir'       => ($applyMode ?? (bool)$input->getOption('apply')) ? 'refactored' : null,
-            'applyDryRun'    => true, // F1a: --apply always behaves as dry-run (F1b will respect --dry-run flag)
+            // shell-S28 (php-dup-finder-shell-039): the F1a hardcode was the
+            // defect — --dry-run was registered but never read. The value now
+            // flows from the option through the boolean door above; the
+            // default (bare/absent) stays the F1a preview posture, and
+            // --dry-run=false opens the F1b real-apply branch that already
+            // ships one layer below (RefactorPatchReporter::writeTo apply).
+            'applyDryRun'    => $dryRun,
             'checkstyleFile' => $input->getOption('checkstyle'),
             'csvFile'        => $input->getOption('csv'),
             'prometheusFile' => $input->getOption('prometheus'),
