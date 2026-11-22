@@ -116,12 +116,11 @@ Full reference: [`docs/CLI.md`](docs/CLI.md)
 
 ## Table of contents
 
-- [Features](docs/CLI.md#features) — semantic detection, type-3/4, parameter discovery, pattern tags
+- [Features](docs/CLI.md#features) — semantic detection, type-3, parameter discovery, pattern tags
 - [Installation](docs/CLI.md#installation) — PHAR, Composer, from source
 - [Self-update](docs/CLI.md#self-update) — `phpdup self-update`
 - [How it works](docs/CLI.md#how-it-works) — 5-stage pipeline, normalization modes, clustering, anti-unification
 - [Type-3 / optional-segment detection](docs/CLI.md#type-3--optional-segment-detection)
-- [Type-4 / behavioural similarity](docs/CLI.md#type-4--behavioural-similarity-experimental)
 - [ORM- / DB-aware deduplication](docs/CLI.md#orm---db-aware-semantic-deduplication) — `--db-aware`, `--trinity-collapse`
 - [TUI mode](docs/CLI.md#tui-mode) — `--tui`, `--theme`, keyboard shortcuts
 - [Watch mode](docs/CLI.md#watch-mode) — `--watch`

@@ -50,8 +50,9 @@ phpdup outputs (`safety` ∈ {0.0, 0.5, 1.0} as a rough rubric).
 ## Pair similarity (option 6 of `docs/plans/orm-db-semantic-dedup.md`)
 
 A second sidecar contract scores **block pair similarity** for the
-ORM ↔ raw-SQL deduplication work. `Phpdup\Ml\MlPairClient` POSTs
-the 11-field feature vector produced by `Phpdup\Ml\PairFeatures`
+ORM ↔ raw-SQL deduplication work. `Phpdup\Ml\MlPairClient` POSTs the
+12-field feature vector (11 signals plus the `feature_version`
+header) produced by `Phpdup\Ml\PairFeatures`
 to `/score-pair` and consumes a single `{similarity, confidence}`
 response.
 

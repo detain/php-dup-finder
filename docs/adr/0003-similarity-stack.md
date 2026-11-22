@@ -2,6 +2,8 @@
 
 **Status**: accepted
 **Date**: 2026-05
+**Amended**: 2026-11 (engine-S31c catalog close-out: tier-3 wiring truth,
+normalization policy absorbed from the deleted marker classes)
 
 ## Context
 
@@ -18,14 +20,19 @@ Three tiers, run in increasing cost order with early rejection:
 ```
 Tier 1: Jaccard over n-gram bag       (cheap; rejects most pairs)
 Tier 2: Tree-edit distance (APTED)    (expensive; only on Jaccard hits)
-Tier 3: Containment / behavioural     (fallback for type-3 / type-4)
+Tier 3: Containment                   (type-3 fallback; the only wired tier-3 scorer)
+Planned: Behavioural                  (type-4 — NOT wired, see Tier-3 fallbacks)
 ```
 
 Each tier's threshold is configurable. Pairs that cross tier 1's
 threshold proceed to tier 2; pairs that cross tier 2's threshold
-contribute an edge. Pairs that fail tier 2 fall through to tier 3
-when `optionalBlocksEnabled` (containment) or `--type4` (behavioural)
-is set.
+contribute an edge. Pairs that fail tier 2 fall through to
+`ContainmentSimilarity` when `optional_blocks.enabled` is set.
+(The former prose named a `--type4` flag for the behavioural leg —
+no such flag exists and never shipped; catalog close-out
+engine-S31c corrected this. Optional IR-tier and ML-pair scorers
+exist behind `--scorer=ir` / `--ml-pair-url`; they extend the
+cascade rather than the three tiers of this decision.)
 
 ## Tier-1 pre-filters
 
@@ -56,10 +63,48 @@ int-only.
 ## Tier-3 fallbacks
 
 - `ContainmentSimilarity` — for type-3 clusters where one block is
-  a near-subset of the other.
+  a near-subset of the other. LIVE: this is the only tier-3 scorer
+  the Clusterer instantiates.
 - `BehaviouralSimilarity` — for type-4 (behavioural) clusters.
-  Combines var/call/return Jaccard + side-effect-flag match.
-  Higher false-positive risk; gated behind a config flag.
+  Combines var/call/return Jaccard + a side-effect-flag match over
+  the `DataflowSummarizer` summary. PLANNED, NOT WIRED: the flag the
+  old prose gated it behind (`--type4`) does not exist, and the
+  Clusterer never instantiates it. The class is kept, tested, and
+  honest per the engine-S31a catalog ledger (rows 3 and 16).
+
+## Normalization beneath the stack
+
+Every tier above scores *normalized* ASTs, so the normalization
+policy belongs with this decision. It used to be stated by two
+marker classes with zero production references
+(`Normalization\LiteralCanonicalizer`,
+`Normalization\NameCanonicalizer`) whose `PLACEHOLDER_*` constants
+duplicated literals inlined in `Normalizer` — pure drift risk; both
+were deleted by the engine-S31c catalog close-out. The accurate
+policy, as `Normalizer` implements it today:
+
+- **Literals** (default + aggressive modes): string values →
+  `__STR`, integers → `0`, floats → `0.0`; interpolated-string parts
+  collapse to `__STR`.
+- **Names** (aggressive mode only): call, property and class
+  identifiers become NAME-STAMPED sentinels — `__CALL_<name>`,
+  `__PROP_<name>`, `__CLASS_<name>` — injective on the identifier
+  space, so branch-role-swapped pairs can no longer re-deal into
+  byte-identical streams (engine-002). The deleted markers' prose of
+  first-occurrence `__CALLn` ordinals and a `__KEY` sentinel
+  described the pre-engine-S02 scheme: ordinals were replaced by
+  stamps, and the `__KEY` case was never implemented (engine-S02a
+  report-only row, folded here).
+- **Structural functions keep their names** — `isset`, `empty`,
+  `unset`, `count`, `is_*` predicates, `array_map`/`array_filter`/
+  `array_reduce`, and the synthetic `__DB_<OP>` tokens emitted by
+  `DbOpCanonicalizer` (`Normalizer::isStructuralFunction()` is the
+  list).
+- **Variables keep first-occurrence ordinals** (`__V0`, …) on
+  purpose: local-name agnosticism is the mode's contract and
+  variable slots carry no cross-block identity claim.
+- Downstream, the n-gram fingerprint and APTED label passes fold the
+  name stamps symmetrically via `Util\IdentifierIds`.
 
 ## Consequences
 
