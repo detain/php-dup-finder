@@ -7,17 +7,26 @@ this file is the look-up table.
 ```
 Usage:
   phpdup analyze <paths...> [options]
+  phpdup <paths...> [options]
+  phpdup init
+  phpdup serve [--host H] [--port P]
+  phpdup self:update | upgrade | self-update
   phpdup completion [<shell>]
+  phpdup list
+  phpdup help [<command>]
 ```
 
 ## Sub-commands
 
 | Command       | Description                                                                  |
 |---------------|------------------------------------------------------------------------------|
-| `analyze`     | Scan paths for duplicate logic. The default command — `bin/phpdup src` runs it. |
+| `analyze`     | Scan paths for duplicate logic. The default command — `bin/phpdup src` runs it. A first non-flag token that is not a registered sub-command name or alias is routed to `analyze`, so `phpdup src/` and `phpdup analyze src/` are the same invocation (this is also the form the exit-2 missing-path hint teaches). A directory literally named like a sub-command is addressed with path separation: `./init`, `init/`. |
 | `completion`  | Dump a bash / fish / zsh completion script with commented-out install instructions inline. |
 | `help`        | Symfony Console's built-in help. `bin/phpdup help analyze` lists every flag. |
-| `list`        | List every registered command.                                               |
+| `init`        | Scaffold a `phpdup.json` in the current directory. |
+| `list`        | List every registered command. Also what a bare `phpdup` (no arguments) runs — it prints this listing and exits `0` instead of tripping analyze's missing-path door. |
+| `self:update` | Replace this phpdup phar with the latest release from GitHub. Aliases: `upgrade`, `self-update`. |
+| `serve`       | Run phpdup as a minimal HTTP analysis server. Binds `127.0.0.1:8080` by default (`--host`, `--port`). |
 
 ## `analyze` — arguments
 
@@ -250,6 +259,12 @@ first line of the zsh dump.
 | `2`  | Invalid input: missing required argument, unknown shell for `completion`, schema-validation failure for `--validate-config`, a non-numeric or out-of-domain value for a numeric option (e.g. `--min-block-size abc`, `--similarity 1.5`, `--limit abc`, `--min-safety 2.0`, `--max-memory banana`, `--optional-blocks-containment hot`), an invalid choice for `--stage`, `--pager` or `--theme`, etc. |
 | `3`  | CI gate triggered: `--fail-on-impact N` exceeded (total cluster impact > N) or `--max-clusters N` exceeded (cluster count > N). |
 | `4`  | CI gate triggered: `--baseline FILE` was provided, FILE exists, and new duplicate clusters were found that were not present in the baseline. |
+
+A bare `phpdup` with no arguments is the one no-path form that exits `0`:
+it prints the command listing (identical to `phpdup list`). Every other
+path-less `analyze` form — a flags-only run such as `phpdup --exact-only`
+— still hits the `2` door above, whose suggested `phpdup <path>/ ...`
+shape runs analyze directly.
 
 Numeric option values are trimmed before coercion: surrounding whitespace
 is accepted (`--workers ' 4 '` is the same as `--workers 4`). A value that

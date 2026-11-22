@@ -39,4 +39,34 @@ $app->add(new CompletionCommand());
 // `phpdup serve` — minimal HTTP analysis server.
 $app->add(new ServeCommand());
 $app->setDefaultCommand($cmd->getName(), false);
+
+// once-S19 (php-dup-finder-once-022): make the documented default-command
+// form real. Symfony's singleCommand mode (the true second argument of
+// setDefaultCommand) routes EVERY invocation to the default command —
+// Application::getCommandName() short-circuits on it — which would make
+// init/serve/self:update unreachable. The enabled default command is
+// therefore a pre-dispatch guard on $_SERVER['argv']:
+//   * no arguments at all            -> show the command listing (list),
+//                                       not analyze's exit-2 path door;
+//   * first non-flag token not a     -> the path-as-positional form: run it
+//     registered command or alias      as `analyze <token> ...`, the exact
+//                                       shape the missing-path hint teaches;
+//   * anything else                  -> normal dispatch, so named
+//                                       sub-commands, -h/-V and flag-only
+//                                       admission runs are untouched.
+$argvTokens = \array_slice($_SERVER['argv'] ?? [], 1);
+$firstToken = null;
+foreach ($argvTokens as $token) {
+    if ('' === $token || '-' !== $token[0]) {
+        $firstToken = $token;
+        break;
+    }
+}
+if (null === $firstToken) {
+    if ([] === $argvTokens) {
+        $_SERVER['argv'][] = 'list';
+    }
+} elseif (!$app->has($firstToken)) {
+    \array_splice($_SERVER['argv'], 1, 0, [$cmd->getName()]);
+}
 exit($app->run());
