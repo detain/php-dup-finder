@@ -94,14 +94,15 @@ final class IrSimilarityTest extends TestCase
         );
     }
 
-    public function testSimilarityIsZeroForFullyDisjointStreams(): void
+    public function testFullyDisjointStreamsScoreSharedScaffoldingOnly(): void
     {
         $a = new BlockIr([new ReturnIr(new DbReadIr('alpha', 'id'))]);
         $b = new BlockIr([new ReturnIr(new DbReadIr('beta', 'id'))]);
-        // Shared structural scaffolding (block(, return(, ), )) keeps
-        // this above zero — the exact-0 arm is unreachable for real
-        // trees, so pin the floor claim the docblock makes indirectly:
-        // disjoint payloads score well below the mode-1 fast path.
-        $this->assertLessThan(1.0, (new IrSimilarity())->similarity($a, $b));
+        // engine-S31b fix-round-1 (reviewer F-2): the old name claimed
+        // "zero" while the body asserted only "below 1.0". Disjoint
+        // payloads still share the structural multiset — block(,
+        // return( and the two ")" — so the exact mode-2 value is the
+        // hand-computed 4-of-6 fraction, pinned rather than bounded.
+        $this->assertSame(4 / 6, (new IrSimilarity())->similarity($a, $b));
     }
 }

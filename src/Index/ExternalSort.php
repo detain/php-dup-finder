@@ -97,6 +97,15 @@ final class ExternalSort
         }
         try {
             $this->writeRunLines($h, $buffer, $tmp);
+        } catch (\Throwable $e) {
+            // engine-S31b fix-round-1 (reviewer F-1): a line that
+            // cannot be written in full aborts flushRun() BEFORE the
+            // run path is ever appended to sortStream()'s $runs list,
+            // so the caller's finally cannot see this file — without
+            // the unlink here the corrupt run leaks on disk, the one
+            // throw path that made the @throws guarantee above false.
+            @unlink($tmp);
+            throw $e;
         } finally {
             fclose($h);
         }

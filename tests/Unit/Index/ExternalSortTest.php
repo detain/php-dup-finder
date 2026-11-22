@@ -112,6 +112,52 @@ final class ExternalSortTest extends TestCase
         }
     }
 
+    public function testFailedFlushLeavesNoCorruptRunFileBehind(): void
+    {
+        // engine-S31b fix-round-1 (reviewer F-1): the short-write pin
+        // below only exercises the writeRunLines() seam, and the
+        // temp-dir-prune pin above tests the MERGE throw — so nothing
+        // pinned flushRun()'s own cleanup. When a flush aborts mid
+        // write, tempnam has already created the run file but the
+        // path never reaches sortStream()'s $runs list (flushRun only
+        // returns on success), so without flushRun's own unlink the
+        // corrupt run leaks — the one throw path that denied the
+        // "every run file already created is unlinked" @throws claim.
+        //
+        // Hermetic trigger: the second record carries a non-stringable
+        // payload, so the write seam's string concatenation throws
+        // from inside flushRun() on the REAL tempnam file (the same
+        // guard any short-write \RuntimeException travels). runSize 1
+        // makes the first record spill normally, so this also proves
+        // the caller's finally sweeps the already-spilled run while
+        // flushRun's guard sweeps the corrupt one: the temp dir ends
+        // up completely empty.
+        $tempDir = $this->freshTempDir();
+        try {
+            $sorter = new ExternalSort($tempDir, runSize: 1);
+            try {
+                iterator_to_array($sorter->sortStream([
+                    ['a', '1'],
+                    ['b', new \stdClass()], // poison: aborts the second flush
+                ]), false);
+                $this->fail('a run that cannot be written in full must abort the sort');
+            } catch (\Throwable $e) {
+                $this->assertStringContainsString(
+                    'could not be converted to string',
+                    $e->getMessage(),
+                    'expected the poison payload to abort the flush',
+                );
+            }
+            $this->assertSame(
+                [],
+                glob($tempDir . '/*') ?: [],
+                'flush-failure path must leave zero files in the temp dir',
+            );
+        } finally {
+            $this->removeTempDir($tempDir);
+        }
+    }
+
     public function testShortWriteAbortsTheRunFlush(): void
     {
         // Leg 2 direct: flushRun used to trust fwrite's return — a
