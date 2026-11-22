@@ -462,8 +462,14 @@ function verifySynthetic(array $pins, string $dir, array &$failures): void
         $failures[] = 'synthetic-fuzz: no [synthetic-fuzz] block in bench/corpus-pins.txt';
         return;
     }
+    // Presence mirrors the OSS rule in main(): the ground truth ships
+    // COMMITTED while the corpus *.php files are gitignored, so a fresh
+    // checkout holds a GT file and zero planted files — an
+    // un-materialized tree is [absent], never a 0-files digest mismatch
+    // (LOW-1, r1 review). Once the tree IS planted the digest gates below
+    // keep their full bite.
     $gtFile = $dir . '/.ground-truth.json';
-    if (!is_file($gtFile)) {
+    if (!is_file($gtFile) || countPhpFiles($dir) === 0) {
         echo "[absent] synthetic-fuzz not materialized (--verify-only before a real run?)\n";
         return;
     }
@@ -517,21 +523,35 @@ function verifyReportDigests(string $pinsFile, array &$failures): void
  * captured under default-locale collation and could not be trusted on
  * another host).
  *
+ * The checked dirs are each block's pinned `corpus-roots` value — ONE
+ * source (LOW-2, r1 review): a pin edit steers this verifier instead of
+ * silently drifting from a hardcoded copy in code. The value is a comma
+ * list WITHOUT spaces (readPins keeps only the first whitespace token).
+ *
  * @param array<string,array<string,string>> $pins
  * @param list<string> $failures
  */
 function verifyHostRepoPins(array $pins, array &$failures): void
 {
     $checks = [
-        'phlix-server' => ['commit' => 'scan-commit', 'digest' => 'src-filelist-sha256', 'dirs' => ['src']],
-        'phlix-hub'    => ['commit' => 'scan-commit', 'digest' => 'src-filelist-sha256', 'dirs' => ['src']],
-        'home-my'      => ['commit' => 'scan-pin',    'digest' => 'api-ajax-filelist-sha256', 'dirs' => ['include/Api', 'include/ajax']],
+        'phlix-server' => ['commit' => 'scan-commit', 'digest' => 'src-filelist-sha256'],
+        'phlix-hub'    => ['commit' => 'scan-commit', 'digest' => 'src-filelist-sha256'],
+        'home-my'      => ['commit' => 'scan-pin',    'digest' => 'api-ajax-filelist-sha256'],
     ];
     foreach ($checks as $block => $c) {
         $pin  = $pins[$block] ?? null;
         $repo = $pin['repo'] ?? null;
         if ($pin === null || $repo === null || $repo === '') {
             $failures[] = "{$block}: missing repo/pin data in bench/corpus-pins.txt";
+            continue;
+        }
+        /** @var list<string> $dirs */
+        $dirs = array_values(array_filter(
+            array_map('trim', explode(',', $pin['corpus-roots'] ?? '')),
+            static fn (string $d): bool => $d !== ''
+        ));
+        if ($dirs === []) {
+            $failures[] = "{$block}: no corpus-roots pin in bench/corpus-pins.txt — the checked dirs must come from the pins (single source), never from code";
             continue;
         }
         if (!is_dir($repo)) {
@@ -549,7 +569,7 @@ function verifyHostRepoPins(array $pins, array &$failures): void
             echo "[absent] host repo {$block}: commit {$commit} unreachable in {$repo} (fresh clone?)\n";
             continue;
         }
-        $dirArgs = implode(' ', array_map('escapeshellarg', $c['dirs']));
+        $dirArgs = implode(' ', array_map('escapeshellarg', $dirs));
         $cmd = sprintf(
             'LC_ALL=C git -C %s ls-tree -r --name-only %s -- %s 2>/dev/null | LC_ALL=C sort | sha256sum',
             escapeshellarg($repo),
