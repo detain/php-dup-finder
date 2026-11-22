@@ -25,10 +25,13 @@ use Phpdup\Util\LineRange;
  * can drop {@see Block::$ast} and the AntiUnifier reloads the original
  * subtree only for the small subset of blocks that end up in clusters.
  *
- * Resolution first walks the file's parse-cached statement list for a
- * node whose kind, line-range, and (when applicable) declared name
- * match the block — the strict triple, exact whenever the range was
- * produced by this process's own scan.
+ * Resolution first consults the per-file batched candidate index — ONE
+ * whole-file walk per process collects every servable node, and the
+ * strict search answers from that memo for a node whose kind,
+ * line-range, and (when applicable) declared name match the block —
+ * the strict triple, exact whenever the range was produced by this
+ * process's own scan (engine-031/output-015 leg A: the walk count is
+ * bounded by the number of distinct files, never by the block count).
  *
  * A range replayed from the cluster cache is only an ADVISORY hint:
  * content-preserving edits (comment or blank-line shifts) leave the
@@ -88,6 +91,34 @@ final class BlockAstLoader
      * @var array<string, Normalizer>
      */
     private array $normalizers = [];
+
+    /**
+     * Per-file candidate index (engine-031 / output-015 leg A): ONE
+     * batched whole-file walk per process collects every node the
+     * relocation machinery can ever serve — kind, declared name, live
+     * scope and span recorded in NodeTraverser (pre-)order — and
+     * findStrict, findReanchored and liveCandidateNodes all answer from
+     * this memo. Before this law a file with B blocks paid up to 2B
+     * whole-file traversals (a strict walk plus a pool walk per
+     * resolve()); after it, a file is walked exactly once and every
+     * match decision is an ordered lookup that RETURNS on its first
+     * hit — the post-match visit waste STOP_TRAVERSAL existed to cure
+     * cannot occur because no match site traverses anymore, and the one
+     * walk that remains must run to completion (cutting it short would
+     * starve later pool consumers of the same file).
+     *
+     * Entries are plain immutable-at-use descriptors over the SHARED
+     * cached stmt tree — the same node objects the old per-call
+     * visitors yielded, never a copy: pooled leaves (engine-S04) keep
+     * their exact aliasing, the index only READS kind/scope/span
+     * metadata off them.
+     *
+     * @var array<string, list<array{node: Node, kind: string, name: string|null, namespace: string|null, class: string|null, start: int, end: int}>>
+     */
+    private array $index = [];
+
+    /** Evidence: whole-file index walks performed (see rebaseStats()). */
+    private int $walkCount = 0;
 
     private ?PluginRegistry $pluginRegistry = null;
 
@@ -167,7 +198,6 @@ final class BlockAstLoader
         if ($block->kind === 'script') {
             throw ScriptKindApplyRefusal::forBlock($block, 'BlockAstLoader::resolve()');
         }
-        $stmts = $this->stmtsFor($block->file);
 
         $group   = self::groupKey($block);
         $foreign = $this->foreignClaims($group, $block);
@@ -182,7 +212,7 @@ final class BlockAstLoader
             if ([$block->range->start, $block->range->end] !== $claim['assigned']) {
                 continue;
             }
-            $again = $this->findStrict($stmts, $block, exclude: $foreign, forceRange: $claim['assigned']);
+            $again = $this->findStrict($block, exclude: $foreign, forceRange: $claim['assigned']);
             if ($again !== null) {
                 $block->ast = $again;
                 return $again;
@@ -200,7 +230,7 @@ final class BlockAstLoader
 
         $hintObj = $block->range;
         $hint    = [$hintObj->start, $hintObj->end];
-        $found   = $this->findStrict($stmts, $block, exclude: $foreign);
+        $found   = $this->findStrict($block, exclude: $foreign);
         // [M-1] gate: a node sitting exactly on the stale hint is only the
         // block's own if its CONTENT still matches — a different-content
         // sibling that drifted onto the hint (or any same-span stranger)
@@ -217,7 +247,7 @@ final class BlockAstLoader
             $found = null;
         }
         if ($found === null) {
-            $found = $this->findReanchored($stmts, $block, $hint, $foreign);
+            $found = $this->findReanchored($block, $hint, $foreign);
         }
         if ($found === null) {
             throw new \RuntimeException(sprintf(
@@ -274,58 +304,66 @@ final class BlockAstLoader
      * somebody else's anchor — serving it twice is the silent
      * double-anchor Vector-2 door).
      *
-     * @param list<Node\Stmt>                  $stmts
+     * Answered from the per-file batched index in NodeTraverser order,
+     * so the FIRST hit of the ordered scan is exactly the node the old
+     * whole-file visitor would have landed on, and the lookup returns
+     * on it — decisive at the match site, zero post-match visiting.
+     * The strict triple carries no scope law (identity is the span
+     * itself), so scope is not filtered here — unchanged semantics.
+     *
      * @param list<array{hint: array{int,int}, assigned: array{int,int}}> $exclude
-     * @param array{int,int}|null              $forceRange
+     * @param array{int,int}|null                                         $forceRange
      */
-    private function findStrict(array $stmts, Block $block, array $exclude, ?array $forceRange = null): ?Node
+    private function findStrict(Block $block, array $exclude, ?array $forceRange = null): ?Node
     {
-        $found = null;
-        $kindMatch = static fn (Node $node, string $kind): bool => self::matchesKind($node, $kind);
-        $traverser = new NodeTraverser();
-        $traverser->addVisitor(new class($block, $found, $kindMatch, $exclude, $forceRange) extends NodeVisitorAbstract {
-            /**
-             * @param list<array{hint: array{int,int}, assigned: array{int,int}}> $exclude
-             * @param array{int,int}|null                                         $forceRange
-             */
-            public function __construct(
-                private readonly Block $block,
-                private ?Node &$found,
-                private readonly \Closure $kindMatch,
-                private readonly array $exclude,
-                private readonly ?array $forceRange,
-            ) {
+        $wantStart = $forceRange[0] ?? $block->range->start;
+        $wantEnd   = $forceRange[1] ?? $block->range->end;
+        foreach ($exclude as $taken) {
+            if ($taken['assigned'] === [$wantStart, $wantEnd]) {
+                return null; // foreign-claimed span is never free
             }
-            #[\Override]
-            public function enterNode(Node $node)
-            {
-                if ($this->found !== null) {
-                    return null;
-                }
-                $wantStart = $this->forceRange[0] ?? $this->block->range->start;
-                $wantEnd   = $this->forceRange[1] ?? $this->block->range->end;
-                if ($node->getStartLine() !== $wantStart) return null;
-                if ($node->getEndLine()   !== $wantEnd)   return null;
-                foreach ($this->exclude as $taken) {
-                    if ($taken['assigned'] === [$wantStart, $wantEnd]) {
-                        return null; // foreign-claimed span is never free
-                    }
-                }
-                if (!($this->kindMatch)($node, $this->block->kind))  return null;
-                if ($this->block->name !== null) {
-                    $name = match (true) {
-                        $node instanceof Node\Stmt\Function_   => $node->name->toString(),
-                        $node instanceof Node\Stmt\ClassMethod => $node->name->toString(),
-                        default                              => null,
-                    };
-                    if ($name !== $this->block->name) return null;
-                }
-                $this->found = $node;
-                return null;
+        }
+        foreach ($this->indexFor($block->file) as $entry) {
+            if ($entry['start'] !== $wantStart || $entry['end'] !== $wantEnd) {
+                continue;
             }
-        });
-        $traverser->traverse($stmts);
-        return $found;
+            if ($entry['kind'] !== $block->kind) {
+                continue;
+            }
+            if ($block->name !== null && $entry['name'] !== $block->name) {
+                continue;
+            }
+            return $entry['node'];
+        }
+        return null;
+    }
+
+    /**
+     * The twelve candidate kinds the relocation machinery can serve, in
+     * the matchesKind table's canonical order. Item 1.3: deliberately NO
+     * 'script' entry — a synthetic fold is not a parse-tree counterpart
+     * and positional script matching is the silent-mis-anchor class.
+     */
+    private const CANDIDATE_KINDS = [
+        'function', 'method', 'closure', 'arrow', 'if', 'for',
+        'foreach', 'while', 'do', 'try', 'switch', 'match',
+    ];
+
+    /**
+     * Classify a node into the single block kind it can serve — the
+     * matchesKind table probed per kind (the twelve candidate classes
+     * are disjoint, so at most one kind matches). Answers inside the
+     * once-per-file batched walk, which is why probing the table here
+     * is vanishingly cheap compared to the per-block walks it replaces.
+     */
+    private static function kindOf(Node $node): ?string
+    {
+        foreach (self::CANDIDATE_KINDS as $kind) {
+            if (self::matchesKind($node, $kind)) {
+                return $kind;
+            }
+        }
+        return null;
     }
 
     /**
@@ -343,105 +381,35 @@ final class BlockAstLoader
      * beats an equidistant mirror above it); a survivor-less pool or an
      * exact tie returns null so the caller keeps its loud failure.
      *
-     * @param list<Node\Stmt>  $stmts
+     * The candidate pool is read off the per-file batched index (leg A
+     * of engine-031/output-015): same nodes, same traversal order the
+     * old dedicated whole-file visitor collected — zero extra walks.
+     *
      * @param array{int,int}   $hint  [start,end] as originally served
      * @param list<array{hint: array{int,int}, assigned: array{int,int}}> $foreign
      */
-    private function findReanchored(array $stmts, Block $block, array $hint, array $foreign): ?Node
+    private function findReanchored(Block $block, array $hint, array $foreign): ?Node
     {
-        $kindMatch = static fn (Node $node, string $kind): bool => self::matchesKind($node, $kind);
-        $traverser = new NodeTraverser();
-        $visitor = new class($block, $kindMatch) extends NodeVisitorAbstract {
-            /** @var list<array{node: Node, score: array{int,int,int}}> */
-            public array $candidates = [];
-
-            private ?string $namespace = null;
-
-            /** @var list<string> */
-            private array $classStack = [];
-
-            public function __construct(
-                private readonly Block $block,
-                private readonly \Closure $kindMatch,
-            ) {
-            }
-
-            #[\Override]
-            public function enterNode(Node $node)
-            {
-                if ($node instanceof Node\Stmt\Namespace_) {
-                    $this->namespace = $node->name?->toString();
-                    return null;
-                }
-                if ($node instanceof Node\Stmt\ClassLike) {
-                    // MUST mirror BlockVisitor's anonymous marker verbatim
-                    // ('<anonymous>', BlockExtractor.php:101): the scope
-                    // filter compares against Block::$class, and a
-                    // divergent sentinel silently excludes every
-                    // anonymous-class member from re-anchoring (the
-                    // self-scan warm replay caught this).
-                    $this->classStack[] = $node->name?->toString() ?? '<anonymous>';
-                    return null;
-                }
-                $this->consider($node);
-                return null;
-            }
-
-            #[\Override]
-            public function leaveNode(Node $node)
-            {
-                if ($node instanceof Node\Stmt\Namespace_) {
-                    $this->namespace = null;
-                } elseif ($node instanceof Node\Stmt\ClassLike) {
-                    array_pop($this->classStack);
-                }
-                return null;
-            }
-
-            private function consider(Node $node): void
-            {
-                if (!($this->kindMatch)($node, $this->block->kind)) {
-                    return;
-                }
-                $currentClass = $this->classStack === [] ? null : end($this->classStack);
-                if ($currentClass !== $this->block->class) {
-                    return;
-                }
-                if ($this->namespace !== $this->block->namespace) {
-                    return;
-                }
-                if ($this->block->name !== null) {
-                    $name = match (true) {
-                        $node instanceof Node\Stmt\Function_   => $node->name->toString(),
-                        $node instanceof Node\Stmt\ClassMethod => $node->name->toString(),
-                        default                              => null,
-                    };
-                    if ($name !== $this->block->name) {
-                        return;
-                    }
-                }
-                $hintSpan = $this->block->range->end - $this->block->range->start;
-                $nodeSpan = $node->getEndLine() - $node->getStartLine();
-                $dStart   = $node->getStartLine() - $this->block->range->start;
-                $dEnd     = $node->getEndLine() - $this->block->range->end;
-                $this->candidates[] = [
-                    'node'  => $node,
-                    'score' => [
-                        $nodeSpan === $hintSpan ? 0 : 1,
-                        abs($dStart) + abs($dEnd),
-                        $dStart >= 0 ? 0 : 1,
-                    ],
-                ];
-            }
-        };
-        $traverser->addVisitor($visitor);
-        $traverser->traverse($stmts);
+        $candidates = [];
+        $hintSpan   = $block->range->end - $block->range->start;
+        foreach ($this->scopeCandidates($block) as $entry) {
+            $nodeSpan = $entry['end'] - $entry['start'];
+            $dStart   = $entry['start'] - $block->range->start;
+            $dEnd     = $entry['end'] - $block->range->end;
+            $candidates[] = [
+                'node'  => $entry['node'],
+                'score' => [
+                    $nodeSpan === $hintSpan ? 0 : 1,
+                    abs($dStart) + abs($dEnd),
+                    $dStart >= 0 ? 0 : 1,
+                ],
+            ];
+        }
 
         // [M-1]: positional geometry is only ever a TIE-BREAKER among
         // content-equal candidates. Sub-extraction-threshold same-kind
         // blocks (the norm in real files) must never win a slot their
         // bytes cannot fill.
-        $candidates = $visitor->candidates;
         if ($this->contentBound($block)) {
             $candidates = array_values(array_filter(
                 $candidates,
@@ -592,9 +560,12 @@ final class BlockAstLoader
      * observation only — NEVER a correctness input): keys = positional
      * groups swept, freshKeys = groups proven class-exact without a single
      * content recomputation, hashes = candidate re-normalisations
-     * performed (escalated sweeps plus per-block resolve() gates).
+     * performed (escalated sweeps plus per-block resolve() gates),
+     * walks = whole-file index walks (engine-031/output-015 leg A law:
+     * at most one per distinct file touched by resolution, whatever the
+     * block count — the pre-leg-A shape cost up to two walks per block).
      *
-     * @return array{keys:int, freshKeys:int, hashes:int}
+     * @return array{keys:int, freshKeys:int, hashes:int, walks:int}
      */
     public function rebaseStats(): array
     {
@@ -602,6 +573,7 @@ final class BlockAstLoader
             'keys'      => $this->sweptKeys,
             'freshKeys' => $this->freshKeyCount,
             'hashes'    => $this->hashCalls,
+            'walks'     => $this->walkCount,
         ];
     }
 
@@ -713,10 +685,9 @@ final class BlockAstLoader
             /** @var list<Block> $keyMembers every stale member sharing this key */
             $keyMembers = array_merge(...array_values($classes));
             $sample = $keyMembers[0];
-            $stmts  = $this->stmtsFor($sample->file);
 
             if (!isset($pools[$poolKey])) {
-                $pools[$poolKey] = $this->liveCandidateNodes($stmts, $sample);
+                $pools[$poolKey] = $this->liveCandidateNodes($sample);
             }
             $live = $pools[$poolKey];
 
@@ -871,29 +842,87 @@ final class BlockAstLoader
     }
 
     /**
-     * All nodes of the block's kind/name/scope family in $stmts — the
+     * All nodes of the block's kind/name/scope family in the file — the
      * raw candidate pool (claim ledger and content gates applied by the
-     * caller). Extracted from findReanchored's visitor.
+     * caller), read off the per-file batched index: one whole-file walk
+     * per process backs every pool in the escalation sweep AND every
+     * per-block resolve, no matter how many groups a file carries.
      *
-     * @param list<Node\Stmt> $stmts
      * @return list<Node>
      */
-    private function liveCandidateNodes(array $stmts, Block $block): array
+    private function liveCandidateNodes(Block $block): array
     {
-        $kindMatch = static fn (Node $node, string $kind): bool => self::matchesKind($node, $kind);
+        $nodes = [];
+        foreach ($this->scopeCandidates($block) as $entry) {
+            $nodes[] = $entry['node'];
+        }
+        return $nodes;
+    }
+
+    /**
+     * Index entries of the block's (kind, scope, name) family in file
+     * traversal order — the shared collection law the old dedicated
+     * findReanchored/liveCandidateNodes visitors enforced, now answered
+     * from the memo instead of a per-call walk.
+     *
+     * @return list<array{node: Node, kind: string, name: string|null, namespace: string|null, class: string|null, start: int, end: int}>
+     */
+    private function scopeCandidates(Block $block): array
+    {
+        $out = [];
+        foreach ($this->indexFor($block->file) as $entry) {
+            if ($entry['kind'] !== $block->kind) {
+                continue;
+            }
+            if ($entry['class'] !== $block->class) {
+                continue;
+            }
+            if ($entry['namespace'] !== $block->namespace) {
+                continue;
+            }
+            if ($block->name !== null && $entry['name'] !== $block->name) {
+                continue;
+            }
+            $out[] = $entry;
+        }
+        return $out;
+    }
+
+    /**
+     * The per-file candidate index (engine-031 / output-015 leg A): one
+     * batched NodeTraverser walk over the parse-cached stmts collects
+     * every servable node with its kind, declared name, live scope and
+     * span, in pre-order. Scope tracking mirrors the old pool visitors
+     * exactly: Namespace_ binds, ClassLike pushes the BlockVisitor
+     * anonymous sentinel ('<anonymous>', BlockExtractor.php:101 — a
+     * divergent sentinel silently drops every anonymous-class member,
+     * the self-scan warm replay caught this), leaveNode unwinds.
+     *
+     * @return list<array{node: Node, kind: string, name: string|null, namespace: string|null, class: string|null, start: int, end: int}>
+     */
+    private function indexFor(string $file): array
+    {
+        if (isset($this->index[$file])) {
+            return $this->index[$file];
+        }
+        $this->walkCount++;
+        $stmts = $this->stmtsFor($file);
         $traverser = new NodeTraverser();
-        $visitor = new class($block, $kindMatch) extends NodeVisitorAbstract {
-            /** @var list<Node> */
-            public array $nodes = [];
+        // Scope-bound callable: created inside BlockAstLoader, so the
+        // private classifier is reachable from the anon visitor.
+        $classify = static fn (Node $node): ?string => self::kindOf($node);
+        $visitor = new class($classify) extends NodeVisitorAbstract {
+            /** @var list<array{node: Node, kind: string, name: string|null, namespace: string|null, class: string|null, start: int, end: int}> */
+            public array $entries = [];
 
             private ?string $namespace = null;
 
             /** @var list<string> */
             private array $classStack = [];
 
+            /** @param \Closure(Node):?string $classify */
             public function __construct(
-                private readonly Block $block,
-                private readonly \Closure $kindMatch,
+                private readonly \Closure $classify,
             ) {
             }
 
@@ -905,33 +934,27 @@ final class BlockAstLoader
                     return null;
                 }
                 if ($node instanceof Node\Stmt\ClassLike) {
-                    // MUST mirror BlockVisitor's anonymous marker verbatim
-                    // ('<anonymous>', BlockExtractor.php:101) — see the
-                    // matching note in findReanchored's visitor.
                     $this->classStack[] = $node->name?->toString() ?? '<anonymous>';
                     return null;
                 }
-                if (!($this->kindMatch)($node, $this->block->kind)) {
+                $kind = ($this->classify)($node);
+                if ($kind === null) {
                     return null;
                 }
-                $currentClass = $this->classStack === [] ? null : end($this->classStack);
-                if ($currentClass !== $this->block->class) {
-                    return null;
-                }
-                if ($this->namespace !== $this->block->namespace) {
-                    return null;
-                }
-                if ($this->block->name !== null) {
-                    $name = match (true) {
-                        $node instanceof Node\Stmt\Function_   => $node->name->toString(),
-                        $node instanceof Node\Stmt\ClassMethod => $node->name->toString(),
-                        default                              => null,
-                    };
-                    if ($name !== $this->block->name) {
-                        return null;
-                    }
-                }
-                $this->nodes[] = $node;
+                $name = match (true) {
+                    $node instanceof Node\Stmt\Function_   => $node->name->toString(),
+                    $node instanceof Node\Stmt\ClassMethod => $node->name->toString(),
+                    default                              => null,
+                };
+                $this->entries[] = [
+                    'node'      => $node,
+                    'kind'      => $kind,
+                    'name'      => $name,
+                    'namespace' => $this->namespace,
+                    'class'     => $this->classStack === [] ? null : end($this->classStack),
+                    'start'     => $node->getStartLine(),
+                    'end'       => $node->getEndLine(),
+                ];
                 return null;
             }
 
@@ -948,7 +971,8 @@ final class BlockAstLoader
         };
         $traverser->addVisitor($visitor);
         $traverser->traverse($stmts);
-        return $visitor->nodes;
+        $this->index[$file] = $visitor->entries;
+        return $this->index[$file];
     }
 
     /**
@@ -971,6 +995,12 @@ final class BlockAstLoader
         return $stmts;
     }
 
+    /**
+     * The relocation machinery's candidate classifier (belt pinned by
+     * ScriptKindTest via reflection: a 'script' block must never
+     * positionally match a parse-tree node — the typed refusal in
+     * resolve()/rebaseClusters() fires long before this table matters).
+     */
     private static function matchesKind(Node $node, string $kind): bool
     {
         return match ($kind) {

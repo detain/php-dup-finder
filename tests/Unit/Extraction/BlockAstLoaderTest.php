@@ -693,7 +693,7 @@ final class BlockAstLoaderTest extends TestCase
         $trusted = $this->loaderWithConfig($file);
         $trusted->trustFreshScan();
         $trusted->rebaseClusters([new Cluster('F13579bdfcafebab', [$trustedPair[0]], 1.0, true)]);
-        self::assertSame(['keys' => 0, 'freshKeys' => 0, 'hashes' => 0], $trusted->rebaseStats(),
+        self::assertSame(['keys' => 0, 'freshKeys' => 0, 'hashes' => 0, 'walks' => 0], $trusted->rebaseStats(),
             'a trusted run has nothing replayed — the sweep must be a no-op');
 
         $node = $trusted->resolve($trustedPair[0]);
@@ -701,6 +701,153 @@ final class BlockAstLoaderTest extends TestCase
         self::assertSame([16, 19], [$trustedPair[0]->range->start, $trustedPair[0]->range->end],
             'trusted strict hit is served as identity, exactly as minted');
         self::assertSame(0, $trusted->rebaseStats()['hashes'], 'zero content proofs consumed');
+    }
+
+    // ------------------------------------ leg A: batched single-walk index
+
+    /**
+     * engine-031 / output-015 leg A acceptance: a file with B blocks is
+     * walked ONCE per loader process. Eight blocks spanning seven groups
+     * (two functions, three methods sharing a name across two classes,
+     * an if, a foreach, a match) all resolve through one whole-file
+     * index walk; the re-entry path and every pool consumer hit the same
+     * memo, and a fresh loader proves the memo is per-instance (its own
+     * walk budget starts at one, never zero-reused across processes).
+     */
+    public function testWholeFileIsWalkedOnceAcrossEveryBlockOfTheFile(): void
+    {
+        $file    = $this->write('b1.php', self::multiGroupFile());
+        $members = $this->multiGroupMembers($file);
+        self::assertCount(8, $members);
+        foreach ($members as $b) {
+            $b->unloadAst();
+        }
+
+        $loader = $this->loader();
+        $served = [];
+        foreach ($members as $i => $b) {
+            $node = $loader->resolve($b);
+            self::assertNotNull($node, "block $i must resolve");
+            self::assertSame($b->ast, $node, "block $i must keep the attached identity");
+            self::assertSame($b->range->start, $node->getStartLine());
+            self::assertSame($b->range->end, $node->getEndLine());
+            $served[$i] = $node;
+        }
+        self::assertSame(1, $loader->rebaseStats()['walks'],
+            'eight blocks over one file — exactly one whole-file walk');
+
+        // Re-entry over the claim ledger must serve the SAME node objects
+        // from the SAME memo (identity, not reconstruction).
+        foreach ($members as $b) {
+            $b->unloadAst();
+        }
+        foreach ($members as $i => $b) {
+            self::assertSame($served[$i], $loader->resolve($b), "block $i memo identity");
+        }
+        self::assertSame(1, $loader->rebaseStats()['walks'],
+            'the re-entry path adds zero walks — batched index memo');
+
+        // Per-loader scope: a fresh process is a fresh walk budget.
+        $second = $this->loader();
+        $again  = $this->multiGroupMembers($file);
+        $again[0]->unloadAst();
+        self::assertNotNull($second->resolve($again[0]));
+        self::assertSame(1, $second->rebaseStats()['walks'], 'the index memo is per instance');
+    }
+
+    /**
+     * The re-anchor path shares the same single walk: two stale-hint
+     * twin members both land honestly (pure +2 insertion drift) while
+     * the loader performs ONE whole-file traversal — pre-leg-A this
+     * geometry paid a strict walk plus a pool walk per member.
+     */
+    public function testReanchoredResolutionsShareTheSingleIndexWalk(): void
+    {
+        $file = $this->write('b2.php', self::twoTwinIfs());
+        $pair = $this->ifPairBlocks($file, null, false);
+        [$upHint, $lowHint] = $pair;
+        $hints = [[$upHint->range->start, $upHint->range->end], [$lowHint->range->start, $lowHint->range->end]];
+
+        $this->insertAfterOpen($file, 2); // truths move to [11,13] and [15,17]
+
+        [$m1, $m2] = $this->freshIfPair($file, $hints);
+        $loader    = $this->loader();
+        $loader->resolve($m1);
+        $loader->resolve($m2);
+
+        self::assertSame([11, 13], [$m1->range->start, $m1->range->end]);
+        self::assertSame([15, 17], [$m2->range->start, $m2->range->end]);
+        self::assertSame(1, $loader->rebaseStats()['walks'],
+            'two re-anchors over one file — the pool rides the same single walk');
+        self::assertSame(0, $loader->rebaseStats()['hashes'], 'no config threaded, no content gate');
+    }
+
+    /**
+     * Batched span collection on the escalation side: two positional
+     * groups in one file both fail the freshness proof and escalate.
+     * Pre-leg-A each key paid its own whole-file pool walk (and each
+     * later resolve walked again); the batched index serves every pool
+     * and every strict/re-entry lookup from ONE traversal while the
+     * pairing law itself stays untouched.
+     */
+    public function testEscalationPoolsAreBatchedPerFileNotPerGroup(): void
+    {
+        $file  = $this->write('b3.php', self::splitScopeIfs());
+        $upper = $this->ifBlockIn($file, 'Upper', 1);          // live [9,11]
+        $lower = $this->blockOfKind($file, 'if', 'Lower', 1);  // outer [20,24]
+        $this->mintHashes($file, $upper, $lower);
+        $upper->unloadAst();
+        $lower->unloadAst();
+
+        $this->insertAfterOpen($file, 2); // truths [11,13] / [22,26] / [23,25]
+
+        $carriers = [
+            $this->ifBlockIn($file, 'Upper', 1),
+            $this->blockOfKind($file, 'if', 'Lower', 1),
+            $this->blockOfKind($file, 'if', 'Lower', 2),
+        ];
+        $this->mintHashes($file, ...$carriers);
+
+        $cluster = new Cluster('Fb1b2b3b4b5b6b7b', [$upper, $lower], 1.0, true);
+        $loader  = $this->loaderWithConfig($file);
+        $loader->rebaseClusters([$cluster], $carriers);
+
+        $stats = $loader->rebaseStats();
+        self::assertSame(2, $stats['keys'], 'Upper and Lower keys both swept');
+        self::assertSame(0, $stats['freshKeys'], 'drifted spans defeat every booking');
+        self::assertGreaterThan(0, $stats['hashes'], 'escalation pays the content law');
+        self::assertSame(1, $stats['walks'], 'two escalated pools, one batched walk');
+
+        self::assertNotNull($loader->resolve($upper));
+        self::assertNotNull($loader->resolve($lower));
+        self::assertSame([11, 13], [$upper->range->start, $upper->range->end]);
+        self::assertSame([22, 26], [$lower->range->start, $lower->range->end]);
+        self::assertSame(1, $loader->rebaseStats()['walks'], 'resolution rides the same memo');
+    }
+
+    /**
+     * The pool's scope law survived the move to batched collection: a
+     * same-kind stranger in ANOTHER class that scores strictly nearer
+     * the stale hint than the member's true node must never enter the
+     * pool. (Discovered by this leg's mutation sweep — the pre-leg-A
+     * suite never made the class filter decisive, so a mutant dropping
+     * it passed everywhere; this pin closes that gap for good.)
+     */
+    public function testPoolScopeLawSurvivesTheBatchedIndex(): void
+    {
+        $file  = $this->write('b4.php', self::scopeSplitNearHint());
+        $truth = $this->blockOfKind($file, 'if', 'Alpha', 1); // live [9,11]
+        $member = new Block($file, new LineRange(17, 20), 'if', 'SG', 'Alpha', null, $truth->ast);
+        $member->unloadAst();
+
+        $loader = $this->loader();
+        $node   = $loader->resolve($member);
+
+        self::assertNotNull($node);
+        self::assertSame([9, 11], [$node->getStartLine(), $node->getEndLine()]);
+        self::assertSame([9, 11], [$member->range->start, $member->range->end],
+            'the nearer-but-cross-class stranger must never be served');
+        self::assertSame(1, $loader->rebaseStats()['walks'], 'one walk serves the whole re-anchor');
     }
 
     public function testCrossClassTranspositionEscalatesByClassBuckets(): void
@@ -969,6 +1116,81 @@ final class BlockAstLoaderTest extends TestCase
             $blocks[] = $block;
         }
         return $blocks;
+    }
+
+    /**
+     * The eight leg-A members: two functions, three methods (two sharing
+     * one declared name across classes), one if, one foreach and one
+     * match — every block scanned with extractor-faithful scope fields.
+     *
+     * @return list<Block>
+     */
+    private function multiGroupMembers(string $file): array
+    {
+        return [
+            $this->functionBlock($file, 'alpha'),
+            $this->functionBlock($file, 'beta'),
+            $this->blockOfKind($file, 'method', 'First', 1, 'gate'),
+            $this->blockOfKind($file, 'method', 'First', 1, 'handle'),
+            $this->blockOfKind($file, 'method', 'Second', 1, 'gate'),
+            $this->blockOfKind($file, 'if', null, 1),
+            $this->blockOfKind($file, 'foreach', null, 1),
+            $this->blockOfKind($file, 'match', 'Second', 1),
+        ];
+    }
+
+    /**
+     * The nth block of one kind whose enclosing class is exactly $class
+     * (null = top-level/function scope) and — when $name is given — whose
+     * declared name matches, taken in file (pre-)order. Built with the
+     * scope fields the extractor itself would stamp: namespace and class
+     * come from the real tree position via a hand-rolled pre-order walk
+     * (anonymous classes use the '<anonymous>' marker convention), so no
+     * geometry is guessed.
+     */
+    private function blockOfKind(string $file, string $kind, ?string $class, int $nth, ?string $name = null): Block
+    {
+        $nodeClass = match ($kind) {
+            'if'      => Node\Stmt\If_::class,
+            'foreach' => Node\Stmt\Foreach_::class,
+            'match'   => Node\Expr\Match_::class,
+            'method'  => Node\Stmt\ClassMethod::class,
+            default   => throw new \InvalidArgumentException("kind $kind unsupported"),
+        };
+        $stmts  = $this->parser->parseFile($file) ?? [];
+        $picked = [];
+        $walk   = static function (array $nodes, ?string $ns, ?string $enc) use (&$walk, $nodeClass, $class, $name, &$picked): void {
+            foreach ($nodes as $node) {
+                if (!$node instanceof Node) {
+                    continue;
+                }
+                $curNs  = $ns;
+                $curEnc = $enc;
+                if ($node instanceof Node\Stmt\Namespace_) {
+                    $curNs = $node->name?->toString();
+                } elseif ($node instanceof Node\Stmt\ClassLike) {
+                    $curEnc = $node->name?->toString() ?? '<anonymous>';
+                } elseif ($node instanceof $nodeClass) {
+                    $named = $node instanceof Node\Stmt\ClassMethod ? $node->name->toString() : null;
+                    if ($curEnc === $class && ($name === null || $named === $name)) {
+                        $picked[] = [$node, $curNs];
+                    }
+                }
+                foreach ($node->getSubNodeNames() as $prop) {
+                    $child = $node->{$prop};
+                    if (is_array($child)) {
+                        $walk($child, $curNs, $curEnc);
+                    } elseif ($child instanceof Node) {
+                        $walk([$child], $curNs, $curEnc);
+                    }
+                }
+            }
+        };
+        $walk($stmts, null, null);
+        self::assertGreaterThanOrEqual($nth, count($picked), "fixture must hold at least $nth $kind block(s) in scope");
+        [$node, $ns] = $picked[$nth - 1];
+        return new Block($file, new LineRange($node->getStartLine(), $node->getEndLine()),
+            $kind, $ns, $class, $name, $node);
     }
 
     private static function transposedGuardsOrig(): string
@@ -1621,5 +1843,106 @@ final class BlockAstLoaderTest extends TestCase
             . $member
             . "    if (\$x > 6) {\n        echo 'd2';\n        \$junk = 2;\n    }\n"
             . "    return \$x;\n}\n";
+    }
+
+    /**
+     * Leg-A multi-group geometry: nine extractable blocks in one file —
+     * two functions, three methods (First::gate and Second::gate share a
+     * declared name across classes, so only the group key's class leg
+     * keeps them apart), one if, two foreach loops and one match. Eight
+     * of them serve as the leg-A members. Every kind here is a kindOf
+     * arm, so the batched index must serve all groups from one walk.
+     */
+    private static function multiGroupFile(): string
+    {
+        return <<<'PHP'
+            <?php
+
+            namespace MultiLand;
+
+            function alpha(array $rows): float
+            {
+                $sum = 0.0;
+                foreach ($rows as $r) {
+                    $sum += $r;
+                }
+                return $sum;
+            }
+
+            function beta(int $x): int
+            {
+                if ($x > 1) {
+                    $x += 1;
+                }
+                return $x;
+            }
+
+            class First
+            {
+                public function gate(int $x): int
+                {
+                    return $x;
+                }
+
+                public function handle(array $a): int
+                {
+                    $c = 0;
+                    foreach ($a as $v) {
+                        $c += $v;
+                    }
+                    return $c;
+                }
+            }
+
+            class Second
+            {
+                public function gate(int $y): int
+                {
+                    $z = match (true) {
+                        $y > 5 => 1,
+                        default => 0,
+                    };
+                    return $z;
+                }
+            }
+            PHP;
+    }
+
+    /**
+     * Scope-split geometry for the pool-scope pin: Alpha's if is the
+     * member's truth at [9,11]; Beta's identical-shape if sits at
+     * [20,22], deliberately NEARER the member's stale hint [17,20] than
+     * the truth is, so only the class filter keeps the stranger out of
+     * the re-anchor pool.
+     */
+    private static function scopeSplitNearHint(): string
+    {
+        return <<<'PHP'
+            <?php
+
+            namespace SG;
+
+            class Alpha
+            {
+                public function a(int $x): int
+                {
+                    if ($x > 1) {
+                        $x += 1;
+                    }
+                    return $x;
+                }
+            }
+
+            class Beta
+            {
+                public function b(int $x): int
+                {
+                    if ($x > 3) {
+                        $x += 3;
+                    }
+                    return $x;
+                }
+            }
+            PHP;
     }
 }
