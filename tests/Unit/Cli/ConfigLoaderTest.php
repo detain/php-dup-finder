@@ -624,7 +624,7 @@ final class ConfigLoaderTest extends TestCase
         try {
             $probe = new Command();
             $detect = new \ReflectionMethod($probe, 'cacheResidesInScanRoot');
-            $detect->setAccessible(true);
+            // No setAccessible(): a no-op since PHP 8.1, deprecated in 8.5.
             $in = static fn (string $cache, array $paths): bool => (bool)$detect->invoke($probe, $cache, $paths);
 
             // The PoC, verbatim: relative default cache + a `.` root.
