@@ -296,7 +296,15 @@ foreach ($iterator as $file) {
     if ($file->isDir()) {
         continue;
     }
-    $localPath = 'vendor/' . $iterator->getSubPathName();
+    // XP-09 (php-dup-finder-once-127, once-S102): getSubPathName() joins
+    // with the OS-native separator, so a Windows-built phar would mint
+    // entry keys like `vendor\pkg\file.php` — literal backslash names the
+    // composer PSR-4 map inside the phar cannot resolve. The published
+    // artifact is safe (release.yml builds on ubuntu-latest, and the
+    // once-S56 artifact-smoke job execs that same Linux build); this is
+    // the belt for users who follow the README and build on Windows. On
+    // POSIX DIRECTORY_SEPARATOR === '/' and the fold is a byte no-op.
+    $localPath = 'vendor/' . str_replace(\DIRECTORY_SEPARATOR, '/', $iterator->getSubPathName());
     if (shouldSkipVendorPath($localPath)) {
         $counters['vendor_skipped']++;
         $counters['bytes_skipped'] += $file->getSize();
@@ -316,7 +324,7 @@ foreach ($iterator as $file) {
     if ($file->isDir() || !str_ends_with($file->getFilename(), '.php')) {
         continue;
     }
-    $localPath = 'src/' . $iterator->getSubPathName();
+    $localPath = 'src/' . str_replace(\DIRECTORY_SEPARATOR, '/', $iterator->getSubPathName()); // XP-09 fold, see vendor leg above
     $phar->addFile($file->getPathname(), $localPath);
     $counters['src_added']++;
 }

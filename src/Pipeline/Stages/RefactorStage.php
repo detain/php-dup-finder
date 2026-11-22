@@ -166,11 +166,23 @@ final class RefactorStage implements CooperativeStageInterface
         }
         yield Stage::Refactoring;
 
-        // Build an id -> cluster map up front so worker enrichments can be
+        // Build an id -> clusters map up front so worker enrichments can be
         // applied back to the parent's Cluster instances in O(1).
-        $byId = [];
+        //
+        // once-S102 (php-dup-finder-once-127, DET-06): ids are content-
+        // derived (Clusterer::contentClusterId) and the stage cannot prove
+        // them unique — a hand-built or cache-replayed state may carry the
+        // same content at several positions under one id. The map therefore
+        // keeps every co-id twin and applies each
+        // enrichment record to ALL of them — that is exactly
+        // what the positional serial loop does (it enriches every twin it
+        // walks past). The previous last-write-wins map silently left the
+        // earlier twins raw under fork while serial enriched them, the one
+        // real fork-vs-serial merge divergence; the parity tests in
+        // tests/Unit/Parallel/RefactorWorkerTest.php pin the broadcast.
+        $twinsById = [];
         foreach ($state->clusters as $cluster) {
-            $byId[$cluster->id] = $cluster;
+            $twinsById[$cluster->id][] = $cluster;
         }
 
         $worker = new RefactorWorker(
@@ -198,13 +210,14 @@ final class RefactorStage implements CooperativeStageInterface
         };
         foreach ($pool->runStreaming($state->clusters, $task, $cancel) as $enrichment) {
             $cid = $enrichment['id'] ?? null;
-            if ($cid !== null && isset($byId[$cid])) {
-                $cluster = $byId[$cid];
-                $cluster->generalizedAst = $enrichment['generalizedAst'];
-                $cluster->holes          = $enrichment['holes'];
-                $cluster->holePaths      = $enrichment['holePaths'];
-                $cluster->signature      = $enrichment['signature'];
-                $cluster->patternTags    = $enrichment['patternTags'];
+            if ($cid !== null && isset($twinsById[$cid])) {
+                foreach ($twinsById[$cid] as $cluster) {
+                    $cluster->generalizedAst = $enrichment['generalizedAst'];
+                    $cluster->holes          = $enrichment['holes'];
+                    $cluster->holePaths      = $enrichment['holePaths'];
+                    $cluster->signature      = $enrichment['signature'];
+                    $cluster->patternTags    = $enrichment['patternTags'];
+                }
             }
 
             $state->refactoredClusters++;

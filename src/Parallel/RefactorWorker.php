@@ -18,7 +18,9 @@ use Phpdup\Refactor\SignatureBuilder;
  * passes (anti-unify → synthesize parameters → build signature → tag
  * patterns) on its assigned chunk, and emits enrichment payloads back
  * to the master via the WorkerPool framing channel. The master applies
- * each payload to its own Cluster instance by id.
+ * each payload to every one of its own Cluster instances carrying that
+ * id (co-id twins share content by the id-derivation law — once-S102),
+ * never to a last-write-wins singleton.
  *
  * Each emitted payload carries only the fields the four passes write
  * (generalizedAst, holes, signature, patternTags) plus the cluster id.

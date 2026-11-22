@@ -22,6 +22,27 @@ namespace Phpdup\Semantic;
  * caller decides whether to shell out to psalm or pre-stage a
  * cached report. Tests construct via {@see fromArray()}.
  *
+ * Determinism (once-S102, php-dup-finder-once-127 / INTEG-10 — executes
+ * the engine-S31a row-5 ruling):
+ *  - A (file, line) site reported by issues that DISAGREE on the
+ *    extracted type carries no single honest answer — Psalm routinely
+ *    reports more than one expected type per line ("Argument 1 …
+ *    expects int", "Argument 2 … expects string"). Such a site is
+ *    therefore left absent from the index (typeAt → null, caller falls
+ *    back) instead of keeping whichever winner arrived last. The index
+ *    depends only on the SET of parsed reports, never on their order.
+ *  - Reads are typed, never cast: {@see fromFile()} fails loud on an
+ *    unreadable file (no silent (string) cast of a false read), and
+ *    {@see extractType()} only inspects a message that actually is a
+ *    string (a non-string "message" degrades to null, not to an
+ *    Array-to-string warning under failOnWarning builds).
+ *  - The extraction patterns below are coupled to Psalm's DISPLAY
+ *    phrasing, not to a stable machine field — Psalm's JSON carries no
+ *    structured "expected type" key. Phrasing drift degrades a site to
+ *    null (it never fabricates a type) and surfaces as a red in
+ *    tests/Unit/Semantic/{PsalmTypeProviderTest,TypeProviderTest}.php,
+ *    which pin both message shapes.
+ *
  * Status: NOT WIRED (engine-S31a catalog ledger, row 5). No code
  * path constructs a TypeProvider yet; this reader is held ready for
  * the planned ParameterSynthesizer type-upgrade leg. It only parses
@@ -31,7 +52,7 @@ namespace Phpdup\Semantic;
  */
 final class PsalmTypeProvider implements TypeProvider
 {
-    /** @var array<string, array<int, string>> file → line → type */
+    /** @var array<string, array<int, string>> file → line → sole unambiguous type */
     private array $index;
 
     /** @param array<string, array<int, string>> $index */
@@ -57,7 +78,11 @@ final class PsalmTypeProvider implements TypeProvider
         if (!is_file($file)) {
             throw new \RuntimeException("Psalm report not found: {$file}");
         }
-        $data = json_decode((string)file_get_contents($file), true);
+        $raw = @file_get_contents($file);
+        if (!is_string($raw)) {
+            throw new \RuntimeException("Psalm report not readable: {$file}");
+        }
+        $data = json_decode($raw, true);
         if (!is_array($data)) {
             throw new \RuntimeException("Psalm report not valid JSON: {$file}");
         }
@@ -67,16 +92,35 @@ final class PsalmTypeProvider implements TypeProvider
     /** @param array<int|string, mixed> $report */
     public static function fromArray(array $report): self
     {
-        $index = [];
+        // Collect the distinct extracted types per site first: an order-
+        // independent set (type-string keyed), so whichever issue arrives
+        // first/last cannot mint the winner. A site ends up in the index
+        // only when its candidate set holds exactly one type.
+        /** @var array<string, array<int, non-empty-array<string, true>>> $candidates */
+        $candidates = [];
         foreach ($report as $issue) {
-            if (!is_array($issue)) continue;
+            if (!is_array($issue)) {
+                continue;
+            }
             $file = $issue['file_path'] ?? null;
             $line = $issue['line_from'] ?? null;
             $type = self::extractType($issue);
-            if (is_string($file) && is_int($line) && $type !== null) {
-                $index[$file][$line] = $type;
+            if (is_string($file) && is_int($line) && $type !== null && $type !== '') {
+                $candidates[$file][$line][$type] = true;
             }
         }
+
+        $index = [];
+        foreach ($candidates as $file => $lines) {
+            foreach ($lines as $line => $types) {
+                if (count($types) === 1) {
+                    $index[$file][$line] = (string) array_key_first($types);
+                }
+                // count($types) > 1: the site genuinely disagrees — it
+                // carries no honest answer, so it stays absent (null).
+            }
+        }
+
         return new self($index);
     }
 
@@ -86,7 +130,10 @@ final class PsalmTypeProvider implements TypeProvider
         // Common patterns in Psalm messages:
         //   "Argument 1 of foo expects int|string, but string provided"
         //   "Cannot return mixed where int is expected"
-        $msg = (string)($issue['message'] ?? '');
+        $msg = $issue['message'] ?? null;
+        if (!is_string($msg)) {
+            return null;
+        }
         if (preg_match('/expects ([a-zA-Z0-9_\\\\\\|<>,\\s\\?]+),/', $msg, $m)) {
             return trim($m[1]);
         }
