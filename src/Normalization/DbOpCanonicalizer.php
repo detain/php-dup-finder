@@ -168,8 +168,20 @@ final class DbOpCanonicalizer extends NodeVisitorAbstract
         $traverser->traverse([$root]);
     }
 
+    /**
+     * Return type intentionally bare (engine-039, PHP-8.1-floor
+     * convention per AGENTS.md): the previous `?Node\Expr\FuncCall` was
+     * narrower than the NodeVisitor contract itself — a latent
+     * signature-compatibility trap. A null return is php-parser's "no
+     * replacement" signal; the explicit @return names only the parts
+     * actually returned so the inherited `null|int|Node|Node[]` union
+     * stops leaking into analysis. The rewrite helpers keep their
+     * precise types.
+     *
+     * @return null|Node Replacement node, or null to leave it as-is
+     */
     #[\Override]
-    public function leaveNode(Node $node): ?Node\Expr\FuncCall
+    public function leaveNode(Node $node)
     {
         // Static call: ClassName::method(...)
         if ($node instanceof Node\Expr\StaticCall && $node->name instanceof Node\Identifier) {

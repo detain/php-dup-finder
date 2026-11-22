@@ -141,9 +141,16 @@ final class TrinityCollapser extends NodeVisitorAbstract
      * collapse trinities inside it. Functions, methods, closures,
      * if/else branches, loop bodies, try/catch — anything with a
      * stmt list — gets the same scan.
+     *
+     * Return type intentionally bare (engine-039, PHP-8.1-floor
+     * convention per AGENTS.md): NodeVisitorAbstract::leaveNode declares
+     * none, and php-parser reads a null return as "no replacement" —
+     * this visitor mutates $node in place and never replaces it.
+     *
+     * @return null Always — in-place mutation only, no replacement
      */
     #[\Override]
-    public function leaveNode(Node $node): ?Node
+    public function leaveNode(Node $node)
     {
         if (property_exists($node, 'stmts') && is_array($node->stmts ?? null)) {
             /** @var list<Node\Stmt> $stmts */

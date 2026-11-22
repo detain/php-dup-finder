@@ -324,8 +324,18 @@ final class CanonicalizingVisitor extends NodeVisitorAbstract
         $this->userVarNames = $userVarNames;
     }
 
+    /**
+     * Return type intentionally bare (engine-039, PHP-8.1-floor
+     * convention per AGENTS.md): NodeVisitorAbstract::leaveNode declares
+     * no native type and a null return is php-parser's "no replacement"
+     * signal. The explicit @return names only the parts this visitor
+     * actually returns, so the inherited `null|int|Node|Node[]` contract
+     * union stops leaking into analysis.
+     *
+     * @return null|Node Replacement node, or null to leave it as-is
+     */
     #[\Override]
-    public function leaveNode(Node $node): ?Node
+    public function leaveNode(Node $node)
     {
         // engine-036(a): the Match_/Switch_ desugaring below is a
         // cross-parity fold — `match` (=== arms, no fall-through) and
