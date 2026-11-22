@@ -4,13 +4,19 @@ declare(strict_types=1);
 namespace Phpdup\Tests\Unit\Clustering;
 
 use PHPUnit\Framework\TestCase;
+use Phpdup\Cli\Config;
 use Phpdup\Clustering\CandidateBudgetException;
 use Phpdup\Clustering\Clusterer;
 use Phpdup\Extraction\Block;
 use Phpdup\Index\BlockIndex;
+use Phpdup\Pipeline\PipelineState;
+use Phpdup\Pipeline\ProgressListener;
+use Phpdup\Pipeline\Stage;
+use Phpdup\Pipeline\Stages\ClusterStage;
 use Phpdup\Similarity\JaccardSimilarity;
 use Phpdup\Similarity\TreeEditDistance;
 use Phpdup\Util\LineRange;
+use Symfony\Component\Console\Output\NullOutput;
 
 /**
  * Generation-loop budget guard (improve_logic.md item 0.5, F3 leg).
@@ -36,6 +42,16 @@ use Phpdup\Util\LineRange;
  *       (c1) halts storms the count guard cannot see and is a distinct
  *       exception from CandidateBudgetException, and (c2) never invents
  *       work for the count guard below its budget.
+ *
+ *   (d) once-037 (once-S33): the guard's halt must be reachable WITHOUT
+ *       first materializing a budget-sized pair list. ClusterStage now
+ *       streams the generator in bounded resident windows (its
+ *       CANDIDATE_WINDOW), scoring each window as it fills; these arms pin
+ *       the stage-level contract — halt position (before any pair is
+ *       scored when the budget fits one fill), resident-progress
+ *       announcement (the listener learns the count-so-far, not the full
+ *       list), pair-for-pair identity between windowed and full-resident
+ *       scoring, and the breach-above-window interleaving tax.
  */
 final class GenerationBudgetTest extends TestCase
 {
@@ -356,5 +372,219 @@ final class GenerationBudgetTest extends TestCase
         ));
         $this->assertSame($project($off), $project($armed),
             'a cost budget equal to the corpus charge completes byte-identically');
+    }
+
+    // ------------------------------------------------------------------
+    // once-037 (once-S33): the stage must reach the guard WITHOUT first
+    // paying a budget-sized resident list.
+    //
+    // The generator-level arms above prove the enumeration halts at
+    // budget+1; the finding's actual pain was in ClusterStage, which
+    // drained it through iterator_to_array before scoring anything — so a
+    // production-default storm needed ~14 GB of pair tuples resident
+    // before the loud halt was allowed to speak, and died OOM (exit 255)
+    // instead. The stage now streams bounded windows. These arms drive the
+    // REAL stage (PipelineState + ClusterStage::run over hand-built
+    // blocks — the PairScoreWorkerTedParityTest harness shape) and pin the
+    // windowed contract: halt position, resident-window announcement,
+    // pair-for-pair identity, and the documented breach-above-window tax.
+    // cloneFamilyBlocks() shares one structuralHash so the scorer takes the
+    // trivial exact-hash path — deterministic edges, zero APTED, test-safe.
+    // ------------------------------------------------------------------
+
+    /** @return list<Block> k mutually exact clones; pairs = k(k-1)/2 */
+    private function cloneFamilyBlocks(int $k): array
+    {
+        $blocks = [];
+        for ($i = 0; $i < $k; $i++) {
+            $block                = $this->makeBlock(sprintf('F%04d', $i), ['family_gram' => 1, 'g2' => 1, 'g3' => 1]);
+            $block->structuralHash = 'hash_shared'; // exact-hash tier: no refinement pass needed
+            $blocks[]             = $block;
+        }
+        return $blocks;
+    }
+
+    private function stageConfig(int $candidateBudget): Config
+    {
+        return new Config(
+            paths:                [sys_get_temp_dir()],
+            exclude:              [],
+            maxDocumentFrequency: 1.0, // df=1.0 admits every gram — the guard arms in the synthetic family
+            incremental:          false,
+            workers:              1,   // serial zone: deterministic, no fork noise
+            lazyAst:              false,
+            candidateBudget:      $candidateBudget,
+        );
+    }
+
+    private function makeStage(Config $config, ?ProgressListener $listener, int $window): ClusterStage
+    {
+        return new ClusterStage(
+            exactOnly: false,
+            maxMemoryMb: 0,
+            listener: $listener,
+            useClusterCache: false,
+            candidateWindow: $window,
+        );
+    }
+
+    private function stageState(Config $config, array $blocks): PipelineState
+    {
+        $state = new PipelineState($config);
+        $state->blocks = $blocks;
+        return $state;
+    }
+
+    /** Listener recording every onPairScored(scored, total) announcement. */
+    private function recordingListener(): ProgressListener
+    {
+        return new class implements ProgressListener {
+            /** @var list<array{0:int,1:int}> */
+            public array $pairCalls = [];
+
+            #[\Override]
+            public function onStageStart(Stage $stage): void {}
+            #[\Override]
+            public function onStageEnd(Stage $stage): void {}
+            #[\Override]
+            public function onFileScanned(int $scanned, int $total): void {}
+            #[\Override]
+            public function onFilePreprocessed(int $processed, int $reused, int $errors): void {}
+            #[\Override]
+            public function onPairScored(int $scored, int $total): void
+            {
+                $this->pairCalls[] = [$scored, $total];
+            }
+            #[\Override]
+            public function onClusterRefactored(int $refactored, int $total): void {}
+        };
+    }
+
+    public function testStageHaltsMidFillBeforeScoringAnyPair(): void
+    {
+        // The once-037 headline at stage level: a budget that fits inside
+        // one resident window must die at seeding — zero pairs scored, zero
+        // edges, and the listener never even hears about the scoring pass.
+        // Pre-once-S33 this shape was unverifiable from the stage: the whole
+        // 435-pair list (or a budget-sized slice of the real storms) was
+        // materialized before any of these counters could be observed.
+        $config   = $this->stageConfig(100);
+        $state    = $this->stageState($config, $this->cloneFamilyBlocks(30)); // 435 storm pairs
+        $listener = $this->recordingListener();
+
+        try {
+            $this->makeStage($config, $listener, 512)->run($state, new NullOutput());
+            $this->fail('the stage must rethrow the generation halt, not swallow or delay it');
+        } catch (CandidateBudgetException $e) {
+            $this->assertStringContainsString('100', $e->getMessage(), 'the halted budget must be named');
+        }
+
+        $this->assertSame(100, $state->candidatePairs, 'the halt fires at exactly pair number budget+1 of the stream');
+        $this->assertSame(0, $state->scoredPairs, 'no pair may be scored before the pre-window halt');
+        $this->assertSame([], $state->edges);
+        $this->assertSame([], $listener->pairCalls,
+            'the (0, total) scoring announcement is the materialization witness: on the old batch path it could only ever carry the FULL list — here the stream died before it');
+    }
+
+    public function testWindowedScoringIsPairForPairIdenticalToFullResidentRun(): void
+    {
+        // The streaming law: windows are consecutive prefixes of ONE
+        // deterministic enumeration, so any corpus that completes under the
+        // budget scores the same pairs, in the same order, as the old
+        // full-list path — only the residency is windowed. 100 exact clones
+        // = 4,950 pairs: 25 windows vs one resident batch.
+        $run = function (int $window): PipelineState {
+            $config = $this->stageConfig(Clusterer::MAX_CANDIDATE_PAIRS);
+            $state  = $this->stageState($config, $this->cloneFamilyBlocks(100));
+            $this->makeStage($config, null, $window)->run($state, new NullOutput());
+            return $state;
+        };
+
+        $streamed = $run(200);
+        $resident = $run(PHP_INT_MAX);
+
+        $this->assertSame(4950, $streamed->candidatePairs, 'closed-form mass k(k-1)/2 for k=100');
+        $this->assertSame($resident->candidatePairs, $streamed->candidatePairs);
+        $this->assertSame($resident->scoredPairs, $streamed->scoredPairs);
+        $this->assertSame($resident->edges, $streamed->edges,
+            'window boundaries must not alter which pairs are scored or in which order they land');
+
+        $project = static fn (array $cs): string => (string) json_encode(array_map(
+            static fn ($c): array => [$c->id, array_map(static fn ($b): string => $b->id, $c->members), $c->pairs],
+            $cs,
+        ));
+        $this->assertSame($project($resident->clusters), $project($streamed->clusters),
+            'clustering over windowed edges is the same function of the edge stream (engine-S11 permutations law one store over)');
+    }
+
+    public function testStageAnnouncesTheResidentWindowNotTheMaterializedTotal(): void
+    {
+        // Peak-pairs instrumentation at the listener seam: the FIRST
+        // (0, total) call is the moment the old stage had already drained
+        // the whole generator into RAM. The windowed stage must announce
+        // with only one window generated — the total-so-far grows afterward.
+        $config   = $this->stageConfig(Clusterer::MAX_CANDIDATE_PAIRS);
+        $state    = $this->stageState($config, $this->cloneFamilyBlocks(100)); // 4,950 pairs
+        $listener = $this->recordingListener();
+
+        $this->makeStage($config, $listener, 200)->run($state, new NullOutput());
+
+        $this->assertNotEmpty($listener->pairCalls);
+        $this->assertSame(200, $listener->pairCalls[0][1],
+            'scoring begins while the resident candidate list is ONE window — not 4,950 pairs deep');
+        $this->assertSame(4950, $listener->pairCalls[count($listener->pairCalls) - 1][1],
+            'the final announcement is the honest total');
+        $this->assertSame(4950, $state->candidatePairs);
+        $this->assertGreaterThan(200, $listener->pairCalls[count($listener->pairCalls) - 1][1]);
+    }
+
+    public function testBreachAboveTheWindowPaysTheInterleavingTaxAndStaysBounded(): void
+    {
+        // Second bullet of the breach taxonomy: budget beyond one window
+        // (here fillCeil 64 with an injected window of 50) — the first
+        // window scores, the halt lands the moment generation reaches
+        // pair 101. Memory never outruns the window even though the budget
+        // did have to be flown; the counters record exactly that shape.
+        $config   = $this->stageConfig(100);
+        $state    = $this->stageState($config, $this->cloneFamilyBlocks(100)); // 4,950 pairs available
+        $listener = $this->recordingListener();
+
+        try {
+            $this->makeStage($config, $listener, 50)->run($state, new NullOutput());
+            $this->fail('budget 100 must halt a 4,950-pair storm');
+        } catch (CandidateBudgetException $e) {
+            $this->assertStringContainsString('100', $e->getMessage());
+        }
+
+        $this->assertSame(100, $state->candidatePairs);
+        $this->assertSame(64, $state->scoredPairs,
+            'exactly the first resident window (fillCeil = max(window, PARALLEL_MIN_PAIRS)) was scored before the halt — the documented interleaving tax');
+        $this->assertCount(64, $state->edges, 'edges stay window-sized; the resident list never grew past max(window, 64)');
+        $this->assertSame(64, $listener->pairCalls[0][1], 'the announcement carried the window fill, not the budget');
+    }
+
+    public function testCandidateWindowBoundSitsFarBelowBudgetSizedMaterialization(): void
+    {
+        // Guard-rail on the constant itself (same house style as the
+        // MAX_CANDIDATE_PAIRS pin above): the resident window keeps stage
+        // memory near tens of megabytes while the production budget would
+        // have demanded ~14 GB of pair tuples under the old shape — the
+        // number that made the guard decorative is now bounded by a
+        // DIFFERENT number. And the default window sits at or above the
+        // parallel threshold, so production corpora that complete make the
+        // fork/serial decision over one fill, byte-for-byte the old
+        // arithmetic.
+        $this->assertSame(262_144, ClusterStage::CANDIDATE_WINDOW);
+        $this->assertLessThan(80_000_000, ClusterStage::CANDIDATE_WINDOW * 230,
+            '~230-byte tuples: the resident candidate list stays under 80 MB at the default window');
+        $this->assertLessThan(
+            intdiv(Clusterer::MAX_CANDIDATE_PAIRS * 230, 100),
+            ClusterStage::CANDIDATE_WINDOW * 230,
+            'the window must bound residency at least 100x below what flying the full production budget as one list would have cost'
+        );
+        $minPairs = (int) (new \ReflectionClass(ClusterStage::class))->getConstant('PARALLEL_MIN_PAIRS');
+        $this->assertSame(64, $minPairs);
+        $this->assertGreaterThanOrEqual($minPairs, ClusterStage::CANDIDATE_WINDOW,
+            'default window >= parallel floor: one-fill decisions at production shape');
     }
 }

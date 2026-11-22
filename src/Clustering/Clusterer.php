@@ -240,11 +240,17 @@ final class Clusterer
      * Rare-gram posting unions make pair count quadratic inside a clone
      * family: measured corpora stay at 787-882 pairs/block (18.8M pairs on
      * 23,895 blocks for phlix) while the observed storm hit 2,400-3,400
-     * pairs/block and died at 80 GB / ~320M materialized pairs. 60M bounds
-     * the materialized list at ~14 GB — ~3× the largest corpus ever
-     * completed, ~5× below the death zone. Breaching the budget halts with
-     * a loud {@see CandidateBudgetException} instead of an OOM; below it
-     * the enumeration is pair-for-pair identical to the unguarded loop.
+     * pairs/block and died at 80 GB / ~320M pairs enumerated. The budget
+     * caps ENUMERATION at 60M pairs — ~3× the largest corpus ever
+     * completed, ~5× below the death zone. Since once-S33 the caller-side
+     * resident list no longer rides this number: ClusterStage streams the
+     * generator in bounded windows (ClusterStage::CANDIDATE_WINDOW, ~60 MB),
+     * so the guard fires at budget+1 pairs WITHOUT needing a budget-sized
+     * RAM spare (pre-once-S33 the stage materialized first — the guard was
+     * decorative at exactly the sizes it exists for). Breaching the budget
+     * halts with a loud {@see CandidateBudgetException} instead of an OOM;
+     * below it the enumeration is pair-for-pair identical to the unguarded
+     * loop.
      */
     public const MAX_CANDIDATE_PAIRS = 60_000_000;
 
@@ -258,7 +264,11 @@ final class Clusterer
      * pool: it builds the inverted index, walks each block's candidates,
      * and yields each pair exactly once (canonicalized so a_id < b_id).
      *
-     * Returns a Generator to avoid materializing the full list in memory.
+     * Returns a Generator to avoid materializing the full list in memory —
+     * honored only if the CONSUMER streams it: ClusterStage's windowed
+     * driver (once-S33) scores max(CANDIDATE_WINDOW, PARALLEL_MIN_PAIRS)
+     * pairs at a time; a caller that iterator_to_array()s this generator
+     * re-introduces the full materialization the guard was made to survive.
      * Deduplication uses a bounded $seen map capped at SEEN_CAP entries.
      * When the cap is exceeded the map is cleared — duplicates in the
      * overflow period may not be deduped, but this is extremely rare in
