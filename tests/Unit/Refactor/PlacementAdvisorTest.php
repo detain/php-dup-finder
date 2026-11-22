@@ -168,6 +168,50 @@ final class PlacementAdvisorTest extends TestCase
         $this->assertSame(['acme/shared', 'phpunit/phpunit'], $advice['host_packages']);
     }
 
+    /**
+     * output-046 (php-dup-finder-output-046): require/require-dev KEYS ride
+     * from the untrusted tree's composer.json straight into the CLI placement
+     * line. The advisor gates them to composer's package-name charset, so a
+     * planted newline/ESC/CR/NUL/space/tab key is dropped as unnameable at the
+     * source — never laundered into advice, never forging a report line or
+     * driving a terminal downstream.
+     */
+    public function testComposerManifestKeysAreGatedToComposerNameCharset(): void
+    {
+        $clean = [
+            'a.b_c-d~e/ok'  => '^1', // every charset member: dot . underscore _ hyphen - tilde ~ slash /
+            'acme/shared'   => '^1',
+        ];
+        $hostile = [
+            "vendor/na\nme"     => '^1', // LF forges a standalone stream line
+            "vendor/esc\x1bkey" => '^1', // ESC starts an OSC/CSI frame on any cat of the output
+            "vendor/over\rload" => '^1', // CR drives cursor-overwrite
+            "vendor/nul\x00byte" => '^1', // NUL truncates system calls on consumers
+            'vendor/spaced key' => '^1', // space: never part of a package name
+            "vendor/tab\tkey"   => '^1', // tab is a legal FILENAME byte but not a name byte
+        ];
+        $body = json_encode([
+            'require'     => $clean + ['php' => '*', 'ext-json' => '*'] + $hostile,
+            'require-dev' => ['dev/tool.one' => '^1'] + $hostile,
+        ]);
+
+        [$root1, $root2] = $this->twoRoots($body, $body);
+        $cluster = $this->cluster(
+            $this->member($root1 . '/src/A.php', 'Acme\\X', 'Alpha'),
+            $this->member($root2 . '/src/B.php', 'Acme\\X', 'Beta'),
+        );
+        $advice = (new PlacementAdvisor([$root1, $root2]))->advise($cluster);
+
+        $this->assertSame(
+            ['a.b_c-d~e/ok', 'acme/shared', 'dev/tool.one'],
+            $advice['host_packages'],
+            'only composer-charset keys survive the gate; hostile ones are dropped, not scrubbed, at the advisor',
+        );
+        $flat = $advice['shape'] . $advice['rationale'] . implode('|', $advice['host_packages'] ?? []);
+        $this->assertStringNotContainsString("\x1b", $flat);
+        $this->assertStringNotContainsString("vendor/na\nme", $flat);
+    }
+
     public function testSingleRootClusterSaysNothingAboutPackages(): void
     {
         [$root1, $root2] = $this->twoRoots('{}', '{}');

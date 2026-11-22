@@ -32,11 +32,24 @@ use Phpdup\Clustering\Cluster;
  * package names from each root's composer.json (capped read). Anything
  * less (single root, unreadable manifest, malformed JSON) yields null
  * with the reason in the rationale — never a guessed dependency.
+ *
+ * output-046: those keys arrive from the UNTRUSTED tree's composer.json,
+ * so they carry composer's own package-name charset — nothing outside it
+ * reaches the advice, let alone a report sink. A planted
+ * `vendor/na<newline>me` or ESC-bearing key is dropped as unnameable.
  */
 final class PlacementAdvisor
 {
     /** @var int Bytes to read per composer.json before refusing to parse. */
     private const MANIFEST_MAX_BYTES = 64_000;
+
+    /**
+     * Composer package-name charset (output-046): vendor/name over the
+     * bytes composer itself admits. Anything else (control bytes, spaces,
+     * tabs — tab is legal in filenames but not in package names) is not a
+     * package name and never enters the advice.
+     */
+    private const PACKAGE_NAME_PATTERN = '#^[A-Za-z0-9._~/-]+$#';
 
     /** @var array<string, list<string>|false> root => package list, false = unreadable */
     private array $manifestCache = [];
@@ -225,7 +238,11 @@ final class PlacementAdvisor
         );
         $pkgs = array_values(array_unique(array_filter(
             $pkgs,
-            static fn($p) => is_string($p) && $p !== '' && $p !== 'php' && !str_starts_with($p, 'ext-'),
+            static fn($p) => is_string($p)
+                && $p !== ''
+                && $p !== 'php'
+                && !str_starts_with($p, 'ext-')
+                && preg_match(self::PACKAGE_NAME_PATTERN, $p) === 1,
         )));
         $this->manifestCache[$root] = $pkgs;
         return $pkgs;

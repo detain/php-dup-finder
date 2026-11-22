@@ -8,6 +8,7 @@ use Phpdup\Cli\Config;
 use Phpdup\Refactor\Hole;
 use Phpdup\Refactor\HoleCoverage;
 use Phpdup\Refactor\PlacementAdvisor;
+use Phpdup\Util\ControlText;
 use Phpdup\Util\CountPhrase;
 use SugarCraft\Core\Util\Color;
 use SugarCraft\Cli\Banner;
@@ -27,6 +28,15 @@ use Symfony\Component\Console\Output\OutputInterface;
  * When the output is not decorated (Symfony's --no-ansi or output piped
  * to a non-TTY), we switch to {@see Theme::plain()} so the same
  * code path produces clean, ANSI-free text.
+ *
+ * output-046 boundary law: every scanned-derived string (member paths and
+ * names, signatures, hole evidence, pattern tags, composer host packages)
+ * is scrubbed through the shared {@see ControlText} substitute arm before
+ * it reaches writeln(). Theme::plain() neutralizes THIS file's own Style
+ * objects — nothing neutralizes an ESC byte that rode in inside a scanned
+ * filename, and OSC window-title/clipboard payloads drive the terminal of
+ * whoever cats the output even under --no-ansi. Clean text stays
+ * byte-identical, so the scrub costs nothing on honest trees.
  */
 final class CliReporter
 {
@@ -186,7 +196,7 @@ final class CliReporter
         $out->writeln('');
         $rows = [];
         foreach ($clusters as $c) {
-            $loc = isset($c->members[0]) ? $c->members[0]->location() : '';
+            $loc = isset($c->members[0]) ? self::scrub($c->members[0]->location()) : '';
             $rows[] = [
                 $c->id,
                 (string)$c->size(),
@@ -219,9 +229,9 @@ final class CliReporter
         foreach ($c->members as $idx => $m) {
             $marker = isset($outliers[$idx]) ? ' ⚠ outlier' : '';
             $memberTable = $memberTable->row(
-                $m->location() . $marker,
+                self::scrub($m->location()) . $marker,
                 $m->kind,
-                $m->qualifiedName(),
+                self::scrub($m->qualifiedName()),
             );
         }
         $out->writeln($memberTable->render());
@@ -233,7 +243,16 @@ final class CliReporter
             if ($decorated) {
                 $sigStyle = $sigStyle->foreground(Color::ansi(14)); // bright cyan
             }
-            $out->writeln($sigStyle->render($c->signature));
+            // output-046, line-scoped: the signature's own grammar carries
+            // LF between parameter rows (SignatureBuilder:54), so a whole-
+            // string substitute would replace its legitimate line breaks.
+            // Scrub per line instead — the terminal-driving ESC plus the
+            // NUL/CR forgers are removed from every line, and a scanned
+            // name cannot smuggle a raw byte onto the box unchanged.
+            $out->writeln($sigStyle->render(implode("\n", array_map(
+                static fn(string $line): string => self::scrub($line),
+                explode("\n", $c->signature),
+            ))));
         }
 
         if ($c->holes) {
@@ -244,8 +263,8 @@ final class CliReporter
                 ->headers('PARAM', 'TYPE', 'KIND', 'OBSERVED');
             foreach ($c->holes as $h) {
                 $holesTable = $holesTable->row(
-                    $h->suggestedName,
-                    $h->inferredType,
+                    self::scrub($h->suggestedName),
+                    self::scrub($h->inferredType),
                     $h->kind,
                     $this->summarizeObserved($h->observedValues, 60),
                 );
@@ -284,10 +303,21 @@ final class CliReporter
 
         // Item 5.3: placement advice — where the extraction belongs, said
         // even for zero-hole clusters (a verbatim 'move' still needs a host).
+        // output-046: the rationale interpolates scanned namespaces and root
+        // paths, and the host list rides keys from the untrusted tree's
+        // composer.json (PlacementAdvisor already gates those to composer's
+        // charset; the boundary scrub is the second lock).
         $placement = $advisor->advise($c);
-        $whereLine = sprintf('placement: %s — %s', $placement['shape'], $placement['rationale']);
+        $whereLine = sprintf(
+            'placement: %s — %s',
+            $placement['shape'],
+            self::scrub($placement['rationale']),
+        );
         if ($placement['host_packages'] !== null && $placement['host_packages'] !== []) {
-            $whereLine .= ' [shared host: ' . implode(', ', $placement['host_packages']) . ']';
+            $whereLine .= ' [shared host: ' . implode(', ', array_map(
+                static fn(string $p): string => self::scrub($p),
+                $placement['host_packages'],
+            )) . ']';
         }
         $out->writeln('');
         $out->writeln('  ' . ($decorated ? $theme->muted->render($whereLine) : $whereLine));
@@ -326,8 +356,15 @@ final class CliReporter
     /** @param list<string> $tags */
     private function renderTags(array $tags, Theme $theme, bool $decorated): string
     {
+        // output-046: the tag vocabulary is analyzer-internal, but the
+        // finding lists these two sinks and the boundary law is mechanical
+        // — no scan-adjacent string enters writeln unchecked, decorated or
+        // plain alike.
         if (!$decorated) {
-            return 'patterns: ' . implode(', ', $tags);
+            return 'patterns: ' . implode(', ', array_map(
+                static fn(string $t): string => self::scrub($t),
+                $tags,
+            ));
         }
         $chip = Style::new()
             ->bold()
@@ -336,7 +373,7 @@ final class CliReporter
             ->background(Color::hex('#ff5fd2'));
         $out = $theme->muted->render('patterns ');
         foreach ($tags as $tag) {
-            $out .= $chip->render($tag) . ' ';
+            $out .= $chip->render(self::scrub($tag)) . ' ';
         }
         return rtrim($out);
     }
@@ -344,7 +381,14 @@ final class CliReporter
     /** @param list<string> $values */
     private function summarizeObserved(array $values, int $maxLen): string
     {
-        $unique = array_values(array_unique($values));
+        // output-046: an observed value is a raw source fragment, so it
+        // carries every byte the scanned file held — control bytes included.
+        // Scrub through the shared boundary before it is truncated and
+        // printed; length folding alone left an OSC intro intact on stdout.
+        $unique = array_values(array_unique(array_map(
+            static fn(string $v): string => self::scrub($v),
+            $values,
+        )));
         $shown  = array_map(
             static fn(string $v) => ($v === Hole::MISSING || $v === '<missing>') ? '(gap)' : $v,
             array_slice($unique, 0, 5),
@@ -353,6 +397,19 @@ final class CliReporter
         $extra = count($unique) > 5 ? sprintf(' (+%d more)', count($unique) - 5) : '';
         $out = implode(', ', $rendered) . $extra;
         return mb_strlen($out) > $maxLen ? mb_substr($out, 0, $maxLen - 1) . '…' : $out;
+    }
+
+    /**
+     * Boundary scrub for a scanned-derived string about to reach writeln()
+     * (output-046). Delegates to the shared {@see ControlText} substitute arm
+     * — this reporter does not fork a second sanitizer — so ESC/CR/LF/NUL
+     * become one visible replacement char (no OSC/CSI sequence can then
+     * start on whoever cats the report), while clean paths and names return
+     * byte-identical.
+     */
+    private static function scrub(string $text): string
+    {
+        return ControlText::substitute($text);
     }
 
     private static function terminalWidth(): int

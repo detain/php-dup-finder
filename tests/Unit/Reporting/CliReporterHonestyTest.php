@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Phpdup\Tests\Unit\Reporting;
 
+use PhpParser\Node\Stmt\Nop;
 use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\Config;
 use Phpdup\Clustering\Cluster;
@@ -14,6 +15,7 @@ use Phpdup\Refactor\Hole;
 use Phpdup\Refactor\HoleCoverage;
 use Phpdup\Reporting\CliReporter;
 use Phpdup\Reporting\Report;
+use Phpdup\Util\LineRange;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\OutputInterface;
 
@@ -162,7 +164,134 @@ final class CliReporterHonestyTest extends TestCase
         );
     }
 
+    /**
+     * output-046 (php-dup-finder-output-046): Theme::plain() neutralizes the
+     * reporter's OWN Style objects — nothing there stops an ESC byte that
+     * rode in inside a scanned filename, class name, signature fragment,
+     * hole value or tag. The boundary scrub (shared ControlText substitute
+     * arm) must leave ZERO escape bytes in the plain render, with the forger
+     * replaced by the one visible marker instead of silently vanishing.
+     */
+    public function testScannedControlBytesLeavePlainRenderEscapeFree(): void
+    {
+        $rendered = $this->renderHostile(decorated: false);
+
+        $this->assertStringNotContainsString("\x1b", $rendered, 'no ESC may reach a --no-ansi stream from scanned text');
+        $this->assertStringNotContainsString("\x00", $rendered);
+        $this->assertStringContainsString(
+            "\u{FFFD}]0;pwn",
+            $rendered,
+            'the OSC window-title payload survives only as inert text behind one visible replacement char',
+        );
+        $this->assertStringContainsString("\u{FFFD}[31mArm", $rendered, 'injected SGR body cannot survive the class-name scrub intact');
+        $this->assertStringContainsString("'va\u{FFFD}lue'", $rendered, 'observed hole values are scrubbed too');
+    }
+
+    /**
+     * output-046, decorated leg: the hostile OSC frame and injected-SGR arms
+     * are gone while legitimate styling remains — proving the scrub targets
+     * scanned bytes, not the reporter's own ANSI.
+     */
+    public function testScannedControlBytesScrubbedUnderDecoratedOutput(): void
+    {
+        $rendered = $this->renderHostile(decorated: true);
+
+        $this->assertMatchesRegularExpression('/\x1b\[/', $rendered, 'decorated render must still carry the reporter\u2019s own SGR styling');
+        $this->assertStringNotContainsString("\x1b]0;pwn", $rendered);
+        $this->assertStringNotContainsString("\x1b[31mArm", $rendered);
+        $this->assertStringContainsString("\u{FFFD}]0;pwn", $rendered);
+    }
+
+    /**
+     * output-046 cross-check on the two-root placement line: the advisor
+     * already drops non-charset composer keys, so the plain render names the
+     * shared host and neither the newline-forged key nor the ESC key appears
+     * in ANY form.
+     */
+    public function testComposerHostLineDropsNonCharsetKeysBeforeRender(): void
+    {
+        $body = json_encode(['require' => [
+            'acme/shared' => '^1',
+            "vendor/na\nme" => '^1',
+            "vendor/esc\x1bkey" => '^1',
+        ]]);
+        $rootA = $this->tmp . '/ra';
+        $rootB = $this->tmp . '/rb';
+        mkdir($rootA . '/src', 0777, true);
+        mkdir($rootB . '/src', 0777, true);
+        file_put_contents($rootA . '/composer.json', $body);
+        file_put_contents($rootB . '/composer.json', $body);
+
+        $cluster = new Cluster('PAIR', [
+            new Block($rootA . '/src/A.php', new LineRange(1, 3), 'method', 'Acme', 'A', 'run', new Nop()),
+            new Block($rootB . '/src/B.php', new LineRange(1, 3), 'method', 'Acme', 'B', 'run', new Nop()),
+        ], 0.9, false);
+        $config  = new Config(paths: [$rootA, $rootB], exclude: [], maxHoleCoverage: 1.0);
+
+        $out = new BufferedOutput(OutputInterface::VERBOSITY_NORMAL, decorated: false);
+        (new CliReporter())->render(
+            new Report(files: 2, blocks: 2, parseErrors: 0, clusters: [$cluster], config: $config),
+            $out,
+        );
+        $rendered = $out->fetch();
+
+        $this->assertStringContainsString('[shared host: acme/shared]', $rendered);
+        $this->assertStringNotContainsString('vendor/na', $rendered);
+        $this->assertStringNotContainsString('vendor/esc', $rendered);
+        $this->assertStringNotContainsString("\x1b", $rendered);
+    }
+
     // ── fixtures ────────────────────────────────────────────────────────────
+
+    /**
+     * A hand-built cluster whose EVERY scanned-derived slot carries a
+     * forger: filename (OSC title), class name (SGR injection), signature
+     * (ESC inside a two-line parameter block — the legitimate LF structure
+     * must survive the line-scoped signature scrub), one hole observed
+     * value, and one pattern tag.
+     */
+    private function hostileCluster(): Cluster
+    {
+        $a = new Block(
+            $this->tmp . "/\x1b]0;pwn\x07evil.php",
+            new LineRange(1, 3),
+            'method',
+            'Acme',
+            "Al\x1b[31mArm",
+            'run',
+            new Nop(),
+        );
+        $b = new Block(
+            $this->tmp . '/clean.php',
+            new LineRange(1, 3),
+            'method',
+            'Acme',
+            'Clean',
+            'run',
+            new Nop(),
+        );
+        $cluster = new Cluster('PAIR', [$a, $b], 0.9, false);
+        $cluster->signature = "function extracted(\n    \$a\x1bb\n): mixed";
+        $h = new Hole('__P0', 'literal', ["'va\x1blue'", "'other'"]);
+        $h->suggestedName = "\x1bval";
+        $h->inferredType  = "St\x1cr\x00ange";
+        $cluster->holes[] = $h;
+        $cluster->patternTags = ['db-op' . "\x1b[H"];
+
+        return $cluster;
+    }
+
+    private function renderHostile(bool $decorated): string
+    {
+        $cluster = $this->hostileCluster();
+        $config  = new Config(paths: [$this->tmp], exclude: [], maxHoleCoverage: 1.0);
+        $out = new BufferedOutput(OutputInterface::VERBOSITY_NORMAL, decorated: $decorated);
+        (new CliReporter())->render(
+            new Report(files: 2, blocks: 2, parseErrors: 0, clusters: [$cluster], config: $config),
+            $out,
+        );
+        return $out->fetch();
+    }
 
     private function render(Cluster $cluster, float $maxHoleCoverage): string
     {
