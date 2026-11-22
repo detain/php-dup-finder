@@ -1396,57 +1396,6 @@ final class BlockAstLoaderTest extends TestCase
             PHP;
     }
 
-    /**
-     * Leg-B multi-class collision geometry: TWO byte-identical guards
-     * (one hash class — the duplicate-hash case the candidate memo must
-     * key per NODE, never per hash) plus a different-class stranger, all
-     * in one positional group. Ghost members hint far away so the sweep
-     * always escalates onto the content law.
-     */
-    private static function memoMultiClassFile(): string
-    {
-        return <<<'PHP'
-            <?php
-
-            namespace MM1;
-
-            $k = 1;
-            $s = 0;
-            if ($k > 1) { $s += 1; }
-
-            if ($k > 1) { $s += 1; }
-
-            if ($k > 2) { $s -= 1; }
-            echo $s;
-            PHP;
-    }
-
-    /**
-     * Leg-B resolve-side geometry: two distinct-class guards, one
-     * positional group, no twins — the stale-hint members force every
-     * content decision (strict gate and pool filter alike) through the
-     * same two live candidate nodes.
-     */
-    private static function memoBeltFile(): string
-    {
-        return <<<'PHP'
-            <?php
-
-            namespace MB1;
-
-            $k = 1;
-            $s = 0;
-            if ($k > 1) {
-                $s += strlen('ALPHA1');
-            }
-            if ($k < 1) {
-                $s += strlen('ONER1');
-                $s += strlen('ONER2');
-            }
-            echo $s;
-            PHP;
-    }
-
     private static function sameClassPermuteOrig(): string
     {
         return <<<'PHP'
