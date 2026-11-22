@@ -58,7 +58,15 @@ jobs:
           rc=$?
           printf '%s\n' "$out"
           offenders="$(printf '%s\n' "$out" | grep -E '^[[:space:]]*- ' | grep -v 'pointing to a commit-ref')"
-          if [ "$rc" -ne 0 ] && [ -n "$offenders" ]; then
+          # once-S11 fix-round-1 (MEDIUM-2): the old guard was fail-open for
+          # the worst manifest states — composer renders a JSON-parse failure
+          # and a missing-file error OUTSIDE the `- ` bullet format, so rc!=0
+          # with zero offenders used to slip through. Fail unless the strict
+          # error is FULLY explained by commit-ref bullets, which is only true
+          # when composer still declared the file valid (rc!=0 + no offenders +
+          # "composer.json is valid" present). Parse/missing failures never
+          # print that line, so they break the build as promised above.
+          if [ "$rc" -ne 0 ] && { [ -n "$offenders" ] || ! printf '%s\n' "$out" | grep -q 'composer.json is valid'; }; then
             echo "::error::composer validate --strict reported non-commit-ref problems"
             printf '%s\n' "$offenders"
             exit 1
@@ -194,4 +202,9 @@ jobs:
         # No blanket ignore. A suppressed advisory must live in
         # composer.json `config.audit.ignore` (empty today) with a dated
         # justification, never a per-run --ignore flag.
-        run: composer audit --format=github --no-dev
+        # once-S11 fix-round-1 (HIGH-1): dropped `--format=github` — composer
+        # 2.x audit only accepts table|plain|json|summary, so the shipped flag
+        # errored rc=1 on every run. Default `table` output is fine for this
+        # pass/fail gate; the fail-hard posture (exit non-zero on any advisory)
+        # is unchanged.
+        run: composer audit --no-dev
