@@ -628,7 +628,8 @@ final class MlClientTest extends TestCase
         $response = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 6\r\n\r\nnope!!";
         [$pid, $port, $server] = $this->forkHttpServer(
             static fn(string $request): string => $response,
-            5
+            5,
+            2
         );
         try {
             $client   = new MlClient('http://127.0.0.1', timeoutSec: 3);
@@ -648,7 +649,8 @@ final class MlClientTest extends TestCase
         $response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " . strlen($body) . "\r\n\r\n" . $body;
         [$pid, $port, $server] = $this->forkHttpServer(
             static fn(string $request): string => $response,
-            5
+            5,
+            2
         );
         try {
             $client   = new MlClient('http://127.0.0.1', timeoutSec: 3);
@@ -686,6 +688,8 @@ final class MlClientTest extends TestCase
     /**
      * One-shot loopback HTTP server in a forked child. $responseFor gets
      * the raw request text and returns the full response to write once.
+     * $serveCount lets a test dial the same seam repeatedly (a literal
+     * round-trip through curl AND stream needs two accepted connections).
      * The parent KEEPS the listener handle so tests can assert "no
      * connection arrived" with stream_select; callers must fclose it and
      * reap the child when done.
@@ -693,7 +697,7 @@ final class MlClientTest extends TestCase
      * @param callable(string): string $responseFor
      * @return array{0: int, 1: int, 2: resource} [pid, port, listener]
      */
-    private function forkHttpServer(callable $responseFor, int $acceptTimeoutSec = 5): array
+    private function forkHttpServer(callable $responseFor, int $acceptTimeoutSec = 5, int $serveCount = 1): array
     {
         if (!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid')) {
             self::markTestSkipped('forked HTTP server requires pcntl_fork/pcntl_waitpid');
@@ -715,40 +719,43 @@ final class MlClientTest extends TestCase
             self::markTestSkipped('pcntl_fork failed');
         }
         if ($pid === 0) {
-            // Child: serve exactly one request, then exit() past
+            // Child: serve up to $serveCount requests, then exit() past
             // PHPUnit shutdown — drop inherited output buffers so
             // nothing flushes twice.
             while (ob_get_level() > 0) {
                 ob_end_clean();
             }
-            $conn = @stream_socket_accept($server, $acceptTimeoutSec);
-            if ($conn === false) {
-                fclose($server);
-                exit(1);
-            }
-            stream_set_timeout($conn, $acceptTimeoutSec);
-            $request = '';
-            while (!str_contains($request, "\r\n\r\n")) {
-                $chunk = fread($conn, 8192);
-                if ($chunk === false || $chunk === '') {
+            $served = 0;
+            for ($i = 0; $i < $serveCount; $i++) {
+                $conn = @stream_socket_accept($server, $acceptTimeoutSec);
+                if ($conn === false) {
                     break;
                 }
-                $request .= $chunk;
-            }
-            if (preg_match('/^Content-Length: (\d+)$/mi', $request, $m) === 1) {
-                $remaining = (int)$m[1];
-                while ($remaining > 0) {
-                    $chunk = fread($conn, min(8192, $remaining));
+                $served++;
+                stream_set_timeout($conn, $acceptTimeoutSec);
+                $request = '';
+                while (!str_contains($request, "\r\n\r\n")) {
+                    $chunk = fread($conn, 8192);
                     if ($chunk === false || $chunk === '') {
                         break;
                     }
-                    $remaining -= strlen($chunk);
+                    $request .= $chunk;
                 }
+                if (preg_match('/^Content-Length: (\d+)$/mi', $request, $m) === 1) {
+                    $remaining = (int)$m[1];
+                    while ($remaining > 0) {
+                        $chunk = fread($conn, min(8192, $remaining));
+                        if ($chunk === false || $chunk === '') {
+                            break;
+                        }
+                        $remaining -= strlen($chunk);
+                    }
+                }
+                @fwrite($conn, $responseFor($request));
+                fclose($conn);
             }
-            @fwrite($conn, $responseFor($request));
-            fclose($conn);
             fclose($server);
-            exit(0);
+            exit($served > 0 ? 0 : 1);
         }
         return [$pid, $port, $server];
     }
