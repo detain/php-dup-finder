@@ -92,6 +92,23 @@ final class CsvReporterTest extends TestCase
         $this->assertSame('"\'=hello, world"', $r->invoke($reporter, '=hello, world'));
     }
 
+    public function testDefuseFormulaIsTheSharedGuardVenue(): void
+    {
+        // output-035: escape() delegates to the public static — the guard
+        // shape the other three rule-named reporters (Diff, RefactorPatch,
+        // RefactorTest) route their metadata text through. Byte behavior of
+        // escape() stays pinned by the reflection test above.
+        $this->assertSame("'=cmd|'/C calc'", CsvReporter::defuseFormula("=cmd|'/C calc'"));
+        $this->assertSame("'+1", CsvReporter::defuseFormula('+1'));
+        $this->assertSame("'-1", CsvReporter::defuseFormula('-1'));
+        $this->assertSame("'@x", CsvReporter::defuseFormula('@x'));
+        $this->assertSame("'\tx", CsvReporter::defuseFormula("\tx"));
+        $this->assertSame("'\rx", CsvReporter::defuseFormula("\rx"));
+        $this->assertSame('', CsvReporter::defuseFormula(''), 'empty string stays empty');
+        $this->assertSame('F0a1b2c3', CsvReporter::defuseFormula('F0a1b2c3'), 'clean value byte-unchanged');
+        $this->assertSame('a=b', CsvReporter::defuseFormula('a=b'), 'only the first char is a trigger');
+    }
+
     private function buildReport(): Report
     {
         $config = new Config(

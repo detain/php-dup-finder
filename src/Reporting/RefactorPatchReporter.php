@@ -95,19 +95,19 @@ final class RefactorPatchReporter
                     $unsafe = $this->detectUnsafe($cluster);
                     if ($unsafe !== null) {
                         // Unsafe cluster: fall back to preview patch.
-                        $skipped[] = "# cluster {$cluster->id}: {$unsafe}";
+                        $skipped[] = "# cluster " . CsvReporter::defuseFormula($cluster->id) . ": {$unsafe}";
                         $skipped[] = $this->buildPatch($cluster, $safeId);
                         continue;
                     }
                     if ($cluster->generalizedAst === null || $cluster->signature === null) {
-                        $skipped[] = "# cluster {$cluster->id}: no signature";
+                        $skipped[] = "# cluster " . CsvReporter::defuseFormula($cluster->id) . ": no signature";
                         continue;
                     }
                     try {
                         $extractor->apply($cluster, $dir);
-                        $applied[] = "{$safeId}.php";
+                        $applied[] = CsvReporter::defuseFormula("{$safeId}.php");
                     } catch (\Throwable $e) {
-                        $skipped[] = "# cluster {$cluster->id}: error - " . $e->getMessage();
+                        $skipped[] = "# cluster " . CsvReporter::defuseFormula($cluster->id) . ": error - " . $e->getMessage();
                     }
                 }
                 // Write summary diff.
@@ -152,7 +152,11 @@ final class RefactorPatchReporter
 
         $safeId ??= Slug::safe($cluster->id);
         $unsafe = $this->detectUnsafe($cluster);
-        $header = "# phpdup refactor patch — cluster {$cluster->id}\n"
+        // output-035 (S6): the `#`-comment rows are metadata and their text
+        // values go through CsvReporter::defuseFormula; the `+`/`-` hunk
+        // payload below (including prefixLines of the signature) is raw
+        // patch structure and stays byte-faithful by the carve-out law.
+        $header = "# phpdup refactor patch — cluster " . CsvReporter::defuseFormula($cluster->id) . "\n"
                 . "# members: " . count($cluster->members)
                 . ", impact: {$cluster->impact}, confidence: " . sprintf('%.2f', $cluster->confidence) . "\n";
         if ($unsafe !== null) {
@@ -237,7 +241,9 @@ final class RefactorPatchReporter
      */
     private function memberHint(Block $member, string $funcName, int $idx): string
     {
-        $loc = "{$member->file}:{$member->range->start}-{$member->range->end}";
+        // Metadata hint row (output-035): the member path is scanned text —
+        // defused; the range digits are structural.
+        $loc = CsvReporter::defuseFormula($member->file) . ":{$member->range->start}-{$member->range->end}";
         return "\n# member[{$idx}] @ {$loc}\n"
              . "#   replace body with: return \\Refactored\\{$funcName}(...);\n";
     }

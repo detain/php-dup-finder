@@ -80,15 +80,33 @@ final class CsvReporter
 
     private function escape(string $cell): string
     {
-        // Formula injection guard: prefix cells starting with formula-
-        // trigger characters with a text-prefix (') so spreadsheets
-        // treat them as literal text, not formulas.
-        if ($cell !== '' && strpbrk($cell[0], "=+-@\t\r") !== false) {
-            $cell = "'" . $cell;
-        }
+        $cell = self::defuseFormula($cell);
         if (preg_match('/[",\r\n]/', $cell) === 1) {
             return '"' . str_replace('"', '""', $cell) . '"';
         }
         return $cell;
+    }
+
+    /**
+     * S6 formula-neutralization — the plan's shared guard shape (output-035).
+     *
+     * Prefixes a value whose FIRST character is a formula trigger (`=`, `+`,
+     * `-`, `@`, tab, CR) with the text-marker `'` so spreadsheet consumers
+     * ingest it as literal text, never as a formula. Byte-class copied from
+     * the original {@see self::escape()} guard; this method is the venue the
+     * rule's four named reporters (Csv, Diff, RefactorPatch, RefactorTest)
+     * route user-derived metadata text through.
+     *
+     * Scope law (the raw-hunk carve-out): metadata/tabular TEXT values only.
+     * Never apply this to unified-diff body or header bytes, or to positions
+     * inside generated PHP code — those are parser-consumed structure where
+     * a spurious `'` corrupts the artifact. once-S58 widens the venue's
+     * consumers; a later lane may promote it to src/Util.
+     */
+    public static function defuseFormula(string $value): string
+    {
+        return $value !== '' && strpbrk($value[0], "=+-@\t\r") !== false
+            ? "'" . $value
+            : $value;
     }
 }

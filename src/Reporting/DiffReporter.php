@@ -75,13 +75,19 @@ final class DiffReporter
         $baseSource = self::sourceOf($base);
         $differ     = new Differ(new UnifiedDiffOutputBuilder("--- a/{$base->file}\n+++ b/{$base->file}\n", false));
 
-        $header = "# phpdup cluster {$cluster->id}\n"
+        // output-035 (S6): the comment-header rows below are metadata — they
+        // carry cluster name, signature text and member paths. Those values
+        // pass through CsvReporter::defuseFormula. The unified-diff payload
+        // itself (`--- a/`/`+++ b/` pair fed to the Differ, and every hunk
+        // byte it renders) is parser-consumed structure and stays raw —
+        // defusing it would corrupt the diff.
+        $header = "# phpdup cluster " . CsvReporter::defuseFormula($cluster->id) . "\n"
                 . sprintf("#   members: %d, similarity: %.2f, impact: %d\n", count($cluster->members), $cluster->similarity, $cluster->impact)
                 . "#\n# Suggested abstraction:\n"
-                . $this->indent((string)$cluster->signature, '#   ')
+                . $this->indent(CsvReporter::defuseFormula((string)$cluster->signature), '#   ')
                 . "\n#\n# Anchor ("
                 . ($cluster->medoidId !== null && $base->id === $cluster->medoidId ? 'medoid' : 'members[0] fallback')
-                . "): {$base->file}:{$base->range->start}-{$base->range->end}\n\n";
+                . "): " . CsvReporter::defuseFormula($base->file) . ":{$base->range->start}-{$base->range->end}\n\n";
 
         $diffs = [];
         foreach ($cluster->members as $i => $other) {
@@ -92,7 +98,7 @@ final class DiffReporter
             $diff        = $differ->diff($baseSource, $otherSource);
             $diffs[] = sprintf(
                 "## member[%d]: %s:%d-%d\n%s",
-                $i, $other->file, $other->range->start, $other->range->end, $diff,
+                $i, CsvReporter::defuseFormula($other->file), $other->range->start, $other->range->end, $diff,
             );
         }
 

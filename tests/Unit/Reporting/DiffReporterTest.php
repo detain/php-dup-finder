@@ -163,6 +163,48 @@ final class DiffReporterTest extends TestCase
         $this->assertSame(substr_count($body, "--- a/"), substr_count($body, "+++ b/"));
     }
 
+    // ── output-035 (S6): metadata rows defuse, diff bytes stay raw ────────────
+
+    public function testMetadataRowsDefuseFormulaTriggersAndHunkBytesStayRaw(): void
+    {
+        $dir = sys_get_temp_dir() . '/phpdup-diff-defuse-' . uniqid('', true);
+        $src = $dir . '/sub';
+        mkdir($src, 0o775, true);
+        $fileA = $src . '/a.php';
+        $fileB = $src . '/b.php';
+        file_put_contents($fileA, "<?php\nfunction m() { return 1; }\n");
+        file_put_contents($fileB, "<?php\nfunction m() { return 2; }\n");
+        try {
+            // Attack-shaped name/signature plus a relative trigger-leading
+            // member path (what a scan of `=evil.php` actually yields); the
+            // third member has no source on disk so its diff payload is the
+            // structural "<source unavailable>" line — raw on purpose.
+            $cluster = new Cluster("=cmd|'/C calc'", [
+                $this->realBlock($fileA), $this->realBlock($fileB), $this->block('=evil.php'),
+            ], 1.0, false);
+            $cluster->signature = "=cmd|'/C calc'";
+            $body = $this->renderCluster($cluster);
+
+            // Guarded metadata: cluster name and signature rows carry the
+            // text prefix; the trigger-leading member path is defused.
+            $this->assertStringContainsString("# phpdup cluster '=cmd|'/C calc'", $body);
+            $this->assertStringContainsString("#   '=cmd|'/C calc'", $body);
+            $this->assertStringContainsString("# Anchor (members[0] fallback): {$fileA}:2-2", $body);
+            $this->assertStringContainsString("## member[2]: '=evil.php:1-1", $body);
+
+            // Carve-out: the diff headers and hunk payload are raw bytes —
+            // a defused path there would corrupt the patch structure.
+            $this->assertStringContainsString('--- a/' . $fileA, $body);
+            $this->assertStringNotContainsString("--- a/'", $body);
+            $this->assertStringContainsString('<source unavailable: =evil.php>', $body);
+            $this->assertMatchesRegularExpression('/^\+function m\(\) \{ return 2; \}$/m', $body);
+            $this->assertMatchesRegularExpression('/^-function m\(\) \{ return 1; \}$/m', $body);
+            $this->assertDoesNotMatchRegularExpression("/^'[-+@]/m", $body, 'no defuse prefix may reach hunk line starts');
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
     private function renderCluster(Cluster $cluster): string
     {
         // buildClusterDiff is private; exercise it through the file surface.
