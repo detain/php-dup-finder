@@ -203,7 +203,7 @@ final class PlacementAdvisor
         foreach ($rootList as $root) {
             $pkgs = $this->packagesAt($root);
             if ($pkgs === null) {
-                return [null, "Host-package advice degrades to null: {$root} has no parseable composer.json (conservative mode, item 5.3)."];
+                return [null, "Cannot name a shared host package: {$root} has no parseable composer.json (conservative mode, item 5.3)."];
             }
             $sets[] = $pkgs;
         }

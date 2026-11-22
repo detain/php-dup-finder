@@ -985,9 +985,9 @@ final class Clusterer
                         . ' max_ted_size, so the per-pair cap alone cannot bound it.' . "\n"
                         . 'Ways forward: scan a narrower path (or exclude the family\'s directories'
                         . ' via the config "exclude" list); lower the config key max_ted_size so'
-                        . ' large members ride the jaccard-unverified tier; or raise the Clusterer'
-                        . ' constructor knob maxTedCost for this caller'
-                        . ' (Clusterer::UNLIMITED_TED_COST disables the aggregate guard).',
+                        . ' large members ride the jaccard-unverified tier; or, when embedding phpdup'
+                        . ' as a library, construct the Clusterer with a larger maxTedCost (an unlimited'
+                        . ' cost disables the aggregate guard).',
                         number_format($this->maxTedCost),
                         number_format($tedVerdicts),
                         number_format($tedCost),

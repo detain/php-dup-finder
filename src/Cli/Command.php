@@ -130,24 +130,54 @@ final class Command extends SymfonyCommand
             ->addOption('mode', null, InputOption::VALUE_REQUIRED, 'Normalization mode: strict|default|aggressive')
             ->addOption('similarity', null, InputOption::VALUE_REQUIRED, 'Jaccard similarity threshold (0..1)')
             ->addOption('max-df', null, InputOption::VALUE_REQUIRED, 'Max document-frequency (0..1) for n-grams to be candidate-pair seeds. 0.01 default suits real codebases; bump to ~0.5 for small fixtures.')
-            ->addOption('candidate-budget', null, InputOption::VALUE_REQUIRED, 'Safety cap on candidate pairs emitted during clustering. A pathological clone family halts loudly (CandidateBudgetException) instead of exhausting memory. Default 60,000,000; 0 = unlimited (opts out of the guard).')
+            ->addOption('candidate-budget', null, InputOption::VALUE_REQUIRED, 'Safety cap on candidate pairs emitted during clustering. A pathological clone family
+                halts loudly instead of exhausting memory. Default 60,000,000; 0 = unlimited (opts out of the guard).')
             ->addOption('optional-blocks', null, InputOption::VALUE_REQUIRED, 'Type-3 / "optional segment" detection: on|off (default on). When on, blocks whose statements differ in length but share a common skeleton cluster together with bool $include* params for the absent-from-some-members segments.')
             ->addOption('optional-blocks-containment', null, InputOption::VALUE_REQUIRED, 'Containment threshold (0..1) for the type-3 fallback path. Default 0.85.')
             ->addOption('min-impact', null, InputOption::VALUE_REQUIRED, 'Minimum cluster impact to report')
             ->addOption('exact-only', null, InputOption::VALUE_NONE, 'Skip near-duplicate detection (faster)')
-            ->addOption('kinds', null, InputOption::VALUE_REQUIRED, 'Comma-separated block kinds to include (e.g. method,closure). Default: all of method|function|closure|arrow|if|for|foreach|while|do|try|switch|match. The item-1.3 kind script (top-level statement folds) is NOT in that default set — it must be named explicitly, and it currently cannot combine with --apply/--refactor-patch (script clusters are refused by the AST-addressing machinery, typed exit 1; text rendering via --patch/--diff stays allowed).')
+            ->addOption('kinds', null, InputOption::VALUE_REQUIRED, 'Comma-separated block kinds to include (e.g. method,closure). Default: all of
+                method|function|closure|arrow|if|for|foreach|while|do|try|switch|match. The fold kind script
+                (top-level statements) is NOT in that default set — it must be named explicitly, and it currently
+                cannot combine with --apply/--refactor-patch (script clusters are refused by the AST-addressing
+                machinery, typed exit 1; text rendering via --patch/--diff stays allowed).')
             ->addOption('auto-tune', null, InputOption::VALUE_NONE, 'Probe the corpus before analysis and pick min-block-size / max-df / min-impact based on size; --exact-only is forced on for very large trees. The probe counts the tree the run will actually scan (profile and --config excludes applied, exclude_reset honored). Suggestions fill gaps only: a knob explicitly set on the command line, by --profile, or in the --config file is never overwritten, and the printed rationale claims only what was applied.')
             ->addOption('profile', null, InputOption::VALUE_REQUIRED, 'Apply a project profile (' . implode('|', ProfileRegistry::bundled()->listAvailable()) . '|auto) to seed framework-aware excludes + tuning. db-aware-* profiles ship symbol-equivalence packs for various ORMs. "auto" sniffs the scan path for known markers. Explicit CLI flags + --config win over profile values.')
             ->addOption('min-safety', null, InputOption::VALUE_REQUIRED, 'Drop clusters whose refactor-safety score (0..1) is below this threshold. 0 = report all (default).')
-            ->addOption('score-mode', null, InputOption::VALUE_REQUIRED, 'Scoring stance for cross-repo clones: global|per-repo|typed (item 5.1, default global). global = legacy math, byte-identical to every stored baseline. per-repo = the >3-namespaces penalty in confidence/safety is evaluated on the namespace spread within the densest member repo, so a subsystem mirrored across packages is no longer double-penalized for its mirroring. typed = audit posture: cross-repo clusters skip that penalty and gain the inverse bonus (a cross-repo clone is the strongest dedup signal: one shared helper erases N repo-local copies). Only clusters with >=2 distinct member repo labels behave differently; everything else scores as before. Equivalently: config key score_mode.')
-            ->addOption('max-hole-coverage', null, InputOption::VALUE_REQUIRED, 'Extraction-quality stance (item 5.4): fraction 0..1 (default 1.0 = rule never fires, today\'s behavior byte-identical). When a cluster\'s generalized template is MORE than this fraction hole, the report marks it re_expressed and surfaces its longest hole-free statement run (hole_fragment) instead of dressing the wreck up as a clean function. Evidence is annotated, never dropped. Equivalently: config key max_hole_coverage (root-only).')
+            ->addOption('score-mode', null, InputOption::VALUE_REQUIRED, 'Scoring stance for cross-repo clones: global|per-repo|typed (default global).
+                global = legacy math, byte-identical to every stored baseline. per-repo = the >3-namespaces
+                penalty in confidence/safety is evaluated on the namespace spread within the densest member
+                repo, so a subsystem mirrored across packages is no longer double-penalized for its mirroring.
+                typed = audit posture: cross-repo clusters skip that penalty and gain the inverse bonus (a
+                cross-repo clone is the strongest dedup signal: one shared helper erases N repo-local copies).
+                Only clusters with >=2 distinct member repo labels behave differently; everything else scores
+                as before. Equivalently: config key score_mode.')
+            ->addOption('max-hole-coverage', null, InputOption::VALUE_REQUIRED, 'Extraction-quality stance: fraction 0..1 (default 1.0 = rule never fires,
+                today\'s behavior byte-identical). When a cluster\'s generalized template is MORE than this
+                fraction hole, the report marks it re_expressed and surfaces its longest hole-free statement
+                run (hole_fragment) instead of dressing the wreck up as a clean function. Evidence is
+                annotated, never dropped. Equivalently: config key max_hole_coverage (root-only).')
             ->addOption('ted-weights', null, InputOption::VALUE_REQUIRED, 'Tree-edit cost model: default|semantic. semantic weights method calls / control flow heavier than literals.')
-            ->addOption('db-aware', null, InputOption::VALUE_NONE, 'ORM-/DB-aware semantic dedup: rewrite recognised database calls (Eloquent, Doctrine, PDO, mysqli, pg_*, raw SQL) to canonical __DB_<OP>__ tokens during normalisation so equivalent ORM and raw-SQL variants cluster together. Off by default — opt-in for ORM-heavy codebases. See docs/plans/orm-db-semantic-dedup.md.')
-            ->addOption('trinity-collapse', null, InputOption::VALUE_NONE, 'Detect the canonical CRUD trinity (read → mutate → save) and rewrite the three-statement sequence as a single __DB_UPSERT__("entity") synthetic call so ORM upserts cluster with raw UPDATE queries. Composes with --db-aware. Off by default. See option 2 of docs/plans/orm-db-semantic-dedup.md.')
-            ->addOption('scorer', null, InputOption::VALUE_REQUIRED, 'Scoring tier set: default | ir. "ir" enables option-5 IR-tier fallback — when AST Jaccard / TED / containment all reject a pair, lift both blocks to the canonical IR (Phpdup\\Ir\\IrLifter) and Jaccard their token bags. Pairs at or above --ir-threshold form edges weighted by the IR similarity. When the flag is absent the config-file / built-in scorer applies (NN1: the flag used to shadow a config-file "scorer" unconditionally).')
+            ->addOption('db-aware', null, InputOption::VALUE_NONE, 'ORM-/DB-aware semantic dedup: rewrite recognised database calls (Eloquent,
+                Doctrine, PDO, mysqli, pg_*, raw SQL) to canonical __DB_<OP>__ tokens during
+                normalisation so equivalent ORM and raw-SQL variants cluster together. Off by
+                default — opt-in for ORM-heavy codebases.')
+            ->addOption('trinity-collapse', null, InputOption::VALUE_NONE, 'Detect the canonical CRUD trinity (read → mutate → save) and rewrite the
+                three-statement sequence as a single __DB_UPSERT__("entity") synthetic call so ORM
+                upserts cluster with raw UPDATE queries. Composes with --db-aware. Off by default.')
+            ->addOption('scorer', null, InputOption::VALUE_REQUIRED, 'Scoring tier set: default | ir. "ir" enables the IR-tier fallback — when AST
+                Jaccard / TED / containment all reject a pair, lift both blocks to the canonical IR
+                (Phpdup\\Ir\\IrLifter) and Jaccard their token bags. Pairs at or above --ir-threshold
+                form edges weighted by the IR similarity. When the flag is absent the config-file /
+                built-in scorer applies.')
             ->addOption('ir-threshold', null, InputOption::VALUE_REQUIRED, 'IR-tier multiset-Jaccard threshold (0..1). Pairs at or above this score form edges. Default 0.85.')
-            ->addOption('ml-pair-url', null, InputOption::VALUE_REQUIRED, 'External pair-similarity ML sidecar URL (option 6 of docs/plans/orm-db-semantic-dedup.md). Empty = disabled. When set, the very last clustering tier — runs after structural-hash, AST Jaccard + TED, containment, and IR all reject a pair. Posts a PairFeatures vector to <URL>/score-pair and accepts pairs at or above --ml-pair-threshold. Returns null on transport failure so unavailability never breaks the run. http(s) only.')
-            ->addOption('ml-pair-threshold', null, InputOption::VALUE_REQUIRED, 'Similarity threshold (0..1) for the option-6 ML pair tier. Pairs whose model-returned similarity meets this value emit edges. Default 0.80.')
+            ->addOption('ml-pair-url', null, InputOption::VALUE_REQUIRED, 'External pair-similarity ML sidecar URL. Empty = disabled. When set, the
+                very last clustering tier — runs after structural-hash, AST Jaccard + TED,
+                containment, and IR all reject a pair. Posts a PairFeatures vector to
+                <URL>/score-pair and accepts pairs at or above --ml-pair-threshold. Returns null
+                on transport failure so unavailability never breaks the run. http(s) only.')
+            ->addOption('ml-pair-threshold', null, InputOption::VALUE_REQUIRED, 'Similarity threshold (0..1) for the ML pair tier. Pairs whose model-returned
+                similarity meets this value emit edges. Default 0.80.')
             ->addOption('fail-on-impact', null, InputOption::VALUE_REQUIRED, 'Exit code 3 when any single cluster impact is >= N (canonical per-cluster maximum formula; the shipped GitHub action fail-on-impact input enforces the same rule). 0 = disabled.')
             ->addOption('max-clusters', null, InputOption::VALUE_REQUIRED, 'Exit code 3 when cluster count exceeds N. 0 = disabled. CI gate for max cluster count.');
 
@@ -174,7 +204,12 @@ final class Command extends SymfonyCommand
             ->addOption('limit', null, InputOption::VALUE_REQUIRED, 'Show at most N clusters in CLI output: 0 prints NO detail cards (unlike the --candidate-budget / --max-clusters family it is NOT the 0=unlimited sentinel — pass a large N to see every cluster), file sinks such as --json/--html always carry every cluster regardless of N, and a negative or non-numeric N is rejected with exit 2', 50)
             ->addOption('summary-only', null, InputOption::VALUE_NONE, 'Render only the top banner + final summary line (skip per-cluster details)')
             ->addOption('clusters', null, InputOption::VALUE_NONE, 'Render a one-line-per-cluster table instead of the full per-cluster breakdown')
-            ->addOption('scope', null, InputOption::VALUE_REQUIRED, 'Report only clusters matching a repo scope (item 5.1): all|single|multi|<repo label> (default all). Clusters carry per-member repo labels derived from the scan roots; single = one repo per cluster, multi = members span >=2 distinct repos, any other value = keep clusters with at least one member from that repo label. Applied after ranking, so --limit/--sort and the CI gates all measure the filtered slice. Equivalently: config key scope.')
+            ->addOption('scope', null, InputOption::VALUE_REQUIRED, 'Report only clusters matching a repo scope: all|single|multi|<repo label>
+                (default all). Clusters carry per-member repo labels derived from the scan roots;
+                single = one repo per cluster, multi = members span >=2 distinct repos, any other
+                value = keep clusters with at least one member from that repo label. Applied after
+                ranking, so --limit/--sort and the CI gates all measure the filtered slice.
+                Equivalently: config key scope.')
             ->addOption('pager', null, InputOption::VALUE_REQUIRED, 'Page CLI report through $PAGER (default `less -R`). Modes: auto|never|always. auto pages when stdout is a TTY and the rendered output exceeds ~60 lines.', 'never')
             ->addOption('sort', null, InputOption::VALUE_REQUIRED, 'Cluster sort: KEY[:asc|desc]. Keys: impact|members|block-size|lines|similarity|confidence|name|file|id. Aliases: size→members, count→members. Default impact:desc.')
             ->addOption('stats', null, InputOption::VALUE_NONE, 'Show pipeline statistics')

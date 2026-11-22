@@ -85,7 +85,7 @@
             "type": "integer",
             "minimum": 0,
             "default": 60000000,
-            "description": "Safety cap on candidate pairs emitted during clustering. A pathological clone family halts with CandidateBudgetException instead of exhausting memory. 0 = unlimited (opts out of the guard). Default matches Clusterer::MAX_CANDIDATE_PAIRS."
+            "description": "Safety cap on candidate pairs emitted during clustering. A pathological clone family halts loudly instead of exhausting memory. 0 = unlimited (opts out of the guard). Default 60,000,000; CLI: --candidate-budget."
         },
         "ngram_size": {
             "type": "integer",
@@ -98,13 +98,13 @@
             "type": "string",
             "enum": ["numbered", "un-numbered"],
             "default": "numbered",
-            "description": "Identifier-numbering form of the similarity fingerprints (item 1.1, plan §5a). 'numbered' = legacy: the aggressive Normalizer's first-occurrence counters (__V3, __CALL12, __PROP0, __CLASS7) ride into the n-gram bag and the tree-edit labels, so one inserted guard renumbers every later identifier and breaks the fingerprint for the rest of the block. 'un-numbered' = strip the counters from bag tokens AND TED labels in lockstep (Phpdup\\Util\\IdentifierIds); multiset Jaccard, containment and TED similarity are monotone under this coarsening, so no edge accepted today is lost and guard-drift clones finally link. Structural hashes, anti-unification and ML pair features keep numbered input either way. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (mixed modes would poison the shared candidate index and warm caches). No CLI flag in v1. The mode value rides the worker tooling key, the per-file index cache key and the cluster-cache config key; 'numbered' keeps every cache and golden byte-identical."
+            "description": "Identifier-numbering form of the similarity fingerprints. 'numbered' = legacy: the aggressive Normalizer's first-occurrence counters (__V3, __CALL12, __PROP0, __CLASS7) ride into the n-gram bag and the tree-edit labels, so one inserted guard renumbers every later identifier and breaks the fingerprint for the rest of the block. 'un-numbered' = strip the counters from bag tokens AND TED labels in lockstep (Phpdup\\Util\\IdentifierIds); multiset Jaccard, containment and TED similarity are monotone under this coarsening, so no edge accepted today is lost and guard-drift clones finally link. Structural hashes, anti-unification and ML pair features keep numbered input either way. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (mixed modes would poison the shared candidate index and warm caches). No CLI flag in v1. The mode value rides the worker tooling key, the per-file index cache key and the cluster-cache config key; 'numbered' keeps every cache and golden byte-identical."
         },
         "max_ted_size": {
             "type": "integer",
             "minimum": 1,
             "default": 800,
-            "description": "Node-count cap for APTED tree-edit judgment (item 1.2). A candidate pair whose LARGER member exceeds this cap skips the TED call entirely: it is accepted on Jaccard alone with edge tier 'jaccard-unverified' (weight = the Jaccard score), or falls through to the containment/IR/ML tiers unchanged — APTED is the O(n^2)-space quadratic cost site (161s / 1.2GB on a 1000-node pair). Default 800 equals the max_block_size extraction ceiling, so no real block can exceed it and the gate is inert out of the box: every existing verdict, cache and golden stays byte-identical. Lower it (e.g. 200-400) on giant-clone corpora to trade exactness for wall time. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load — a pair spans two directories, so a per-directory cap would be ambiguous. No CLI flag in v1. The cap rides the cluster-cache config key and is applied identically by the serial Clusterer and the parallel PairScoreWorker."
+            "description": "Node-count cap for APTED tree-edit judgment. A candidate pair whose LARGER member exceeds this cap skips the TED call entirely: it is accepted on Jaccard alone with edge tier 'jaccard-unverified' (weight = the Jaccard score), or falls through to the containment/IR/ML tiers unchanged — APTED is the O(n^2)-space quadratic cost site (161s / 1.2GB on a 1000-node pair). Default 800 equals the max_block_size extraction ceiling, so no real block can exceed it and the gate is inert out of the box: every existing verdict, cache and golden stays byte-identical. Lower it (e.g. 200-400) on giant-clone corpora to trade exactness for wall time. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load — a pair spans two directories, so a per-directory cap would be ambiguous. No CLI flag in v1. The cap rides the cluster-cache config key and is applied identically by the serial Clusterer and the parallel PairScoreWorker."
         },
         "ted_weights": {
             "type": "string",
@@ -117,7 +117,7 @@
             "minimum": 0,
             "maximum": 1,
             "default": 1.0,
-            "description": "Hole-coverage ceiling for extraction honesty (item 5.4). Every cluster's generalized template is measured (hole_coverage = fraction of its AST units inside hole subtrees); a cluster whose coverage is STRICTLY ABOVE this threshold is marked re_expressed in the JSON and CLI reports, and its longest hole-free top-level statement run is surfaced as hole_fragment — the part actually worth extracting. Default 1.0 disables the rule (coverage can never exceed it), so every existing report and golden stays byte-identical. Lower it (e.g. 0.4, the plan's original draft figure) to flag hole-riddled abstractions — annotation never deletion: phpdup does not drop evidence based on a threshold. CLI: --max-hole-coverage. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load — a cluster spans directories, and the threshold is a stance about the one final report."
+            "description": "Hole-coverage ceiling for extraction honesty. Every cluster's generalized template is measured (hole_coverage = fraction of its AST units inside hole subtrees); a cluster whose coverage is STRICTLY ABOVE this threshold is marked re_expressed in the JSON and CLI reports, and its longest hole-free top-level statement run is surfaced as hole_fragment — the part actually worth extracting. Default 1.0 disables the rule (coverage can never exceed it), so every existing report and golden stays byte-identical. Lower it (e.g. 0.4) to flag hole-riddled abstractions — annotation never deletion: phpdup does not drop evidence based on a threshold. CLI: --max-hole-coverage. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load — a cluster spans directories, and the threshold is a stance about the one final report."
         },
         "cache_dir": {
             "type": "string",
@@ -167,13 +167,13 @@
         "scope": {
             "type": "string",
             "default": "all",
-            "description": "Repo scope filter for reported clusters (item 5.1). 'all' = no filtering (legacy behaviour). 'single' = keep clusters whose members share one repo; 'multi' = keep clusters spanning >=2 distinct non-empty member repo labels; any other non-empty string = keep clusters with at least one member carrying that exact repo label. Repo labels are the basenames of the configured scan roots (each block's file matched against the longest root prefix), so a multi-repo analysis passes one root per repository. Applied after ranking: --limit/--sort and the CI gates all measure the filtered slice. CLI: --scope. Root-config/CLI only; a per-directory .phpdup.json carrying this key fails the load (report-level stance, chosen once per run)."
+            "description": "Repo scope filter for reported clusters. 'all' = no filtering (legacy behaviour). 'single' = keep clusters whose members share one repo; 'multi' = keep clusters spanning >=2 distinct non-empty member repo labels; any other non-empty string = keep clusters with at least one member carrying that exact repo label. Repo labels are the basenames of the configured scan roots (each block's file matched against the longest root prefix), so a multi-repo analysis passes one root per repository. Applied after ranking: --limit/--sort and the CI gates all measure the filtered slice. CLI: --scope. Root-config/CLI only; a per-directory .phpdup.json carrying this key fails the load (report-level stance, chosen once per run)."
         },
         "score_mode": {
             "type": "string",
             "enum": ["global", "per-repo", "typed"],
             "default": "global",
-            "description": "Scoring stance for cross-repo clones (item 5.1). 'global' = legacy math, byte-identical to every historical score, baseline and gate run. 'per-repo' = the >3-namespaces penalty in confidence (Ranker) and safety (SafetyScorer) is evaluated on the namespace spread within the densest member repo, so a subsystem mirrored across packages is no longer double-penalized for its mirroring (quantified: 13.2% of phlix clusters took the paired −0.05/−0.10 hit). 'typed' = audit posture: cross-repo clusters skip that penalty and instead gain +0.05 confidence / +0.10 safety — one shared helper erases N repo-local copies, so the spread is evidence FOR the refactor. Single-repo clusters score identically under every mode. CLI: --score-mode. Root-config/CLI only; a per-directory .phpdup.json carrying this key fails the load (report-level stance, chosen once per run)."
+            "description": "Scoring stance for cross-repo clones. 'global' = legacy math, byte-identical to every historical score, baseline and gate run. 'per-repo' = the >3-namespaces penalty in confidence (Ranker) and safety (SafetyScorer) is evaluated on the namespace spread within the densest member repo, so a subsystem mirrored across packages is no longer double-penalized for its mirroring (quantified: 13.2% of phlix clusters took the paired −0.05/−0.10 hit). 'typed' = audit posture: cross-repo clusters skip that penalty and instead gain +0.05 confidence / +0.10 safety — one shared helper erases N repo-local copies, so the spread is evidence FOR the refactor. Single-repo clusters score identically under every mode. CLI: --score-mode. Root-config/CLI only; a per-directory .phpdup.json carrying this key fails the load (report-level stance, chosen once per run)."
         },
         "optional_blocks": {
             "type": "object",
@@ -231,37 +231,37 @@
         "db_aware": {
             "type": "boolean",
             "default": false,
-            "description": "ORM-/DB-aware semantic deduplication (option 1 of docs/plans/orm-db-semantic-dedup.md). When true, the Normalizer runs DbOpCanonicalizer as a pre-pass: recognised database calls across Eloquent, Doctrine, query builders, PDO, mysqli, pg_*, and raw SQL strings rewrite to canonical __DB_<OP>__(\"table\") tokens so equivalent ORM and raw-SQL variants of the same operation cluster together. Two honesty guards ride on it (engine-003): the generic verbs get/all/save fold only when the receiver chain carries DB evidence (builder table-literal seed, a recognised DB receiver/class name, or an informative user mapping), and SQL-promoted synthetics retain a coarse payload signature — the sorted column set as a structural __DB_COLS_<set> name argument — so same table+verb payloads touching different columns cluster as near-duplicates instead of exact clones. Off by default — enabling it broadens clustering but raises the false-positive ceiling, so it's an explicit opt-in. CLI: --db-aware."
+            "description": "ORM-/DB-aware semantic deduplication. When true, the Normalizer runs DbOpCanonicalizer as a pre-pass: recognised database calls across Eloquent, Doctrine, query builders, PDO, mysqli, pg_*, and raw SQL strings rewrite to canonical __DB_<OP>__(\"table\") tokens so equivalent ORM and raw-SQL variants of the same operation cluster together. Two honesty guards ride on it: the generic verbs get/all/save fold only when the receiver chain carries DB evidence (builder table-literal seed, a recognised DB receiver/class name, or an informative user mapping), and SQL-promoted synthetics retain a coarse payload signature — the sorted column set as a structural __DB_COLS_<set> name argument — so same table+verb payloads touching different columns cluster as near-duplicates instead of exact clones. Off by default — enabling it broadens clustering but raises the false-positive ceiling, so it's an explicit opt-in. CLI: --db-aware."
         },
         "trinity_collapse": {
             "type": "boolean",
             "default": false,
-            "description": "Trinity-collapse (option 2 of docs/plans/orm-db-semantic-dedup.md). When true, the Normalizer runs TrinityCollapser as a pre-pass that detects the canonical CRUD trinity (read → mutate → save) and rewrites the three-statement sequence as a single __DB_UPSERT__(\"entity\") synthetic call. Composes with db_aware. Off by default. CLI: --trinity-collapse."
+            "description": "Trinity-collapse: when true, the Normalizer runs TrinityCollapser as a pre-pass that detects the canonical CRUD trinity (read → mutate → save) and rewrites the three-statement sequence as a single __DB_UPSERT__(\"entity\") synthetic call. Composes with db_aware. Off by default. CLI: --trinity-collapse."
         },
         "scorer": {
             "type": "string",
             "enum": ["default", "ir"],
             "default": "default",
-            "description": "Scoring tier set (option 5 of docs/plans/orm-db-semantic-dedup.md — clusterer wiring). 'default' = stock AST-tier scoring (Jaccard + TED + containment). 'ir' = also enable the IR-tier fallback after AST tiers reject: lift both blocks to canonical IR (Phpdup\\Ir\\IrLifter) and Jaccard their token bags. Pairs at or above ir_threshold form edges. CLI: --scorer."
+            "description": "Scoring tier set. 'default' = stock AST-tier scoring (Jaccard + TED + containment). 'ir' = also enable the IR-tier fallback after AST tiers reject: lift both blocks to canonical IR (Phpdup\\Ir\\IrLifter) and Jaccard their token bags. Pairs at or above ir_threshold form edges. CLI: --scorer."
         },
         "ir_threshold": {
             "type": "number",
             "minimum": 0.0,
             "maximum": 1.0,
             "default": 0.85,
-            "description": "Multiset-Jaccard threshold for the option-5 IR tier. Only consulted when scorer=ir. CLI: --ir-threshold."
+            "description": "Multiset-Jaccard threshold for the IR tier. Only consulted when scorer=ir. CLI: --ir-threshold."
         },
         "ml_pair_url": {
             "type": "string",
             "default": "",
-            "description": "External pair-similarity ML sidecar URL (option 6 of docs/plans/orm-db-semantic-dedup.md — clusterer wiring). Empty (the default) disables the tier. When set, the very last clustering tier — POSTs a PairFeatures vector to <URL>/score-pair; pairs at or above ml_pair_threshold form edges. http(s) only; SSRF-hardened at admission by SHAPE ONLY — no resolver call happens while the config is validated (once-S54): canonical IP literals are bit-checked against the refused space (0.0.0.0/8, loopback, RFC 1918, CGNAT, link-local, 192.0.0.0/24, 198.18.0.0/15, multicast/reserved, IPv6 loopback/ULA/link-local/multicast, IPv4-mapped and IPv4-compatible forms, and the NAT64 64:ff9b::/96 well-known prefix's embedded IPv4), file:// / gopher:// and inet_aton numeric shorthands refuse, localhost refuses by name; bare hostnames are grammar-checked and resolved ONCE at dial time, fail-closed there. Returns null on transport failure so unavailability never breaks the run. CLI: --ml-pair-url."
+            "description": "External pair-similarity ML sidecar URL. Empty (the default) disables the tier. When set, the very last clustering tier — POSTs a PairFeatures vector to <URL>/score-pair; pairs at or above ml_pair_threshold form edges. http(s) only; SSRF-hardened at admission by SHAPE ONLY — no resolver call happens while the config is validated: canonical IP literals are bit-checked against the refused space (0.0.0.0/8, loopback, RFC 1918, CGNAT, link-local, 192.0.0.0/24, 198.18.0.0/15, multicast/reserved, IPv6 loopback/ULA/link-local/multicast, IPv4-mapped and IPv4-compatible forms, and the NAT64 64:ff9b::/96 well-known prefix's embedded IPv4), file:// / gopher:// and inet_aton numeric shorthands refuse, localhost refuses by name; bare hostnames are grammar-checked and resolved ONCE at dial time, fail-closed there. Returns null on transport failure so unavailability never breaks the run. CLI: --ml-pair-url."
         },
         "ml_pair_threshold": {
             "type": "number",
             "minimum": 0.0,
             "maximum": 1.0,
             "default": 0.80,
-            "description": "Similarity threshold for the option-6 ML pair tier. Only consulted when ml_pair_url is set. CLI: --ml-pair-threshold."
+            "description": "Similarity threshold for the ML pair tier. Only consulted when ml_pair_url is set. CLI: --ml-pair-threshold."
         },
         "debug_log": {
             "type": "string",
@@ -277,7 +277,7 @@
         "db_symbols": {
             "type": "object",
             "additionalProperties": false,
-            "description": "User-extensible DB symbol equivalence registry (option 4 of docs/plans/orm-db-semantic-dedup.md). Custom method/function name → canonical-op mappings merged on top of the stock DbOpRegistry entries. Keys are matched case-insensitively (both stored keys and looked-up call names are lower-cased), so the lower-case convention and camelCase pack keys both work; values are one of db.read | db.write | db.delete | db.execute | db.query. Profiles ship symbol packs (db-aware-laravel, db-aware-doctrine, db-aware-cake) that can be loaded via --profile.",
+            "description": "User-extensible DB symbol equivalence registry. Custom method/function name → canonical-op mappings merged on top of the stock DbOpRegistry entries. Keys are matched case-insensitively (both stored keys and looked-up call names are lower-cased), so the lower-case convention and camelCase pack keys both work; values are one of db.read | db.write | db.delete | db.execute | db.query. Profiles ship symbol packs (db-aware-laravel, db-aware-doctrine, db-aware-cake) that can be loaded via --profile.",
             "properties": {
                 "methods": {
                     "type": "object",
@@ -332,7 +332,7 @@
         "apply": {
             "type": "boolean",
             "default": false,
-            "description": "Enable the report pipeline's apply mode: a cumulative apply.diff of every cluster refactor patch is written under refactored/ (dry-run posture — F1a emits the same text as --patch; F1b adds real file rewrites). Effective value is flag OR config file: --apply turns it on from argv, \"apply\": true in the root config activates the same mode with no flag, and the flag wins a disagreement (it arrives as a CLI override, which outranks the file layer). Shape-checked like every other key — a non-boolean value exits 2 from --validate-config and from a run (shell-S27, closing shell-015/053; before that leg the key could raw-crash the Config ctor at exit 255 and, when valid, was silently inert without the flag). A per-directory .phpdup.json carrying this key is ignored — the key is not in the per-dir admit set (root-only loud-refusal for write-posture keys is the shell-S22 family this belongs to; its extension is banked, not yet ruled). CLI: --apply."
+            "description": "Enable the report pipeline's apply mode: a cumulative apply.diff of every cluster refactor patch is written under refactored/ (dry-run posture — the preview apply.diff carries the same text --patch emits; real file rewrites happen with --dry-run=false). Effective value is flag OR config file: --apply turns it on from argv, \"apply\": true in the root config activates the same mode with no flag, and the flag wins a disagreement (it arrives as a CLI override, which outranks the file layer). Shape-checked like every other key — a non-boolean value exits 2 from --validate-config and from a run. A per-directory .phpdup.json carrying this key is ignored — the key is not in the per-dir admit set. CLI: --apply."
         }
     }
 }
