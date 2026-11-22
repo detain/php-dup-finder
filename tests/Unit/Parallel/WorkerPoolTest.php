@@ -4,7 +4,9 @@ declare(strict_types=1);
 namespace Phpdup\Tests\Unit\Parallel;
 
 use PHPUnit\Framework\TestCase;
+use Phpdup\Cli\Config;
 use Phpdup\Persistence\SerializedClassAllowList;
+use Phpdup\Pipeline\PipelineState;
 use Phpdup\Parallel\WorkerPool;
 
 final class WorkerPoolTest extends TestCase
@@ -817,5 +819,164 @@ final class WorkerPoolTest extends TestCase
         $frame = ['type' => 'pair', 'note' => 'O:8:"stdClass":0:{} lives only as text here'];
         $record = $this->invokeDecodeFrame(0, serialize($frame), $allow);
         $this->assertSame($frame, $record);
+    }
+
+    // ── shell-S12 (php-dup-finder-shell-041): cooperative mid-stream cancel ──
+    //
+    // Before shell-S12 the select loop was cancellation-unaware: a stalled
+    // child left the pool spinning 1-second stream_select timeouts forever,
+    // because the consumer's state->cancelled poll lives at a yield
+    // boundary that a stall never reaches. The optional $cancel probe is
+    // now checked at the entry (start NOTHING) and at every select pulse
+    // (end QUIETLY: verification pass skipped, children SIGTERMed + reaped
+    // by the finally). A null or never-armed probe keeps the historic
+    // behaviour byte-for-byte — the whole pre-existing section above is
+    // that half of the pin.
+
+    /**
+     * Census pattern reused from the shell-S10 partial-spawn pin: after a
+     * cancelled run nothing waitable may survive — the finally TERMed and
+     * blocking-reaped every child it forked.
+     */
+    private function assertPoolLeftNoStrayChildren(): void
+    {
+        $lateReaped = [];
+        for ($i = 0; $i < 64; $i++) {
+            $status = 0;
+            $pid    = pcntl_waitpid(-1, $status, WNOHANG);
+            if ($pid === -1) {
+                break; // ECHILD: the pool reaped everything it spawned
+            }
+            if ($pid === 0) {
+                usleep(5000);
+                continue;
+            }
+            $lateReaped[] = $pid;
+        }
+        $this->assertSame([], $lateReaped, 'cancelled children must be SIGTERMed and reaped before the return surfaces');
+    }
+
+    public function testPreArmedCancelStartsNothingAtAll(): void
+    {
+        if (!WorkerPool::isAvailable()) {
+            $this->markTestSkipped('pcntl unavailable');
+        }
+        $this->withCpuEnv('2', function (): void {
+            $marker = sys_get_temp_dir() . '/shell-s12-prearm-' . bin2hex(random_bytes(6));
+            $pool   = new WorkerPool(workers: 2);
+            $seen   = iterator_to_array($pool->runStreaming(
+                range(1, 16),
+                static function (array $batch) use ($marker): \Generator {
+                    // Child-side proof of life: ANY fork that runs this task
+                    // — the serial fallback or a stalled child — touches it.
+                    touch($marker);
+                    yield 'should-never-stream';
+                },
+                static fn(): bool => true,
+            ), false);
+            $this->assertSame([], $seen, 'a pre-armed cancel must end the stream with zero records');
+            $this->assertFileDoesNotExist($marker, 'not even one child (nor the serial fallback) may start');
+            $this->assertPoolLeftNoStrayChildren();
+            @unlink($marker);
+        });
+    }
+
+    public function testStalledChildCancelledMidStreamEndsQuietlyAndReaps(): void
+    {
+        if (!WorkerPool::isAvailable()) {
+            $this->markTestSkipped('pcntl unavailable');
+        }
+        $this->withCpuEnv('2', function (): void {
+            $state = new PipelineState(Config::defaults([sys_get_temp_dir()]));
+            $pool  = new WorkerPool(workers: 2);
+            $start = microtime(true);
+            $seen  = [];
+            try {
+                foreach ($pool->runStreaming(
+                    range(1, 16),
+                    static function (array $batch): \Generator {
+                        if (in_array(1, $batch, true)) {
+                            // The one record that proves streaming was live.
+                            yield 'pre-stall';
+                        }
+                        // Both children park here forever: no EOF, no
+                        // sentinel, no further frames — the shell-041 stall.
+                        while (true) {
+                            usleep(10000);
+                        }
+                    },
+                    static function () use ($state): bool {
+                        return $state->cancelled;
+                    },
+                ) as $record) {
+                    $seen[] = $record;
+                    // The exact CLI/TUI shape: SignalHandler's first Ctrl-C
+                    // flips state->cancelled; the pool owns noticing it
+                    // while the children are wedged.
+                    $state->cancelled = true;
+                }
+            } catch (\Throwable $e) {
+                $this->fail('a deliberate cancel must end the generator without error, got ' . $e::class . ': ' . $e->getMessage());
+            }
+            $elapsed = microtime(true) - $start;
+            $this->assertSame(['pre-stall'], $seen, 'streaming halts at the cancel, records before it survive');
+            $this->assertLessThan(15.0, $elapsed, 'the pool returns promptly instead of waiting on the wedged children');
+            $this->assertTrue($state->cancelled, 'the exercise went through the real state->cancelled field');
+            $this->assertPoolLeftNoStrayChildren();
+        });
+    }
+
+    public function testSelectTimeoutPulseCarriesTheCancelWithZeroRecords(): void
+    {
+        if (!WorkerPool::isAvailable()) {
+            $this->markTestSkipped('pcntl unavailable');
+        }
+        $this->withCpuEnv('2', function (): void {
+            $pool     = new WorkerPool(workers: 2);
+            $deadline = microtime(true) + 0.1; // already past at the first 1 s pulse
+            $start    = microtime(true);
+            $seen     = iterator_to_array($pool->runStreaming(
+                range(1, 16),
+                static function (array $batch): \Generator {
+                    while (true) {
+                        // Never a byte on the wire — the pure stall case.
+                        usleep(10000);
+                        yield from [];
+                    }
+                },
+                static function () use ($deadline): bool {
+                    return microtime(true) >= $deadline;
+                },
+            ), false);
+            $elapsed = microtime(true) - $start;
+            $this->assertSame([], $seen, 'a stream cancelled from a stall yields nothing');
+            $this->assertLessThan(15.0, $elapsed, 'the 1 s timeout arm must carry the cancel pulse');
+            $this->assertPoolLeftNoStrayChildren();
+        });
+    }
+
+    public function testNeverFiringCancelProbeKeepsTheHistoricHappyPath(): void
+    {
+        if (!WorkerPool::isAvailable()) {
+            $this->markTestSkipped('pcntl unavailable');
+        }
+        $this->withCpuEnv('2', function (): void {
+            $pool = new WorkerPool(workers: 2);
+            $rows = iterator_to_array($pool->runStreaming(
+                range(1, 16),
+                static function (array $batch): array {
+                    $out = [];
+                    foreach ($batch as $x) {
+                        $out[] = 'ok-' . $x;
+                    }
+                    return $out;
+                },
+                static fn(): bool => false,
+            ), false);
+            sort($rows);
+            $expect = array_map(static fn(int $x): string => 'ok-' . $x, range(1, 16));
+            sort($expect);
+            $this->assertSame($expect, $rows, 'a wired-but-never-armed probe changes nothing: all records stream, verification keeps its historic quiet success');
+        });
     }
 }

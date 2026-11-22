@@ -369,6 +369,25 @@ final class WorkerPool
      * @template TResult
      * @param list<TItem> $items
      * @param \Closure(list<TItem>): iterable<TResult> $task
+     * @param (\Closure(): bool)|null $cancel shell-S12 (shell-041)
+     *        cooperative-cancel probe. Polled once before anything starts
+     *        (a pre-armed cancel forks NOTHING and runs the serial task
+     *        nothing either — the generator just ends) and again after
+     *        every {@see stream_select()} wake-up, including the 1-second
+     *        timeout arm and the EINTR arm that lets dispatched SIGINT
+     *        handlers flip the pipeline's cancel flag. When it returns
+     *        true the stream ENDS PROMPTLY AND QUIET: the drain loop
+     *        breaks, the exit-status verification pass is skipped (it
+     *        exists for ACCIDENTAL child deaths — children we are about
+     *        to SIGTERM on purpose would all "fail" it, and throwing
+     *        there would turn a deliberate abort into a false alarm),
+     *        and the finally still SIGTERMs + reaps the whole set. A
+     *        stalled child no longer spins the loop forever: before this
+     *        parameter existed the consumer could only notice a cancel at
+     *        a yield boundary it never reached. `null` (the default)
+     *        keeps the pre-S12 behaviour byte-for-byte. The serial
+     *        fallback is gated by the entry probe only — between-records
+     *        granularity there is the task's and the consumer's own loop.
      * @return \Generator<int, TResult>
      *
      * @note When the generator is abandoned (e.g., on TUI/pipeline cancel with ^C),
@@ -382,11 +401,19 @@ final class WorkerPool
      *         exits without its __done sentinel, reports an __error frame,
      *         is a wedged post-sentinel child killed by the bounded
      *         verification escalation, or the fork set cannot be completed
-     *         (shell-005, shell-028, shell-S10).
+     *         (shell-005, shell-028, shell-S10). A run ended by the
+     *         shell-S12 cancel probe is NOT such a case: it ends without
+     *         error by contract.
      */
-    public function runStreaming(array $items, \Closure $task): \Generator
+    public function runStreaming(array $items, \Closure $task, ?\Closure $cancel = null): \Generator
     {
         if (!$items) return;
+
+        // shell-S12 (shell-041): a pre-armed cancel means the consumer has
+        // already given up before the first pull — start nothing at all.
+        if ($cancel !== null && $cancel()) {
+            return;
+        }
 
         $workers = max(1, $this->workers > 0 ? $this->workers : self::detectCpuCount());
         // shell-038: bound the fork set BEFORE chunking — an oversized
@@ -415,6 +442,11 @@ final class WorkerPool
         // call is a pointer reuse — the hoist stays because this is the
         // hot decode path and the frame loop reads it per record.
         $allowList = SerializedClassAllowList::blockCacheClasses();
+
+        // shell-S12: set when the drain loop broke on the cancel probe
+        // instead of draining all pipes; suppresses the exit-status
+        // verification (deliberate cancels must not throw, see below).
+        $cancelledRun = false;
 
         // shell-028: the try/finally that owns pipe-closing and child-reaping
         // opens BEFORE the fork loop. A stream_socket_pair() or pcntl_fork()
@@ -475,12 +507,25 @@ final class WorkerPool
             }
 
             while ($pipes !== []) {
+                // shell-S12 (shell-041): the cancellation pulse. With a
+                // stalled child the select loop used to spin its 1-second
+                // timeouts forever — the consumer's cancel poll sits at a
+                // yield boundary it could never reach. Every wake-up (data,
+                // timeout, or EINTR after the dispatched SIGINT flipped
+                // state->cancelled) passes this check first, so a cancel
+                // lands within one pulse.
+                if ($cancel !== null && $cancel()) {
+                    $cancelledRun = true;
+                    break;
+                }
                 $read   = $pipes;
                 $write  = null;
                 $except = null;
                 $ready  = @stream_select($read, $write, $except, 1, 0);
                 if ($ready === false) {
                     // EINTR can show up here when a signal arrives mid-select; just retry.
+                    // Since shell-S12 the retry's head-check turns a SIGINT that
+                    // only signalled the handler into a prompt cooperative abort.
                     if (function_exists('pcntl_signal_dispatch')) {
                         pcntl_signal_dispatch();
                     }
@@ -551,6 +596,17 @@ final class WorkerPool
                     $gcCounter = 0;
                     gc_collect_cycles();
                 }
+            }
+
+            // shell-S12: cooperative abort. Every child left in $pids is
+            // about to be SIGTERMed and reaped by the finally below — the
+            // S10 exit-status logic would (correctly, for ACCIDENTAL
+            // deaths) throw on each of them as a signal death without a
+            // sentinel. A deliberate cancel is not an accident: end the
+            // generator quietly. No orphan outlives this path; the finally
+            // owns the TERM + bounded reap.
+            if ($cancelledRun) {
+                return;
             }
 
             // shell-005: every worker stream is closed. Verify each still-

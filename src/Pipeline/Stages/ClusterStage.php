@@ -410,7 +410,13 @@ final class ClusterStage implements CooperativeStageInterface
                     }
                 }
             };
-            foreach ($pool->runStreaming($candidatePairs, $task) as $row) {
+            // shell-S12 (shell-041): the pool polls state->cancelled
+            // between select wake-ups, so a stall during scoring no
+            // longer waits for the next arriving record to abort.
+            $cancel = static function () use ($state): bool {
+                return $state->cancelled;
+            };
+            foreach ($pool->runStreaming($candidatePairs, $task, $cancel) as $row) {
                 if (is_array($row) && isset($row['__progress'])) {
                     $state->scoredPairs += (int)$row['__progress'];
                 } else {

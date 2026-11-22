@@ -160,7 +160,15 @@ final class PreprocessStage implements CooperativeStageInterface
             $sinceYield        = 0;
 
             $state->debug($output, sprintf('preprocess: collecting results from workers... [%s]', MemoryDebug::getMemoryUsage()));
-            foreach ($pool->runStreaming($toProcess, $task) as $row) {
+            // shell-S12 (shell-041): hand the pool the state->cancelled
+            // probe. The yield-boundary poll below can only fire while
+            // records flow; this lets the first Ctrl-C reach the pool
+            // itself when a child stalls and none do.
+            $cancel = static function () use ($state): bool {
+                return $state->cancelled;
+            };
+
+            foreach ($pool->runStreaming($toProcess, $task, $cancel) as $row) {
                 // Counter law (0.6): every fresh file lands in exactly one
                 // bucket — a 'block'-emitting file counts as processed, a
                 // 'skipped' file as without-blocks, an 'error' file as a

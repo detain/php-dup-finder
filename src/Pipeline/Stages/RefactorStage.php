@@ -190,7 +190,13 @@ final class RefactorStage implements CooperativeStageInterface
 
         $pool       = new WorkerPool(workers: $workers);
         $sinceYield = 0;
-        foreach ($pool->runStreaming($state->clusters, $task) as $enrichment) {
+        // shell-S12 (shell-041): same mid-stream contract as the other two
+        // runStreaming callers — the pool sees state->cancelled even while
+        // every refactor child is busy (or wedged) and no record arrives.
+        $cancel = static function () use ($state): bool {
+            return $state->cancelled;
+        };
+        foreach ($pool->runStreaming($state->clusters, $task, $cancel) as $enrichment) {
             $cid = $enrichment['id'] ?? null;
             if ($cid !== null && isset($byId[$cid])) {
                 $cluster = $byId[$cid];
