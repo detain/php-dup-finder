@@ -845,9 +845,12 @@ final class Clusterer
             // Ranker can still distinguish strong subsets from marginal ones.
             $cont = null;
             if ($this->optionalBlocksEnabled) {
-                $cont  = $this->containment->similarity($bagA, $bagB);
-                $ratio = $this->containment->sizeRatio($bagA, $bagB);
-                if ($cont >= $this->containmentThreshold && $ratio >= $this->optionalBlocksMinOverlap) {
+                // engine-S14 (engine-035): one merged pass — similarity()
+                // already summed both bags, sizeRatio() re-summed them
+                // right after. Same tuples, half the walks.
+                $metrics = $this->containment->containmentAndSizeRatio($bagA, $bagB);
+                $cont    = $metrics['containment'];
+                if ($cont >= $this->containmentThreshold && $metrics['sizeRatio'] >= $this->optionalBlocksMinOverlap) {
                     $edges[] = [$aId, $bId, $cont, MatchTier::Containment->value];
                     continue;
                 }

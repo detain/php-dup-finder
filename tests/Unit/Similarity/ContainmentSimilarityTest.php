@@ -57,4 +57,130 @@ final class ContainmentSimilarityTest extends TestCase
         $this->assertEqualsWithDelta(0.5, $sim->sizeRatio(['a' => 1], ['a' => 1, 'b' => 1]), 0.0001);
         $this->assertSame(0.0, $sim->sizeRatio([], ['a' => 1]));
     }
+
+    /**
+     * Deterministic mini-LCG (no global RNG state, PHP 8.1 floor).
+     * Yields reproducible pseudo-random ints in [0, modulus).
+     */
+    private static function nextRandom(int $state, int $modulus): int
+    {
+        $state = ($state * 6364136223846793005 + 1442695040888963407) & PHP_INT_MAX;
+        return $state % $modulus;
+    }
+
+    /**
+     * @return array<string|int,int>
+     */
+    private static function randomBag(int &$state, int $maxKeys): array
+    {
+        $bag  = [];
+        $size = self::nextRandom($state, $maxKeys + 1);
+        for ($i = 0; $i < $size; $i++) {
+            // Mix string and int keys so both ?? and isset() paths are exercised.
+            $key   = $i % 2 === 0 ? 'g' . self::nextRandom($state, 7) : self::nextRandom($state, 5);
+            $bag[$key] = self::nextRandom($state, 6); // counts 0..5, incl. zero-weight keys
+        }
+        return $bag;
+    }
+
+    /**
+     * Acceptance (engine-035): the combined single pass must return tuples
+     * IDENTICAL to the old two-pass (similarity(), sizeRatio()) across random
+     * integer bags — bit-for-bit, so the refactor is value-preserving and the
+     * Ranker/edge weights built from $cont cannot drift.
+     */
+    public function testCombinedMatchesTwoPassOnRandomBags(): void
+    {
+        $sim   = new ContainmentSimilarity();
+        $state = 20261122;
+        for ($round = 0; $round < 300; $round++) {
+            $a = self::randomBag($state, 8);
+            $b = self::randomBag($state, 8);
+            $combined = $sim->containmentAndSizeRatio($a, $b);
+            $this->assertSame(
+                $sim->similarity($a, $b),
+                $combined['containment'],
+                "containment drift on round {$round}: " . json_encode([$a, $b])
+            );
+            $this->assertSame(
+                $sim->sizeRatio($a, $b),
+                $combined['sizeRatio'],
+                "sizeRatio drift on round {$round}: " . json_encode([$a, $b])
+            );
+        }
+    }
+
+    public function testCombinedEmptyBagEdgeCases(): void
+    {
+        $sim = new ContainmentSimilarity();
+        $this->assertSame(
+            ['containment' => 0.0, 'sizeRatio' => 0.0],
+            $sim->containmentAndSizeRatio([], [])
+        );
+        $this->assertSame(
+            ['containment' => 0.0, 'sizeRatio' => 0.0],
+            $sim->containmentAndSizeRatio([], ['a' => 3])
+        );
+        $this->assertSame(
+            ['containment' => 0.0, 'sizeRatio' => 0.0],
+            $sim->containmentAndSizeRatio(['a' => 3], [])
+        );
+        // Non-empty bags whose counts all sum to zero still gate to zero.
+        $this->assertSame(
+            ['containment' => 0.0, 'sizeRatio' => 0.0],
+            $sim->containmentAndSizeRatio(['a' => 0, 'b' => 0], ['a' => 0, 'c' => 0])
+        );
+    }
+
+    /**
+     * Hand-computed tuple pin: distinct denominators per metric (containment
+     * divides by the SMALLER sum, size ratio by the LARGER) — swapping either
+     * denominator changes a value and fails here.
+     */
+    public function testCombinedHandComputedTuple(): void
+    {
+        $sim = new ContainmentSimilarity();
+        // sumA = 8, sumB = 2, intersection-min = 1.
+        $a = ['a' => 7, 'x' => 1];
+        $b = ['a' => 1, 'c' => 1];
+        $this->assertSame(
+            ['containment' => 0.5, 'sizeRatio' => 0.25],
+            $sim->containmentAndSizeRatio($a, $b)
+        );
+        // Subset shape from testSubsetScoresOne: C = 1.0 while the ratio shows
+        // the size gap (3/5).
+        $this->assertSame(
+            ['containment' => 1.0, 'sizeRatio' => 0.6],
+            $sim->containmentAndSizeRatio(
+                ['a' => 1, 'b' => 1, 'c' => 1, 'd' => 1, 'e' => 1],
+                ['a' => 1, 'b' => 1, 'c' => 1]
+            )
+        );
+        // Symmetric bags: both metrics saturate at 1.0.
+        $this->assertSame(
+            ['containment' => 1.0, 'sizeRatio' => 1.0],
+            $sim->containmentAndSizeRatio(['a' => 2, 'b' => 1], ['a' => 2, 'b' => 1])
+        );
+    }
+
+    /**
+     * The merged pass must be order-symmetric in the ratio like the old pair:
+     * sizeRatio(a, b) === sizeRatio(b, a); containment shares the smaller-side
+     * denominator, so similarity() is itself symmetric — pin both to catch a
+     * combined implementation that only walks one direction correctly.
+     */
+    public function testCombinedIsOrderSymmetricLikeTwoPass(): void
+    {
+        $sim = new ContainmentSimilarity();
+        $a   = ['a' => 4, 'b' => 2, 'q' => 1]; // sum 7
+        $b   = ['a' => 1, 'z' => 3];           // sum 4, inter-min 1
+        $ab  = $sim->containmentAndSizeRatio($a, $b);
+        $ba  = $sim->containmentAndSizeRatio($b, $a);
+        $this->assertEqualsWithDelta(0.25, $ab['containment'], 0.0001, 'non-vacuous containment');
+        $this->assertEqualsWithDelta(4 / 7, $ab['sizeRatio'], 0.0001, 'non-vacuous size ratio');
+        $this->assertSame($ab['containment'], $ba['containment']);
+        $this->assertSame($ab['sizeRatio'], $ba['sizeRatio']);
+        $this->assertSame($ab['containment'], $sim->similarity($b, $a));
+        $this->assertSame($ab['sizeRatio'], $sim->sizeRatio($b, $a));
+    }
 }

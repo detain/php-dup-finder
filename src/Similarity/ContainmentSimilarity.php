@@ -68,4 +68,55 @@ final class ContainmentSimilarity
         if ($larger === 0) return 0.0;
         return min($sumA, $sumB) / $larger;
     }
+
+    /**
+     * Both gating metrics in ONE merged pass — containment (as {@see similarity()})
+     * and size ratio (as {@see sizeRatio()}).
+     *
+     * engine-035: the cluster phase's Jaccard-reject branch calls similarity()
+     * and sizeRatio() back-to-back on the same two bags. similarity() already
+     * walks both bags and accumulates their sums; sizeRatio() then re-walks both
+     * via array_sum — a second redundant O(bag) pass per candidate on the
+     * engine's most common rejection path. This method exposes the sums the
+     * single walk already has.
+     *
+     * Value-preserving by construction: the containment projection runs the
+     * exact arithmetic of similarity() (same loop order, same $inter/$smaller
+     * division) and the size-ratio projection the exact arithmetic of
+     * sizeRatio() over the same integer sums, so every tuple equals the
+     * two-call result bit-for-bit — pinned by ContainmentSimilarityTest.
+     *
+     * @param array<string|int,int> $a
+     * @param array<string|int,int> $b
+     * @return array{containment: float, sizeRatio: float}
+     */
+    public function containmentAndSizeRatio(array $a, array $b): array
+    {
+        if (!$a || !$b) {
+            return ['containment' => 0.0, 'sizeRatio' => 0.0];
+        }
+        // Same two-walk shape as similarity(): full sweep of $a, then only the
+        // $b-only keys. Every key's count lands in exactly one sum either way,
+        // so $sumA/$sumB match array_sum($a)/array_sum($b) over the same bag.
+        $inter = 0;
+        $sumA  = 0;
+        $sumB  = 0;
+        foreach ($a as $k => $av) {
+            $bv    = $b[$k] ?? 0;
+            $inter += min($av, $bv);
+            $sumA  += $av;
+            $sumB  += $bv;
+        }
+        foreach ($b as $k => $bv) {
+            if (!isset($a[$k])) {
+                $sumB += $bv;
+            }
+        }
+        $smaller = min($sumA, $sumB);
+        $larger  = max($sumA, $sumB);
+        return [
+            'containment' => $smaller === 0 ? 0.0 : $inter / $smaller,
+            'sizeRatio'   => $larger === 0 ? 0.0 : $smaller / $larger,
+        ];
+    }
 }
