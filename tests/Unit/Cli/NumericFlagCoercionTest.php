@@ -557,7 +557,8 @@ final class NumericFlagCoercionTest extends TestCase
      * cluster on this checkout's extractor (measured: 3 cards / 3 clusters
      * in a default run — the baseline sanity legs above re-prove it, so a
      * drift that silences the corpus fails loudly instead of pinning
-     * absence vacuously). <8 files, so the fork path never spawns.
+     * absence vacuously). 8 files — at WorkerPool's count<8 serial boundary,
+     * so a fork (if any) stays trivially small.
      */
     private function s49CorpusDir(): string
     {
