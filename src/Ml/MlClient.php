@@ -42,16 +42,28 @@ use Phpdup\Clustering\Cluster;
  * - every candidate address (literal or resolved) clears the refused-
  *   address-space bit checks listed on {@see MlClient::isAllowedUrl()}.
  *
- * Known remaining limit, disclosed honestly: the gate resolves the
- * name at check time and the transport resolves again at connect
- * time; without CURLOPT_RESOLVE/bindto pinning (sibling hardening of
- * this finding) a DNS-rebinding zone can still pass the gate and
- * connect elsewhere. Callers that need a tighter policy (e.g. only
- * specific hostnames) can prefilter the URL before constructing the
- * client.
+ * Transport legs (engine-S19b, closing engine-012 hole c + engine-015):
+ * the addresses checked here are the addresses connected to. The curl
+ * transport pins them via CURLOPT_RESOLVE; the stream transport — whose
+ * wrapper has no resolve-pinning option — rewrites a named host to the
+ * first checked address, carries the original authority in an explicit
+ * Host header, and keeps https certificate identity via ssl.peer_name.
+ * Response bodies are capped at MAX_RESPONSE_BYTES on both transports
+ * (curl write-callback abort; stream bounded read). Callers that need a
+ * tighter policy (e.g. only specific hostnames) can still prefilter the
+ * URL before constructing the client.
  */
 final class MlClient
 {
+    /**
+     * Hard bound on response-body bytes the transports will buffer
+     * (php-dup-finder-engine-015: a hostile sidecar behind an allowed
+     * URL used to grow per-worker RSS without bound — measured +129 MB
+     * from a 64 MB body). Public so MlPairClient shares the same cap
+     * and the two clients can never drift it.
+     */
+    public const MAX_RESPONSE_BYTES = 1_048_576;
+
     /**
      * @param string $baseUrl    HTTP(S) URL prefix of the scoring service. Empty = disabled.
      * @param int    $timeoutSec Total read timeout passed to the HTTP context.
@@ -75,7 +87,8 @@ final class MlClient
             return null;
         }
         $url = rtrim($this->baseUrl, '/') . '/score';
-        if (!self::isAllowedUrl($url)) {
+        $decision = self::gateUrl($url);
+        if ($decision === null) {
             return null;
         }
 
@@ -92,7 +105,7 @@ final class MlClient
             return null;
         }
 
-        $resp = $this->postJson($url, $body);
+        $resp = $this->postJson($url, $body, $decision);
         if ($resp === null) {
             return null;
         }
@@ -148,23 +161,48 @@ final class MlClient
      *   targets all refuse; an address string that inet_pton cannot
      *   parse is refused too (cannot classify → cannot connect)
      *
-     * Not yet closed by this gate (sibling hardening owns the transport
-     * legs): connect-time IP pinning against DNS rebinding, and response
-     * size caps on the two postJson transports.
+     * The transport legs of this policy — connect-time pinning of the
+     * checked addresses (engine-012 hole c) and the response size caps
+     * (engine-015) — are enforced by the consumers of {@see
+     * MlClient::gateUrl()}: curlPinEntries() / pinnedStreamRequest()
+     * feed the two postJson transports (engine-S19b).
      */
     public static function isAllowedUrl(string $url): bool
     {
+        return self::gateUrl($url) !== null;
+    }
+
+    /**
+     * The full gate decision: not just whether $url passes, but what
+     * exactly was verified. The transports in both Ml clients pin the
+     * addresses returned here so the connection can never be made to a
+     * record the bit checks did not classify (DNS-rebinding close-out,
+     * engine-S19b).
+     *
+     * Policy is identical to {@see MlClient::isAllowedUrl()} (which is
+     * this method's boolean face); see its docblock for the refuse list.
+     *
+     * @return null|array{host: string, port: int, addresses: list<string>}
+     *         Null when the URL is refused. Otherwise the lower-cased,
+     *         bracket-stripped authority host, the effective port
+     *         (explicit, else the scheme default), and every address
+     *         the gate bit-checked — the canonical literal itself for
+     *         IP-literal hosts, all resolver records for names.
+     */
+    public static function gateUrl(string $url): ?array
+    {
         $parts = parse_url($url);
         if (!is_array($parts)) {
-            return false;
+            return null;
         }
         $scheme = strtolower((string)($parts['scheme'] ?? ''));
         if ($scheme !== 'http' && $scheme !== 'https') {
-            return false;
+            return null;
         }
+        $port = (int)($parts['port'] ?? ($scheme === 'https' ? 443 : 80));
         $host = (string)($parts['host'] ?? '');
         if ($host === '') {
-            return false;
+            return null;
         }
         $bracketed = str_starts_with($host, '[');
         if ($bracketed) {
@@ -172,13 +210,13 @@ final class MlClient
             $host = trim($host, '[]');
         }
         if ($host === '') {
-            return false;
+            return null;
         }
         $host = strtolower($host);
 
         // RFC 6761 special-use names: refuse without touching the resolver.
         if ($host === 'localhost' || str_ends_with($host, '.localhost')) {
-            return false;
+            return null;
         }
 
         $bytes = inet_pton($host);
@@ -186,23 +224,27 @@ final class MlClient
             // Canonical literal. URL syntax pairs brackets with IPv6 and
             // bare text with IPv4; a mismatch is a malformed literal.
             if ((strlen($bytes) === 16) !== $bracketed) {
-                return false;
+                return null;
             }
-            return !self::isBlockedBytes($bytes);
+            if (self::isBlockedBytes($bytes)) {
+                return null;
+            }
+            return ['host' => $host, 'port' => $port, 'addresses' => [$host]];
         }
         if ($bracketed) {
-            return false; // bracketed text that is not valid IPv6
+            return null; // bracketed text that is not valid IPv6
         }
         if (self::looksLikeNumericShorthand($host)) {
             // inet_aton family (hex/decimal/octal/partial dotted forms).
             // Left as a "name" it would fail resolution on some boxes and
             // be numeric-parsed by the transport on others — the exact
             // gate-vs-transport divergence engine-012's PoC exploited.
-            return false;
+            return null;
         }
 
         // Bare name: fail closed on zero records, refuse on any refused
         // record among everything the resolvers returned.
+        /** @var list<string> $candidates */
         $candidates = [];
         $records = @dns_get_record($host, DNS_A | DNS_AAAA);
         if (is_array($records)) {
@@ -225,14 +267,14 @@ final class MlClient
             }
         }
         if ($candidates === []) {
-            return false;
+            return null;
         }
         foreach ($candidates as $address) {
             if (self::isBlockedAddress($address)) {
-                return false;
+                return null;
             }
         }
-        return true;
+        return ['host' => $host, 'port' => $port, 'addresses' => $candidates];
     }
 
     /**
@@ -337,71 +379,229 @@ final class MlClient
     }
 
     /**
+     * CURLOPT_RESOLVE pin entries for the gate-checked addresses
+     * (engine-012 hole c: connect-time resolution must never disagree
+     * with check-time resolution). An empty list means "nothing to
+     * pin" — a canonical literal host, which curl dials directly
+     * without the resolver. Null is a refusal: a decision shape the
+     * gate could not have produced (no checked addresses at all) is
+     * fail-closed, never handed to a transport that would resolve the
+     * name on its own.
+     *
+     * @internal Shared transport policy for both Ml clients
+     *           (engine-S19b) so the pinning rules cannot drift.
+     * @param array{host: string, port: int, addresses: list<string>} $decision
+     * @return list<string>|null
+     */
+    public static function curlPinEntries(array $decision): ?array
+    {
+        if ($decision['addresses'] === []) {
+            return null;
+        }
+        $host = $decision['host'];
+        if (self::isHeaderUnsafeHost($host)) {
+            return null;
+        }
+        if (inet_pton($host) !== false) {
+            return [];
+        }
+        return [$host . ':' . $decision['port'] . ':' . implode(',', $decision['addresses'])];
+    }
+
+    /**
+     * Stream-transport pinning. The PHP http wrapper has no
+     * CURLOPT_RESOLVE analogue, so a named host is rewritten to its
+     * first gate-checked address (the resolver is never consulted for
+     * it), with the original authority kept in an explicit Host header
+     * (RFC 9112 §3.2); an https request keeps certificate identity
+     * through ssl.peer_name, so the pinned dial cannot mask a
+     * wrong-host certificate. Canonical-literal hosts pass through
+     * byte-identically (the wrapper numeric-parses them; no lookup).
+     * Null is a refusal — same fail-closed rule as curlPinEntries().
+     *
+     * @internal Shared transport policy for both Ml clients
+     *           (engine-S19b).
+     * @param array{host: string, port: int, addresses: list<string>} $decision
+     * @return null|array{url: string, header: string, peer_name: string|null}
+     */
+    public static function pinnedStreamRequest(string $url, array $decision): ?array
+    {
+        if ($decision['addresses'] === []) {
+            return null;
+        }
+        $host = $decision['host'];
+        if (self::isHeaderUnsafeHost($host)) {
+            return null;
+        }
+        if (inet_pton($host) !== false) {
+            return [
+                'url'       => $url,
+                'header'    => "Content-Type: application/json\r\n",
+                'peer_name' => null,
+            ];
+        }
+        $parts = parse_url($url);
+        if (!is_array($parts)) {
+            return null;
+        }
+        $scheme = strtolower((string)($parts['scheme'] ?? 'http'));
+        $target = $decision['addresses'][0];
+        if (str_contains($target, ':')) {
+            $target = '[' . $target . ']';
+        }
+        $userinfo = '';
+        if (isset($parts['user'])) {
+            $userinfo = $parts['user'] . (isset($parts['pass']) ? ':' . $parts['pass'] : '') . '@';
+        }
+        $path  = (string)($parts['path'] ?? '/');
+        $query = isset($parts['query']) ? '?' . $parts['query'] : '';
+        return [
+            'url'       => $scheme . '://' . $userinfo . $target . ':' . $decision['port'] . $path . $query,
+            'header'    => "Content-Type: application/json\r\nHost: $host:" . $decision['port'] . "\r\n",
+            'peer_name' => $scheme === 'https' ? $host : null,
+        ];
+    }
+
+    /**
+     * Defense-in-depth: gateUrl() only ever emits label-safe hosts, but
+     * a host text is about to be placed into a request header — refuse
+     * anything with control or separator bytes rather than trust the
+     * call site.
+     */
+    private static function isHeaderUnsafeHost(string $host): bool
+    {
+        return $host === '' || preg_match('/^[a-z0-9._\-]+$/', $host) !== 1;
+    }
+
+    /**
      * POST `$body` as JSON to `$url` and return the raw response body.
      *
      * Uses ext-curl when available (richer error reporting and easier
      * to harden) and falls back to streams when not. Returns null on
-     * any transport-level failure or non-2xx HTTP response.
+     * any transport-level failure, non-2xx HTTP response, pinning
+     * refusal, or a response larger than MAX_RESPONSE_BYTES.
+     *
+     * @param array{host: string, port: int, addresses: list<string>} $decision
      */
-    private function postJson(string $url, string $body): ?string
+    private function postJson(string $url, string $body, array $decision): ?string
     {
-        if (function_exists('curl_init')) {
-            $ch = curl_init();
-            if ($ch === false) {
-                return null;
-            }
-            // CI-85: no curl_close — deprecated in PHP 8.5 and a no-op
-            // since 8.0 (the handle closes on GC), which is why the
-            // try/finally that carried only that call is gone too.
-            curl_setopt_array($ch, [
-                CURLOPT_URL            => $url,
-                CURLOPT_POST           => true,
-                CURLOPT_POSTFIELDS     => $body,
-                CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT        => $this->timeoutSec,
-                CURLOPT_CONNECTTIMEOUT => $this->timeoutSec,
-                // Refuse silly redirects to file:// / gopher:// / ftp://
-                // — only http(s) on the original request is allowed.
-                CURLOPT_FOLLOWLOCATION => false,
-                CURLOPT_PROTOCOLS      => CURLPROTO_HTTP | CURLPROTO_HTTPS,
-            ]);
-            $resp = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            if ($httpCode < 200 || $httpCode >= 300) {
-                return null;
-            }
-            if (!is_string($resp)) {
-                return null;
-            }
-            return $resp;
-        }
+        return function_exists('curl_init')
+            ? $this->postJsonCurl($url, $body, $decision)
+            : $this->postJsonStream($url, $body, $decision);
+    }
 
-        $ctx = stream_context_create([
+    /**
+     * @param array{host: string, port: int, addresses: list<string>} $decision
+     */
+    private function postJsonCurl(string $url, string $body, array $decision): ?string
+    {
+        $pins = self::curlPinEntries($decision);
+        if ($pins === null) {
+            return null;
+        }
+        $ch = curl_init();
+        if ($ch === false) {
+            return null;
+        }
+        // engine-015 (write-callback cap): the callback owns response
+        // collection and aborts the transfer (CURLE_WRITE_ERROR) the
+        // moment the body would cross the bound — no RETURNTRANSFER
+        // buffering, so a hostile sidecar cannot balloon this worker's
+        // RSS.
+        $buffer     = '';
+        $overflowed = false;
+        $opts       = [
+            CURLOPT_URL            => $url,
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => $body,
+            CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+            CURLOPT_TIMEOUT        => $this->timeoutSec,
+            CURLOPT_CONNECTTIMEOUT => $this->timeoutSec,
+            // Refuse silly redirects to file:// / gopher:// / ftp://
+            // — only http(s) on the original request is allowed.
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_PROTOCOLS      => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+            CURLOPT_WRITEFUNCTION  => function (string $chunk) use (&$buffer, &$overflowed): int {
+                if (strlen($chunk) > self::MAX_RESPONSE_BYTES - strlen($buffer)) {
+                    $overflowed = true;
+                    return 0;
+                }
+                $buffer .= $chunk;
+                return strlen($chunk);
+            },
+        ];
+        // engine-012(c) (pin): preload the DNS cache with the gate-
+        // checked records so connect resolves nothing on its own.
+        if ($pins !== []) {
+            $opts[CURLOPT_RESOLVE] = $pins;
+        }
+        // CI-85: no curl_close — deprecated in PHP 8.5 and a no-op
+        // since 8.0 (the handle closes on GC), which is why the
+        // try/finally that carried only that call is gone too.
+        curl_setopt_array($ch, $opts);
+        $ok       = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        if ($ok !== true || $overflowed) {
+            return null;
+        }
+        if ($httpCode < 200 || $httpCode >= 300) {
+            return null;
+        }
+        return $buffer;
+    }
+
+    /**
+     * @param array{host: string, port: int, addresses: list<string>} $decision
+     */
+    private function postJsonStream(string $url, string $body, array $decision): ?string
+    {
+        $pin = self::pinnedStreamRequest($url, $decision);
+        if ($pin === null) {
+            return null;
+        }
+        $ctxOpts = [
             'http' => [
-                'method'        => 'POST',
-                'header'        => "Content-Type: application/json\r\n",
-                'content'       => $body,
-                'timeout'       => $this->timeoutSec,
-                'ignore_errors' => true,
+                'method'          => 'POST',
+                'header'          => $pin['header'],
+                'content'         => $body,
+                'timeout'         => $this->timeoutSec,
+                'ignore_errors'   => true,
                 'follow_location' => 0,
             ],
-        ]);
-        $resp = @file_get_contents($url, false, $ctx);
-        if ($resp !== false) {
-            // CI-85: PHP 8.5 deprecates the $http_response_header magic-
-            // variable read; http_get_last_response_headers() replaces it.
-            // On 8.3/8.4 the function does not exist and the legacy branch
-            // runs byte-identical to the old code.
-            $headers  = function_exists('http_get_last_response_headers')
-                ? (array) http_get_last_response_headers()
-                : $http_response_header;
-            $httpCode = $this->parseStatusCode($headers);
-            if ($httpCode < 200 || $httpCode >= 300) {
-                return null;
-            }
+        ];
+        if ($pin['peer_name'] !== null) {
+            $ctxOpts['ssl'] = ['peer_name' => $pin['peer_name']];
         }
-        return $resp === false ? null : $resp;
+        $ctx = stream_context_create($ctxOpts);
+        $fh  = @fopen($pin['url'], 'r', false, $ctx);
+        if ($fh === false) {
+            return null;
+        }
+        // engine-015 (bounded read): pull at most MAX_RESPONSE_BYTES + 1
+        // bytes; a longer body is refused without ever being buffered
+        // whole. fopen+stream_get_contents replaces file_get_contents
+        // purely to pass that length bound — the request itself is the
+        // same wrapper operation.
+        $resp = stream_get_contents($fh, self::MAX_RESPONSE_BYTES + 1);
+        fclose($fh);
+        if ($resp === false) {
+            return null;
+        }
+        // CI-85: PHP 8.5 deprecates the $http_response_header magic-
+        // variable read; http_get_last_response_headers() replaces it.
+        // On 8.3/8.4 the function does not exist and the legacy branch
+        // runs byte-identical to the old code.
+        $headers  = function_exists('http_get_last_response_headers')
+            ? (array) http_get_last_response_headers()
+            : $http_response_header;
+        $httpCode = $this->parseStatusCode($headers);
+        if ($httpCode < 200 || $httpCode >= 300) {
+            return null;
+        }
+        if (strlen($resp) > self::MAX_RESPONSE_BYTES) {
+            return null;
+        }
+        return $resp;
     }
 
     /**

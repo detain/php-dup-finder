@@ -5,6 +5,7 @@ namespace Phpdup\Tests\Unit\Ml;
 
 use PHPUnit\Framework\TestCase;
 use Phpdup\Extraction\Block;
+use Phpdup\Ml\MlClient;
 use Phpdup\Ml\MlPairClient;
 use Phpdup\Parsing\AstParser;
 use Phpdup\Util\LineRange;
@@ -199,5 +200,227 @@ final class MlPairClientTest extends TestCase
         $a = $this->makeBlock();
         $b = $this->makeBlock();
         self::assertNull($client->score($a, $b));
+    }
+
+    // =====================================================================
+    // engine-S19b — the pair client's transports share MlClient's pinning
+    // and cap policy (curlPinEntries/pinnedStreamRequest/MAX_RESPONSE_
+    // BYTES), so seam tests mirror MlClientTest's against this class's
+    // own private postJsonCurl/postJsonStream to prove the mirror cannot
+    // drift. Rationale for seam-level proof (loopback pin vs refusing
+    // gate) is documented there.
+    // =====================================================================
+
+    public function testGateUrlRefusesEveryRejectedPairUrl(): void
+    {
+        foreach (self::rejectedUrlProvider() as [$url]) {
+            self::assertNull(MlClient::gateUrl($url), "gate decision must refuse: $url");
+        }
+    }
+
+    public function testPinnedCurlTransportConnectsCheckedIpWithoutResolver(): void
+    {
+        [$pid, $port, $server] = $this->forkHttpServer(
+            static fn(string $request): string => self::echoResponseFor($request)
+        );
+        try {
+            $client   = new MlPairClient('http://ml.invalid', timeoutSec: 3);
+            $decision = ['host' => 'ml.invalid', 'port' => $port, 'addresses' => ['127.0.0.1']];
+            $method   = new \ReflectionMethod($client, 'postJsonCurl');
+            $resp     = $method->invoke($client, "http://ml.invalid:$port/score-batch", '{}', $decision);
+            self::assertIsString($resp, 'pinned curl dial of the checked address failed');
+            self::assertStringContainsString('POST /score-batch', $resp);
+            self::assertStringContainsString("Host: ml.invalid:$port", $resp);
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    public function testPinnedStreamTransportConnectsCheckedIpWithoutResolver(): void
+    {
+        [$pid, $port, $server] = $this->forkHttpServer(
+            static fn(string $request): string => self::echoResponseFor($request),
+            2
+        );
+        try {
+            $client   = new MlPairClient('http://ml.invalid', timeoutSec: 3);
+            $decision = ['host' => 'ml.invalid', 'port' => $port, 'addresses' => ['127.0.0.1']];
+            $method   = new \ReflectionMethod($client, 'postJsonStream');
+            $resp     = $method->invoke($client, "http://ml.invalid:$port/score-batch", '{}', $decision);
+            self::assertIsString($resp, 'pinned stream rewrite to the checked address failed');
+            self::assertStringContainsString('POST /score-batch', $resp);
+            self::assertStringContainsString("Host: ml.invalid:$port", $resp);
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    public function testOversizedBodyCappedOnCurlTransport(): void
+    {
+        $big      = str_repeat('X', 4 * MlClient::MAX_RESPONSE_BYTES);
+        $response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " . strlen($big) . "\r\n\r\n" . $big;
+        [$pid, $port, $server] = $this->forkHttpServer(
+            static fn(string $request): string => $response,
+            5
+        );
+        try {
+            $client   = new MlPairClient('http://127.0.0.1', timeoutSec: 5);
+            $decision = ['host' => '127.0.0.1', 'port' => $port, 'addresses' => ['127.0.0.1']];
+            $mark     = memory_get_usage();
+            $method   = new \ReflectionMethod($client, 'postJsonCurl');
+            $resp     = $method->invoke($client, "http://127.0.0.1:$port/score-batch", '{}', $decision);
+            $delta    = memory_get_usage() - $mark;
+            self::assertNull($resp, 'over-cap body must be refused');
+            self::assertLessThan(2 * MlClient::MAX_RESPONSE_BYTES, $delta, "curl transport ballooned RSS: $delta bytes");
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    public function testOversizedBodyCappedOnStreamTransport(): void
+    {
+        $big      = str_repeat('X', 4 * MlClient::MAX_RESPONSE_BYTES);
+        $response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " . strlen($big) . "\r\n\r\n" . $big;
+        [$pid, $port, $server] = $this->forkHttpServer(
+            static fn(string $request): string => $response,
+            5
+        );
+        try {
+            $client   = new MlPairClient('http://127.0.0.1', timeoutSec: 5);
+            $decision = ['host' => '127.0.0.1', 'port' => $port, 'addresses' => ['127.0.0.1']];
+            $mark     = memory_get_usage();
+            $method   = new \ReflectionMethod($client, 'postJsonStream');
+            $resp     = $method->invoke($client, "http://127.0.0.1:$port/score-batch", '{}', $decision);
+            $delta    = memory_get_usage() - $mark;
+            self::assertNull($resp, 'over-cap body must be refused');
+            self::assertLessThan(2 * MlClient::MAX_RESPONSE_BYTES, $delta, "stream transport ballooned RSS: $delta bytes");
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    public function testEmptyAddressListRefusedWithoutConnection(): void
+    {
+        [$pid, $port, $server] = $this->forkHttpServer(
+            static fn(string $request): string => self::echoResponseFor($request),
+            2
+        );
+        try {
+            $client   = new MlPairClient('http://127.0.0.1', timeoutSec: 2);
+            $decision = ['host' => '127.0.0.1', 'port' => $port, 'addresses' => []];
+            $curl     = new \ReflectionMethod($client, 'postJsonCurl');
+            self::assertNull($curl->invoke($client, "http://127.0.0.1:$port/score-batch", '{}', $decision));
+            $stream = new \ReflectionMethod($client, 'postJsonStream');
+            self::assertNull($stream->invoke($client, "http://127.0.0.1:$port/score-batch", '{}', $decision));
+            // Fail-closed means no dial was even attempted.
+            $read = [$server];
+            $w    = null;
+            $e    = null;
+            self::assertSame(0, stream_select($read, $w, $e, 0, 50_000));
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    /**
+     * Response that reflects the first request line and the Host header:
+     * bytes visible only to a client that actually talked to the listener.
+     */
+    private static function echoResponseFor(string $request): string
+    {
+        $line = strtok($request, "\r\n");
+        $host = preg_match('/^Host: .*$/mi', $request, $m) === 1 ? rtrim($m[0], "\r") : '(none)';
+        $body = ($line === false ? '' : $line) . "\n" . $host;
+        return "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " . strlen($body) . "\r\n\r\n" . $body;
+    }
+
+    /**
+     * One-shot loopback HTTP server in a forked child (mirrors
+     * MlClientTest's helper; test files cannot share code without a new
+     * unlocked fixture, so this is a deliberate byte-level copy of the
+     * same discipline).
+     *
+     * @param callable(string): string $responseFor
+     * @return array{0: int, 1: int, 2: resource} [pid, port, listener]
+     */
+    private function forkHttpServer(callable $responseFor, int $acceptTimeoutSec = 5): array
+    {
+        if (!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid')) {
+            self::markTestSkipped('forked HTTP server requires pcntl_fork/pcntl_waitpid');
+        }
+        if (!function_exists('posix_kill')) {
+            self::markTestSkipped('forked HTTP server reaper requires posix_kill');
+        }
+        $server = @stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
+        if ($server === false) {
+            self::markTestSkipped("loopback bind unavailable: $errstr");
+        }
+        $name = (string)stream_socket_get_name($server, false);
+        $port = (int)substr($name, (int)strrpos($name, ':') + 1);
+        self::assertGreaterThan(0, $port);
+
+        $pid = pcntl_fork();
+        if ($pid === -1) {
+            fclose($server);
+            self::markTestSkipped('pcntl_fork failed');
+        }
+        if ($pid === 0) {
+            while (ob_get_level() > 0) {
+                ob_end_clean();
+            }
+            $conn = @stream_socket_accept($server, $acceptTimeoutSec);
+            if ($conn === false) {
+                fclose($server);
+                exit(1);
+            }
+            stream_set_timeout($conn, $acceptTimeoutSec);
+            $request = '';
+            while (!str_contains($request, "\r\n\r\n")) {
+                $chunk = fread($conn, 8192);
+                if ($chunk === false || $chunk === '') {
+                    break;
+                }
+                $request .= $chunk;
+            }
+            if (preg_match('/^Content-Length: (\d+)$/mi', $request, $m) === 1) {
+                $remaining = (int)$m[1];
+                while ($remaining > 0) {
+                    $chunk = fread($conn, min(8192, $remaining));
+                    if ($chunk === false || $chunk === '') {
+                        break;
+                    }
+                    $remaining -= strlen($chunk);
+                }
+            }
+            @fwrite($conn, $responseFor($request));
+            fclose($conn);
+            fclose($server);
+            exit(0);
+        }
+        return [$pid, $port, $server];
+    }
+
+    private function reapForkedHttpServer(int $pid): void
+    {
+        $status   = 0;
+        $deadline = microtime(true) + 20.0;
+        while (microtime(true) < $deadline) {
+            $reaped = pcntl_waitpid($pid, $status, WNOHANG);
+            if ($reaped === $pid) {
+                return;
+            }
+            if ($reaped === -1) {
+                self::fail("pcntl_waitpid failed for forked server $pid");
+            }
+            usleep(20_000);
+        }
+        posix_kill($pid, SIGKILL);
+        pcntl_waitpid($pid, $status);
+        self::fail("forked HTTP server $pid never finished — client stalled or never connected");
     }
 }

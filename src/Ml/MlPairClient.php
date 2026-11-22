@@ -50,16 +50,17 @@ use Phpdup\Extraction\Block;
  *
  * **Security**
  *
- * Every endpoint URL passes {@see MlClient::isAllowedUrl()}, the
- * shared gate rebuilt per php-dup-finder-engine-012: http(s) only,
- * host must be a canonical IP literal or resolve to at least one
- * A/AAAA record (fail-closed), and every candidate address must
- * clear the refused-space bit checks (loopback, RFC 1918, CGNAT,
- * link-local, ULA, IPv4-mapped, multicast/reserved/broadcast, plus
- * the localhost deny-list) documented there. Connect-time rebinding
- * and response-size caps are open transport limits tracked with the
- * sibling hardening of that finding. Callers wanting tighter policy
- * should prefilter the URL.
+ * Every endpoint URL passes {@see MlClient::gateUrl()}, the shared gate
+ * rebuilt per php-dup-finder-engine-012: http(s) only, host must be a
+ * canonical IP literal or resolve to at least one A/AAAA record
+ * (fail-closed), and every candidate address must clear the
+ * refused-space bit checks (loopback, RFC 1918, CGNAT, link-local,
+ * ULA, IPv4-mapped, multicast/reserved/broadcast, plus the localhost
+ * deny-list) documented there. The transports pin the checked
+ * addresses and cap response bodies per engine-S19b (see
+ * {@see MlClient::curlPinEntries()} / {@see MlClient::pinnedStreamRequest()}
+ * and MAX_RESPONSE_BYTES). Callers wanting tighter policy should
+ * prefilter the URL.
  */
 final class MlPairClient implements PairScorer
 {
@@ -84,7 +85,8 @@ final class MlPairClient implements PairScorer
             return null;
         }
         $url = rtrim($this->baseUrl, '/') . '/score-pair';
-        if (!MlClient::isAllowedUrl($url)) {
+        $decision = MlClient::gateUrl($url);
+        if ($decision === null) {
             return null;
         }
 
@@ -94,7 +96,7 @@ final class MlPairClient implements PairScorer
             return null;
         }
 
-        $resp = $this->postJson($url, $body);
+        $resp = $this->postJson($url, $body, $decision);
         if ($resp === null) {
             return null;
         }
@@ -136,7 +138,8 @@ final class MlPairClient implements PairScorer
             return null;
         }
         $url = rtrim($this->baseUrl, '/') . '/score-batch';
-        if (!MlClient::isAllowedUrl($url)) {
+        $decision = MlClient::gateUrl($url);
+        if ($decision === null) {
             return null;
         }
 
@@ -151,7 +154,7 @@ final class MlPairClient implements PairScorer
             return null;
         }
 
-        $resp = $this->postJson($url, $body);
+        $resp = $this->postJson($url, $body, $decision);
         if ($resp === null) {
             return null;
         }
@@ -184,65 +187,135 @@ final class MlPairClient implements PairScorer
     }
 
     /**
+     * POST `$body` as JSON to `$url` and return the raw response body.
+     *
+     * Uses ext-curl when available (richer error reporting and easier
+     * to harden) and falls back to streams when not. Returns null on
+     * any transport-level failure, non-2xx HTTP response, pinning
+     * refusal, or a response larger than MlClient::MAX_RESPONSE_BYTES.
+     * The pinning and cap policy is shared with MlClient (engine-S19b)
+     * so the two transports cannot drift.
+     *
+     * @param array{host: string, port: int, addresses: list<string>} $decision
      * @return string|null Raw response body, or null on transport error or non-2xx response.
      */
-    private function postJson(string $url, string $body): ?string
+    private function postJson(string $url, string $body, array $decision): ?string
     {
-        if (function_exists('curl_init')) {
-            $ch = curl_init();
-            if ($ch === false) {
-                return null;
-            }
-            // CI-85: no curl_close — deprecated in PHP 8.5 and a no-op
-            // since 8.0 (the handle closes on GC), which is why the
-            // try/finally that carried only that call is gone too.
-            curl_setopt_array($ch, [
-                CURLOPT_URL            => $url,
-                CURLOPT_POST           => true,
-                CURLOPT_POSTFIELDS     => $body,
-                CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT        => $this->timeoutSec,
-                CURLOPT_CONNECTTIMEOUT => $this->timeoutSec,
-                CURLOPT_FOLLOWLOCATION => false,
-                CURLOPT_PROTOCOLS      => CURLPROTO_HTTP | CURLPROTO_HTTPS,
-            ]);
-            $resp = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            if ($httpCode < 200 || $httpCode >= 300) {
-                return null;
-            }
-            if (!is_string($resp)) {
-                return null;
-            }
-            return $resp;
-        }
+        return function_exists('curl_init')
+            ? $this->postJsonCurl($url, $body, $decision)
+            : $this->postJsonStream($url, $body, $decision);
+    }
 
-        $ctx = stream_context_create([
+    /**
+     * @param array{host: string, port: int, addresses: list<string>} $decision
+     */
+    private function postJsonCurl(string $url, string $body, array $decision): ?string
+    {
+        $pins = MlClient::curlPinEntries($decision);
+        if ($pins === null) {
+            return null;
+        }
+        $ch = curl_init();
+        if ($ch === false) {
+            return null;
+        }
+        // engine-015 (write-callback cap): the callback owns response
+        // collection and aborts the transfer (CURLE_WRITE_ERROR) the
+        // moment the body would cross the bound — no RETURNTRANSFER
+        // buffering, so a hostile sidecar cannot balloon this worker's
+        // RSS.
+        $buffer     = '';
+        $overflowed = false;
+        $opts       = [
+            CURLOPT_URL            => $url,
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => $body,
+            CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+            CURLOPT_TIMEOUT        => $this->timeoutSec,
+            CURLOPT_CONNECTTIMEOUT => $this->timeoutSec,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_PROTOCOLS      => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+            CURLOPT_WRITEFUNCTION  => function (string $chunk) use (&$buffer, &$overflowed): int {
+                if (strlen($chunk) > MlClient::MAX_RESPONSE_BYTES - strlen($buffer)) {
+                    $overflowed = true;
+                    return 0;
+                }
+                $buffer .= $chunk;
+                return strlen($chunk);
+            },
+        ];
+        // engine-012(c) (pin): preload the DNS cache with the gate-
+        // checked records so connect resolves nothing on its own.
+        if ($pins !== []) {
+            $opts[CURLOPT_RESOLVE] = $pins;
+        }
+        // CI-85: no curl_close — deprecated in PHP 8.5 and a no-op
+        // since 8.0 (the handle closes on GC), which is why the
+        // try/finally that carried only that call is gone too.
+        curl_setopt_array($ch, $opts);
+        $ok       = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        if ($ok !== true || $overflowed) {
+            return null;
+        }
+        if ($httpCode < 200 || $httpCode >= 300) {
+            return null;
+        }
+        return $buffer;
+    }
+
+    /**
+     * @param array{host: string, port: int, addresses: list<string>} $decision
+     */
+    private function postJsonStream(string $url, string $body, array $decision): ?string
+    {
+        $pin = MlClient::pinnedStreamRequest($url, $decision);
+        if ($pin === null) {
+            return null;
+        }
+        $ctxOpts = [
             'http' => [
                 'method'          => 'POST',
-                'header'          => "Content-Type: application/json\r\n",
+                'header'          => $pin['header'],
                 'content'         => $body,
                 'timeout'         => $this->timeoutSec,
                 'ignore_errors'   => true,
                 'follow_location' => 0,
             ],
-        ]);
-        $resp = @file_get_contents($url, false, $ctx);
-        if ($resp !== false) {
-            // CI-85: PHP 8.5 deprecates the $http_response_header magic-
-            // variable read; http_get_last_response_headers() replaces it.
-            // On 8.3/8.4 the function does not exist and the legacy branch
-            // runs byte-identical to the old code.
-            $headers  = function_exists('http_get_last_response_headers')
-                ? (array) http_get_last_response_headers()
-                : $http_response_header;
-            $httpCode = $this->parseStatusCode($headers);
-            if ($httpCode < 200 || $httpCode >= 300) {
-                return null;
-            }
+        ];
+        if ($pin['peer_name'] !== null) {
+            $ctxOpts['ssl'] = ['peer_name' => $pin['peer_name']];
         }
-        return $resp === false ? null : $resp;
+        $ctx = stream_context_create($ctxOpts);
+        $fh  = @fopen($pin['url'], 'r', false, $ctx);
+        if ($fh === false) {
+            return null;
+        }
+        // engine-015 (bounded read): pull at most MAX_RESPONSE_BYTES + 1
+        // bytes; a longer body is refused without ever being buffered
+        // whole. fopen+stream_get_contents replaces file_get_contents
+        // purely to pass that length bound — the request itself is the
+        // same wrapper operation.
+        $resp = stream_get_contents($fh, MlClient::MAX_RESPONSE_BYTES + 1);
+        fclose($fh);
+        if ($resp === false) {
+            return null;
+        }
+        // CI-85: PHP 8.5 deprecates the $http_response_header magic-
+        // variable read; http_get_last_response_headers() replaces it.
+        // On 8.3/8.4 the function does not exist and the legacy branch
+        // runs byte-identical to the old code.
+        $headers  = function_exists('http_get_last_response_headers')
+            ? (array) http_get_last_response_headers()
+            : $http_response_header;
+        $httpCode = $this->parseStatusCode($headers);
+        if ($httpCode < 200 || $httpCode >= 300) {
+            return null;
+        }
+        if (strlen($resp) > MlClient::MAX_RESPONSE_BYTES) {
+            return null;
+        }
+        return $resp;
     }
 
     /**
