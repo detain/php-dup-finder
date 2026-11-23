@@ -36,6 +36,10 @@ final class SignatureBuilder
         $name = $this->suggestFunctionName($cluster);
         $required = [];
         $optional = [];
+        // output-S49b: the reserved set is derived through the ONE shared
+        // helper the apply door consults too — signature renderer and
+        // call-site builder cannot disagree on which names the holes claim.
+        $renderedVars = self::renderedHoleVars($cluster);
         foreach ($cluster->holes as $hole) {
             if ($hole->placeholder === AntiUnifier::CAP_SENTINEL) {
                 // output-S57 r1 F1: one parameter line per hole is the
@@ -59,9 +63,57 @@ final class SignatureBuilder
                 $required[] = sprintf('    %s%s,', $type ? $type . ' ' : '', $var);
             }
         }
-        $params = array_merge($required, $optional);
+        // output-S49a (php-dup-finder-output-006): the members' own
+        // shared formal parameters lead the list — every member already
+        // declares them at these positions, so the abstraction that
+        // references them is no longer reading free variables. The
+        // derivation is pure and idempotent (ParamIntersection reads the
+        // member declarations, never the walk); a routed cluster and a
+        // cluster without loaded member ASTs derive nothing, keeping
+        // today's shape. No hole is minted and no holePaths entry is
+        // touched. output-S49b wired the other side: ApplyExtractor
+        // renders this same promoted set into the artifact's parameter
+        // list (via the signature text) and prepends it to every call
+        // site, passing each member's own locals positionally — so the
+        // declared parameters and the emitted arguments agree by
+        // construction.
+        $promoted = [];
+        foreach (ParamIntersection::promote($cluster->members, $renderedVars) as $param) {
+            $promoted[] = sprintf(
+                '    %s%s,',
+                $param->type !== null && $param->type !== '' ? $param->type . ' ' : '',
+                $param->varName(),
+            );
+        }
+        $params = array_merge($promoted, $required, $optional);
         $body = $params ? "\n" . implode("\n", $params) . "\n" : '';
         $cluster->signature = "function {$name}({$body}): mixed";
+    }
+
+    /**
+     * The variable names the cluster's rendered hole parameters claim.
+     *
+     * output-S49b: ONE projection shared by SignatureBuilder's own
+     * promotion reserved-set and ApplyExtractor's promotion derivation at
+     * the apply door. If the two consumers ever computed the set apart, a
+     * promoted parameter could collide with a hole parameter in the
+     * written artifact while the signature stayed clean (or vice versa) —
+     * the silent double-binding class the S49a handoff named. The cap
+     * sentinel is excluded exactly as in buildSignature: it never renders
+     * a parameter line, so it reserves nothing.
+     *
+     * @return list<string> '$'-carrying names, in hole order
+     */
+    public static function renderedHoleVars(Cluster $cluster): array
+    {
+        $vars = [];
+        foreach ($cluster->holes as $hole) {
+            if ($hole->placeholder === AntiUnifier::CAP_SENTINEL) {
+                continue;
+            }
+            $vars[] = CodeParam::varName($hole->suggestedName, $hole->placeholder);
+        }
+        return $vars;
     }
 
     private function suggestFunctionName(Cluster $cluster): string

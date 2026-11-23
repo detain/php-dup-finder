@@ -121,6 +121,21 @@ use Phpdup\Util\AstSerializer;
  * hole whose row for THIS member is missing, or does not re-parse to
  * one expression, refuses the cluster in the loud zero-write taxonomy
  * — an argument is never invented.
+ *
+ * output-S49b (php-dup-finder-output-006, joint landing with S49a): the
+ * promoted shared formals reach the code. The planning walk became TWO
+ * phases — read/parse/locate (and hydrate unloaded member ASTs from the
+ * located declaration nodes, so promotion runs on loaded evidence at the
+ * apply venue, never on null) across every member file first; then the
+ * cluster-level promotion set, derived ONCE through the same
+ * {@see SignatureBuilder::renderedHoleVars()} reserved set the signature
+ * renderer used, so declared parameters and call-site arguments agree by
+ * construction: artifact params = promoted + required holes + optional
+ * knobs, call args = the member's own promoted locals (in scope — S46
+ * keeps the declaration) + observed rows + knobs. Consequence disclosed:
+ * cross-file refusal ORDER shifted — every locate-class diagnostic of
+ * every file now precedes every replacement-build diagnostic (within one
+ * file the old order is byte-identical).
  */
 final class ApplyExtractor
 {
@@ -628,6 +643,16 @@ final class ApplyExtractor
      * Group the cluster's members by file (first-appearance order) and plan
      * each file's full rewrite without touching the filesystem for writes.
      *
+     * output-S49b: the walk is TWO phases. Phase one reads, parses and
+     * locates EVERY member in every file — all locate-class refusals
+     * (missing file, unreadable, unparseable, stale span, double claim,
+     * abstract body) therefore precede all replacement-build refusals
+     * (missing observed row, unparseable row, member attribution). Phase
+     * two derives the cluster's promoted shared formals ONCE and builds
+     * the rewrites. The promoted set is a cluster-level fact and must be
+     * computed after every member's declaration evidence exists — the
+     * phase split is what lets it.
+     *
      * @return array<string, array{original: string, rewritten: string}>
      *         file path => the bytes the plan read + the rewritten text
      */
@@ -639,26 +664,51 @@ final class ApplyExtractor
             $byFile[$member->file][] = $member;
         }
 
-        $rewrites = [];
+        /** @var array<string, array{original: string, stmts: list<Node\Stmt>, located: list<array{0: Block, 1: Node}>}> $contexts */
+        $contexts = [];
         foreach ($byFile as $file => $members) {
-            $rewrites[$file] = $this->planFileRewrite($cluster, $file, $members, $funcName);
+            $contexts[$file] = $this->locateFileMembers($cluster, $file, $members);
+        }
+
+        // The promotion set the artifact's signature carries, derived with
+        // the SAME reserved-name projection SignatureBuilder used — one
+        // shared helper, so renderer and apply door cannot disagree on
+        // which names the holes claim (the S49a handoff's silent
+        // double-binding class). Member ASTs are current: phase one
+        // hydrated every unloaded one from its located declaration node.
+        $promoted = ParamIntersection::promote(
+            $cluster->members,
+            SignatureBuilder::renderedHoleVars($cluster),
+        );
+
+        $rewrites = [];
+        foreach ($contexts as $file => $context) {
+            $rewrites[$file] = $this->buildFileRewrite($cluster, $file, $context, $funcName, $promoted);
         }
         return $rewrites;
     }
 
     /**
-     * One read, one parse, one node-identity collection, one replacement
-     * pass, one prettyPrint for a whole file — or a loud refusal naming the
-     * member that could not be rewritten. The refusal arrives before the
-     * caller has written anything, so "partial application" is structurally
-     * excluded for every miss class (php-dup-finder-output-004). The read
-     * bytes ride out with the rewrite as the transaction's snapshot of
-     * this path (half B) — the plan's one read serves both legs.
+     * Phase one for one member file: the is_file/read/parse/locate leg of
+     * the old planFileRewrite, verbatim diagnostics and all. Every member
+     * of this file is located by node identity in this single parse; the
+     * read bytes and the tree ride out with the context so phase two never
+     * re-reads (the plan's one read serves both legs — output-004 half B).
+     *
+     * Hydration (output-S49b): when a member arrives with an unloaded AST —
+     * the lazyAst/BlockAstLoader world, where RefactorStage::rebaseClusters
+     * re-anchors content-bound members only up to the fork boundary — the
+     * located node IS that member's declaration root in a fresh tree of the
+     * very file about to be rewritten. Filling it (Block::$ast is
+     * public-mutable by design, AGENTS.md) follows the loader idiom
+     * narrower than a re-anchor: ParamIntersection then reads the same
+     * parameters the written artifact will receive, instead of inventing
+     * nothing from null and desyncing against a signature that promotes.
      *
      * @param list<Block> $members
-     * @return array{original: string, rewritten: string}
+     * @return array{original: string, stmts: list<Node\Stmt>, located: list<array{0: Block, 1: Node}>}
      */
-    private function planFileRewrite(Cluster $cluster, string $file, array $members, string $funcName): array
+    private function locateFileMembers(Cluster $cluster, string $file, array $members): array
     {
         // Silent return, old :332-334 — now a named refusal.
         if (!is_file($file)) {
@@ -700,10 +750,10 @@ final class ApplyExtractor
         // Node-identity collection (old :349-351 silent miss — now named):
         // every member of this file is located in THIS single parse, before
         // any rewrite reshapes the text.
-        /** @var array<int, Node> $replacements spl_object_id(target) => replacement */
-        $replacements = [];
         /** @var array<int, Block> $claimants spl_object_id(target) => first claimant */
         $claimants = [];
+        /** @var list<array{0: Block, 1: Node}> $located */
+        $located = [];
         foreach ($members as $member) {
             $targetNode = $this->findNodeInStmts($stmts, $member);
             if ($targetNode === null) {
@@ -748,11 +798,38 @@ final class ApplyExtractor
                     $file,
                 ));
             }
-            $replacements[$targetId] = $this->buildCallReplacement($funcName, $cluster, $member, $targetNode);
+            if ($member->ast === null) {
+                $member->ast = $targetNode;
+            }
+            $located[] = [$member, $targetNode];
         }
 
-        $newStmts = $this->replaceNodesInStmts($stmts, $replacements, $cluster, $file);
-        return ['original' => $code, 'rewritten' => $this->printer->prettyPrintFile($newStmts)];
+        return ['original' => $code, 'stmts' => $stmts, 'located' => $located];
+    }
+
+    /**
+     * Phase two for one member file: build every member's replacement from
+     * the located pairs, apply them by node identity in one traversal,
+     * count-verify and prettyPrint once. The transactional posture is
+     * unchanged from output-004 — a PlacementMiss or count mismatch still
+     * refuses loudly with zero bytes written (the caller holds every file's
+     * plan before its first landing).
+     *
+     * @param array{original: string, stmts: list<Node\Stmt>, located: list<array{0: Block, 1: Node}>} $context
+     * @param list<PromotedParam> $promoted
+     * @return array{original: string, rewritten: string}
+     */
+    private function buildFileRewrite(Cluster $cluster, string $file, array $context, string $funcName, array $promoted): array
+    {
+        /** @var array<int, Node> $replacements spl_object_id(target) => replacement */
+        $replacements = [];
+        foreach ($context['located'] as [$member, $targetNode]) {
+            $replacements[spl_object_id($targetNode)] =
+                $this->buildCallReplacement($funcName, $cluster, $member, $targetNode, $promoted);
+        }
+
+        $newStmts = $this->replaceNodesInStmts($context['stmts'], $replacements, $cluster, $file);
+        return ['original' => $context['original'], 'rewritten' => $this->printer->prettyPrintFile($newStmts)];
     }
 
     /** Compact member label for diagnostics: kind, name (or class), span. */
@@ -1258,12 +1335,14 @@ final class ApplyExtractor
      * signature declares its parameters — not hole-parameter names, not
      * hole-creation order, not one shared argument list for all members.
      *
+     * @param list<PromotedParam> $promoted cluster-level shared formals
+     *                                      (buildCallArguments prepends them)
      * @return Node
      */
-    private function buildCallReplacement(string $funcName, Cluster $cluster, Block $member, Node $targetNode): Node
+    private function buildCallReplacement(string $funcName, Cluster $cluster, Block $member, Node $targetNode, array $promoted): Node
     {
         // Build the argument list for this member, in canonical order.
-        $args = $this->buildCallArguments($cluster, $member);
+        $args = $this->buildCallArguments($cluster, $member, $promoted);
 
         $call = new Node\Expr\FuncCall(
             // output-003: FullyQualified, not the old qualified-relative
@@ -1327,13 +1406,23 @@ final class ApplyExtractor
      * literal 0 under strict_types is a TypeError class, and the old
      * literal rode on Node\Scalar\LNumber — a deprecated v5 alias.
      *
+     * output-S49b: the promoted shared formals lead the argument list —
+     * the same set SignatureBuilder rendered into the signature's leading
+     * parameter lines, derived once per cluster in planRewrites with the
+     * identical reserved-name projection. Each is bound to THIS member's
+     * own local of that name (S46 keeps the member's declaration, so its
+     * parameters are in scope at the rewritten call site). Params =
+     * promoted + required holes + knobs; args = the same three families in
+     * the same order — arity agrees by construction.
+     *
+     * @param list<PromotedParam> $promoted
      * @return list<Node\Arg>
      */
-    private function buildCallArguments(Cluster $cluster, Block $member): array
+    private function buildCallArguments(Cluster $cluster, Block $member, array $promoted): array
     {
         $memberIdx = array_search($member, $cluster->members, true);
         if (false === $memberIdx) {
-            // Defensive: planFileRewrite groups $cluster->members itself, so
+            // Defensive: planRewrites groups $cluster->members itself, so
             // no apply() path can arrive with an alien member. Fail fast and
             // loudly rather than guess an index — a wrong index would
             // silently bind another member's values.
@@ -1345,6 +1434,9 @@ final class ApplyExtractor
         }
 
         $args = [];
+        foreach ($promoted as $param) {
+            $args[] = new Node\Arg(new Node\Expr\Variable($param->name));
+        }
         foreach ($cluster->holes as $hole) {
             if ('optional_block' !== $hole->kind) {
                 $args[] = new Node\Arg($this->observedArgument($cluster, $hole, $memberIdx));

@@ -37,7 +37,7 @@
             ],
             "outlier_members": [],
             "architectural_findings": [],
-            "signature": "function findById(\n    string $value,\n): mixed",
+            "signature": "function findById(\n    \\PDO $db,\n    int $id,\n    string $value,\n): mixed",
             "members": [
                 {
                     "file": "tests/Fixtures/sql/Repos.php",

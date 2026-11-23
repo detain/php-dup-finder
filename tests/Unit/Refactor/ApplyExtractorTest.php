@@ -1213,6 +1213,12 @@ final class ApplyExtractorTest extends TestCase
         // parameter is a TypeError class under strict_types. The S46-era
         // half (declaration stays and delegates; body-gone pinned directly)
         // is kept exactly as struck-in-place then.
+        // S49b-era update (output-006, disclosed era-flip #4): both logIt
+        // members declare the same formal $s, so the promoted shared formal
+        // now LEADS the delegating call — the signature's first parameter
+        // line is $s (the artifact re-parse legs above vouch for it) and
+        // the call passes the member's own local. The knob semantics are
+        // byte-untouched: true for the carrier, false for the non-carrier.
         $knobbed = [$fileA => 'true', $fileB => 'false'];
         foreach ($knobbed as $memberFile => $expectedKnob) {
             $rewritten = (string) file_get_contents($memberFile);
@@ -1220,9 +1226,9 @@ final class ApplyExtractorTest extends TestCase
             $this->assertStringNotContainsString('send(', $rewritten,
                 'the member body was replaced by the delegating call');
             $this->assertMatchesRegularExpression(
-                '/Refactored\\\\[A-Za-z_][A-Za-z0-9_]*\(' . $expectedKnob . '\);/',
+                '/Refactored\\\\[A-Za-z_][A-Za-z0-9_]*\(\$s, ' . $expectedKnob . '\);/',
                 $rewritten,
-                'the member rewrite calls the extracted function with its own knob value (' . $expectedKnob . ')',
+                'the member rewrite passes the promoted local $s, then its own knob value (' . $expectedKnob . ')',
             );
             $this->assertNotNull((new AstParser())->parseCode($rewritten), 'the rewritten member still parses');
         }
@@ -1614,12 +1620,21 @@ final class ApplyExtractorTest extends TestCase
 
         (new ApplyExtractor())->apply($cluster, $dir . '/out');
 
+        // S49b-era update (output-006, disclosed era-flip #1): guardA/guardB
+        // both declare the formal $x, so the promoted shared formal leads
+        // the call and the observed literal follows — two arguments, arity
+        // matching the two-line signature. The defect this test pins (the
+        // hole PARAMETER name riding the call, and one shared argument list)
+        // stays dead exactly as before.
         $expected = [$fileA => ['guardA', 'alpha'], $fileB => ['guardB', 'beta']];
         foreach ($expected as $file => [$fn, $value]) {
             $call = $this->s45CallOf($file, $fn);
-            $this->assertCount(1, $call->args, 'one hole, one argument');
-            $this->assertInstanceOf(Node\Scalar\String_::class, $call->args[0]->value);
-            $this->assertSame($value, $call->args[0]->value->value);
+            $this->assertCount(2, $call->args, 'promoted shared formal + one hole, one argument each');
+            $this->assertInstanceOf(Node\Expr\Variable::class, $call->args[0]->value,
+                'the promoted position passes the member\'s own local $x');
+            $this->assertSame('x', $call->args[0]->value->name);
+            $this->assertInstanceOf(Node\Scalar\String_::class, $call->args[1]->value);
+            $this->assertSame($value, $call->args[1]->value->value);
             $this->assertPhpLints($file);
         }
         $this->assertPhpLints($dir . '/out/Refactored/S45LIT.php');
@@ -1666,8 +1681,18 @@ final class ApplyExtractorTest extends TestCase
         $this->assertPhpLints($fileB);
         $this->assertPhpLints($dir . '/out/Refactored/S45RUN.php');
 
-        $argA = $this->s45CallOf($fileA, 'wrapA')->args[0]->value;
-        $argB = $this->s45CallOf($fileB, 'wrapB')->args[0]->value;
+        // S49b-era update (output-006, disclosed era-flip #2): wrapA/wrapB
+        // both declare the formal $v, so the promoted local leads the call
+        // and the canonical Int_ rides position 1. The three legs this test
+        // owns — Int_ (never the deprecated LNumber alias), php -l, and the
+        // executed strict_types smoke — all survive the promotion verbatim.
+        $callA = $this->s45CallOf($fileA, 'wrapA');
+        $callB = $this->s45CallOf($fileB, 'wrapB');
+        $this->assertCount(2, $callA->args, 'promoted $v + the int hole');
+        $this->assertInstanceOf(Node\Expr\Variable::class, $callA->args[0]->value);
+        $this->assertSame('v', $callA->args[0]->value->name);
+        $argA = $callA->args[1]->value;
+        $argB = $callB->args[1]->value;
         $this->assertSame(Node\Scalar\Int_::class, get_class($argA),
             'the deprecated LNumber alias must never ride new output');
         $this->assertSame(3, $argA->value);
@@ -1710,18 +1735,27 @@ final class ApplyExtractorTest extends TestCase
 
         (new ApplyExtractor())->apply($cluster, $dir . '/out');
 
+        // S49b-era update (output-006, disclosed era-flip #3): the
+        // twoMemberFile members both declare ($u, $s), so the promoted
+        // shared formals lead both the signature and every call — arity is
+        // 4 everywhere (2 promoted + required hole + appended knob). The
+        // ordering defect this test owns stays pinned verbatim: the knob
+        // hole was CREATED first but must ride LAST, after the required
+        // hole that was created second.
         $perMember = [
             'notifyA' => ['Alpha\Thing', 'true'],
             'notifyB' => ['Beta\Thing', 'false'],
         ];
         foreach ($perMember as $fn => [$row, $knob]) {
             $call = $this->s45CallOf($file, $fn);
-            $this->assertCount(2, $call->args, 'required hole + knob — arity matches the signature');
-            $this->assertInstanceOf(Node\Scalar\String_::class, $call->args[0]->value,
+            $this->assertCount(4, $call->args, '2 promoted + required hole + knob — arity matches the signature');
+            $this->assertSame(['u', 's'], [$call->args[0]->value->name, $call->args[1]->value->name],
+                'the promoted shared formals ride the member\'s own locals, in declaration order');
+            $this->assertInstanceOf(Node\Scalar\String_::class, $call->args[2]->value,
                 'a name row binds as a string, never as a constant fetch');
-            $this->assertSame($row, $call->args[0]->value->value);
-            $this->assertInstanceOf(Node\Expr\ConstFetch::class, $call->args[1]->value);
-            $this->assertSame($knob, $call->args[1]->value->name->toLowerString(),
+            $this->assertSame($row, $call->args[2]->value->value);
+            $this->assertInstanceOf(Node\Expr\ConstFetch::class, $call->args[3]->value);
+            $this->assertSame($knob, $call->args[3]->value->name->toLowerString(),
                 'the knob is switched by THIS member (first row present, second missing)');
         }
         $this->assertPhpLints($file);
@@ -1745,12 +1779,15 @@ final class ApplyExtractorTest extends TestCase
             }
         }
         $this->assertInstanceOf(Node\Stmt\Function_::class, $function);
-        $this->assertCount(2, $function->params, 'call arity == signature arity');
-        $this->assertSame('__P0', $function->params[0]->var->name);
-        $this->assertInstanceOf(Node\Identifier::class, $function->params[1]->type);
-        $this->assertSame('bool', $function->params[1]->type->name);
-        $this->assertInstanceOf(Node\Expr\ConstFetch::class, $function->params[1]->default);
-        $this->assertSame('false', $function->params[1]->default->name->toLowerString());
+        $this->assertCount(4, $function->params, 'call arity == signature arity');
+        $this->assertSame(['u', 's', '__P0', '__O0'], array_map(
+            static fn (Node\Param $param): string => $param->var->name,
+            $function->params,
+        ), 'promoted shared formals lead, required hole next, knob last (S49b order law)');
+        $this->assertInstanceOf(Node\Identifier::class, $function->params[3]->type);
+        $this->assertSame('bool', $function->params[3]->type->name);
+        $this->assertInstanceOf(Node\Expr\ConstFetch::class, $function->params[3]->default);
+        $this->assertSame('false', $function->params[3]->default->name->toLowerString());
     }
 
     public function testRequiredHoleWithoutAnObservedRowForAMemberRefusesTheCluster(): void
@@ -1813,6 +1850,301 @@ final class ApplyExtractorTest extends TestCase
 
         $this->assertSame($untouched, (string) file_get_contents($file));
         $this->assertFileDoesNotExist($dir . '/out/Refactored/S45JNK.php');
+    }
+
+    // ---------------------------------------------------------------
+    // output-S49b (php-dup-finder-output-006, joint landing with S49a):
+    // the promoted shared formals reach the CODE. The planning walk now
+    // reads, parses, locates (and hydrates) every member before deriving
+    // the promotion set ONCE — with the same reserved-name projection the
+    // signature renderer used (SignatureBuilder::renderedHoleVars) — and
+    // every delegating call prepends the member's own locals. Artifact
+    // parameters (promoted + required holes + knobs) and call arguments
+    // (promoted locals + observed rows + knobs) agree by construction;
+    // these pins vouch for each arm of that equality, the apply door's
+    // promotion semantics, the honest-evidence rule (unloaded ASTs are
+    // hydrated from the located declaration, never guessed from null),
+    // and the executed strict_types behaviour the finding demanded.
+    // ---------------------------------------------------------------
+
+    /**
+     * The finding's own shape (PDREF S1 acceptance): two members sharing
+     * their formals ($value, $user) and differing only in one call
+     * argument, unified and signature-built through the REAL chain.
+     *
+     * @return array{0: Cluster, 1: string, 2: string} cluster, fileA, fileB
+     */
+    private function s49SharedFormalCluster(string $dir, string $id): array
+    {
+        $srcA = "<?php\ndeclare(strict_types=1);\nfunction mailHigh(\$value, \$user) { return dispatch(\$user, 'high', \$value); }\n";
+        $srcB = "<?php\ndeclare(strict_types=1);\nfunction mailLow(\$value, \$user) { return dispatch(\$user, 'low', \$value); }\n";
+        $fileA = $dir . '/a.php';
+        $fileB = $dir . '/b.php';
+        file_put_contents($fileA, $srcA);
+        file_put_contents($fileB, $srcB);
+
+        $cluster = new Cluster($id, [
+            $this->cloneFunctionBlock($fileA, $srcA, 'mailHigh'),
+            $this->cloneFunctionBlock($fileB, $srcB, 'mailLow'),
+        ], 0.9, false);
+        (new AntiUnifier())->unify($cluster);
+        (new SignatureBuilder())->buildSignature($cluster);
+        return [$cluster, $fileA, $fileB];
+    }
+
+    /** The Function_ node inside a generated artifact (namespace descent). */
+    private function s49ArtifactFunction(string $path): Node\Stmt\Function_
+    {
+        $stmts = (new AstParser())->parseCode((string) file_get_contents($path));
+        $this->assertNotNull($stmts, "fixture: artifact {$path} re-parses");
+        foreach ($stmts as $stmt) {
+            if ($stmt instanceof Node\Stmt\Namespace_) {
+                $stmts = $stmt->stmts;
+                break;
+            }
+        }
+        foreach ($stmts as $stmt) {
+            if ($stmt instanceof Node\Stmt\Function_) {
+                return $stmt;
+            }
+        }
+        $this->fail("fixture: no function in artifact {$path}");
+    }
+
+    /** Executed smoke over a shared-formal rewrite: exact child stdout. */
+    private function s49RunSmoke(string $dir, string $bootstrapPath): string
+    {
+        $run = $dir . '/run.php';
+        file_put_contents($run, "<?php\nfunction dispatch(\$u, \$k, \$v) { return \$u . ':' . \$k . ':' . \$v; }\n"
+            . 'require ' . var_export($bootstrapPath, true) . ";\n"
+            . 'require ' . var_export($dir . '/a.php', true) . ";\n"
+            . 'require ' . var_export($dir . '/b.php', true) . ";\n"
+            . "echo mailHigh('V', 'U') . ',' . mailLow('W', 'T') . PHP_EOL;\n");
+        return (string) shell_exec('php ' . escapeshellarg($run) . ' 2>&1');
+    }
+
+    public function testPromotedFormalsLandInTheGeneratedSignatureAndAtEveryCallSite(): void
+    {
+        // The finding end to end (php-dup-finder-output-006 verbatim:
+        // "generated function declares the intersected formals, each
+        // rewritten call site passes the member's own locals"), executed
+        // under strict_types — pre-S49a the abstraction read $value/$user
+        // as FREE VARIABLES and every rewritten call was live broken code.
+        $dir = $this->makeScratchDir();
+        [$cluster, $fileA, $fileB] = $this->s49SharedFormalCluster($dir, 'S49PS1');
+        $this->assertMatchesRegularExpression('/\(\n    \$value,\n    \$user,\n/', (string) $cluster->signature,
+            'fixture: the promoted shared formals lead the emitted signature');
+
+        $returned = (new ApplyExtractor())->apply($cluster, $dir . '/out');
+        $this->assertSame([$fileA, $fileB], $returned);
+
+        $function = $this->s49ArtifactFunction($dir . '/out/Refactored/S49PS1.php');
+        $this->assertSame(['value', 'user'], [
+            $function->params[0]->var->name,
+            $function->params[1]->var->name,
+        ], 'the abstraction declares the members\' shared formals as its first parameters');
+
+        $per = [$fileA => ['mailHigh', 'high'], $fileB => ['mailLow', 'low']];
+        foreach ($per as $file => [$fn, $row]) {
+            $call = $this->s45CallOf($file, $fn);
+            $this->assertSame(['value', 'user'], [
+                $call->args[0]->value->name,
+                $call->args[1]->value->name,
+            ], "the {$fn} call site passes the member's own promoted locals");
+            $this->assertInstanceOf(Node\Scalar\String_::class, $call->args[2]->value,
+                'the hole position still passes THIS member\'s observed row');
+            $this->assertSame($row, $call->args[2]->value->value);
+            $this->assertSame(count($function->params), count($call->args),
+                "the {$fn} call binds every declared parameter");
+            $this->assertPhpLints($file);
+        }
+        $this->assertPhpLints($dir . '/out/Refactored/S49PS1.php');
+
+        $out = $this->s49RunSmoke($dir, $dir . '/out/Refactored/_autoload.php');
+        $this->assertSame("U:high:V,T:low:W\n", $out,
+            'the rewritten pair executes: promoted locals bind through the whole rewrite');
+    }
+
+    public function testDivergingFormalNamesPromoteNothingAtTheCallSites(): void
+    {
+        // The prefix law's negative arm seen through the apply door:
+        // position 0 already disagrees by name ($first vs $other), so
+        // NOTHING is promoted — the call keeps the pure hole-only family
+        // and no argument can shift into a parameter the artifact never
+        // declared. (The shared $rest at position 1 must NOT sneak in:
+        // prefix, not subset.)
+        $dir = $this->makeScratchDir();
+        $srcA = "<?php\nfunction checkA(\$first, \$rest) { return tally(5, \$first); }\n";
+        $srcB = "<?php\nfunction checkB(\$other, \$rest) { return tally(9, \$first); }\n";
+        $fileA = $dir . '/a.php';
+        $fileB = $dir . '/b.php';
+        file_put_contents($fileA, $srcA);
+        file_put_contents($fileB, $srcB);
+
+        $cluster = new Cluster('S49NEG', [
+            $this->cloneFunctionBlock($fileA, $srcA, 'checkA'),
+            $this->cloneFunctionBlock($fileB, $srcB, 'checkB'),
+        ], 0.9, false);
+        (new AntiUnifier())->unify($cluster);
+        (new SignatureBuilder())->buildSignature($cluster);
+        $this->assertStringNotContainsString("\$first,", (string) $cluster->signature,
+            'fixture: no promoted line survives the position-0 divergence');
+
+        (new ApplyExtractor())->apply($cluster, $dir . '/out');
+
+        $function = $this->s49ArtifactFunction($dir . '/out/Refactored/S49NEG.php');
+        $paramNames = array_map(static fn (Node\Param $p): string => (string) $p->var->name, $function->params);
+        $this->assertNotContains('first', $paramNames);
+        $this->assertNotContains('other', $paramNames);
+        $this->assertNotContains('rest', $paramNames,
+            'position 1 ($rest) is name-equal but must NOT sneak in: prefix law, not subset');
+        foreach ([$fileA => ['checkA', 5], $fileB => ['checkB', 9]] as $file => [$fn, $int]) {
+            $call = $this->s45CallOf($file, $fn);
+            $this->assertCount(count($function->params), $call->args,
+                "{$fn}: the two hole rows ride the two declared parameters, nothing promoted leads");
+            $this->assertInstanceOf(Node\Scalar\Int_::class, $call->args[1]->value,
+                'the literal divergence rides position 1 exactly as the signature declares');
+            $this->assertSame($int, $call->args[1]->value->value);
+        }
+        $this->assertPhpLints($fileA);
+        $this->assertPhpLints($fileB);
+    }
+
+    public function testEmittedSignatureDeclaresExactlyWhatEveryCallSitePasses(): void
+    {
+        // The handoff's arity-invariant law made executable over three
+        // shapes: promoted+hole, promoted+hole+knob, and hole-only. For
+        // every apply-eligible cluster the artifact's declared parameters
+        // and each rewritten call's arguments agree 1:1 positionally —
+        // the equality S49b derives by construction, pinned from the
+        // outside rather than asserted internally.
+        $dirA = $this->makeScratchDir();
+        [$clusterA, $fileA1, $fileA2] = $this->s49SharedFormalCluster($dirA, 'S49AR1');
+        (new ApplyExtractor())->apply($clusterA, $dirA . '/out');
+        $paramsA = $this->s49ArtifactFunction($dirA . '/out/Refactored/S49AR1.php')->params;
+        foreach ([$fileA1 => 'mailHigh', $fileA2 => 'mailLow'] as $file => $fn) {
+            $this->assertSame(count($paramsA), count($this->s45CallOf($file, $fn)->args),
+                "shape (a): {$fn} binds every declared parameter");
+        }
+
+        $dirB = $this->makeScratchDir();
+        [$fileB, $blocksB] = $this->twoMemberFile($dirB);
+        $clusterB = new Cluster('S49AR2', $blocksB, 0.9, false);
+        $clusterB->generalizedAst = $blocksB[0]->ast;
+        $clusterB->holes = [
+            new Hole('__O0', 'optional_block', ['send("admin", $u);', '']),
+            new Hole('__P0', 'name', ['Alpha\Thing', 'Beta\Thing']),
+        ];
+        (new SignatureBuilder())->buildSignature($clusterB);
+        $clusterB->holePaths = ['__P0' => ['stmts', 0, 'stmts', 0, 'expr', 'args', 0, 'value']];
+        (new ApplyExtractor())->apply($clusterB, $dirB . '/out');
+        $paramsB = $this->s49ArtifactFunction($dirB . '/out/Refactored/S49AR2.php')->params;
+        foreach (['notifyA', 'notifyB'] as $fn) {
+            $this->assertSame(count($paramsB), count($this->s45CallOf($fileB, $fn)->args),
+                "shape (b): {$fn} — promoted + required + knob on both sides");
+        }
+        $this->assertCount(4, $paramsB);
+
+        $dirC = $this->makeScratchDir();
+        $srcC1 = "<?php\nfunction soloA(\$k) { return keep(1); }\n";
+        $srcC2 = "<?php\nfunction soloB(\$k) { return keep(2); }\n";
+        $fileC1 = $dirC . '/a.php';
+        $fileC2 = $dirC . '/b.php';
+        file_put_contents($fileC1, $srcC1);
+        file_put_contents($fileC2, $srcC2);
+        $clusterC = new Cluster('S49AR3', [
+            $this->cloneFunctionBlock($fileC1, $srcC1, 'soloA'),
+            $this->cloneFunctionBlock($fileC2, $srcC2, 'soloB'),
+        ], 0.9, false);
+        (new AntiUnifier())->unify($clusterC);
+        (new SignatureBuilder())->buildSignature($clusterC);
+        (new ApplyExtractor())->apply($clusterC, $dirC . '/out');
+        $paramsC = $this->s49ArtifactFunction($dirC . '/out/Refactored/S49AR3.php')->params;
+        $this->assertCount(2, $paramsC, 'shape (c): promoted $k + one hole');
+        foreach ([$fileC1 => 'soloA', $fileC2 => 'soloB'] as $file => $fn) {
+            $call = $this->s45CallOf($file, $fn);
+            $this->assertSame(count($paramsC), count($call->args));
+            $this->assertSame('k', $call->args[0]->value->name);
+        }
+    }
+
+    public function testUnloadedMemberAstsAreHydratedFromTheLocatedDeclarations(): void
+    {
+        // The lazyAst world: a cluster handed to the apply door may have
+        // lost its member ASTs AFTER the signature was built (workers drop
+        // them; rebaseClusters re-anchors only content-bound members up to
+        // the fork boundary). Promoting from null would derive NOTHING and
+        // desync the call against the signature's promoted lines — the
+        // loud ArgumentCountError class. Phase one of the plan hydrates
+        // each unloaded AST from the located declaration node in the fresh
+        // tree of the very file about to be rewritten (Block::$ast is
+        // public-mutable by design; this is the loader idiom, narrower
+        // than a re-anchor). Acceptance, verbatim from the handoff: a
+        // cluster whose members were unloaded-then-re-anchored still
+        // passes the arity and RUNS.
+        $dir = $this->makeScratchDir();
+        [$cluster, $fileA, $fileB] = $this->s49SharedFormalCluster($dir, 'S49REA');
+        $this->assertMatchesRegularExpression('/\(\n    \$value,\n    \$user,\n/', (string) $cluster->signature,
+            'fixture: the signature carries the promoted formals (built while ASTs were loaded)');
+
+        foreach ($cluster->members as $member) {
+            $member->ast = null;
+        }
+
+        $returned = (new ApplyExtractor())->apply($cluster, $dir . '/out');
+        $this->assertSame([$fileA, $fileB], $returned);
+
+        $function = $this->s49ArtifactFunction($dir . '/out/Refactored/S49REA.php');
+        foreach ([$fileA => 'mailHigh', $fileB => 'mailLow'] as $file => $fn) {
+            $call = $this->s45CallOf($file, $fn);
+            $this->assertSame(['value', 'user'], [
+                $call->args[0]->value->name,
+                $call->args[1]->value->name,
+            ], "promotion survived the AST drop at {$fn} (hydrated from the located declaration)");
+            $this->assertSame(count($function->params), count($call->args),
+                "the unloaded-then-hydrated cluster keeps arity at {$fn}");
+        }
+
+        $out = $this->s49RunSmoke($dir, $dir . '/out/Refactored/_autoload.php');
+        $this->assertSame("U:high:V,T:low:W\n", $out,
+            'and the hydrated rewrite RUNS — not just lints');
+    }
+
+    public function testAHoleRenderedNameStopsPromotionAtTheApplyDoorToo(): void
+    {
+        // S49a's collision law (a hole that RENDERS the name `$u` reserves
+        // it; the prefix stops there) must hold at the apply door as well.
+        // The door derives the promotion set through the same shared
+        // projection SignatureBuilder used — re-deriving with an empty
+        // reserved set would prepend the members' locals while the emitted
+        // signature declares only the hole: extra arguments into a
+        // one-parameter strict_types function, the silent shifted-argument
+        // corruption class the S49a handoff named.
+        $dir = $this->makeScratchDir();
+        [$file, $blocks] = $this->twoMemberFile($dir);
+
+        $cluster = new Cluster('S49COL', $blocks, 0.9, false);
+        $cluster->generalizedAst = $blocks[0]->ast;
+        $collision = new Hole('__P0', 'literal', ['"admin"', '"moderator"']);
+        $collision->suggestedName = '$u';
+        $cluster->holes = [$collision];
+        (new SignatureBuilder())->buildSignature($cluster);
+        $this->assertStringNotContainsString("\$s,", (string) $cluster->signature,
+            'fixture: the position-0 collision stops the prefix, so $s is never declared either');
+        $cluster->holePaths = ['__P0' => ['stmts', 0, 'stmts', 0, 'expr', 'args', 0, 'value']];
+
+        (new ApplyExtractor())->apply($cluster, $dir . '/out');
+
+        $function = $this->s49ArtifactFunction($dir . '/out/Refactored/S49COL.php');
+        $this->assertCount(1, $function->params, 'one hole parameter, nothing promoted (signature side)');
+        $this->assertSame('u', $function->params[0]->var->name,
+            'the hole keeps its rendered name; the promotion yielded it');
+        foreach (['notifyA', 'notifyB'] as $fn) {
+            $call = $this->s45CallOf($file, $fn);
+            $this->assertCount(1, $call->args, 'the door passes the row only — no promoted locals the signature lacks');
+            $this->assertInstanceOf(Node\Scalar\String_::class, $call->args[0]->value);
+        }
+        $this->assertPhpLints($file);
     }
 }
 
