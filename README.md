@@ -155,10 +155,10 @@ each topic to where it actually lives. Every link is checked in CI.
 - [Runtime flags](docs/CLI.md#runtime) — workers, memory ceiling, cache toggles
 - [Cache retention and pruning](docs/CLI.md#cache-retention-and-pruning) — content-addressed disk cache, documented rm-based reclaim
 - [TUI and watch mode](docs/CLI.md#tui--watch) — `--tui`, `--theme`, `--watch`, keyboard shortcuts
-- [CI baseline gate](docs/CLI.md#ci--baseline) — `--baseline` / `--baseline-out`, incremental exit-code 3 workflow
+- [CI baseline gate](docs/CLI.md#ci--baseline) — `--baseline` / `--baseline-out`, incremental exit-code 4 workflow
 - [Config validation](docs/CLI.md#validation) — `--validate-config`
 - [Self-update](docs/CLI.md#selfupdate--options) — `phpdup self:update` and the signed-manifest contract
-- [Exit codes](docs/CLI.md#exit-codes) — 0 / 1 / 2 / 3, plus the SIGINT `130` soft-cancel convention
+- [Exit codes](docs/CLI.md#exit-codes) — 0 / 1 / 2 / 3 / 4
 - [Configuration file](docs/CLI.md#configuration-file) — `phpdup.json` fields (+ machine-readable schema above)
 - [Configuration precedence](docs/CLI.md#configuration-precedence) — per-directory overrides, project profiles
 - [`exclude` glob dialect](docs/CLI.md#exclude-stacks--the-glob-dialect) — how exclude lists stack
