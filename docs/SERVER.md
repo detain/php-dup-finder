@@ -329,8 +329,14 @@ merely sits inside an admitted tree is contained by the walk itself
 (once-S20): a nested symlink whose target resolves outside the scan
 root — or re-enters it, or does not resolve — is **skipped, never
 scanned and never served**, and each skip answers one
-`phpdup: warning: skipped symlinked path <path> (target escapes the
-scan root)` line on the server's stderr. The count of such notes
+`phpdup: warning: skipped symlinked path <path> (<reason>)` line,
+where `<reason>` is one of the three shipped notes: `target escapes
+the scan root`, `target does not resolve` or `target re-enters the
+scan root`. That line lands on the server's stderr for synchronous
+`POST /analyze` runs; async worker warnings do not currently reach
+the daemon's stderr (the worker's stdio pipes are closed at spawn),
+so on that path the notes ride the report carrier described below —
+never a stderr line. The count of such notes
 surfaces on the `scan_notes` channel: every serve transport threads
 its run's skip notes onto the report's scan-notes carrier (sync
 `POST /analyze` and the async worker share one seam,
