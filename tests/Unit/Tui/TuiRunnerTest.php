@@ -126,4 +126,26 @@ final class TuiRunnerTest extends TestCase
         $this->assertSame($model->exitCode(), $status, 'runner status is the model exit code');
         return [$model, $status];
     }
+
+    /**
+     * once-S72 A-21 acceptance (host half): booting a live model through
+     * buildLiveModel costs EXACTLY ONE iterator-factory call — the seed pair
+     * is adopted, never thrown away.
+     */
+    public function testBuildLiveModelConstructsTheIteratorExactlyOnce(): void
+    {
+        $calls = 0;
+        $factory = function () use (&$calls): array {
+            $calls++;
+            return [
+                (static function (): \Generator { yield \Phpdup\Pipeline\Stage::Scanning; })(),
+                new \Phpdup\Pipeline\PipelineState(\Phpdup\Cli\Config::defaults([__DIR__])),
+            ];
+        };
+
+        $model = (new TuiRunner())->buildLiveModel('plain', $factory);
+        $model->init();
+
+        $this->assertSame(1, $calls, 'one factory call for the whole boot (PP-1 leg)');
+    }
 }

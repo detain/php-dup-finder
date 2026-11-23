@@ -5,6 +5,12 @@ namespace Phpdup\Pipeline;
 
 enum Stage: string
 {
+    /**
+     * The five canonical phases, in pipeline order. Each phase appears as a
+     * yield value from Pipeline::iter() — once-S72 made even Reporting
+     * cooperative, so every frame the live driver repaints between now
+     * includes the report tail, not just the analysis before it.
+     */
     case Scanning      = 'scanning';
     case Preprocessing = 'preprocessing';
     case Clustering    = 'clustering';

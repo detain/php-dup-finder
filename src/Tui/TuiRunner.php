@@ -169,12 +169,14 @@ final class TuiRunner
      */
     public function buildLiveModel(string $themeName, \Closure $iteratorFactory): PhpdupModel
     {
-        [, $initialState] = $iteratorFactory();
+        $initialRun = $iteratorFactory();
         return new PhpdupModel(
-            $initialState,
+            $initialRun[1],
             new ViewState(),
             self::resolveTheme($themeName),
             $iteratorFactory,
+            null,
+            $initialRun,
         );
     }
 
