@@ -7,6 +7,7 @@ use Phpdup\Pipeline\Stage;
 use Phpdup\Reporting\ClusterSort;
 use Phpdup\Util\ControlText;
 use SugarCraft\Core\Util\Width;
+use SugarCraft\Style\Style;
 
 /**
  * UI-only state for the phpdup TUI.
@@ -17,7 +18,10 @@ use SugarCraft\Core\Util\Width;
  * This class is also the single display-string boundary for the TUI: every
  * scanned-derived label, toast or excerpt entering a terminal cell passes
  * {@see self::displayLabel()}, which consumes the shared
- * {@see ControlText} venue (php-dup-finder-once-024, ViewState leg).
+ * {@see ControlText} venue (php-dup-finder-once-024, ViewState leg). Theme
+ * styling crossing the same boundary is governed by {@see self::trustedStyle()}
+ * — the only style channel the layout engine's sanitizer leaves alive
+ * (php-dup-finder-once-072).
  *
  * All cell math runs through sugar-core's {@see Width} util — the same
  * grapheme-cluster, East-Asian-wide, emoji-aware measure the rest of the
@@ -240,6 +244,55 @@ final class ViewState
     public static function displayLabel(string $text, int $maxCells): string
     {
         return self::clipToCells(self::displaySafe($text), $maxCells);
+    }
+
+    /**
+     * The trusted-span seam between sugar Style composition and the FlexBox
+     * layout border (php-dup-finder-once-072).
+     *
+     * `FlexBox` runs every item LINE through `Sanitize::untrusted` before
+     * painting it, which strips any SGR embedded in the content — a theme
+     * style rendered into the string arrives monochrome. The one channel
+     * whose colour survives that border is `FlexItem::withStyle()`: its
+     * parameters are applied AFTER the strip and admitted only as a bare
+     * digits-and-semicolons string. So styling must be carried as data
+     * through that door, never smuggled inline through the sanitized span.
+     *
+     * This is the derivation: probe the Style with an empty render (a sugar
+     * Style composes exactly its opening SGR runs plus one reset for empty
+     * content) and fold the runs into the single parameter string the
+     * channel admits — `render('')` of the bold-blue style yields
+     * `ESC[1m ESC[38;2;…m ESC[0m` and folds to `1;38;2;…`, byte-equivalent
+     * in effect to the terminal. A plain (no-op) theme renders nothing and
+     * yields `''` — the honest "no style" answer, so plain-mode pins stay
+     * byte-identical. Any shape that cannot fold — a hyperlink OSC, a
+     * sub-parameterised underline, a stray byte — fails SAFE to `''`:
+     * monochrome paint beats a throw at repaint time (the once-075 lesson:
+     * a failure inside rendering must never crash the run it decorates).
+     */
+    public static function trustedStyle(Style $style): string
+    {
+        $probe = $style->render('');
+        if ($probe === '') {
+            return '';
+        }
+        // Expected shape: ( CSI <params> m )+ followed by exactly one reset.
+        $reset = "\x1b[0m";
+        if (strlen($probe) <= strlen($reset) || !str_ends_with($probe, $reset)) {
+            return '';
+        }
+        $runs   = substr($probe, 0, strlen($probe) - strlen($reset));
+        $params = [];
+        while ($runs !== '') {
+            if (preg_match('/\A\x1b\[([0-9;]*)m/', $runs, $m) !== 1) {
+                return '';
+            }
+            if ($m[1] !== '') {
+                $params[] = $m[1];
+            }
+            $runs = substr($runs, strlen($m[0]));
+        }
+        return implode(';', $params);
     }
 
     /**

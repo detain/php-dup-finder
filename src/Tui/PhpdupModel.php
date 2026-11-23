@@ -453,11 +453,20 @@ final class PhpdupModel implements Model, ProgressListener
             $this->viewState->analysisComplete ? '' : '   ' . $this->spinner->view(),
         ), $cols));
 
+        // Trusted-span seam (php-dup-finder-once-072): pane content enters the
+        // box PLAIN and each pane's theme colour rides FlexItem::withStyle(),
+        // the one channel FlexBox paints AFTER its per-line
+        // Sanitize::untrusted strip. Styling smuggled inline through the
+        // content used to be erased by that very sanitizer — the finding's
+        // "advertised theme not visible" on the whole pane block. Untrusted
+        // data inside a pane is scrubbed at OUR display door (once-024)
+        // before the box sees it, so the strip keeps guarding a string we
+        // already vouch for; colours and control-scrub coexist by design.
         $panes = FlexBox::row(
-            FlexItem::new($this->paneFor(Stage::Scanning))->withRatio(1),
-            FlexItem::new($this->paneFor(Stage::Preprocessing))->withRatio(1),
-            FlexItem::new($this->paneFor(Stage::Clustering))->withRatio(1),
-            FlexItem::new($this->paneFor(Stage::Refactoring))->withRatio(1),
+            FlexItem::new($this->paneFor(Stage::Scanning))->withRatio(1)->withStyle($this->paneStyleFor(Stage::Scanning)),
+            FlexItem::new($this->paneFor(Stage::Preprocessing))->withRatio(1)->withStyle($this->paneStyleFor(Stage::Preprocessing)),
+            FlexItem::new($this->paneFor(Stage::Clustering))->withRatio(1)->withStyle($this->paneStyleFor(Stage::Clustering)),
+            FlexItem::new($this->paneFor(Stage::Refactoring))->withRatio(1)->withStyle($this->paneStyleFor(Stage::Refactoring)),
         )->withGap(1);
 
         // Panes shrink instead of overflowing: 8 chrome rows (banner + blank
@@ -655,15 +664,32 @@ final class PhpdupModel implements Model, ProgressListener
         return '  ' . $this->theme->muted->render($labelClipped) . $sparkline->view() . "\n";
     }
 
+    /**
+     * Pane content crossing the FlexBox border as PLAIN text — every arm
+     * built from display-safe data, no SGR embedded. The cell's theme colour
+     * rides the trusted withStyle channel instead ({@see self::paneStyleFor()},
+     * php-dup-finder-once-072): an inline `->render()` here used to be
+     * stripped by the box's own sanitizer and arrive monochrome.
+     */
     private function paneFor(Stage $stage): string
     {
         $focused = $this->viewState->focusedStage() === $stage;
-        $marker  = $focused ? $this->theme->accent->render('▸ ') : '  ';
+        // The focus marker is a glyph, not a colour: the ▸/blank distinction
+        // is what the pane actually showed even before the seam (the accent
+        // SGR around it never survived the box strip).
+        $marker  = $focused ? '▸ ' : '  ';
         $label   = $stage->label();
 
+        // allowedKinds are config-file strings — semi-untrusted data. The
+        // box strip used to be their only scrub; they now cross our display
+        // door first, so hostile bytes surface as caret notation like every
+        // other region instead of vanishing silently.
         $kindFilter = $this->state->config->allowedKinds === []
             ? ''
-            : "\nfiltering: " . implode(', ', $this->state->config->allowedKinds);
+            : "\nfiltering: " . implode(', ', array_map(
+                static fn(string $kind): string => ViewState::displaySafe($kind),
+                $this->state->config->allowedKinds,
+            ));
 
         $body = match ($stage) {
             Stage::Scanning => sprintf(
@@ -707,14 +733,41 @@ final class PhpdupModel implements Model, ProgressListener
                 }
             }
             if ($debugLines !== []) {
-                $debugSection = "\n" . $this->theme->muted->render('debug:') . "\n" . implode("\n", array_map(
-                    fn(string $msg) => '  ' . $this->theme->muted->render($msg),
+                // Debug breadcrumbs embed scanned paths — the most
+                // untrusted text in the pane. They cross ViewState's door
+                // (escape-first, visible notation) before the box sees them
+                // (php-dup-finder-once-024's boundary contract, once-072's
+                // coexistence requirement: scrub at our door, colour on the
+                // trusted channel — both properties hold at once).
+                $debugSection = "\ndebug:\n" . implode("\n", array_map(
+                    static fn(string $msg): string => '  ' . ViewState::displaySafe($msg),
                     $debugLines
                 ));
             }
         }
 
-        return $marker . $this->theme->info->render($label) . "\n" . $body . $debugSection;
+        return $marker . $label . "\n" . $body . $debugSection;
+    }
+
+    /**
+     * The pane's colour as bare SGR parameters — the trusted-span seam of
+     * php-dup-finder-once-072. `FlexItem::withStyle()` is the one styling
+     * channel FlexBox paints downstream of its per-line
+     * `Sanitize::untrusted` strip (and admits only a digits-and-semicolons
+     * parameter string, validated at the vendor setter), so the theme's
+     * Style must arrive as DATA through that door rather than as inline
+     * escapes inside the content. Focused pane = info (bright), unfocused =
+     * muted (faint): the same visual hierarchy the head-line styling
+     * advertised, now actually visible. A plain theme derives `''` — no
+     * style, honest; an unfoldable shape fails safe to the same.
+     */
+    private function paneStyleFor(Stage $stage): string
+    {
+        return ViewState::trustedStyle(
+            $this->viewState->focusedStage() === $stage
+                ? $this->theme->info
+                : $this->theme->muted
+        );
     }
 
     /**
