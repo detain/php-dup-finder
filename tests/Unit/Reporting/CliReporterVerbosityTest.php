@@ -7,19 +7,12 @@ use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\Config;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
-use Phpdup\Pipeline\PipelineState;
-use Phpdup\Pipeline\Stages\ClusterStage;
-use Phpdup\Pipeline\Stages\PreprocessStage;
-use Phpdup\Pipeline\Stages\RefactorStage;
-use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Reporting\CliReporter;
-use Phpdup\Reporting\Ranker;
 use Phpdup\Reporting\Report;
 use Phpdup\Util\LineRange;
 use SugarCraft\Style\Border;
 use SugarCraft\Style\Table\Table;
 use Symfony\Component\Console\Output\BufferedOutput;
-use Symfony\Component\Console\Output\NullOutput;
 use Symfony\Component\Console\Output\OutputInterface;
 
 final class CliReporterVerbosityTest extends TestCase
@@ -32,13 +25,16 @@ final class CliReporterVerbosityTest extends TestCase
 
     public function testSummaryOnlySkipsClusterDetails(): void
     {
-        $report = $this->buildReport();
+        $report = $this->syntheticReport(3);
         $out    = $this->buffered();
         (new CliReporter(CliReporter::VERBOSITY_SUMMARY_ONLY))->render($report, $out);
         $rendered = $out->fetch();
 
         $this->assertStringContainsString('phpdup', $rendered);
         $this->assertStringContainsString('summary  ', $rendered);
+        // output-S56b strengthening: the fixture era never pinned the count;
+        // the synthetic report carries exactly 3 clusters by construction.
+        $this->assertStringContainsString('summary  3 clusters', $rendered);
         // No member tables or "Suggested abstraction" sections in summary-only.
         $this->assertStringNotContainsString('Suggested abstraction', $rendered);
         $this->assertStringNotContainsString('LOCATION', $rendered);
@@ -46,7 +42,7 @@ final class CliReporterVerbosityTest extends TestCase
 
     public function testClustersModeShowsTableButNoSignaturePanel(): void
     {
-        $report = $this->buildReport();
+        $report = $this->syntheticReport(3);
         $out    = $this->buffered();
         (new CliReporter(CliReporter::VERBOSITY_CLUSTERS))->render($report, $out);
         $rendered = $out->fetch();
@@ -59,15 +55,16 @@ final class CliReporterVerbosityTest extends TestCase
 
     public function testFullModeIsTheDefault(): void
     {
-        $report = $this->buildReport();
+        $report = $this->syntheticReport(3);
         $out    = $this->buffered();
         (new CliReporter())->render($report, $out);
         $rendered = $out->fetch();
         $this->assertStringContainsString('summary  ', $rendered);
-        // Full-mode-only sections (only present when there are clusters)
-        if (count($report->clusters) > 0) {
-            $this->assertStringContainsString('Cluster #', $rendered);
-        }
+        // output-S56b: the retired pipeline fixture MIGHT have ranked to
+        // zero clusters (the old arm wrapped this in a conditional); the
+        // synthetic report carries 3 clusters by construction, so the
+        // full-mode-only section is now pinned unconditionally.
+        $this->assertStringContainsString('Cluster #', $rendered);
     }
 
     public function testEmptyReportRendersClean(): void
@@ -111,9 +108,9 @@ final class CliReporterVerbosityTest extends TestCase
     /** Pre-0.6 producers pass null counters: the historical surface is untouched. */
     public function testLegacyNullReportKeepsOriginalSurface(): void
     {
-        // buildReport() constructs its Report with the 5-arg legacy shape
+        // syntheticReport() constructs its Report with the 5-arg legacy shape
         // (counters null) and carries real clusters, so the trailer runs.
-        $report = $this->buildReport();
+        $report = $this->syntheticReport(3);
         $out = $this->buffered();
         (new CliReporter(CliReporter::VERBOSITY_SUMMARY_ONLY))->render($report, $out);
         $rendered = $out->fetch();
@@ -216,28 +213,5 @@ final class CliReporterVerbosityTest extends TestCase
     {
         $out = new BufferedOutput(OutputInterface::VERBOSITY_NORMAL, decorated: false);
         return $out;
-    }
-
-    private function buildReport(): Report
-    {
-        $config = new Config(
-            paths: [__DIR__ . '/../../Fixtures/sql'],
-            exclude: Config::defaults([])->exclude,
-            lazyAst: false,
-        );
-        $state = new PipelineState($config);
-        $out   = new NullOutput();
-        (new ScanningStage())->run($state, $out);
-        (new PreprocessStage(useCache: false))->run($state, $out);
-        (new ClusterStage(exactOnly: true))->run($state, $out);
-        (new RefactorStage(useCache: false))->run($state, $out);
-
-        return new Report(
-            files: count($state->files),
-            blocks: count($state->blocks),
-            parseErrors: $state->parseErrors,
-            clusters: (new Ranker($config->minClusterImpact))->rank($state->clusters),
-            config: $config,
-        );
     }
 }
