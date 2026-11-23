@@ -226,7 +226,7 @@ once-S13	45	once-S17,once-S18,once-S24,once-S39,once-S41,once-S53,once-S57,once-
 output-S41	90	output-S30,output-S38	src/Reporting/JsonReporter.php;tests/Unit/Reporting/	done
 output-S42	75	output-S34,output-S38,output-S41	src/Pipeline/Stages/ReportStage.php;src/Reporting/ClusterScope.php;src/Reporting/JsonReporter.php;src/Reporting/Ranker.php;src/Reporting/SafetyScorer.php	done
 output-S52	90	output-S44b	src/Cli/Command.php;src/Refactor/ApplyExtractor.php	done
-once-S101	30	output-S02,output-S03,output-S05,output-S20,output-S52	src/Reporting/JsonReporter.php;src/Reporting/PrometheusReporter.php;src/Reporting/TimeseriesReporter.php;src/Util/PathCanonical.php;tests/Unit/Reporting/	running
+once-S101	30	output-S02,output-S03,output-S05,output-S20,output-S52	src/Reporting/JsonReporter.php;src/Reporting/PrometheusReporter.php;src/Reporting/TimeseriesReporter.php;src/Util/PathCanonical.php;tests/Unit/Reporting/	done
 output-S39	120	output-S27,output-S38	src/Reporting/HtmlReporter.php;tests/Unit/Reporting/HtmlReporterTest.php	done
 output-S40	120	output-S39	src/Reporting/HtmlReporter.php;tests/Unit/Reporting/HtmlReporterTest.php	done
 once-S60	45	output-S18,output-S40	src/Reporting/CheckstyleReporter.php;src/Reporting/HtmlReporter.php;src/Reporting/PlantumlReporter.php;tests/Unit/Reporting/CheckstyleReporterTest.php;tests/Unit/Reporting/GraphReportersTest.php;tests/Unit/Reporting/HtmlReporterTest.php	done
