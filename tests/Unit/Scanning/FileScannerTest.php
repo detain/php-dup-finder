@@ -9,6 +9,7 @@ use Phpdup\Util\PathCanonical;
 use Phpdup\Cli\Command;
 use Symfony\Component\Console\Application;
 use Symfony\Component\Console\Tester\CommandTester;
+use Symfony\Component\Console\Output\OutputInterface;
 
 final class FileScannerTest extends TestCase
 {
@@ -1678,6 +1679,67 @@ final class FileScannerTest extends TestCase
         $this->assertSame(0, $exit, 'display was: ' . $display);
         $this->assertStringNotContainsString('path(s) skipped', $display);
         $this->assertStringNotContainsString('matched no path', $display);
+    }
+
+    public function testS37ParseFailureVerboseNamesFileAndMessage(): void
+    {
+        // once-080 acceptance leg: the count was always visible; the WHY was
+        // discarded at the worker boundary. --verbose must name the file and
+        // carry the parser's REAL message — and the default verbosity must
+        // stay count-only (the arm is verbosity-gated, not spam).
+        $dir = sys_get_temp_dir() . '/phpdup-s37-tree-' . getmypid() . '-' . spl_object_id($this);
+        $this->assertNotFalse(mkdir($dir, 0777, true));
+        file_put_contents($dir . '/broken.php', "<?php\nfunction a() { \$x = ;; }\n");
+        file_put_contents($dir . '/ok.php', "<?php\nfunction ok() { return 1; }\n");
+
+        $quiet = $this->s34CommandTester();
+        $exit = $quiet->execute(['paths' => [$dir], '--no-cache' => true]);
+        $this->assertSame(0, $exit, 'display was: ' . $quiet->getDisplay());
+        $this->assertStringContainsString('1 parse errors', $quiet->getDisplay());
+        $this->assertStringNotContainsString('parse failure', $quiet->getDisplay(), 'default verbosity stays count-only');
+
+        $loud = $this->s34CommandTester();
+        $exit = $loud->execute(
+            ['paths' => [$dir], '--no-cache' => true],
+            ['verbosity' => OutputInterface::VERBOSITY_VERBOSE],
+        );
+        $this->assertSame(0, $exit, 'display was: ' . $loud->getDisplay());
+        $display = $loud->getDisplay();
+        $this->assertStringContainsString('phpdup: parse failure ', $display);
+        $this->assertStringContainsString('broken.php', $display);
+        $this->assertStringContainsString('Syntax error', $display, 'the real nikic/php-parser message must ride the line, not a placeholder');
+        $this->assertStringNotContainsString('ok.php:', $display, 'only failing files are listed');
+    }
+
+    public function testS37WarmReplayDisclosesStaleRangesE2E(): void
+    {
+        // once-081 CLI-visible leg: a run that replays whole clusters from
+        // the cluster cache says so — because the replayed members' line
+        // ranges came from the SAVING run's bytes. Cold run must NOT show
+        // the notice (the arm is conditional on clustersReplayed). The
+        // cache lives OUTSIDE the scanned tree: an in-root cache would
+        // correctly trip the engine-006 trust gate and never warm-replay.
+        $dir = sys_get_temp_dir() . '/phpdup-s37-tree-' . getmypid() . '-' . spl_object_id($this);
+        $this->assertNotFalse(mkdir($dir . '/cache', 0777, true));
+        $this->assertNotFalse(mkdir($dir . '/tree', 0777, true));
+        $clone = "<?php\nfunction %sName(\$to, \$subj) { \$h = mail_header(\$to); \$b = body(\$subj); transport()->queue(\$h, \$b); audit(\"mail\", [\$to, \$subj]); return true; }\n";
+        file_put_contents($dir . '/tree/a.php', sprintf($clone, 'send'));
+        file_put_contents($dir . '/tree/b.php', sprintf($clone, 'post'));
+        file_put_contents($dir . '/phpdup.json', json_encode(['cache_dir' => $dir . '/cache']));
+
+        $first = $this->s34CommandTester();
+        $exit = $first->execute(['paths' => [$dir . '/tree'], '--config' => $dir . '/phpdup.json']);
+        $this->assertSame(0, $exit, 'display was: ' . $first->getDisplay());
+        $this->assertStringContainsString('1 clusters', $first->getDisplay(), 'premise: the corpus clusters');
+        $this->assertStringNotContainsString('clusters replayed', $first->getDisplay(), 'a cold run never claims replay');
+
+        $second = $this->s34CommandTester();
+        $exit = $second->execute(['paths' => [$dir . '/tree'], '--config' => $dir . '/phpdup.json']);
+        $this->assertSame(0, $exit, 'display was: ' . $second->getDisplay());
+        $this->assertStringContainsString(
+            'phpdup: clusters replayed from the cluster cache — member line ranges are from the saving run, not re-derived from current bytes',
+            $second->getDisplay(),
+        );
     }
 
     /**
