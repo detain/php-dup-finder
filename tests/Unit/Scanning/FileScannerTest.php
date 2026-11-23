@@ -752,6 +752,12 @@ final class FileScannerTest extends TestCase
         foreach (glob(sys_get_temp_dir() . '/phpdup-redos-' . getmypid() . '-*') ?: [] as $dir) {
             self::purgeTree($dir);
         }
+        // once-S37: locked-FILE scratch trees — release the chmod-000 file
+        // before purging, same posture as the unreadable-tree loops above.
+        foreach (glob(sys_get_temp_dir() . '/phpdup-s37-tree-' . getmypid() . '-*') ?: [] as $dir) {
+            @chmod($dir . '/blocked.php', 0644);
+            self::purgeTree($dir);
+        }
         // once-S34: tmp git repos built by the diff-cohort tests.
         foreach ($this->s34Dirs as $dir) {
             if (is_dir($dir)) {
@@ -1480,5 +1486,221 @@ final class FileScannerTest extends TestCase
             $tester->getDisplay(),
             'a git output path carrying markup must arrive literally, never as style',
         );
+    }
+
+    // ── once-S37 — php-dup-finder-once-041 / once-080 / once-081 ──────────
+    //    honest scan signals: missing roots and unreadable FILES speak on
+    //    skipNotes(), a nonexistent analyze path is refused at admission
+    //    (exit 2, never silent-zero), and user exclude globs are watched so
+    //    a typo says so ONCE instead of quietly un-hiding the tree.
+
+    public function testS37MissingScanRootIsNotedNotSilent(): void
+    {
+        $missing = sys_get_temp_dir() . '/phpdup-s37-absent-' . getmypid() . '-' . spl_object_id($this);
+        $this->assertFileDoesNotExist($missing);
+
+        $scanner = new FileScanner([], warnOnSkip: false);
+        $files = iterator_to_array($scanner->scan($missing), false);
+
+        $this->assertSame([], $files, 'a missing root yields nothing…');
+        $notes = $scanner->skipNotes();
+        $this->assertCount(1, $notes, '…and says so once, in the resolveDiffCohort dialect');
+        $this->assertSame('scan root ' . $missing . ' does not exist', $notes[0]);
+    }
+
+    public function testS37ExistingNonPhpFileRootStaysSilent(): void
+    {
+        // The decline half of the branch: notes.txt EXISTS and is a file —
+        // the scanner's PHP-file dialect simply declines it. That is a
+        // scoping decision, not an unusable path: no note, ever. (A pin
+        // against the tempting-but-wrong `else` in place of `elseif`.)
+        $dir = sys_get_temp_dir() . '/phpdup-s37-tree-' . getmypid() . '-' . spl_object_id($this);
+        $this->assertNotFalse(mkdir($dir, 0777, true));
+        file_put_contents($dir . '/notes.txt', "not php\n");
+
+        $scanner = new FileScanner([], warnOnSkip: false);
+        $files = iterator_to_array($scanner->scan($dir . '/notes.txt'), false);
+
+        $this->assertSame([], $files);
+        $this->assertSame([], $scanner->skipNotes());
+    }
+
+    public function testS37UnreadableFileIsSkippedWithNote(): void
+    {
+        $dir = $this->lockedFileTree();
+
+        $scanner = new FileScanner([], warnOnSkip: false);
+        $files = iterator_to_array($scanner->scan($dir), false);
+
+        $basenames = array_map('basename', $files);
+        $this->assertContains('readable.php', $basenames);
+        $this->assertContains('nested.php', $basenames, 'the walk continues past the blocked file');
+        $this->assertNotContains('blocked.php', $basenames, 'an unreadable file never reaches the pipeline — the raw read-warning leak (QA-M8) is closed at the walk');
+        $this->assertNotNull(
+            $this->noteFor($scanner->skipNotes(), '/blocked.php (file is not readable)'),
+            'the skip rides the same honest channel as directory skips',
+        );
+    }
+
+    public function testS37ExcludedUnreadableFileIsNotNoted(): void
+    {
+        // Branch-order pin: an excluded file was never a candidate, so the
+        // readability guard must sit AFTER the exclude verdict — otherwise
+        // `**/blocked.php` would turn a deliberate exclusion into skip noise.
+        $dir = $this->lockedFileTree();
+
+        $scanner = new FileScanner(['**/blocked.php'], warnOnSkip: false);
+        $files = iterator_to_array($scanner->scan($dir), false);
+
+        $this->assertNotContains('blocked.php', array_map('basename', $files));
+        $this->assertSame([], $scanner->skipNotes());
+    }
+
+    public function testS37InertWatchedPatternWarnsOnce(): void
+    {
+        $dir = $this->lockedFileTree();
+        chmod($dir . '/blocked.php', 0644); // release: this pin is about the census
+
+        $scanner = new FileScanner(['no/such/**'], warnOnSkip: false);
+        $scanner->watchExcludePatterns(['no/such/**']);
+        iterator_to_array($scanner->scan($dir), false);
+
+        $notes = $scanner->inertWatchPatterns();
+        $this->assertCount(1, $notes, 'a never-matched watched pattern is reported');
+        $this->assertSame('exclude pattern no/such/** matched no path in this scan (typo?)', $notes[0]);
+        $this->assertSame($notes[0], $scanner->skipNotes()[count($scanner->skipNotes()) - 1], 'the warning also rides the skipNotes channel');
+        $this->assertSame([], $scanner->inertWatchPatterns(), 'report-once: later drains stay quiet');
+    }
+
+    public function testS37MatchedWatchedPatternStaysSilent(): void
+    {
+        $dir = $this->lockedFileTree();
+        chmod($dir . '/blocked.php', 0644);
+
+        $scanner = new FileScanner(['**/deep/**'], warnOnSkip: false);
+        $scanner->watchExcludePatterns(['**/deep/**']);
+        $files = iterator_to_array($scanner->scan($dir), false);
+
+        $this->assertNotContains('nested.php', array_map('basename', $files), 'the watched pattern is live: it really excludes');
+        $this->assertSame([], $scanner->inertWatchPatterns());
+    }
+
+    public function testS37UnwatchedRunNeverCensuses(): void
+    {
+        // Stock-defaults exemption by construction: ScanningStage never
+        // watches the built-in globs, and an un-armed scanner stays mute
+        // even when its patterns match nothing.
+        $dir = $this->lockedFileTree();
+        chmod($dir . '/blocked.php', 0644);
+
+        $scanner = new FileScanner(['no/such/**'], warnOnSkip: false);
+        iterator_to_array($scanner->scan($dir), false);
+
+        $this->assertSame([], $scanner->inertWatchPatterns());
+        $this->assertSame([], $scanner->skipNotes());
+    }
+
+    public function testS37FileOnlyRootSuppressesCensus(): void
+    {
+        // An un-walked tree cannot prove a pattern inert: the file-root
+        // path never enters the walk, so no witnesses accrue.
+        $dir = $this->lockedFileTree();
+        chmod($dir . '/blocked.php', 0644);
+
+        $scanner = new FileScanner(['no/such/**'], warnOnSkip: false);
+        $scanner->watchExcludePatterns(['no/such/**']);
+        $files = iterator_to_array($scanner->scan($dir . '/readable.php'), false);
+
+        $this->assertSame([$dir . '/readable.php'], $files);
+        $this->assertSame([], $scanner->inertWatchPatterns());
+    }
+
+    public function testS37MissingPathAdmissionExits2BeforePipeline(): void
+    {
+        // The acceptance shape of once-041 (U-05/QA-M1): /nope used to run
+        // 'scanning 1 path(s) → 0 files' and exit 0 — a clean-looking
+        // nothing CI would trust. Now the door refuses before any stage.
+        $missing = sys_get_temp_dir() . '/phpdup-s37-absent-' . getmypid() . '-' . spl_object_id($this);
+        $this->assertFileDoesNotExist($missing);
+
+        $tester = $this->s34CommandTester();
+        $exit = $tester->execute(['paths' => [$missing]], ['capture_stderr_separately' => true]);
+
+        $combined = $tester->getErrorOutput() . $tester->getDisplay();
+        $this->assertSame(2, $exit, 'display was: ' . $combined);
+        $this->assertStringContainsString('phpdup: path not found: ' . $missing, $combined);
+        $this->assertStringNotContainsString('scanning ', $combined, 'the refusal is the run\'s last word: the pipeline never started');
+    }
+
+    public function testS37MissingPathAdmissionEchoesMarkupNameLiterally(): void
+    {
+        // The admission echo carries raw argv bytes — shell-S34 law: an
+        // <error>-shaped path must arrive literal, not as live markup.
+        $missing = sys_get_temp_dir() . '/phpdup-s37-p<error>wn-' . getmypid();
+        $this->assertFileDoesNotExist($missing);
+
+        $tester = $this->s34CommandTester();
+        $exit = $tester->execute(['paths' => [$missing]], ['capture_stderr_separately' => true]);
+
+        $combined = $tester->getErrorOutput() . $tester->getDisplay();
+        $this->assertSame(2, $exit, 'display was: ' . $combined);
+        $this->assertStringContainsString('path not found: ' . $missing, $combined);
+    }
+
+    public function testS37TypoExcludeAndSkipCensusSurfaceAtDefaultVerbosity(): void
+    {
+        $dir = $this->lockedFileTree();
+        $config = $dir . '/phpdup.json';
+        file_put_contents($config, json_encode(['exclude' => ['no/such-typo/**']]));
+
+        $tester = $this->s34CommandTester();
+        $exit = $tester->execute(['paths' => [$dir], '--config' => $config, '--no-cache' => true]);
+
+        $display = $tester->getDisplay();
+        $this->assertSame(0, $exit, 'display was: ' . $display);
+        $this->assertStringContainsString('1 exclude pattern(s) matched no path — see warnings above', $display);
+        $this->assertStringContainsString('1 path(s) skipped (unreadable, missing, or symlink containment)', $display);
+        $this->assertStringContainsString('scanning 1 path(s) →', $display, 'the census line precedes the summary; the summary stays the last scan word');
+    }
+
+    public function testS37CleanRunEmitsNoCensusLine(): void
+    {
+        // Conditional-only posture (S87 law): with every path readable and
+        // no user globs, the scan census adds NOTHING — the byte-exact
+        // output-order pins of every prior era hold.
+        $dir = $this->lockedFileTree();
+        chmod($dir . '/blocked.php', 0644);
+
+        $tester = $this->s34CommandTester();
+        $exit = $tester->execute(['paths' => [$dir], '--no-cache' => true]);
+
+        $display = $tester->getDisplay();
+        $this->assertSame(0, $exit, 'display was: ' . $display);
+        $this->assertStringNotContainsString('path(s) skipped', $display);
+        $this->assertStringNotContainsString('matched no path', $display);
+    }
+
+    /**
+     * Scratch tree root/{readable.php, blocked.php (chmod-000 FILE),
+     * deep/nested.php}. Skips when the effective user still reads the
+     * blocked file (running as root) — the file mate of lockedTree().
+     */
+    private function lockedFileTree(): string
+    {
+        $dir = sys_get_temp_dir() . '/phpdup-s37-tree-' . getmypid() . '-' . spl_object_id($this);
+        if (!is_dir($dir)) {
+            mkdir($dir . '/deep', 0777, true);
+        }
+        $php = "<?php\nfunction probe() { return 1; }\n";
+        file_put_contents($dir . '/readable.php', $php);
+        file_put_contents($dir . '/blocked.php', $php);
+        file_put_contents($dir . '/deep/nested.php', "<?php\nfunction nestedProbe() { return 2; }\n");
+        chmod($dir . '/blocked.php', 0000);
+        clearstatcache(true, $dir . '/blocked.php');
+        if (is_readable($dir . '/blocked.php')) {
+            chmod($dir . '/blocked.php', 0644);
+            $this->markTestSkipped('cannot produce a real read refusal on a file for this user (running as root?)');
+        }
+        return $dir;
     }
 }

@@ -133,6 +133,44 @@ longer a bare `clean.`: it reads
 comparable.` so a corpus that never entered the comparison cannot report
 silent success.
 
+#### Scan signals: skips, exclude typos, parse failures
+
+The verdict line above refuses to launder a degraded *corpus* (once-S24);
+the scan stage now refuses to launder degraded *inputs* (once-S37):
+
+- **Skipped paths.** Every path the scanner could not use — an unreadable
+  file or directory, a symlink whose target escapes the tree — earns one
+  `phpdup: warning:` line on STDERR and lands on the scan-notes channel
+  (`PipelineState::$scanNotes`; plan §37 books the same channel for later
+  report consumers). After the walk, one census line at DEFAULT verbosity
+  names the totals — `phpdup N path(s) skipped (unreadable, missing, or
+  symlink containment)` — so a partial scan is visible without `--verbose`.
+  A clean run emits neither the notes nor the census line.
+- **Nonexistent paths are refused up front.** A scan path that is neither a
+  directory nor a file exits `2` before the pipeline starts with one
+  `phpdup: path not found:` line (see *Exit codes*); the silent-zero shape
+  is gone. A path that exists but cannot be read stays a *noted skip* — the
+  run legitimately continues with the paths that do work.
+- **Exclude typos.** Every exclude glob the user owns — config-file,
+  framework-profile and CLI-override-dict globs, not the built-in defaults,
+  which most trees legitimately never match — is watched across the walk: a
+  pattern that matched no path anywhere in the scan is reported once,
+  `exclude pattern X matched no path in this scan (typo?)`, and counted in
+  the census line. Per-directory `.phpdup.json` exclude lists keep their own
+  ownership story and are not typo-censused here.
+- **Parse failures.** The summary counts them (`N parse errors`); under
+  `--verbose` the run additionally lists each failing file with the parser's
+  real message — up to 50 lines, then one `… and N more parse failure(s).`
+  fold — instead of discarding the *why* at the worker boundary.
+
+The JSON summary fields for these channels
+(`summary.scan_notes[]`, `summary.parse_failures[]`,
+`summary.clusters_replayed`) ride the schema-1.8 carrier threading and are
+not in the payload yet; the CLI surface above is what ships. A warm run that
+replayed whole clusters from the cluster cache now says so at default
+verbosity (`phpdup: clusters replayed from the cluster cache — …`), because
+such a report's member line ranges came from the saving run's bytes.
+
 ### Runtime
 
 | Option                                     | Default     | Description                                                                                            |
@@ -347,7 +385,7 @@ first line of the zsh dump.
 |------|------------------------------------------------------------------------------------|
 | `0`  | Successful run. **Note:** `analyze` does NOT exit non-zero when clusters are found (unless CI-gate thresholds are set). Gate CI on the JSON report — an empty `clusters` array means clean. |
 | `1`  | Internal error (uncaught exception, reporter failure, etc.).                       |
-| `2`  | Invalid input: missing required argument, unknown shell for `completion`, schema-validation failure for `--validate-config`, a non-numeric or out-of-domain value for a numeric option (e.g. `--min-block-size abc`, `--similarity 1.5`, `--limit abc`, `--min-safety 2.0`, `--max-memory banana`, `--optional-blocks-containment hot`), an invalid choice for `--stage`, `--pager` or `--theme`, a non-boolean value for `--dry-run`, etc. |
+| `2`  | Invalid input: missing required argument, unknown shell for `completion`, schema-validation failure for `--validate-config`, a non-numeric or out-of-domain value for a numeric option (e.g. `--min-block-size abc`, `--similarity 1.5`, `--limit abc`, `--min-safety 2.0`, `--max-memory banana`, `--optional-blocks-containment hot`), an invalid choice for `--stage`, `--pager` or `--theme`, a non-boolean value for `--dry-run`, a scan path that does not exist (`phpdup analyze /nope` is refused with one `phpdup: path not found:` line BEFORE the pipeline — never the old clean-looking exit 0 over `0 files`), etc. |
 | `3`  | CI gate triggered: `--fail-on-impact N` tripped (maximum single-cluster impact ≥ N — same canonical formula as the GitHub action's `fail-on-impact` input) or `--max-clusters N` tripped (cluster count > N). The tripped gate is named in the output. |
 | `4`  | CI gate triggered: `--baseline FILE` was provided, FILE exists, and new duplicate clusters were found that were not present in the baseline. |
 
