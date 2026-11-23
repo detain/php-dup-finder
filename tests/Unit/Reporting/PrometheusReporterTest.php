@@ -8,17 +8,10 @@ use Phpdup\Cli\Config;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
 use Phpdup\Parsing\AstParser;
-use Phpdup\Pipeline\PipelineState;
-use Phpdup\Pipeline\Stages\ClusterStage;
-use Phpdup\Pipeline\Stages\PreprocessStage;
-use Phpdup\Pipeline\Stages\RefactorStage;
-use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Reporting\PrometheusReporter;
-use Phpdup\Reporting\Ranker;
 use Phpdup\Reporting\Report;
 use Phpdup\Util\ControlText;
 use Phpdup\Util\LineRange;
-use Symfony\Component\Console\Output\NullOutput;
 
 final class PrometheusReporterTest extends TestCase
 {
@@ -37,10 +30,25 @@ final class PrometheusReporterTest extends TestCase
         $this->assertStringNotContainsString('phpdup_kind_blocks', $text);
     }
 
+    /**
+     * php-dup-finder-output-036 (output-S56a migration): this arm used to run
+     * the four pipeline stages over tests/Fixtures/sql. Per the AGENTS.md
+     * reporter-test convention it now consumes a hand-built report; all six
+     * shape vectors (HELP line, the scalar sample regexes, and the
+     * output-026 aggregate family regexes) carry across unchanged.
+     */
     public function testFixtureReportEmitsNonZeroClusterCount(): void
     {
-        $report = $this->buildReport();
-        $text   = (new PrometheusReporter())->build($report);
+        $text = (new PrometheusReporter())->build(
+            new Report(
+                files: 4, blocks: 5, parseErrors: 0,
+                clusters: [
+                    $this->cluster('F0000000000000031', 150, ['method', 'function'], ['sql-builder']),
+                    $this->cluster('F0000000000000032', 10, ['class'], []),
+                ],
+                config: Config::defaults([]),
+            ),
+        );
 
         $this->assertStringContainsString('# HELP phpdup_clusters_total', $text);
         $this->assertMatchesRegularExpression('/^phpdup_clusters_total \d+$/m', $text);
@@ -70,11 +78,27 @@ final class PrometheusReporterTest extends TestCase
      * the by-severity/by-kind aggregates replace it; per-cluster detail
      * lives in JSON/HTML instead, and NO flag re-enables the id series
      * (the plan ruling recorded on output-S20).
+     *
+     * php-dup-finder-output-036 (output-S56a migration): the retired
+     * sql-fixture pipeline run is replaced by a hand-built report spanning
+     * ALL FOUR Severity::forImpact tiers — strictly wider label-domain
+     * coverage than the fixture supplied, and the tier census is now pinned
+     * exhaustively as well as subset-wise (disclosed strengthening).
      */
     public function testPerClusterIdSeriesReplacedByBoundedAggregates(): void
     {
-        $report = $this->buildReport();
-        $text   = (new PrometheusReporter())->build($report);
+        $text = (new PrometheusReporter())->build(
+            new Report(
+                files: 6, blocks: 7, parseErrors: 0,
+                clusters: [
+                    $this->cluster('F0000000000000041', 150, ['method'], ['sql-builder']),        // High
+                    $this->cluster('F0000000000000042', 60, ['function'], ['controller-action']), // Medium
+                    $this->cluster('F0000000000000043', 25, ['class'], []),                       // Low
+                    $this->cluster('F0000000000000044', 10, ['method', 'function'], []),          // Info
+                ],
+                config: Config::defaults([]),
+            ),
+        );
 
         $this->assertStringNotContainsString('phpdup_cluster_impact', $text);
         $this->assertStringNotContainsString('{id=', $text);
@@ -85,6 +109,10 @@ final class PrometheusReporterTest extends TestCase
         $severity = $this->labelValues($text, 'phpdup_severity_clusters');
         $this->assertNotEmpty($severity);
         $this->assertSame([], array_diff(array_keys($severity), ['High', 'Medium', 'Low', 'Info']));
+        $tiers = array_keys($severity);
+        sort($tiers);
+        $this->assertSame(['High', 'Info', 'Low', 'Medium'], $tiers,
+            'the hand-built corpus walks the whole four-tier severity domain');
         $duplicates = $this->scalarGauge($text, 'phpdup_duplicates_total');
         $kindSum    = 0;
         foreach ($this->labelValues($text, 'phpdup_kind_blocks') as $n) {
@@ -165,9 +193,25 @@ final class PrometheusReporterTest extends TestCase
 
     // ── once-S101 (php-dup-finder-once-126): strict exposition re-verify ────
 
+    /**
+     * php-dup-finder-output-036 (output-S56a migration): the sql-fixture
+     * pipeline run is replaced by a hand-built report exercising all three
+     * labeled families at once; the strict grammar parse and the exhaustive
+     * label-name census (once-S101's strongest id-label guard) carry across
+     * untouched — a resurrected id series would surface in this very census.
+     */
     public function testFullExpositionParsesUnderStrictGrammarWithoutIdLabels(): void
     {
-        $text = (new PrometheusReporter())->build($this->buildReport());
+        $text = (new PrometheusReporter())->build(
+            new Report(
+                files: 4, blocks: 5, parseErrors: 0,
+                clusters: [
+                    $this->cluster('F0000000000000051', 150, ['method', 'function'], ['sql-builder']),
+                    $this->cluster('F0000000000000052', 10, ['class'], ['controller-action']),
+                ],
+                config: Config::defaults([]),
+            ),
+        );
         $this->assertExpositionGrammar($text);
 
         // Cardinality law (output-026, default re-verified by output-S20):
@@ -184,7 +228,7 @@ final class PrometheusReporterTest extends TestCase
                 }
             }
         }
-        $this->assertNotEmpty($labelNames, 'the fixture corpus must exercise the labeled families');
+        $this->assertNotEmpty($labelNames, 'the hand-built corpus must exercise the labeled families');
         $found = array_keys($labelNames);
         sort($found);
         $this->assertSame(['kind', 'severity', 'tag'], $found);
@@ -322,29 +366,6 @@ final class PrometheusReporterTest extends TestCase
             files: 2, blocks: 2, parseErrors: 0,
             clusters: [$cluster],
             config: Config::defaults([]),
-        );
-    }
-
-    private function buildReport(): Report
-    {
-        $config = new Config(
-            paths: [__DIR__ . '/../../Fixtures/sql'],
-            exclude: Config::defaults([])->exclude,
-            lazyAst: false,
-        );
-        $state = new PipelineState($config);
-        $out   = new NullOutput();
-        (new ScanningStage())->run($state, $out);
-        (new PreprocessStage(useCache: false))->run($state, $out);
-        (new ClusterStage(exactOnly: true))->run($state, $out);
-        (new RefactorStage(useCache: false))->run($state, $out);
-
-        return new Report(
-            files: count($state->files),
-            blocks: count($state->blocks),
-            parseErrors: $state->parseErrors,
-            clusters: (new Ranker($config->minClusterImpact))->rank($state->clusters),
-            config: $config,
         );
     }
 }
