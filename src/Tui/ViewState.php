@@ -296,6 +296,35 @@ final class ViewState
     }
 
     /**
+     * Singular-at-one count phrase for a prose headline surface — the local
+     * door for the once-120 U-11 grammar law (once-S96). {@see \Phpdup\Util\CountPhrase}
+     * is the canonical home of this rule (3af5499), but it carries only
+     * files(); the cluster/block nouns the finish state renders are outside
+     * this step's locks, so the identical law is applied here rather than
+     * silently violating it. Labelled columnar lines keep fixed header nouns
+     * and stay plural — this serves the headline banner and verdict only.
+     *
+     * @param int    $count the number in front of the noun
+     * @param string $noun  singular noun, e.g. 'cluster'
+     */
+    public static function countNoun(int $count, string $noun): string
+    {
+        return sprintf('%d %s', $count, $count === 1 ? $noun : $noun . 's');
+    }
+
+    /** "N cluster(s)" headline phrase, singular exactly at one (once-120 U-11). */
+    public static function clusters(int $count): string
+    {
+        return self::countNoun($count, 'cluster');
+    }
+
+    /** "N block(s)" headline phrase, singular exactly at one (once-120 U-11). */
+    public static function blocks(int $count): string
+    {
+        return self::countNoun($count, 'block');
+    }
+
+    /**
      * Guarded enqueue for the one-line toast queue: the message is
      * display-sanitized and clipped to the current viewport width on the way
      * in, so a scanned path or exception text can never drive the terminal

@@ -764,4 +764,227 @@ final class PhpdupModelTest extends TestCase
         );
         $this->assertTrue($model->viewState->analysisComplete);
     }
+
+    // ── once-S96: finish-state honesty (php-dup-finder-once-120) ─────────────
+
+    /**
+     * once-120 U-07: the elapsed clock must FREEZE at the completion
+     * instant. The old sparkline recomputed wall-time on every paint, so a
+     * finished dashboard counted up forever behind a static banner. Fake
+     * clock via the injected seam (the ticker reads the same door shell-S40
+     * introduced for the RSS throttle): mid-run the figure tracks the clock,
+     * after the final pump it is stamped dead — a ticks-after-done assert in
+     * both the model's own figure and the painted label.
+     */
+    public function testElapsedClockFreezesAtCompletion(): void
+    {
+        $now = 1000.0;
+        $clock = static function () use (&$now): float { return $now; };
+        $model = new PhpdupModel(
+            new PipelineState(Config::defaults([__DIR__])),
+            new ViewState(),
+            TuiRunner::resolveTheme('plain'),
+            static fn(): array => [self::twoStepGenerator(), new PipelineState(Config::defaults([__DIR__]))],
+            $clock,
+        );
+
+        $model->init();
+        $model->onStageEnd(Stage::Clustering); // one measured bar so the elapsed row exists at all
+        $model->update(new StagePumpedMsg());
+        $now = 1042.5; // the run takes 42.5 seconds of fake time
+        $model->update(new StagePumpedMsg());
+        $model->update(new StagePumpedMsg()); // exhausts → completion stamps the clock
+
+        $this->assertTrue($model->viewState->analysisComplete);
+        $this->assertSame(42.5, $model->elapsedSeconds(), 'frozen at the completion instant');
+        $this->assertStringContainsString('elapsed 42.50s', $model->view()->body, 'paint shows the frozen figure');
+
+        $now = 1099.5; // ticking AFTER done is the defect: the run is over, the clock must not follow
+        $this->assertSame(42.5, $model->elapsedSeconds(), 'once-120 U-07: no ticking after completion');
+        $this->assertStringContainsString(
+            'elapsed 42.50s',
+            $model->view()->body,
+            'post-done paints keep the frozen label, never a live ticker over a finished run',
+        );
+    }
+
+    /**
+     * once-120 U-07 companion arms: the freeze must not become a stop — the
+     * ticker still tracks a pumping run — and {@see \Phpdup\Tui\PhpdupModel::beginRun()}
+     * clears the stamp, so a watch-mode restart re-animates honestly.
+     */
+    public function testElapsedTicksWhileRunningAndUnfreezesOnRestart(): void
+    {
+        $now = 1000.0;
+        $clock = static function () use (&$now): float { return $now; };
+        $model = new PhpdupModel(
+            new PipelineState(Config::defaults([__DIR__])),
+            new ViewState(),
+            TuiRunner::resolveTheme('plain'),
+            static fn(): array => [self::twoStepGenerator(), new PipelineState(Config::defaults([__DIR__]))],
+            $clock,
+        );
+
+        $model->init();
+        $model->onStageEnd(Stage::Clustering);
+        $now = 1007.5;
+        $this->assertSame(7.5, $model->elapsedSeconds(), 'mid-run the ticker tracks the clock');
+
+        $model->update(new StagePumpedMsg());
+        $model->update(new StagePumpedMsg());
+        $model->update(new StagePumpedMsg()); // complete → frozen at 7.5
+        $this->assertSame(7.5, $model->elapsedSeconds());
+
+        $now = 1500.0;
+        $model->update(new RestartPipelineMsg(reload: 1)); // beginRun: startedAt = 1500, stamp cleared
+        $now = 1560.0;
+        $this->assertSame(
+            60.0,
+            $model->elapsedSeconds(),
+            'a fresh run un-freezes the ticker — beginRun clears the stamp with the old run',
+        );
+    }
+
+    /**
+     * once-120 U-10: Scanning and Reporting fire onStageEnd() like every
+     * stage but no stage ever MEASURES a timing for them — the old match
+     * defaulted them to 0.0 and drew two permanent fake "instant" bars on
+     * every run. Discriminator at the surface: with only unmeasured stages
+     * ended, the sparkline row (elapsed label) must be absent; a measured
+     * stage brings it back. Under the old code the first arm is red — the
+     * fake bars made the row render.
+     */
+    public function testSparklineBarsOnlyForMeasuredStages(): void
+    {
+        $model = $this->buildModel();
+
+        $model->onStageEnd(Stage::Scanning);
+        $model->onStageEnd(Stage::Reporting);
+        $this->assertStringNotContainsString(
+            'elapsed',
+            $model->view()->body,
+            'once-120 U-10: unmeasured Scanning/Reporting contribute no fake 0.0 bars',
+        );
+
+        $model->onStageEnd(Stage::Clustering); // timings carries a measured value → one honest bar
+        $this->assertStringContainsString('elapsed', $model->view()->body);
+    }
+
+    /**
+     * once-120 U-08 + U-11: the completed run must END ON A VERDICT — the
+     * result sentence with CountPhrase law ("1 cluster found", never
+     * "1 clusters"), and the same headline grammar on the banner. Red under
+     * the old code twice over: no verdict row existed, and the banner wrote
+     * '%d clusters' / '%d blocks' raw. Scope law: the headline surfaces
+     * (banner + verdict) carry prose grammar; the pane cells are labelled
+     * columnar stats, which the CountPhrase doctrine (and the existing
+     * '1 paths' pin) keeps as fixed plural nouns.
+     */
+    public function testCompletionCarriesVerdictSentenceWithSingularGrammar(): void
+    {
+        $lines = explode("\n", $this->buildCompletedModel(1)->view()->body);
+        $banner = $lines[0];
+        $verdictRow = implode("\n", array_filter($lines, static fn(string $l): bool => str_contains($l, '✓')));
+
+        $this->assertStringContainsString('✓ 1 cluster found', $verdictRow, 'once-120 U-08: the result verdict sentence');
+        $this->assertStringNotContainsString('1 clusters', $banner, 'once-120 U-11: no "1 clusters" on the banner');
+        $this->assertStringNotContainsString('1 blocks', $banner, 'once-120 U-11: no "1 blocks" on the banner');
+        $this->assertStringContainsString('· 1 block · 1 cluster', $banner);
+    }
+
+    /** once-120 U-08/U-11 plural + empty arms. */
+    public function testCompletionCarriesVerdictSentencePluralAndEmpty(): void
+    {
+        $this->assertStringContainsString('✓ 3 clusters found', $this->buildCompletedModel(3)->view()->body);
+        $this->assertStringContainsString('no duplicates found', $this->buildCompletedModel(0)->view()->body,
+            'a clean zero run says so instead of silently showing stopped panes');
+        $this->assertStringNotContainsString('0 duplicates found', $this->buildCompletedModel(0)->view()->body);
+    }
+
+    /**
+     * once-S07 exit-seam binding, finish-state side (once-120): a halted run
+     * carries its ✗ panel — the honest verdict sentence must NOT also print,
+     * or the screen dresses a failure up as a clean "0 clusters found".
+     * "Looks clean while exit!=0" is exactly the once-120 class.
+     */
+    public function testHaltCarriesNoVerdictSentence(): void
+    {
+        $model = $this->buildThrowingModel(new \RuntimeException('boom during clustering'));
+        $model->init();
+        $model->update(new StagePumpedMsg());
+        $model->update(new StagePumpedMsg());
+        $model->update(new StagePumpedMsg()); // throws → halt
+
+        $body = $model->view()->body;
+        $this->assertSame(1, $model->exitCode());
+        $this->assertStringContainsString('✗ phpdup', $body, 'halt panel is the honest terminal state');
+        $this->assertStringNotContainsString('✓', $body, 'once-S96: a halted run never dresses up as a clean verdict');
+    }
+
+    /**
+     * once-120 U-09 regression tripwire (GREEN-BY-DESIGN — disclosed, not a
+     * re-fix): once-S61 made every row clip through clipToCells, which ends
+     * a truncated run in an honest ellipsis. No S96 leg may regress it, so
+     * the clipped headline is pinned here at a 20-col viewport.
+     */
+    public function testClippedHeadlineCarriesEllipsis(): void
+    {
+        $model = $this->buildCompletedModel(3);
+        $model->update(new WindowSizeMsg(20, 40));
+
+        $this->assertStringContainsString(
+            '…',
+            $model->view()->body,
+            'once-120 U-09: a truncated headline ends in an ellipsis, never silent loss',
+        );
+    }
+
+    /**
+     * once-S96 finish-state law: the verdict is part of the honest frame,
+     * not an auxiliary — on a row-starved terminal the clamp drops help,
+     * sparkline and status BEFORE it. Red under the old code (no verdict
+     * row existed at all).
+     */
+    public function testVerdictRowSurvivesTheVerticalClamp(): void
+    {
+        $model = $this->buildCompletedModel(2);
+        $model->update(new WindowSizeMsg(80, 1));
+
+        $this->assertStringContainsString(
+            '2 clusters found',
+            $model->view()->body,
+            'the finish verdict is never clamped away — rows may scroll, the truth may not',
+        );
+    }
+
+    /**
+     * Drain a two-step generator to completion with a synthetic corpus of
+     * $clusterCount clusters (plus matching files/blocks so the headline
+     * plural sites are exercised) — the S96 finish-state surface under test.
+     */
+    private function buildCompletedModel(int $clusterCount): PhpdupModel
+    {
+        $model = new PhpdupModel(
+            new PipelineState(Config::defaults([__DIR__])),
+            new ViewState(),
+            TuiRunner::resolveTheme('plain'),
+            static fn(): array => [self::twoStepGenerator(), new PipelineState(Config::defaults([__DIR__]))],
+        );
+
+        $model->init();
+        $model->state->files   = array_fill(0, max(1, $clusterCount), '/tmp/x.php');
+        $model->state->blocks  = array_fill(0, max(1, $clusterCount), new \stdClass());
+        $clusters              = [];
+        for ($i = 0; $i < $clusterCount; $i++) {
+            $clusters[] = $this->fakeCluster('C' . $i);
+        }
+        $model->state->clusters = $clusters;
+
+        $model->update(new StagePumpedMsg());
+        $model->update(new StagePumpedMsg());
+        $model->update(new StagePumpedMsg()); // exhausts → the finish state
+        $this->assertTrue($model->viewState->analysisComplete, 'helper reaches completion');
+
+        return $model;
+    }
 }

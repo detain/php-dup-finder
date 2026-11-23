@@ -39,10 +39,29 @@ final class PhpdupModel implements Model, ProgressListener
 {
     private Spinner $spinner;
 
-    /** @var list<float> stage durations pushed in order, plotted as a Sparkline. */
+    /**
+     * Stage durations pushed in order, plotted as a Sparkline — ONE bar per
+     * stage the pipeline actually measured (once-S96: Scanning and Reporting
+     * fire {@see self::onStageEnd()} like every stage but never write a
+     * {@see PipelineState::$timings} key, so they contribute no bar instead
+     * of the fake 0.0s the old unconditional push drew — php-dup-finder-once-120 U-10).
+     *
+     * @var list<float>
+     */
     private array $stageDurations = [];
 
     private float $startedAt;
+
+    /**
+     * Elapsed seconds frozen at the instant the run ended, or null while it
+     * is still pumping (once-S96, php-dup-finder-once-120 U-07): the old
+     * sparkline recomputed `microtime(true) - startedAt` on EVERY paint, so
+     * a finished dashboard kept counting up behind a static banner — a
+     * clock that lies about a run that is not running. Completion (clean,
+     * halted, or a born-complete Phase-2 boot) stamps the final figure; a
+     * fresh run clears it and the ticker restarts honestly.
+     */
+    private ?float $finishedElapsed = null;
 
     /**
      * Cooperative pipeline iterator — null when the model isn't driving live (Phase 2 mode).
@@ -130,9 +149,14 @@ final class PhpdupModel implements Model, ProgressListener
         ?array $initialRun = null,
     ) {
         $this->spinner         = Spinner::new(SpinnerStyle::miniDot());
-        $this->startedAt       = microtime(true);
         $this->iteratorFactory = $iteratorFactory;
+        // The elapsed ticker runs off the same injectable clock as the RSS
+        // throttle (once-S96): the default closure IS wall time, so every
+        // non-injected model behaves exactly as the old raw-microtime code,
+        // while a test-injected clock can pin the finish-freeze. Assignment
+        // order is load-bearing: startedAt reads through $nowSeconds.
         $this->nowSeconds      = $nowSeconds ?? static fn(): float => microtime(true);
+        $this->startedAt       = ($this->nowSeconds)();
         $this->initialRun      = $initialRun;
     }
 
@@ -145,13 +169,50 @@ final class PhpdupModel implements Model, ProgressListener
     #[\Override]
     public function onStageEnd(Stage $stage): void
     {
+        // once-S96 (php-dup-finder-once-120 U-10): bars for MEASURED stages
+        // only. Scanning and Reporting fire this callback like every stage,
+        // but no stage ever writes a timings key for them — pushing 0.0 for
+        // those drew two permanent fake "instant" bars on every real run.
+        // The null arm draws nothing; a measured 0.0 (e.g. ClusterStage's
+        // cached short-circuit) is an honest real measurement and still
+        // plots.
         $duration = match ($stage) {
-            Stage::Preprocessing => $this->state->timings['preprocess'] ?? 0.0,
-            Stage::Clustering    => $this->state->timings['cluster']    ?? 0.0,
-            Stage::Refactoring   => $this->state->timings['refactor']   ?? 0.0,
-            default              => 0.0,
+            Stage::Preprocessing => $this->state->timings['preprocess'] ?? null,
+            Stage::Clustering    => $this->state->timings['cluster']    ?? null,
+            Stage::Refactoring   => $this->state->timings['refactor']   ?? null,
+            default              => null,
         };
+        if ($duration === null) {
+            return;
+        }
         $this->stageDurations[] = $duration;
+    }
+
+    /**
+     * The elapsed figure the sparkline prints (once-S96, php-dup-finder-once-120
+     * U-07): ticking wall-seconds while a run pumps, FROZEN from the instant
+     * the run ended (clean completion, halt, or born-complete boot) until a
+     * fresh run clears it. Clamped at zero so an injected clock that sits
+     * before {@see self::$startedAt} can never render a negative timer.
+     */
+    public function elapsedSeconds(): float
+    {
+        if ($this->finishedElapsed !== null) {
+            return $this->finishedElapsed;
+        }
+        return max(0.0, ($this->nowSeconds)() - $this->startedAt);
+    }
+
+    /**
+     * Stamp the finish instant onto the elapsed clock. Called at EVERY site
+     * that flips {@see ViewState::$analysisComplete} to true — the three
+     * arms of "a run is over" (clean drain, halt, born-complete Phase-2
+     * boot) all freeze the same way, so no terminal state leaves the ticker
+     * running.
+     */
+    private function freezeElapsed(): void
+    {
+        $this->finishedElapsed = max(0.0, ($this->nowSeconds)() - $this->startedAt);
     }
 
     #[\Override]
@@ -221,8 +282,11 @@ final class PhpdupModel implements Model, ProgressListener
         // No factory means the pipeline ran before the TUI booted (Phase 2
         // mode). once-S72 (php-dup-finder-once-087 A-20): with nothing to
         // pump there is nothing to animate — the idle-burn spinner chain is
-        // no longer armed for a completed run at all.
+        // no longer armed for a completed run at all. once-S96 (once-120
+        // U-07): a born-complete run is over BEFORE it painted, so its
+        // clock is stamped frozen from the first frame.
         $this->viewState->analysisComplete = true;
+        $this->freezeElapsed();
         return Cmd::batch();
     }
 
@@ -292,12 +356,14 @@ final class PhpdupModel implements Model, ProgressListener
             $this->viewState->pushToast('Pipeline error: ' . $e->getMessage());
             $this->iterator = null;
             $this->viewState->analysisComplete = true;
+            $this->freezeElapsed(); // once-S96: a halt ends the run — the clock stops with it
             return [$this, null];
         }
 
         if (!$this->iterator->valid()) {
             $this->iterator = null;
             $this->viewState->analysisComplete = true;
+            $this->freezeElapsed(); // once-S96: completion freezes the elapsed ticker (once-120 U-07)
             return [$this, null];
         }
 
@@ -353,7 +419,8 @@ final class PhpdupModel implements Model, ProgressListener
         $this->iteratorStarted = false;
         $this->state           = $state;
         $this->stageDurations  = [];
-        $this->startedAt       = microtime(true);
+        $this->startedAt       = ($this->nowSeconds)();
+        $this->finishedElapsed = null; // once-S96: a fresh run un-freezes the ticker
         // A fresh run must not inherit the previous run's throttle window —
         // the new dashboard's first progress callback samples immediately.
         $this->lastRssSampleAt = null;
@@ -507,11 +574,17 @@ final class PhpdupModel implements Model, ProgressListener
         $cols = max(1, $this->viewState->cols);
         $rows = max(1, $this->viewState->rows);
 
+        // once-S96 (php-dup-finder-once-120 U-11): every headline count on
+        // this line reads singular exactly at one — "1 file · 1 block ·
+        // 1 cluster", never "1 files/blocks/clusters". files() was already
+        // CountPhrase-routed by the ui-grammar pass; blocks/clusters join
+        // the law here (ViewState door, the CountPhrase verbs are out of
+        // this step's locks — see the report-row).
         $banner = $this->theme->accent->render(ViewState::clipToCells(sprintf(
-            ' phpdup — %s · %d blocks · %d clusters%s',
+            ' phpdup — %s · %s · %s%s',
             CountPhrase::files(count($this->state->files)),
-            count($this->state->blocks),
-            count($this->state->clusters),
+            ViewState::blocks(count($this->state->blocks)),
+            ViewState::clusters(count($this->state->clusters)),
             $this->viewState->analysisComplete ? '' : '   ' . $this->spinner->view(),
         ), $cols));
 
@@ -546,12 +619,26 @@ final class PhpdupModel implements Model, ProgressListener
 
         $help = $this->viewState->helpExpanded ? $this->helpLine($cols) : '';
 
+        // once-S96 (php-dup-finder-once-120 U-08): a completed run must SAY
+        // what it found. The old finish state showed live panes that simply
+        // stopped — no verdict sentence, and a zero-cluster run looked
+        // identical to a run that found dozens. The verdict is the banner's
+        // honest completion twin: CountPhrase-clean, present for BOTH the
+        // result ("N clusters found") and the empty ("no duplicates found")
+        // outcomes. It is gated off on a halt, where the error panel above
+        // already carries the terminal state — a "0 clusters found" verdict
+        // under a crash panel would be the once-120 "looks clean while it
+        // didn't" class this step exists to close.
+        $verdict = ($this->viewState->analysisComplete && $this->pipelineError === null)
+            ? $this->verdictLine($cols)
+            : '';
+
         $paneBlock = $panes->render($cols, $paneRows);
         $compose   = fn(string $status, string $spark, string $helpRow): string =>
             $banner . "\n\n"
             . $errPanel
             . $paneBlock . "\n"
-            . $status . $spark . $detail . $helpRow;
+            . $verdict . $status . $spark . $detail . $helpRow;
 
         $body = $compose($statusLine, $this->renderTimingsSparkline($cols), $help);
 
@@ -566,7 +653,7 @@ final class PhpdupModel implements Model, ProgressListener
         // necessity, disclosed in the census as max($rows, 5 + err rows).
         $errRows = $this->countRows($errPanel);
         $census  = static fn(string $b): int => $b === '' ? 0 : count(explode("\n", rtrim($b, "\n")));
-        $floor   = 5 + $errRows;
+        $floor   = 5 + $errRows + ($verdict !== '' ? 1 : 0); // verdict row is never droppable (once-S96)
         if ($census($body) > max($rows, $floor)) {
             $body = $compose($statusLine, $this->renderTimingsSparkline($cols), '');
         }
@@ -609,6 +696,24 @@ final class PhpdupModel implements Model, ProgressListener
 
         return "  " . $this->theme->info->render($label)
               . '  ' . $this->theme->muted->render($task) . "\n";
+    }
+
+    /**
+     * The finish-state verdict row (once-S96, php-dup-finder-once-120 U-08):
+     * the honest sentence a completed run ends on — singular-at-one grammar
+     * ("1 cluster found"), the empty verdict spelled out ("no duplicates
+     * found") — clipped to the viewport like every other row. The ✓ echo is
+     * the counterpart the halt's ✗ panel already owns, so the two terminal
+     * states read with the same voice (once-S07 exit-seam binding: the
+     * screen and the exit code agree).
+     */
+    private function verdictLine(int $cols): string
+    {
+        $total   = count($this->state->clusters);
+        $verdict = $total === 0
+            ? '  ✓ no duplicates found'
+            : '  ✓ ' . ViewState::clusters($total) . ' found';
+        return $this->theme->info->render(ViewState::clipToCells($verdict, $cols)) . "\n";
     }
 
     /** Tip row, clipped to the viewport (once-070: the 84-col tip never was). */
@@ -716,7 +821,10 @@ final class PhpdupModel implements Model, ProgressListener
         // clamp that clamps: at 40 cols the plot renders 25 cells, not the
         // old floor-inflated 10-on-a-20-col-screen row that never fit
         // anywhere (php-dup-finder-once-070).
-        $elapsedLabel = sprintf('elapsed %5.2fs ', microtime(true) - $this->startedAt);
+        // once-S96 (php-dup-finder-once-120 U-07): the figure is the frozen-
+        // aware elapsed ticker — live while pumping, stamped at completion —
+        // not a raw clock read that kept counting up over a finished run.
+        $elapsedLabel = sprintf('elapsed %5.2fs ', $this->elapsedSeconds());
         if ($cols < 2 + ViewState::displayWidth($elapsedLabel) + 1) {
             return ''; // label + one plot cell cannot coexist on this row
         }
