@@ -6,15 +6,10 @@ namespace Phpdup\Tests\Unit\Reporting;
 use PHPUnit\Framework\TestCase;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Cli\Config;
-use Phpdup\Pipeline\PipelineState;
-use Phpdup\Pipeline\Stages\ClusterStage;
-use Phpdup\Pipeline\Stages\PreprocessStage;
-use Phpdup\Pipeline\Stages\RefactorStage;
-use Phpdup\Pipeline\Stages\ScanningStage;
-use Phpdup\Reporting\Ranker;
+use Phpdup\Extraction\Block;
 use Phpdup\Reporting\Report;
 use Phpdup\Reporting\TimeseriesReporter;
-use Symfony\Component\Console\Output\NullOutput;
+use Phpdup\Util\LineRange;
 
 final class TimeseriesReporterTest extends TestCase
 {
@@ -90,31 +85,52 @@ final class TimeseriesReporterTest extends TestCase
 
         // On the wire the marker is the object's first member — the cheap
         // probe a streaming consumer uses before decoding the rest.
-        $this->assertStringStartsWith('{"schema_version":"2"', $reporter->buildLine($this->buildReport()));
+        // php-dup-finder-output-036 (output-S56a migration): the probe moves
+        // from the retired sql-fixture pipeline run to a hand-built NON-EMPTY
+        // report, so marker position is pinned for a payload with real
+        // cluster fields, not only the empty-report key contract above.
+        $this->assertStringStartsWith('{"schema_version":"2"', $reporter->buildLine($this->syntheticClusterReport()));
     }
 
+    /**
+     * php-dup-finder-output-036 (output-S56a migration of the former
+     * pipeline-driven arm): the record built from a non-empty hand-built
+     * report carries the identical key contract — the marker does not depend
+     * on the synthetic empty-report shortcut above. The cluster-count pin is
+     * now the exact hand-built count instead of the fixture's > 0.
+     */
     public function testFixtureRecordCarriesTheMarkerToo(): void
     {
-        // The pipeline-built record (fixture corpus, real clusters) carries
-        // the identical key contract — the marker does not depend on the
-        // synthetic empty-report shortcut above.
         $record = (new TimeseriesReporter(commitSha: 'test-sha', timestamp: 1700000000))
-            ->buildRecord($this->buildReport());
+            ->buildRecord($this->syntheticClusterReport());
         $this->assertSame('2', $record['schema_version']);
         $this->assertSame('test-sha', $record['commit_sha']);
-        $this->assertGreaterThan(0, $record['clusters']);
+        $this->assertSame(2, $record['clusters']);
     }
 
+    /**
+     * php-dup-finder-output-036 (output-S56a migration of the former
+     * pipeline-driven arm): the pass-through equalities now compare the record
+     * against hard-coded corpus figures — the old form read $report->files
+     * off the very object handed to the emitter, so a broken pass-through
+     * could only bite if both sides moved together. The aggregate legs the
+     * fixture had implicitly exercised now carry exact synthetic pins
+     * (disclosed strengthening).
+     */
     public function testFixtureRecordHasNonZeroClusterCount(): void
     {
-        $report = $this->buildReport();
-        $reporter = new TimeseriesReporter(commitSha: 'test-sha', timestamp: 1700000000);
-        $record = $reporter->buildRecord($report);
+        $record = (new TimeseriesReporter(commitSha: 'test-sha', timestamp: 1700000000))
+            ->buildRecord($this->syntheticClusterReport());
 
-        $this->assertSame(count($report->clusters), $record['clusters']);
-        $this->assertSame($report->files, $record['files']);
-        $this->assertSame($report->blocks, $record['blocks']);
+        $this->assertSame(3, $record['files']);
+        $this->assertSame(7, $record['blocks']);
+        $this->assertSame(2, $record['clusters']);
         $this->assertSame('test-sha', $record['commit_sha']);
+        // Aggregate legs: impacts 15 + 8; member ranges 5+5 and 3+9 lines.
+        $this->assertSame(23, $record['total_impact']);
+        $this->assertSame(22, $record['duplicated_lines']);
+        // ksorted per-tag counters.
+        $this->assertSame(['db-op' => 1, 'sql-builder' => 1], $record['pattern_tags']);
     }
 
     public function testWriteToAppendsLine(): void
@@ -448,27 +464,34 @@ final class TimeseriesReporterTest extends TestCase
     // helpers
     // ------------------------------------------------------------------
 
-    private function buildReport(): Report
+    /**
+     * Hand-built two-cluster report replacing the retired sql-fixture
+     * pipeline run as the wire-shape carrier (AGENTS.md reporter-test
+     * convention: synthetic Cluster + Block instances, no stages):
+     * files 3 / blocks 7, impacts 15 + 8, member line counts 5+5 and 3+9,
+     * one pattern tag per cluster.
+     */
+    private function syntheticClusterReport(): Report
     {
-        $config = new Config(
-            paths: [__DIR__ . '/../../Fixtures/sql'],
-            exclude: Config::defaults([])->exclude,
-            lazyAst: false,
+        $member = static fn(string $file, int $start, int $end): Block => new Block(
+            file: $file,
+            range: new LineRange($start, $end),
+            kind: 'function',
+            namespace: null,
+            class: null,
+            name: 'm',
+            ast: new \PhpParser\Node\Stmt\Nop(),
         );
-        $state = new PipelineState($config);
-        $out   = new NullOutput();
-        (new ScanningStage())->run($state, $out);
-        (new PreprocessStage(useCache: false))->run($state, $out);
-        (new ClusterStage(exactOnly: true))->run($state, $out);
-        (new RefactorStage(useCache: false))->run($state, $out);
 
-        return new Report(
-            files: count($state->files),
-            blocks: count($state->blocks),
-            parseErrors: $state->parseErrors,
-            clusters: (new Ranker($config->minClusterImpact))->rank($state->clusters),
-            config: $config,
-        );
+        $a            = new Cluster('F0000000000000061', [$member('ts-a.php', 1, 5), $member('ts-b.php', 10, 14)], 1.0, true);
+        $a->impact    = 15;
+        $a->patternTags = ['sql-builder'];
+
+        $b            = new Cluster('F0000000000000062', [$member('ts-c.php', 20, 22), $member('ts-c.php', 30, 38)], 0.9, false);
+        $b->impact    = 8;
+        $b->patternTags = ['db-op'];
+
+        return new Report(files: 3, blocks: 7, parseErrors: 0, clusters: [$a, $b], config: Config::defaults([]));
     }
 
     /**
