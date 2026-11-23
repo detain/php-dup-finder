@@ -69,6 +69,28 @@ use Phpdup\Extraction\Block;
  * both the walk and the display text (the first member's own spelling
  * of an agreeing type is what renders), so serial and forked refactor
  * passes derive byte-identical sets by construction.
+ *
+ * Residual disclosed (output-S49b fix1, review r1 M-2): the refusal law
+ * above is sound FOR THE PROMOTION SET but not for the whole cluster.
+ * When this law correctly REFUSES a shared formal — by-reference,
+ * variadic, defaulted, attribute-carrying, flag-divergent, or
+ * name-divergent at that position — yet the shared template body still
+ * REFERENCES that formal, the apply door lands the rewrite anyway and
+ * the abstraction reads the variable FREE: a behavior-changing applied
+ * artifact. Observed in the r1 probes: the BYREF pair `bA/bB(int $x,
+ * int &$acc)` promotes `int $x` and refuses `&$acc` per this law, then
+ * generates `bump($x, $__P0, $acc)` with `$acc` unbound (the original
+ * mutated the caller's reference; the artifact passes null); the
+ * VARIADIC real-CLI case lands `total($count, $threshold, ...$rest)`
+ * with `$rest` unbound and the call sites silently dropping the tail.
+ * Scope correction: the S49a note that "the finding's most pathological
+ * shape cannot reach apply" holds ONLY for ZERO-HOLE clusters (the
+ * entry guard refuses those); any cluster carrying at least one hole
+ * can transport a refused-but-referenced formal into the artifact as a
+ * free variable. The full cure — a door-level template free-variable
+ * soundness scan refusing clusters whose template reads a member formal
+ * bound by neither promotion nor holes — is BANKED as a rider for the
+ * next door-owner lane (CLOSEOUT-BANK), not this lane's scope.
  */
 final class ParamIntersection
 {

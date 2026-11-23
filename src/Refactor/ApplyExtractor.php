@@ -676,6 +676,21 @@ final class ApplyExtractor
         // which names the holes claim (the S49a handoff's silent
         // double-binding class). Member ASTs are current: phase one
         // hydrated every unloaded one from its located declaration node.
+        //
+        // Residual disclosed (output-S49b fix1, review r1 M-2 — see the
+        // ParamIntersection class docblock for the full statement): this
+        // door binds promoted formals, holes and knobs and NOTHING else.
+        // A shared formal the intersection law refuses (by-ref/variadic/
+        // defaulted/attribute/flag/name-divergent) is still read FREE by
+        // the template body whenever that body references it, and the
+        // rewrite lands regardless — behavior-changing applied artifact
+        // (r1's BYREF `&$acc` and VARIADIC `...$rest` probes). The
+        // commit's own negative pin
+        // testDivergingFormalNamesPromoteNothingAtTheCallSites asserts
+        // arity + php -l only and never executes, so it does not cover
+        // this class. The full cure — a door-level free-variable
+        // soundness scan — is BANKED as a rider for the next door-owner
+        // lane (CLOSEOUT-BANK), not this lane's scope.
         $promoted = ParamIntersection::promote(
             $cluster->members,
             SignatureBuilder::renderedHoleVars($cluster),
