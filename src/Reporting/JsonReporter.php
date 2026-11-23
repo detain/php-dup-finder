@@ -483,6 +483,9 @@ final class JsonReporter
         return $this->evidenceFields($rep, $diff, $truncated);
     }
 
+    /**
+     * @return array{member:string,file:string,start:int,end:int,diff:string,truncated:bool}
+     */
     private function evidenceFields(Block $rep, string $diff, bool $truncated): array
     {
         return [
@@ -501,7 +504,11 @@ final class JsonReporter
         return rtrim($text, "\n") . "\n" . $note;
     }
 
-    /** One side's lines in cap()'s grammar (rtrim the terminator, then split). */
+    /**
+     * One side's lines in cap()'s grammar (rtrim the terminator, then split).
+     *
+     * @return list<string>
+     */
     private static function evidenceLines(string $source): array
     {
         return explode("\n", rtrim($source, "\n"));
