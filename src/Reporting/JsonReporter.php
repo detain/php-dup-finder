@@ -95,8 +95,9 @@ final class JsonReporter
                 'clusters'     => count($report->clusters),
                 'duplicated_lines' => $report->totalDuplicatedLines(),
                 'total_impact' => array_sum(array_map(fn(Cluster $c) => $c->impact, $report->clusters)),
-                // File accounting (0.6) — trailing-additive keys, schema
-                // '1.1' → '1.2'. 'files' above keeps its historical meaning
+                // File accounting — trailing-additive keys, schema
+                // '1.1' → '1.2' (the earlier plan-era '(0.6)' label was a
+                // section reference, not a schema version). 'files' above keeps its historical meaning
                 // (files scanned) and 'files_scanned' restates it under an
                 // unambiguous name. null = the producer does not track the
                 // bucket (legacy `new Report(...)` callers such as the
@@ -109,6 +110,9 @@ final class JsonReporter
                 'files_processed'      => $report->processedFiles,
                 'files_without_blocks' => $report->skippedFiles,
             ],
+            // Echo of the run config — key set governed by
+            // JsonSchemaSpec::configShape() (once-S55); the three
+            // deliberately un-echoed knobs are adjudicated there.
             'config' => [
                 'paths'                => $report->config->paths,
                 'min_block_size'       => $report->config->minBlockSize,
@@ -139,7 +143,13 @@ final class JsonReporter
         $reExpressed = $coverage !== null && $coverage > $config->maxHoleCoverage;
         return [
             'id'           => $c->id,
-            'kind'         => $c->members[0]->kind ?? null,
+            // Governed by JsonSchemaSpec::clusterShape() as string|null:
+            // a populated cluster states its block kind, the null case
+            // is an empty member list (defensive — never pipeline
+            // emitted). The explicit guard declares the null by
+            // construction; bytes are identical to the previous
+            // members[0]->kind ?? null for every input.
+            'kind'         => $c->members === [] ? null : $c->members[0]->kind,
             'exact'        => $c->exact,
             'similarity'   => Num::json($c->similarity),
             'confidence'   => Num::json($c->confidence),

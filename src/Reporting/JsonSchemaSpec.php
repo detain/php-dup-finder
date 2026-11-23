@@ -19,6 +19,50 @@ namespace Phpdup\Reporting;
  *
  * Consumers should treat MAJOR mismatches as hard errors and MINOR
  * mismatches as warnings (existing fields still parse).
+ *
+ * GOVERNANCE (once-S55):
+ *
+ *   (a) Byte-governance. The rules above govern the EMITTED PAYLOAD —
+ *       the JSON bytes of {@see JsonReporter::build()} output — not the
+ *       text of this class. Changing a declaration here to admit a
+ *       value the emitter already produces (or can produce defensively
+ *       without notice) is NOT a version event: the bytes are
+ *       unchanged, so no consumer's parse changes. Adding, removing or
+ *       retyping a KEY, or widening what is EMITTED for an existing
+ *       key, IS a version event and takes the bump its rule names.
+ *
+ *   (b) 1.5 exception — retroactive note (once-061 / API-10). 1.5
+ *       widened the element type of `holes[].observed` from string to
+ *       string|null (a structural gap became JSON null instead of the
+ *       '<missing>' impostor string). Under a strict reading of
+ *       "changing a field's type" above that is a MAJOR, and 1.5
+ *       shipped it under MINOR. The widening was the whole intent of
+ *       the release and its justification: no 1.4 consumer could
+ *       branch on the difference (the impostor was junk either way —
+ *       see 1.5's own note below), so the rule's purpose — loud
+ *       rejection of payloads that cannot parse — was never at risk.
+ *       Shipped versions are not rewritten: 1.5 stands as emitted,
+ *       and consumers take `observed: (string|null)*` as the law of
+ *       >= 1.5 payloads. The rule above stays verbatim for FUTURE
+ *       changes: any later element-type or key-type widening is a
+ *       MAJOR. This note is the record that 1.5 was an exception, not
+ *       a precedent.
+ *
+ *   (c) Sentinel admission — holes[].placeholder (once-S55,
+ *       adjudicating output-S51/S57's '__cap' against this shape).
+ *       The retired printable absent sentinel needs no admission:
+ *       since 1.7 it is not a payload value at all (canonicalised to
+ *       null by JsonReporter::isAbsenceRow, see holeShape()); the
+ *       cache-residual '<missing>' is normalised there as well. The
+ *       one printable sentinel that legitimately rides holes[] is
+ *       AntiUnifier::CAP_SENTINEL '__cap': a routed oversized cluster
+ *       whose evidence was never unified carries a single synthetic
+ *       '__cap' row (all-absence, degraded:true) declaring exactly
+ *       that. It is signature-inert (SignatureBuilder skips it) and
+ *       config-relevant only through the cluster's re_expressed
+ *       stance. Consumers must not treat an unknown placeholder as a
+ *       malformed payload; an unfilled '__cap' row means degraded
+ *       evidence, never a parse bug.
  */
 final class JsonSchemaSpec
 {
@@ -107,7 +151,7 @@ final class JsonSchemaSpec
             'phpdup_version'  => 'string',
             'schema_version'  => 'string',  // mirrors SCHEMA_VERSION
             'summary'         => 'object',
-            'config'          => 'object',
+            'config'          => 'object',  // echo of the run config; see configShape()
             'clusters'        => 'list<object>',
             'declared_twins'  => 'list<object>  // item 4.3, trailing (1.3); see declaredTwinShape()',
         ];
@@ -145,7 +189,9 @@ final class JsonSchemaSpec
     }
 
     /**
-     * Shape of the `summary` object (0.6). The legacy `files` key means
+     * Shape of the `summary` object (the four file-accounting keys are
+     * trailing-additive since schema 1.2; the six original keys predate
+     * versioning). The legacy `files` key means
      * "files scanned" and keeps its historical position; `files_scanned`
      * restates it. The three accounting buckets are `int|null`: null is
      * emitted by producers that predate per-bucket tracking (library API,
@@ -172,6 +218,37 @@ final class JsonSchemaSpec
     }
 
     /**
+     * Shape of the `config` echo block. The block states the
+     * configuration the report was produced under, so a consumer can
+     * reproduce the payload from the same inputs. Its key set is
+     * exactly what JsonReporter::build() emits — governed here for the
+     * first time by once-S55; declaring it changes no bytes.
+     *
+     * Three further operator knobs — max_hole_coverage, score_mode and
+     * scope — are deliberately NOT echoed: the config block is a
+     * key-set contract, not a full dump, and adding emitted keys is a
+     * MINOR version event. The plan's once-060 acceptance asks for the
+     * three; shipping them requires the owner's 1.7→1.8 emit window
+     * (plan "Shared resources": the bump is owner-held, S55/S70 wait
+     * for it; once-S37 left the emit an open owner decision). This
+     * omission is disclosed, not silently dropped (once-S55 STOP row;
+     * see reviews/exec/once-S55.impl.md).
+     *
+     * @return array<string, string>
+     */
+    public static function configShape(): array
+    {
+        return [
+            'paths'                => 'list<string>',
+            'min_block_size'       => 'int',
+            'normalization_mode'   => "string  // 'strict' | 'default' | 'aggressive'",
+            'similarity_threshold' => 'float  // Num::json-normalised',
+            'tree_threshold'       => 'float  // Num::json-normalised',
+            'min_cluster_impact'   => 'int',
+        ];
+    }
+
+    /**
      * @return array<string, string>
      */
     public static function pairShape(): array
@@ -191,7 +268,7 @@ final class JsonSchemaSpec
     {
         return [
             'id'                     => 'string',
-            'kind'                   => 'string',
+            'kind'                   => "string|null  // the members' shared block kind (method/function/...); null only when the cluster carries no members (defensive — never pipeline-emitted). Governed nullable by once-S55 to match JsonReporter::clusterPayload()'s emission; populating a member-less cluster is a producer bug, not a consumer branch",
             'exact'                  => 'bool',
             'similarity'             => 'float',
             'confidence'             => 'float',
@@ -230,12 +307,18 @@ final class JsonSchemaSpec
      * with a genuine value row — absence-marked indices never appear,
      * so it is computed positionally from the per-member rows.
      *
+     * One placeholder VALUE is sanctioned beyond the unifier's own
+     * names: '__cap' (AntiUnifier::CAP_SENTINEL) — the synthetic
+     * all-absence, degraded:true row a routed oversized cluster carries
+     * in place of un-unified evidence. It is signature-inert and never
+     * a parse bug; see the governance note (c) on this class (once-S55).
+     *
      * @return array<string, string>
      */
     public static function holeShape(): array
     {
         return [
-            'placeholder'        => 'string',
+            'placeholder'        => "string  // unifier placeholder name, or the sanctioned '__cap' degraded-evidence marker (governance (c))",
             'kind'               => 'string',
             'inferred_type'      => 'string',
             'suggested_name'     => 'string',
