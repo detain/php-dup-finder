@@ -8,36 +8,59 @@ use Phpdup\Cli\Config;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
 use Phpdup\Parsing\AstParser;
-use Phpdup\Pipeline\PipelineState;
-use Phpdup\Pipeline\Stages\ClusterStage;
-use Phpdup\Pipeline\Stages\PreprocessStage;
-use Phpdup\Pipeline\Stages\RefactorStage;
-use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Reporting\DiffReporter;
-use Phpdup\Reporting\Ranker;
 use Phpdup\Reporting\Report;
 use Phpdup\Reporting\SourceTextStore;
 use Phpdup\Util\LineRange;
-use Symfony\Component\Console\Output\NullOutput;
 
 final class DiffReporterTest extends TestCase
 {
+    /**
+     * output-S56b synthetic carrier for the retired sql-fixture pipeline
+     * report: two 2-member clusters over freshly written temp sources —
+     * member bodies differ, so every rendered .diff carries real hunk
+     * bytes — plus one 1-member cluster that states the <2-member skip
+     * rule by construction. The caller rrmdirs the returned root.
+     *
+     * @return array{0: Report, 1: string}
+     */
+    private function syntheticTree(): array
+    {
+        $root = sys_get_temp_dir() . '/phpdup-diff-syn-' . uniqid('', true);
+        mkdir($root, 0o775, true);
+        $mk = function (string $name, int $value) use ($root): Block {
+            $file = $root . '/' . $name . '.php';
+            file_put_contents($file, "<?php\nfunction m() { return {$value}; }\n");
+            return $this->realBlock($file);
+        };
+        $a = new Cluster('SYN-A', [$mk('a1', 1), $mk('a2', 2)], 1.0, true);
+        $a->signature = 'function m(): int';
+        $b = new Cluster('SYN-B', [$mk('b1', 3), $mk('b2', 4)], 0.9, false);
+        $b->signature = 'function m(): int';
+        $lone = new Cluster('SYN-LONE', [$mk('lone', 5)], 1.0, true);
+        $lone->signature = 'function m(): int';
+
+        return [new Report(
+            files: 5, blocks: 5, parseErrors: 0,
+            clusters: [$a, $b, $lone], config: Config::defaults([$root]),
+        ), $root];
+    }
+
     public function testWriteDirCreatesOneFilePerCluster(): void
     {
-        $report = $this->buildReport();
-        $dir    = sys_get_temp_dir() . '/phpdup-diff-' . uniqid();
+        [$report, $root] = $this->syntheticTree();
+        $dir = $root . '/out';
         try {
             (new DiffReporter())->writeDir($report, $dir);
 
             $this->assertDirectoryExists($dir);
-            $expected = 0;
-            foreach ($report->clusters as $c) {
-                if (count($c->members) >= 2) $expected++;
-            }
-            $this->assertGreaterThan(0, $expected, 'sql fixture should have multi-member clusters');
-
+            // output-S56b: the fixture era re-derived the count from the
+            // report it had just built (a tautology) behind a premise
+            // guard; the synthetic tree carries exactly two multi-member
+            // clusters and one lone cluster, so 2 is now pinned hard and
+            // the skip rule rides the same vector.
             $files = glob($dir . '/*.diff');
-            $this->assertCount($expected, $files);
+            $this->assertCount(2, $files, 'SYN-A and SYN-B written; SYN-LONE skipped');
 
             foreach ($files as $f) {
                 $body = (string)file_get_contents($f);
@@ -45,21 +68,24 @@ final class DiffReporterTest extends TestCase
                 $this->assertStringContainsString('# Suggested abstraction:', $body);
             }
         } finally {
-            $this->rrmdir($dir);
+            $this->rrmdir($root);
         }
     }
 
     public function testWritePatchProducesSingleFile(): void
     {
-        $report = $this->buildReport();
-        $tmp    = sys_get_temp_dir() . '/phpdup-patch-' . uniqid() . '.patch';
+        [$report, $root] = $this->syntheticTree();
+        $tmp = $root . '/all.patch';
         try {
             (new DiffReporter())->writePatch($report, $tmp);
             $this->assertFileExists($tmp);
             $body = (string)file_get_contents($tmp);
             $this->assertStringContainsString('# phpdup cluster', $body);
+            // Strengthened (output-S56b): the patch is exactly the two
+            // multi-member clusters concatenated — the lone one skips.
+            $this->assertSame(2, substr_count($body, '# phpdup cluster'));
         } finally {
-            @unlink($tmp);
+            $this->rrmdir($root);
         }
     }
 
@@ -145,13 +171,18 @@ final class DiffReporterTest extends TestCase
 
     public function testCleanClusterStreamKeepsParseableStructure(): void
     {
-        $body = '';
-        foreach ($this->buildReport()->clusters as $c) {
-            if (count($c->members) >= 2) {
-                $body .= $this->renderCluster($c);
+        [$report, $root] = $this->syntheticTree();
+        try {
+            $body = '';
+            foreach ($report->clusters as $c) {
+                if (count($c->members) >= 2) {
+                    $body .= $this->renderCluster($c);
+                }
             }
+        } finally {
+            $this->rrmdir($root);
         }
-        $this->assertNotSame('', $body, 'sql fixture must yield at least one diff');
+        $this->assertNotSame('', $body, 'synthetic tree must yield at least one diff');
 
         // Header pairs and anchors sit at line starts only — the shape a
         // maintainer (or git apply) reads — and no anchor line is bare.
@@ -381,29 +412,6 @@ final class DiffReporterTest extends TestCase
             kind: 'function',
             namespace: null, class: null, name: null,
             ast: $stmts[0],
-        );
-    }
-
-    private function buildReport(): Report
-    {
-        $config = new Config(
-            paths: [__DIR__ . '/../../Fixtures/sql'],
-            exclude: Config::defaults([])->exclude,
-            lazyAst: false,
-        );
-        $state = new PipelineState($config);
-        $out   = new NullOutput();
-        (new ScanningStage())->run($state, $out);
-        (new PreprocessStage(useCache: false))->run($state, $out);
-        (new ClusterStage(exactOnly: true))->run($state, $out);
-        (new RefactorStage(useCache: false))->run($state, $out);
-
-        return new Report(
-            files: count($state->files),
-            blocks: count($state->blocks),
-            parseErrors: $state->parseErrors,
-            clusters: (new Ranker($config->minClusterImpact))->rank($state->clusters),
-            config: $config,
         );
     }
 
