@@ -7,16 +7,10 @@ use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\Config;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
-use Phpdup\Pipeline\PipelineState;
-use Phpdup\Pipeline\Stages\ClusterStage;
-use Phpdup\Pipeline\Stages\PreprocessStage;
-use Phpdup\Pipeline\Stages\RefactorStage;
-use Phpdup\Pipeline\Stages\ScanningStage;
-use Phpdup\Reporting\Ranker;
+use Phpdup\Refactor\Hole;
 use Phpdup\Reporting\Report;
 use Phpdup\Reporting\SarifReporter;
 use Phpdup\Util\LineRange;
-use Symfony\Component\Console\Output\NullOutput;
 
 final class SarifReporterTest extends TestCase
 {
@@ -61,35 +55,51 @@ final class SarifReporterTest extends TestCase
         $this->assertSame($expected, $payload['$schema'], 'emitted $schema is the constant, not a re-inlined literal');
     }
 
-    public function testFixtureReportEmitsResultPerMember(): void
+    /**
+     * output-S56b (was testFixtureReportEmitsResultPerMember): the sql
+     * fixture pipeline becomes two synthetic clusters — F…081 exact with
+     * three members (ranges start 11/21/31), F…082 near with two (41/51).
+     * Five member slots total: the count is pinned hard instead of
+     * re-derived from the report, and the clusterId/startLine projections
+     * are now exact values rather than key-existence probes.
+     */
+    public function testSyntheticReportEmitsResultPerMember(): void
     {
-        $report  = $this->buildReport();
-        $payload = (new SarifReporter())->build($report);
+        $payload = (new SarifReporter())->build(
+            new Report(5, 5, 0, $this->syntheticClusters(), Config::defaults([])),
+        );
 
-        $this->assertNotEmpty($payload['runs'][0]['results']);
+        $results = $payload['runs'][0]['results'];
+        $this->assertCount(5, $results);
 
-        $expectedResults = 0;
-        foreach ($report->clusters as $c) {
-            $expectedResults += count($c->members);
-        }
-        $this->assertCount($expectedResults, $payload['runs'][0]['results']);
-
-        $first = $payload['runs'][0]['results'][0];
+        $first = $results[0];
         $this->assertSame('phpdup/duplicate-logic', $first['ruleId']);
         $this->assertArrayHasKey('partialFingerprints', $first);
-        $this->assertArrayHasKey('clusterId', $first['partialFingerprints']);
+        $this->assertSame('F0000000000000081', $first['partialFingerprints']['clusterId']);
         $this->assertArrayHasKey('startLine', $first['locations'][0]['physicalLocation']['region']);
+        $this->assertSame(11, $first['locations'][0]['physicalLocation']['region']['startLine']);
+        $this->assertSame(
+            ['warning', 'warning', 'warning', 'note', 'note'],
+            array_map(static fn(array $r): string => $r['level'], $results),
+            'exact cluster members keep warning, near-dup members keep note (per member, not per cluster)',
+        );
     }
 
     public function testWriteToProducesParseableJson(): void
     {
         $tmp = sys_get_temp_dir() . '/phpdup-sarif-' . uniqid() . '.json';
         try {
-            (new SarifReporter())->writeTo($this->buildReport(), $tmp);
+            (new SarifReporter())->writeTo(
+                new Report(5, 5, 0, $this->syntheticClusters(), Config::defaults([])),
+                $tmp,
+            );
             $this->assertFileExists($tmp);
             $decoded = json_decode((string)file_get_contents($tmp), true);
             $this->assertIsArray($decoded);
             $this->assertSame('2.1.0', $decoded['version']);
+            // Strengthened (output-S56b): the round-trip carries all five
+            // member results — parseable AND complete.
+            $this->assertCount(5, $decoded['runs'][0]['results']);
         } finally {
             @unlink($tmp);
         }
@@ -97,8 +107,21 @@ final class SarifReporterTest extends TestCase
 
     public function testOptionalBlockClusterSurfacesOptionalSegmentMetadata(): void
     {
-        $report  = $this->buildOptionalReport();
-        $payload = (new SarifReporter())->build($report);
+        // output-S56b: hand-built carrier (was an optional-fixture scan):
+        // a tagged cluster with two optional_block holes and one literal
+        // hole, so optionalSegmentCount is exact, not "at least one".
+        $cluster = new Cluster('F0000000000000083', [
+            $this->member('S83a', 11), $this->member('S83b', 21),
+        ], 0.7, false);
+        $cluster->patternTags = ['optional-segments'];
+        $cluster->holes = [
+            new Hole('__O0', 'optional_block', ["'s();'", Hole::MISSING], false),
+            new Hole('__O1', 'optional_block', [Hole::MISSING, "'t();'"], false),
+            new Hole('__L0', 'literal', ["'a';", "'b';"], false),
+        ];
+        $payload = (new SarifReporter())->build(
+            new Report(2, 2, 0, [$cluster], Config::defaults([])),
+        );
 
         $this->assertNotEmpty($payload['runs'][0]['results']);
 
@@ -114,7 +137,7 @@ final class SarifReporterTest extends TestCase
         $this->assertNotNull($found, 'expected at least one result tagged optional-segments');
 
         $props = $found['properties'];
-        $this->assertGreaterThanOrEqual(1, $props['optionalSegmentCount']);
+        $this->assertSame(2, $props['optionalSegmentCount'], 'exactly the two optional_block holes count');
         $this->assertTrue($props['hasOptionalSegments']);
     }
 
@@ -202,46 +225,35 @@ final class SarifReporterTest extends TestCase
         $this->assertSame('warning', $default);
     }
 
-    private function buildReport(): Report
+    private function member(string $id, int $start): Block
     {
-        $config = new Config(
-            paths: [__DIR__ . '/../../Fixtures/sql'],
-            exclude: Config::defaults([])->exclude,
-            lazyAst: false,
+        $b = new Block(
+            file: '/phpdup-syn/' . $id . '.php',
+            range: new LineRange($start, $start + 4),
+            kind: 'function',
+            namespace: null, class: null, name: $id,
+            ast: new \PhpParser\Node\Stmt\Nop(),
         );
-        return $this->runPipeline($config);
+        $b->id = $id;
+        return $b;
     }
 
-    private function buildOptionalReport(): Report
+    /**
+     * Synthetic carrier for the retired sql-fixture pipeline: F…081 exact
+     * (three members, startLines 11/21/31) + F…082 near (two members,
+     * 41/51). Every count and value pinned in the migrated arms derives
+     * from these fixed numbers.
+     *
+     * @return list<Cluster>
+     */
+    private function syntheticClusters(): array
     {
-        $config = new Config(
-            paths: [__DIR__ . '/../../Fixtures/optional'],
-            exclude: Config::defaults([])->exclude,
-            minBlockSize: 4,
-            maxDocumentFrequency: 0.5,
-            minClusterImpact: 1,
-            lazyAst: false,
-        );
-        return $this->runPipeline($config, exactOnly: false);
-    }
-
-    private function runPipeline(Config $config, bool $exactOnly = true): Report
-    {
-        $state = new PipelineState($config);
-        $out   = new NullOutput();
-        (new ScanningStage())->run($state, $out);
-        (new PreprocessStage(useCache: false))->run($state, $out);
-        (new ClusterStage(exactOnly: $exactOnly))->run($state, $out);
-        (new RefactorStage(useCache: false))->run($state, $out);
-
-        $clusters = (new Ranker($config->minClusterImpact))->rank($state->clusters);
-
-        return new Report(
-            files: count($state->files),
-            blocks: count($state->blocks),
-            parseErrors: $state->parseErrors,
-            clusters: $clusters,
-            config: $config,
-        );
+        $exact = new Cluster('F0000000000000081', [
+            $this->member('S81a', 11), $this->member('S81b', 21), $this->member('S81c', 31),
+        ], 1.0, true);
+        $near = new Cluster('F0000000000000082', [
+            $this->member('S82a', 41), $this->member('S82b', 51),
+        ], 0.8, false);
+        return [$exact, $near];
     }
 }
