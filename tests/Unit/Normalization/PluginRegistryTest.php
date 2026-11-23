@@ -362,6 +362,197 @@ final class PluginRegistryTest extends TestCase
         }
     }
 
+    // ── once-S66 fix1 (r1 M-1) — degraded-run cache identity ──────────────
+    //
+    // The b5fe197 +233 pins cover the screen arms, the notes channel and
+    // the e2e degrade, but nothing asserts that a degraded run SERVES and
+    // RECORDS under the effective-roster store key. The safety argument is
+    // real (r1 §(b) craft proof: repair precedes PipelineState
+    // construction; IndexStore's per-file config_key binds ->normalization
+    // plugins at PreprocessStage:424) — yet a future refactor that splits
+    // the recording key from the repaired roster would silently contaminate
+    // a warm shared cache while every pre-existing pin stayed green. This
+    // pin closes that gap tests-only.
+
+    public function testDegradedRunRecordsUnderEffectiveRosterCacheKey(): void
+    {
+        $dir = (string) sys_get_temp_dir() . '/phpdup-s66f1-' . uniqid('', true);
+        mkdir($dir . '/src', 0o775, true);
+        mkdir($dir . '/cache-shared', 0o775, true);
+        mkdir($dir . '/cache-pluginless', 0o775, true);
+        $dup = "<?php\nfunction probe_alpha(\$v) {\n\t\$a = 1;\n\t\$b = \$a + \$v;\n\t\$c = \$b * 2;\n\t\$d = \$c - 4;\n\t\$e = \$d / 2;\n\treturn \$e;\n}\n";
+        file_put_contents($dir . '/src/a.php', $dup);
+        file_put_contents($dir . '/src/b.php', str_replace('probe_alpha', 'probe_beta', $dup));
+        file_put_contents($dir . '/src/c.php', "<?php\nfunction probe_gamma(\$v) {\n\treturn 9 * \$v - 17;\n}\n");
+
+        try {
+            // Run 1: the degraded [G,B] roster against the shared cache dir.
+            // The screen must reduce it to [G] BEFORE the store key is
+            // derived, so every .idx header written lands under the roster-
+            // [G] config_key.
+            $cfgDegraded = $this->writeS66F1Config(
+                $dir,
+                'cfg-degraded.json',
+                $dir . '/cache-shared',
+                [UpperCaseStringsPlugin::class, ThrowingConstructorPlugin::class],
+            );
+            [$exit1, $display1] = $this->runS66F1Analyze($cfgDegraded, $dir);
+            $this->assertSame(0, $exit1, 'degraded run must exit 0; display was: ' . $display1);
+            $this->assertSame(
+                1,
+                substr_count($display1, ThrowingConstructorPlugin::class),
+                'run 1 must really be the degraded one (exactly one exclusion warning); display was: ' . $display1,
+            );
+            $afterDegraded = $this->s66F1ConfigKeyHeaders($dir . '/cache-shared');
+            $this->assertNotEmpty(
+                $afterDegraded,
+                'the degraded run must actually write per-file .idx headers — an empty census would make every comparison below vacuous',
+            );
+
+            // Run 2: clean control on the EFFECTIVE roster [G], same shared
+            // cache dir. Correctness leaves the store untouched by a
+            // re-key: the control hits the degraded run's entries (or
+            // rewrites them byte-equal), so the census cannot move.
+            $cfgControl = $this->writeS66F1Config(
+                $dir,
+                'cfg-control.json',
+                $dir . '/cache-shared',
+                [UpperCaseStringsPlugin::class],
+            );
+            [$exit2, $display2] = $this->runS66F1Analyze($cfgControl, $dir);
+            $this->assertSame(0, $exit2, 'clean roster-[G] control must exit 0; display was: ' . $display2);
+            $this->assertStringNotContainsString(
+                'phpdup: warning:',
+                $display2,
+                'the roster-[G] control runs clean — no exclusion, no warning; display was: ' . $display2,
+            );
+            $afterControl = $this->s66F1ConfigKeyHeaders($dir . '/cache-shared');
+
+            // The pin (r1 M-1 discriminating bar): if the degraded run ever
+            // records under the UNSCREENED [G,B] roster key, this control
+            // misses on its own key and rewrites the headers — the two
+            // censuses then differ and the assert goes RED. Demonstrated by
+            // neuter M-A (split key/roster; transcript in
+            // reviews/exec/once-S66.impl.md Fix-round-1).
+            $this->assertSame(
+                $afterDegraded,
+                $afterControl,
+                'a degraded [G,B] run must serve/record under the effective-roster [G] config_key — the shared store may not be re-keyed by the clean [G] control run',
+            );
+
+            // Vacuity fence: the plugin-free roster must mint a DIFFERENT
+            // key for the very same files. Without this leg a roster-blind
+            // (constant or empty) config_key would satisfy the equality
+            // above vacuously.
+            $cfgPluginless = $this->writeS66F1Config($dir, 'cfg-pluginless.json', $dir . '/cache-pluginless', []);
+            [$exit3, $display3] = $this->runS66F1Analyze($cfgPluginless, $dir);
+            $this->assertSame(0, $exit3, 'plugin-free control must exit 0; display was: ' . $display3);
+            $pluginless = $this->s66F1ConfigKeyHeaders($dir . '/cache-pluginless');
+            $this->assertSame(
+                array_keys($afterDegraded),
+                array_keys($pluginless),
+                'the plugin-free census must cover exactly the same per-file stores (same corpus)',
+            );
+            foreach ($afterDegraded as $idxName => $key) {
+                $this->assertNotSame(
+                    $key,
+                    $pluginless[$idxName],
+                    "the per-file config_key must MOVE with the normalization roster (store '$idxName' carries the same key with and without plugins — the binding is roster-blind and the [G] equality above is vacuous)",
+                );
+            }
+        } finally {
+            $this->removeDirTree($dir);
+        }
+    }
+
+    // ── once-S66 fix1 (r1 L-1 fold) — reflection-copy seam guard ──────────
+
+    public function testEveryConfigCtorParamHasSameNamedPublicProperty(): void
+    {
+        // Command::withNormalizationPlugins() (the once-S66 repair seam)
+        // rebuilds Config by reflection, reading `$config->{$name}` for
+        // EVERY ctor param. The seam silently trusts each param to be a
+        // public promoted property (true, 50/50, at b5fe197 — r1 §L-1). A
+        // future non-promoted, renamed or private param would surface as a
+        // raw TypeError OUTSIDE the screened arms — exactly the crash class
+        // this step exists to close. One loop, so the drift fails in CI
+        // instead of in the field.
+        $reflection = new \ReflectionClass(Config::class);
+        $ctor = $reflection->getConstructor();
+        $this->assertNotNull($ctor, 'Config must keep a constructor for the reflection-copy seam');
+
+        $publicProperties = [];
+        foreach ($reflection->getProperties(\ReflectionProperty::IS_PUBLIC) as $property) {
+            $publicProperties[] = $property->getName();
+        }
+
+        foreach ($ctor->getParameters() as $param) {
+            $this->assertContains(
+                $param->getName(),
+                $publicProperties,
+                "Config ctor param \${$param->getName()} has no same-named public property — Command::withNormalizationPlugins()'s reflection copy would throw a raw TypeError when it degrades a run (r1 L-1 guard)",
+            );
+        }
+    }
+
+    /** @param list<string> $plugins */
+    private function writeS66F1Config(string $dir, string $name, string $cacheDir, array $plugins): string
+    {
+        $payload = [
+            'cache_dir'          => $cacheDir,
+            'min_block_size'     => 4,
+            'min_cluster_impact' => 0,
+        ];
+        if ($plugins !== []) {
+            $payload['normalization'] = ['plugins' => $plugins];
+        }
+        $path = $dir . '/' . $name;
+        file_put_contents($path, json_encode($payload, JSON_PRETTY_PRINT) . "\n");
+
+        return $path;
+    }
+
+    /** @return array{int, string} exit code + display of one serial-wire analyze run */
+    private function runS66F1Analyze(string $configPath, string $dir): array
+    {
+        $app    = new Application('phpdup');
+        $app->add(new Command());
+        $tester = new CommandTester($app->find('analyze'));
+        $exit   = $tester->execute([
+            'paths'     => [$dir . '/src'],
+            '--config'  => $configPath,
+            '--workers' => '1',
+        ]);
+
+        return [$exit, $tester->getDisplay()];
+    }
+
+    /**
+     * Census of the per-file .idx config_key headers in a cache dir — the
+     * bounded header read mirrors IndexStore's own gate (per-file stores
+     * only: clusters.idx shares its key across rosters by design, plugin
+     * separation there rides the corpus-hash gate, r1 §(b)).
+     *
+     * @return array<string, string> store basename => 40-hex config_key
+     */
+    private function s66F1ConfigKeyHeaders(string $cacheDir): array
+    {
+        $keys = [];
+        foreach (scandir($cacheDir) ?: [] as $entry) {
+            if ($entry === 'clusters.idx' || !str_ends_with($entry, '.idx')) {
+                continue;
+            }
+            $head = (string) file_get_contents($cacheDir . '/' . $entry, false, null, 0, 512);
+            if (!preg_match('/^config_key:([0-9a-f]{40})$/m', $head, $m)) {
+                $this->fail("per-file index store '$entry' carries no config_key: header in its first 512 bytes");
+            }
+            $keys[$entry] = $m[1];
+        }
+        ksort($keys);
+
+        return $keys;
+    }
+
     private function removeDirTree(string $dir): void
     {
         if (!is_dir($dir)) {
