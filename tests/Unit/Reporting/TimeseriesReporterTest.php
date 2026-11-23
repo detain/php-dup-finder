@@ -70,6 +70,41 @@ final class TimeseriesReporterTest extends TestCase
         $this->assertArrayHasKey('phpdup_version', $record);
     }
 
+    // ── once-S101 (php-dup-finder-once-126): row-shape marker ───────────────
+
+    public function testSchemaVersionMarkerLeadsTheRowAndKeySetIsDocumentedV2(): void
+    {
+        $reporter = new TimeseriesReporter(commitSha: 'abc123', timestamp: 1700000000);
+        $record   = $reporter->buildRecord(new Report(0, 0, 0, [], Config::defaults([])));
+
+        // Row contract v2: the marker leads, the v1 key set follows in its
+        // historical order. The full ordered list is asserted on purpose —
+        // any future row edit must reckon with this pin, which is the whole
+        // point of versioning the row.
+        $this->assertSame(
+            ['schema_version', 'timestamp', 'commit_sha', 'phpdup_version', 'files',
+             'blocks', 'parse_errors', 'clusters', 'duplicated_lines', 'total_impact', 'pattern_tags'],
+            array_keys($record),
+        );
+        $this->assertSame('2', $record['schema_version']);
+
+        // On the wire the marker is the object's first member — the cheap
+        // probe a streaming consumer uses before decoding the rest.
+        $this->assertStringStartsWith('{"schema_version":"2"', $reporter->buildLine($this->buildReport()));
+    }
+
+    public function testFixtureRecordCarriesTheMarkerToo(): void
+    {
+        // The pipeline-built record (fixture corpus, real clusters) carries
+        // the identical key contract — the marker does not depend on the
+        // synthetic empty-report shortcut above.
+        $record = (new TimeseriesReporter(commitSha: 'test-sha', timestamp: 1700000000))
+            ->buildRecord($this->buildReport());
+        $this->assertSame('2', $record['schema_version']);
+        $this->assertSame('test-sha', $record['commit_sha']);
+        $this->assertGreaterThan(0, $record['clusters']);
+    }
+
     public function testFixtureRecordHasNonZeroClusterCount(): void
     {
         $report = $this->buildReport();

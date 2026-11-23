@@ -21,6 +21,15 @@ use Phpdup\Util\Version;
  * (files / blocks / parse errors), and the top-line cluster aggregates
  * (count, duplicated lines, total impact, per-tag counters).
  *
+ * once-S101 (php-dup-finder-once-126): every row now LEADS with a
+ * `schema_version` marker declaring this row contract ('2'; the v1 rows
+ * are the identical key set without the marker). The version is spelled
+ * by this class alone, never borrowed from JsonSchemaSpec: a JSONL row is
+ * not the JSON report payload that class pins, and coupling them would
+ * make a future report-schema bump silently mislabel the row contract.
+ * A consumer that reads `schema_version` gets the guarantee; a pre-marker
+ * reader is unaffected — the marker is additive on every key it knew.
+ *
  * output-S54 (once-040/output-024): append stays append — FILE_APPEND |
  * LOCK_EX is the documented venue exception — but it is now a CHECKED
  * append: a row that does not land throws ReportWriteException naming the
@@ -36,6 +45,15 @@ final class TimeseriesReporter
      * commit sha. First hit wins, in this order.
      */
     private const ENV_SHA_KEYS = ['GIT_COMMIT', 'GITHUB_SHA', 'CI_COMMIT_SHA', 'BUILD_VCS_NUMBER'];
+
+    /**
+     * Row-shape marker (once-S101): '1' was the implicit pre-marker key
+     * set (timestamp → pattern_tags); '2' adds this marker as every row's
+     * first key and changes no other spelling. Deliberately NOT
+     * JsonSchemaSpec::SCHEMA_VERSION — that pins the JSON report payload,
+     * not this JSONL row contract (see class docblock).
+     */
+    public const ROW_SCHEMA_VERSION = '2';
 
     public function __construct(
         private readonly ?string $commitSha = null,
@@ -73,6 +91,7 @@ final class TimeseriesReporter
         ksort($tagCounts);
 
         return [
+            'schema_version'   => self::ROW_SCHEMA_VERSION,
             'timestamp'        => self::formatUtc($this->timestamp ?? time()),
             'commit_sha'       => $this->commitSha ?? $this->detectCommitSha($report),
             'phpdup_version'   => Version::STRING,
