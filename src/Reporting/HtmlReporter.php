@@ -40,6 +40,16 @@ use SebastianBergmann\Diff\Output\StrictUnifiedDiffOutputBuilder;
  * reads the column cell by the header's absolute position, a contract the
  * markup carries and HtmlReporterTest pins (see the thead comment in
  * {@see renderIndex()}).
+ *
+ * once-069 (S60): every htmlspecialchars emission site on scanned or
+ * store-derived text carries ENT_SUBSTITUTE — the lexer-per-token design
+ * of output-053 made an invalid UTF-8 byte blank only its own token
+ * instead of the whole block, but blanking silently destroyed primary
+ * evidence (a Latin-1 member's string/comment tokens vanished from
+ * `<pre class="src">` with no trace). Offending bytes now arrive as the
+ * visible U+FFFD marker shared with the ControlText venue; valid-UTF-8
+ * output, including the documented raw-control-byte posture, is
+ * byte-identical to the S40 era.
  */
 final class HtmlReporter
 {
@@ -398,7 +408,7 @@ final class HtmlReporter
     private function unfetched(SourceTextStore $store, string $file): string
     {
         return '<span class="unfetched">'
-             . htmlspecialchars('[' . SourceTextStore::UNFETCHED . ': ' . ($store->reason($file) ?? 'unavailable') . ']', ENT_QUOTES, 'UTF-8')
+             . htmlspecialchars('[' . SourceTextStore::UNFETCHED . ': ' . ($store->reason($file) ?? 'unavailable') . ']', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
              . '</span>';
     }
 
@@ -418,7 +428,7 @@ final class HtmlReporter
         }
         return '<span class="unfetched">' . htmlspecialchars(
             '[diff skipped: ' . SourceTextStore::UNFETCHED . ' (' . implode('; ', $sides) . ')]',
-            ENT_QUOTES, 'UTF-8',
+            ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8',
         ) . '</span>';
     }
 
@@ -469,9 +479,14 @@ final class HtmlReporter
      * The fragment is lexed behind a synthetic open tag (dropped before
      * rendering) because member-source slices and signature lines are PHP
      * *bodies*; the lexer only enters code mode at an open tag. Escape
-     * posture is unchanged from the pre-lexer design: htmlspecialchars per
-     * unit with the same flags, so a hostile token still cannot open or
-     * close markup (once-S60 owns the non-UTF-8 byte hygiene upgrade).
+     * posture follows the pre-lexer design — htmlspecialchars per unit with
+     * ENT_QUOTES, so a hostile token still cannot open or close markup —
+     * upgraded by once-S60 with ENT_SUBSTITUTE: an invalid UTF-8 byte
+     * (legacy Latin-1 source, TPL-04) now renders as one visible U+FFFD
+     * instead of blanking its whole token, so the primary evidence never
+     * disappears from the page (php-dup-finder-once-069). Control bytes
+     * keep riding inert verbatim per the documented HTML-surface posture
+     * (they are valid UTF-8; substitution does not touch them).
      */
     private function highlightPhp(string $code): string
     {
@@ -511,7 +526,7 @@ final class HtmlReporter
                 $out .= self::htmlSpan('k', $text);
                 continue;
             }
-            $out .= htmlspecialchars($text, ENT_QUOTES, 'UTF-8');
+            $out .= htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
         }
         return $out;
     }
@@ -536,7 +551,7 @@ final class HtmlReporter
     private static function htmlSpan(string $class, string $text): string
     {
         return '<span class="' . $class . '">'
-             . htmlspecialchars($text, ENT_QUOTES, 'UTF-8')
+             . htmlspecialchars($text, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')
              . '</span>';
     }
 

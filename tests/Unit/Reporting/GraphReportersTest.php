@@ -138,6 +138,70 @@ final class GraphReportersTest extends TestCase
         }
     }
 
+    /**
+     * once-S60 / php-dup-finder-once-068 re-check leg: the output-S18
+     * closure refused a NEWLINE example and softened a quote example;
+     * this pins the whole boundary — every byte of the venue's FORGE set
+     * (\0 \n \r \x1b), in either the directory or filename segment, is
+     * refused at the label boundary with the byte named in the diagnostic
+     * (rendered hex-escaped, never raw), because each one could split the
+     * quoted label onto a new physical line and hand the renderer a
+     * top-level statement.
+     */
+    public function testPlantumlRefusesEveryForgeByteInAPath(): void
+    {
+        $refused = [];
+        foreach (str_split(ControlText::FORGE_BYTES) as $byte) {
+            $tag    = sprintf('0x%02X', ord($byte));
+            $report = $this->syntheticReport('FB' . $tag, ['/s/dir' . $byte . 'more/evil.php', '/s/ok.php']);
+            $thrown = null;
+            try {
+                (new PlantumlReporter())->build($report);
+            } catch (\RuntimeException $e) {
+                $thrown = $e->getMessage();
+            }
+            $this->assertNotNull($thrown, "forge byte {$tag} reached the PlantUML stream unrefused");
+            $this->assertStringContainsString('PlantumlReporter', $thrown);
+            $this->assertStringContainsString($tag, $thrown, 'the diagnostic must name the offending byte');
+            $this->assertStringNotContainsString($byte, $thrown, 'the diagnostic must not re-embed the forge byte raw');
+            $refused[] = $tag;
+        }
+        $this->assertCount(4, $refused, 'FORGE_BYTES set changed shape — re-derive the leg');
+    }
+
+    /**
+     * once-S60 closure of the same finding: a name that is legal for the
+     * boundary (no forge bytes) yet hostile for the grammar — a raw double
+     * quote, directive-looking payload text, AND an invalid UTF-8 byte
+     * (TPL-03's crafted-name class carried over to legacy encodings) —
+     * still injects nothing top-level: every emitted class line is one
+     * physical line carrying exactly its two label quotes, no line starts
+     * with `!`, and the quote is softened while the opaque byte rides
+     * visibly (the .puml artifact is plain renderer input: the injection
+     * bar is the grammar characters, and those are closed).
+     */
+    public function testPlantumlLabelCarriesNonUtf8AndQuoteMixWithoutTopLevelStatement(): void
+    {
+        $hostile = '/s/caf' . "\xE9" . '"X!include.php';
+        $report  = $this->syntheticReport('PUMLX', [$hostile, '/s/ok.php']);
+        $puml    = (new PlantumlReporter())->build($report);
+
+        $this->assertDoesNotMatchRegularExpression('/^!/m', $puml, 'a scanned name forged a top-level directive');
+        $classLines = array_values(array_filter(
+            explode("\n", rtrim($puml, "\n")),
+            static fn(string $l): bool => str_starts_with($l, 'class '),
+        ));
+        $this->assertNotEmpty($classLines);
+        foreach ($classLines as $line) {
+            $this->assertSame(2, substr_count($line, '"'), $line);
+            $this->assertMatchesRegularExpression('/^class F[0-9a-f]{8} as "[^"\n]*"$/', $line,
+                'label escaped its quoted single-line slot');
+        }
+        $this->assertStringContainsString("caf\xE9'X!include.php", $puml,
+            'quote softened to an apostrophe, name (incl. the opaque byte) kept honest');
+        $this->assertStringNotContainsString('"!include', $puml);
+    }
+
     /** @param list<string> $files */
     private function syntheticReport(string $id, array $files): Report
     {

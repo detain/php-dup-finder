@@ -578,8 +578,10 @@ final class HtmlReporterTest extends TestCase
      * from observed values/signature/tags. Rendering posture: htmlspecialchars
      * neutralises the quote/angle bytes that could escape a context; the bare
      * control bytes themselves are inert inside text/attribute content — they
-     * can never open or close a tag. (Non-UTF-8 byte hygiene and injection
-     * closure are once-S60's queued territory; DOM parsing of a NUL-bearing
+     * can never open or close a tag. (once-S60 landed the queued non-UTF-8
+     * hygiene upgrade on top — ENT_SUBSTITUTE now marks invalid bytes with
+     * U+FFFD; these valid-UTF-8 control bytes keep riding verbatim exactly
+     * as pinned here. DOM parsing of a NUL-bearing
      * page is unreliable in libxml, so the pin asserts evasion counts on the
      * raw page instead of a parse.)
      */
@@ -769,6 +771,145 @@ final class HtmlReporterTest extends TestCase
         } finally {
             $this->rrmdir($root);
         }
+    }
+
+    /**
+     * php-dup-finder-once-069 (once-S60): a legacy Latin-1 member's source
+     * silently lost its primary evidence — every token carrying an invalid
+     * UTF-8 byte blanked itself (htmlspecialchars without ENT_SUBSTITUTE
+     * returns ''), so string and comment bytes just disappeared from
+     * `<pre class="src">` with no trace while valid neighbours rendered.
+     * Posture now: each offending byte arrives as one visible U+FFFD, its
+     * token (atomicity from output-S40) and every other token stay put,
+     * and the finished page is valid UTF-8.
+     */
+    public function testLatin1MemberSourceKeepsEveryTokenWithVisibleSubstitutes(): void
+    {
+        $body = "<?php\nfunction m()\n{\n    return \"caf\xe9\"; // fin r\xe9sum\xe9\n}\n";
+        [$report, $root] = $this->lexerReport($body, 5);
+        $dir = $root . '/out';
+        try {
+            (new HtmlReporter())->writeTo($report, $dir);
+
+            $page = (string)file_get_contents($dir . '/cluster-001.html');
+            $this->assertTrue(mb_check_encoding($page, 'UTF-8'), 'a rendered page must not carry raw invalid bytes');
+
+            $doc = $this->parseDom($dir . '/cluster-001.html');
+            $x   = new \DOMXPath($doc);
+
+            $pre = $x->query('//pre[@class="src"]')->item(0);
+            $this->assertNotNull($pre);
+            $this->assertNotSame('', trim((string)$pre->textContent), 'empty <pre class="src"> — evidence loss is back');
+            $this->assertStringContainsString('return', (string)$pre->textContent, 'the valid neighbours must still render');
+
+            $sub = "\u{FFFD}";
+            $s   = $x->query('//pre[@class="src"]//span[@class="s"]');
+            $this->assertNotNull($s);
+            $this->assertSame(1, $s->length);
+            $this->assertSame('"caf' . $sub . '"', $s->item(0)->textContent,
+                'the Latin-1 string literal must arrive as one token with a visible substitute, never blanked');
+
+            $c = $x->query('//pre[@class="src"]//span[@class="c"]');
+            $this->assertNotNull($c);
+            $this->assertSame(1, $c->length);
+            $this->assertSame('// fin r' . $sub . 'sum' . $sub, $c->item(0)->textContent,
+                'one U+FFFD per maximal invalid subsequence (W3C substitution) inside the atomic comment token');
+        } finally {
+            $this->rrmdir($root);
+        }
+    }
+
+    /**
+     * once-S60 adversarial bar on the surface upgrade, two posture legs:
+     * (1) PARSED leg — a payload mixing attribute breakout and invalid
+     * UTF-8 (standalone lead + truncated multi-byte lead) rides the index
+     * data-copy default-flag site, the firstLine <code> cell, and the
+     * highlightPhp ENT_QUOTES|ENT_SUBSTITUTE path: parsed DOM stays
+     * honest (no forged elements, round-trip identity with visible
+     * substitutes, nothing blanked). (2) RAW leg — the same payload plus
+     * the 0x1F FRAME-class byte: substitution never touches valid UTF-8
+     * controls, so the byte rides verbatim as the S39-era doctrine
+     * documents; libxml rejects such bytes on parse (the very reason the
+     * FRAME_DANGER pin asserts on the raw page), so this leg carries raw
+     * evasion/entity/balance counts, not a parse.
+     */
+    public function testInvalidUtf8AndBreakoutMixCannotBlankOrForgeOnAnyHtmlFlagPath(): void
+    {
+        $breakout = '" id="x"><img src=1 onerror=alert(1)>';
+        // W3C maximal-subpart substitution: \xE9 → one U+FFFD; the lone
+        // \xC3 lead (followed by '(') → one U+FFFD; '(' is ASCII and stays.
+        $badUtf8     = 'caf' . "\xE9" . "\xC3" . '(end';
+        $substituted = $breakout . 'caf' . "\u{FFFD}" . "\u{FFFD}" . '(end';
+        $withControl = $breakout . "\x1F" . $badUtf8;
+
+        $body = "<?php\nfunction m()\n{\n    return 1;\n}\n";
+        $root = sys_get_temp_dir() . '/phpdup-html-s60mix-' . uniqid();
+        mkdir($root, 0o775, true);
+        try {
+            // --- (1) parsed leg: breakout + invalid UTF-8, no raw control ---
+            $dir = $root . '/parsed';
+            (new HtmlReporter())->writeTo($this->s60SignatureReport($root, 'parsed', $body, $breakout . $badUtf8), $dir);
+
+            $indexRaw = (string)file_get_contents($dir . '/index.html');
+            $pageRaw  = (string)file_get_contents($dir . '/cluster-001.html');
+            foreach (['index' => $indexRaw, 'cluster' => $pageRaw] as $label => $raw) {
+                $this->assertSame(0, substr_count(strtolower($raw), '<img'), $label . ': forged an img');
+                $this->assertSame(1, substr_count(strtolower($raw), '<script'), $label . ': forged a script tag');
+                $this->assertTrue(mb_check_encoding($raw, 'UTF-8'), $label . ': invalid bytes reached the page raw');
+            }
+            $this->assertSame(
+                substr_count($pageRaw, '<span'),
+                substr_count($pageRaw, '</span'),
+                'span balance broken on the highlight path',
+            );
+
+            $index = $this->parseDom($dir . '/index.html');
+            $xi    = new \DOMXPath($index);
+            $copy  = $xi->query('//button[@class="copy"]/@data-copy')->item(0);
+            $this->assertNotNull($copy);
+            $this->assertSame($substituted, (string)$copy->nodeValue,
+                'data-copy identity must round-trip with visible substitutes, never blanked');
+            $this->assertNotSame('', trim((string)$xi->query('//tbody//code')->item(0)->nodeValue));
+
+            $page = $this->parseDom($dir . '/cluster-001.html');
+            $xp   = new \DOMXPath($page);
+            $sig  = $xp->query('//pre[@class="signature"]')->item(0);
+            $this->assertNotNull($sig);
+            $this->assertStringContainsString('caf' . "\u{FFFD}" . "\u{FFFD}" . '(end', (string)$sig->textContent,
+                'the highlightPhp substitute arm must restore the identity bytes beside the escaped breakout');
+            $this->assertNotSame('', trim((string)$sig->textContent), 'blanked signature block — once-069 class');
+
+            // --- (2) raw leg: the FRAME-class byte keeps riding verbatim ---
+            $dirRaw = $root . '/ctrl';
+            (new HtmlReporter())->writeTo($this->s60SignatureReport($root, 'ctrl', $body, $withControl), $dirRaw);
+            $ctrlPage = (string)file_get_contents($dirRaw . '/cluster-001.html');
+            $this->assertGreaterThan(0, substr_count($ctrlPage, "\x1F"), 'documented inert control byte vanished');
+            $this->assertSame(0, substr_count(strtolower($ctrlPage), '<img'), 'ctrl page: forged an img');
+            $this->assertStringContainsString('&lt;img', $ctrlPage, 'breakout survives only in entity form');
+            $this->assertTrue(mb_check_encoding($ctrlPage, 'UTF-8'), 'ctrl page lost UTF-8 validity');
+        } finally {
+            $this->rrmdir($root);
+        }
+    }
+
+    /** Single-member report rooted at a fresh subdir of $root, member f.php, signature $signature. */
+    private function s60SignatureReport(string $root, string $slug, string $body, string $signature): Report
+    {
+        $dir = $root . '/' . $slug;
+        mkdir($dir, 0o775, true);
+        $file  = $dir . '/f.php';
+        file_put_contents($file, $body);
+        $stmts = (new AstParser())->parseCode($body);
+        $block = new Block(
+            file: $file, range: new LineRange(2, 4), kind: 'function',
+            namespace: null, class: null, name: 'm', ast: $stmts[0],
+        );
+        $cluster            = new Cluster('S60X-' . $slug, [$block], 1.0, false);
+        $cluster->signature = $signature;
+        return new Report(
+            files: 1, blocks: 1, parseErrors: 0,
+            clusters: [$cluster], config: Config::defaults([$dir]),
+        );
     }
 
     public function testKeywordListIsASingleDeduplicatedSharedSource(): void
