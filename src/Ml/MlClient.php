@@ -73,6 +73,19 @@ use Phpdup\Util\Http;
  * only thing the memo gives up is following a legitimate relocation.
  * (The pair client additionally reuses one curl handle for keep-alive;
  * the cluster path dials once per cluster and gains nothing from it.)
+ *
+ * Wire-or-delete census note (once-S70, php-dup-finder-once-082): this
+ * class stays WIRED, with zero behavior change from that step. Its
+ * statics are the load-bearing shared machinery — gateUrl/isAllowedUrl
+ * back the CLI's --ml-pair-url admission check, curlPinEntries/
+ * pinnedStreamRequest/MAX_RESPONSE_BYTES/coerceUnitFloat are consumed
+ * by MlPairClient on every leg — while the instance safety-scoring API
+ * above is library-facing: no pipeline stage constructs it (repo-wide
+ * reference census in reviews/exec/once-S70.impl.md), its contract
+ * lives pinned by MlClientTest, and once-S89 already ruled the same
+ * way when collapsing the twins' transports. The once-082
+ * one-probe-backoff degradation therefore belongs to (and landed on)
+ * the pair client, the class the pipeline actually dials.
  */
 final class MlClient
 {

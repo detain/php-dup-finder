@@ -1602,4 +1602,500 @@ final class MlPairClientTest extends TestCase
         fclose($writer);
         return [$pid, $reader];
     }
+
+    // =====================================================================
+    // once-S70 — ML degraded mode: one probe, backoff, visible status
+    // (php-dup-finder-once-082).
+    //
+    // The fake-down sidecars are the finding's two shapes: a port
+    // nothing listens on (refused instantly — the era idiom from
+    // MlPairUrlValidationTest's port-1 pins and
+    // testAllowedAuthorityGatesOnceAcrossEndpointsAndRetries) and a
+    // forked listener that accepts and closes without ever speaking
+    // (counting its accepts proves the client-side dial count from
+    // the SERVER's side). The acceptance pins drive score()/
+    // scoreBatch() end-to-end through the real gate + real loopback
+    // dials (allowPrivate opt-in, as the S54 e2e idiom), never the
+    // pure transport seams — the latch must be proven at the layer
+    // the storm lived in. The notice assertion reads the ACTUAL
+    // writer: the degrade-notice stream property, captured to memory.
+    // The engine-S20 malformed-body tolerance and the S19b/S92 seam
+    // pins above stay byte-untouched and re-run green — a sidecar
+    // that ANSWERS (even junk, even 5xx) is reachable, not down, and
+    // must never latch.
+    // =====================================================================
+
+    public function testFakeDownRefusedSidecarDialsOnceThenFallsBackForTheWholeRun(): void
+    {
+        $a = $this->makeBlock();
+        $b = $this->makeBlock();
+        $client = new MlPairClient('http://127.0.0.1:1', timeoutSec: 1, allowPrivate: true);
+        $notice = $this->captureErrorStream($client);
+
+        self::assertSame('idle', $client->connectionStatus(), 'construction dials nothing');
+
+        // The storm shape: batch first (worker path), then the
+        // per-pair retry loop, then more pairs. Pre-S70 every one of
+        // these POSTs re-dialled the dead port.
+        self::assertNull($client->scoreBatch([[$a, $b], [$b, $a], [$a, $b]]));
+        self::assertSame(1, self::dialAttempts($client), 'the first dial is the probe — exactly one connect attempt');
+        self::assertSame('unreachable', $client->connectionStatus(), 'probe failure latches fallback mode');
+
+        self::assertNull($client->score($a, $b));
+        self::assertNull($client->scoreBatch([[$a, $b]]));
+        self::assertNull($client->score($b, $a));
+        self::assertSame(
+            1,
+            self::dialAttempts($client),
+            'every later call answers null from fallback mode with ZERO further network work (backoff, whole run)',
+        );
+        self::assertSame(1, self::gateCalls($client), 'the engine-S21 gate memo is untouched by the latch');
+
+        $text = $this->drainNotice($notice);
+        self::assertStringContainsString('unreachable', $text, 'the degrade must be VISIBLE on the warning channel');
+        self::assertStringContainsString('127.0.0.1:1', $text, 'the notice names the authority');
+        self::assertSame(1, substr_count($text, 'phpdup: warning:'), 'exactly one notice for the whole latched run');
+    }
+
+    public function testClosingSidecarAcceptsExactlyOneConnectAcrossAMultiPairRun(): void
+    {
+        $countFile = tempnam(sys_get_temp_dir(), 'phpdup-s70-close-');
+        self::assertIsString($countFile);
+        [$pid, $port, $server] = $this->forkClosingServer(8, 4, $countFile);
+        try {
+            $a = $this->makeBlock();
+            $b = $this->makeBlock();
+            $client = new MlPairClient("http://127.0.0.1:$port", timeoutSec: 2, allowPrivate: true);
+            $notice = $this->captureErrorStream($client);
+
+            self::assertNull($client->score($a, $b));      // the probe: accepted, answered by silence-death
+            self::assertNull($client->scoreBatch([[$a, $b], [$b, $a]]));
+            self::assertNull($client->score($b, $a));
+            self::assertSame(1, self::dialAttempts($client), 'an endpoint that accepts-then-dies is unreachable at the FIRST failure');
+            self::assertSame('unreachable', $client->connectionStatus());
+            self::assertStringContainsString('unreachable', $this->drainNotice($notice));
+        } finally {
+            // The child sits in its accept loop until the extra
+            // timeout expires (the correct client never re-dials, so
+            // accepts stops at 1); the reap must let it run out.
+            $this->reapForkedHttpServer($pid);
+            fclose($server);
+        }
+        $accepts = (int) (string) @file_get_contents($countFile);
+        unlink($countFile);
+        self::assertSame(
+            1,
+            $accepts,
+            'the counting sidecar accepted EXACTLY one connection — the per-pair re-POST storm is gone',
+        );
+    }
+
+    public function testMalformedLiveSidecarKeepsPerPairToleranceNeverLatches(): void
+    {
+        // engine-S20's contract preserved: an endpoint that ANSWERS
+        // with junk is reachable and broken, not down. The per-pair
+        // retry semantics of the aligned/voided batch paths must keep
+        // dialling — degrading on model-quality failures would be a
+        // different (unspecified) behavior and is explicitly NOT
+        // what once-082 prescribes.
+        $response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 8\r\n\r\nnonsense";
+        [$pid, $port, $server] = $this->forkHttpServer(
+            static fn(string $request): string => $response,
+            5,
+            3
+        );
+        try {
+            $a = $this->makeBlock();
+            $b = $this->makeBlock();
+            $client = new MlPairClient("http://127.0.0.1:$port", timeoutSec: 3, allowPrivate: true);
+            $notice = $this->captureErrorStream($client);
+
+            self::assertNull($client->scoreBatch([[$a, $b], [$b, $a]])); // decodes to nothing: 'nonsense' is not JSON
+            self::assertNull($client->score($a, $b));                     // named-field fence refuses it
+            self::assertNull($client->score($b, $a));
+            self::assertSame(3, self::dialAttempts($client), 'a lying-but-talking endpoint must keep the established per-request behavior');
+            self::assertFalse(self::isDegraded($client), 'junk answers are NOT liveness failures');
+            self::assertSame('reachable', $client->connectionStatus());
+            self::assertSame('', $this->drainNotice($notice), 'no degrade notice may fire for quality failures');
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    public function testHttpErrorSidecarIsReachableNotUnreachable(): void
+    {
+        // A 5xx IS an HTTP answer: the word 'unreachable' must mean
+        // the machine is down, never "the service is sad" — the
+        // distinction the acceptance sentence ('unreachable' vs 'no
+        // dups') is built on.
+        $response = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 4\r\n\r\nnope";
+        [$pid, $port, $server] = $this->forkHttpServer(
+            static fn(string $request): string => $response,
+            5,
+            2
+        );
+        try {
+            $a = $this->makeBlock();
+            $b = $this->makeBlock();
+            $client = new MlPairClient("http://127.0.0.1:$port", timeoutSec: 3, allowPrivate: true);
+            $notice = $this->captureErrorStream($client);
+
+            self::assertNull($client->score($a, $b));
+            self::assertNull($client->score($b, $a));
+            self::assertFalse(self::isDegraded($client), 'a reachable 5xx must not wear the down-endpoint latch');
+            self::assertSame('reachable', $client->connectionStatus());
+            self::assertSame(2, self::dialAttempts($client), 'both calls really dialled — the retry path stays live');
+            self::assertSame('', $this->drainNotice($notice));
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    public function testMidRunDeathLatchesOnCurlTransportEvidence(): void
+    {
+        if (!function_exists('curl_init')) {
+            self::markTestSkipped('this pin names the curl leg handle-errno evidence');
+        }
+        // The sidecar is UP for one verdict, then its listener is
+        // gone (serveCount 1 + the parent closing its inherited fd).
+        // Pre-S70 every later pair kept retrying it; the transport-
+        // level proof must now latch the client instead.
+        $body     = '{"similarity":0.9,"confidence":0.8}';
+        $response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " . strlen($body) . "\r\n\r\n" . $body;
+        [$pid, $port, $server] = $this->forkHttpServer(
+            static fn(string $request): string => $response,
+            5,
+            1
+        );
+        $reaped = false;
+        try {
+            $a = $this->makeBlock();
+            $b = $this->makeBlock();
+            $client = new MlPairClient("http://127.0.0.1:$port", timeoutSec: 2, allowPrivate: true);
+            $notice = $this->captureErrorStream($client);
+
+            $verdict = $client->score($a, $b);
+            self::assertIsArray($verdict, 'the live phase must still score normally');
+            self::assertSame(0.9, $verdict['similarity']);
+            self::assertSame('reachable', $client->connectionStatus());
+
+            $this->reapForkedHttpServer($pid); // child served its ONE request and exited
+            $reaped = true;
+            fclose($server);                    // parent's inherited listener fd goes too: port dead
+            $server = null;
+
+            self::assertNull($client->scoreBatch([[$a, $b], [$b, $a]]));
+            self::assertTrue(self::isDegraded($client), 'a connect-class failure AFTER an earlier success still latches (curl errno evidence)');
+            self::assertSame(2, self::dialAttempts($client));
+            self::assertSame('unreachable', $client->connectionStatus());
+            $text = $this->drainNotice($notice);
+            self::assertStringContainsString('unreachable', $text);
+            self::assertSame(1, substr_count($text, 'phpdup: warning:'));
+
+            self::assertNull($client->score($a, $b));
+            self::assertSame(2, self::dialAttempts($client), 'the latch is final for this instance: no resurrection dials');
+        } finally {
+            if ($server !== null) {
+                @fclose($server);
+            }
+            if (!$reaped) {
+                $this->reapForkedHttpServer($pid);
+            }
+        }
+    }
+
+    public function testDegradeNoticeNamesAuthorityNeverUserinfo(): void
+    {
+        // A sidecar URL may legally carry credentials (the userinfo
+        // rides basic auth); the warning line surfaces in terminals
+        // and CI logs, so it must name ONLY the gate-checked
+        // authority.
+        $client = new MlPairClient('http://s3cr3t-user:s3cr3t-pass@127.0.0.1:1', timeoutSec: 1, allowPrivate: true);
+        $notice = $this->captureErrorStream($client);
+        self::assertNull($client->score($this->makeBlock(), $this->makeBlock()));
+        $text = $this->drainNotice($notice);
+        self::assertStringContainsString('127.0.0.1:1', $text, 'the authority is the useful part of the sentence');
+        self::assertStringNotContainsString('s3cr3t', $text, 'credentials must never reach the warning channel');
+    }
+
+    public function testStreamLegSilenceLatchRuleAtClassifierLevel(): void
+    {
+        // The stream leg's collapse of every failure into null (the
+        // once-S89 layering; Util\Http surfaces no error detail) makes
+        // 'never answered' the honest evidence. Driven at the seam +
+        // classifier level because this machine runs the curl arm
+        // end-to-end: postJsonStream stays the pre-8.4/8.4 wrapper
+        // path the S19b/S92 pins already prove, and classifyLiveness
+        // is the leg-agnostic rule on top of it.
+        $countFile = tempnam(sys_get_temp_dir(), 'phpdup-s70-stream-');
+        self::assertIsString($countFile);
+        [$pid, $port, $server] = $this->forkClosingServer(4, 4, $countFile);
+        try {
+            $client   = new MlPairClient('http://ml.invalid', timeoutSec: 2);
+            $decision = ['host' => 'ml.invalid', 'port' => $port, 'addresses' => ['127.0.0.1']];
+            $notice   = $this->captureErrorStream($client);
+
+            $resp = (new \ReflectionMethod($client, 'postJsonStream'))
+                ->invoke($client, "http://ml.invalid:$port/score-pair", '{}', $decision);
+            self::assertNull($resp, 'the closing endpoint answers the wrapper with nothing');
+            (new \ReflectionMethod($client, 'classifyLiveness'))->invoke($client, $resp);
+
+            self::assertTrue(self::isDegraded($client), 'a stream-leg endpoint that has NEVER replied is unreachable');
+            self::assertSame('unreachable', $client->connectionStatus());
+            self::assertStringContainsString('no HTTP response received', $this->drainNotice($notice));
+        } finally {
+            $this->reapForkedHttpServer($pid);
+            fclose($server);
+        }
+        @unlink($countFile);
+    }
+
+    public function testStreamLegAfterFirstReachKeepsPerPairToleranceAtClassifierLevel(): void
+    {
+        // Counterfactual for the rule above: once ANY response has
+        // arrived, stream-leg nulls are the established verdict
+        // fallback — not a liveness verdict (documented residual of
+        // that leg, class docblock).
+        $client = new MlPairClient('http://127.0.0.1:1', timeoutSec: 1, allowPrivate: true);
+        $notice = $this->captureErrorStream($client);
+        (new \ReflectionProperty($client, 'everReached'))->setValue($client, true);
+
+        (new \ReflectionMethod($client, 'classifyLiveness'))->invoke($client, null);
+        self::assertFalse(self::isDegraded($client), 'post-reach stream-leg nulls must never latch');
+        self::assertSame('reachable', $client->connectionStatus());
+        self::assertSame('', $this->drainNotice($notice));
+    }
+
+    public function testPinningRefusalCarriesNoLivenessEvidenceNeverLatches(): void
+    {
+        // A zero-address decision is refused without dialling (engine
+        // fail-closed posture): the client must stay 'idle', not
+        // wear the down-endpoint latch — policy ≠ liveness.
+        $client = new MlPairClient('http://ml.invalid', timeoutSec: 1);
+        $notice = $this->captureErrorStream($client);
+        $decision = ['host' => 'ml.invalid', 'port' => 9, 'addresses' => []];
+
+        $resp = (new \ReflectionMethod($client, 'transportPost'))
+            ->invoke($client, 'http://ml.invalid:9/score-pair', '{}', $decision);
+        self::assertNull($resp);
+        self::assertFalse(self::isDegraded($client));
+        self::assertSame(0, self::dialAttempts($client), 'refused-before-dial attempts are not connects');
+        self::assertSame('idle', $client->connectionStatus());
+        self::assertSame('', $this->drainNotice($notice));
+    }
+
+    public function testClusterRunWithFakeDownSidecarCompletesAndTiersStayHonest(): void
+    {
+        // "run finishes exit 0" at the layer this lane owns: the real
+        // Clusterer over a real index, driven by a real (refused)
+        // client. The run must COMPLETE, exact-hash siblings must
+        // still cluster, and the dead endpoint must cost ONE dial no
+        // matter how many pairs fall through to the last-chance ML
+        // arm. The clusters are asserted equal to the clientless
+        // baseline: a degraded ML tier degrades precision, never the
+        // other tiers' verdicts.
+        $blocks = [
+            $this->s70Block('<?php function f($x) { return $x + 1; }'),
+            $this->s70Block('<?php function g($y) { return $y + 1; }'),
+            $this->s70Block('<?php function h($id) { User::destroy($id); }'),
+        ];
+        $index = new \Phpdup\Index\BlockIndex();
+        foreach ($blocks as $block) {
+            $index->add($block);
+        }
+
+        $client   = new MlPairClient('http://127.0.0.1:1', timeoutSec: 1, allowPrivate: true);
+        $notice   = $this->captureErrorStream($client);
+        $clusterer = new \Phpdup\Clustering\Clusterer(
+            similarity: new \Phpdup\Similarity\JaccardSimilarity(),
+            tree: new \Phpdup\Similarity\TreeEditDistance(),
+            similarityThreshold: 0.99,
+            treeThreshold: 0.99,
+            maxDocumentFrequency: 1.0,
+            optionalBlocksEnabled: false,
+            irScoring: false,
+            mlPairClient: $client,
+            mlPairThreshold: 0.80,
+        );
+        $baseline = new \Phpdup\Clustering\Clusterer(
+            similarity: new \Phpdup\Similarity\JaccardSimilarity(),
+            tree: new \Phpdup\Similarity\TreeEditDistance(),
+            similarityThreshold: 0.99,
+            treeThreshold: 0.99,
+            maxDocumentFrequency: 1.0,
+            optionalBlocksEnabled: false,
+            irScoring: false,
+        );
+
+        $degradedClusters  = $clusterer->cluster($index);
+        $baselineClusters  = $baseline->cluster($index);
+
+        self::assertIsArray($degradedClusters, 'the run finished — an unreachable sidecar never escapes an exception');
+        self::assertSame(
+            self::s70ClusterShapes($baselineClusters),
+            self::s70ClusterShapes($degradedClusters),
+            'the AST tiers must be untouched by the degraded ML tier',
+        );
+        self::assertTrue(self::isDegraded($client), 'the refused endpoint latched during the run');
+        self::assertSame(1, self::dialAttempts($client), 'one connect total, however many pairs consulted the pair tier');
+        self::assertStringContainsString('unreachable', $this->drainNotice($notice));
+    }
+
+    public function testConnectionStatusVocabularyOffIdleReachableUnreachable(): void
+    {
+        // The four-state surface the owner-gated schema-1.8 carrier
+        // will later read; 'no dups' (a clean reachable run) and a
+        // degraded run must never share a status value.
+        self::assertSame('off', (new MlPairClient('', timeoutSec: 1))->connectionStatus());
+        self::assertSame('idle', (new MlPairClient('http://127.0.0.1:1', timeoutSec: 1))->connectionStatus());
+
+        // Default policy refuses the loopback literal AT THE GATE —
+        // policy verdict, zero dials, still 'idle' (not 'unreachable').
+        $refusedAtGate = new MlPairClient('http://127.0.0.1:1', timeoutSec: 1);
+        self::assertNull($refusedAtGate->score($this->makeBlock(), $this->makeBlock()));
+        self::assertSame('idle', $refusedAtGate->connectionStatus());
+        self::assertSame(0, self::dialAttempts($refusedAtGate));
+
+        $body       = '{"similarity":0.7,"confidence":0.6}';
+        $response   = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " . strlen($body) . "\r\n\r\n" . $body;
+        [$pid, $port, $server] = $this->forkHttpServer(
+            static fn(string $request): string => $response,
+            5,
+            1
+        );
+        try {
+            $ok = new MlPairClient("http://127.0.0.1:$port", timeoutSec: 2, allowPrivate: true);
+            $verdict = $ok->score($this->makeBlock(), $this->makeBlock());
+            self::assertIsArray($verdict, 'the positive side: a clean dial answers');
+            self::assertSame('reachable', $ok->connectionStatus(), 'a clean ML run reads as reachable, never as unreachable');
+            self::assertFalse(self::isDegraded($ok));
+            self::assertSame(1, self::dialAttempts($ok));
+        } finally {
+            fclose($server);
+            $this->reapForkedHttpServer($pid);
+        }
+    }
+
+    // ----- once-S70 helpers -------------------------------------------
+
+    /**
+     * Redirect the degrade notice into memory and return the buffer,
+     * so pins assert on the ACTUAL writer (php://stderr in production,
+     * this resource in tests) — never on a rendered mirror.
+     *
+     * @return resource
+     */
+    private function captureErrorStream(MlPairClient $client)
+    {
+        $stream = fopen('php://temp', 'r+');
+        self::assertIsResource($stream);
+        (new \ReflectionProperty($client, 'errorStream'))->setValue($client, $stream);
+        return $stream;
+    }
+
+    /** @param resource $stream */
+    private function drainNotice($stream): string
+    {
+        rewind($stream);
+        return (string) stream_get_contents($stream);
+    }
+
+    private static function dialAttempts(MlPairClient $client): int
+    {
+        return (new \ReflectionProperty($client, 'dialAttempts'))->getValue($client);
+    }
+
+    private static function isDegraded(MlPairClient $client): bool
+    {
+        return (new \ReflectionProperty($client, 'degraded'))->getValue($client);
+    }
+
+    /**
+     * Block with the FULL field set the Clusterer consumes (the
+     * tier-venue builder, mirrored — MlPairClientTest::makeBlock stays
+     * byte-untouched for the era pins).
+     */
+    private function s70Block(string $code): Block
+    {
+        $stmts  = (new AstParser())->parseCode($code);
+        $blocks = (new \Phpdup\Extraction\BlockExtractor(minSize: 1))->extract('test.php', $stmts);
+        self::assertNotEmpty($blocks);
+        $block = $blocks[0];
+        (new \Phpdup\Normalization\Normalizer(mode: 'aggressive'))->normalize($block);
+        $block->structuralHash = (new \Phpdup\Fingerprint\SubtreeHasher())->hash($block->canonical);
+        $block->ngramBag       = (new \Phpdup\Fingerprint\NgramFingerprint(3))->fingerprint($block->canonical);
+        $block->id             = $block->structuralHash . '_' . spl_object_id($block);
+        return $block;
+    }
+
+    /**
+     * @param list<\Phpdup\Clustering\Cluster> $clusters
+     * @return list<string>
+     */
+    private static function s70ClusterShapes(array $clusters): array
+    {
+        $shapes = [];
+        foreach ($clusters as $cluster) {
+            $members = array_map(static fn($b): string => (string) $b->id, $cluster->members);
+            sort($members);
+            $shapes[] = implode('|', $members);
+        }
+        sort($shapes);
+        return $shapes;
+    }
+
+    /**
+     * Counting accept-then-close sidecar: the child accepts up to
+     * $maxAccepts connections, answers EACH with an immediate close
+     * (no byte ever written — the finding's "server never really
+     * up" shape), and on exit records the accept count where the
+     * parent can read it. A storming client burns through the accept
+     * budget; a backing-off client leaves the child idling until the
+     * accept timeout ends the loop — the written count is the proof
+     * either way, independent of the client's own counters.
+     *
+     * @return array{0: int, 1: int, 2: resource} [pid, port, listener]
+     */
+    private function forkClosingServer(int $maxAccepts, int $acceptTimeoutSec, string $countFile): array
+    {
+        if (!function_exists('pcntl_fork') || !function_exists('pcntl_waitpid')) {
+            self::markTestSkipped('forked HTTP server requires pcntl_fork/pcntl_waitpid');
+        }
+        if (!function_exists('posix_kill')) {
+            self::markTestSkipped('forked HTTP server reaper requires posix_kill');
+        }
+        $server = @stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
+        if ($server === false) {
+            self::markTestSkipped("loopback bind unavailable: $errstr");
+        }
+        $name = (string)stream_socket_get_name($server, false);
+        $port = (int)substr($name, (int)strrpos($name, ':') + 1);
+        self::assertGreaterThan(0, $port);
+
+        $pid = pcntl_fork();
+        if ($pid === -1) {
+            fclose($server);
+            self::markTestSkipped('pcntl_fork failed');
+        }
+        if ($pid === 0) {
+            while (ob_get_level() > 0) {
+                ob_end_clean();
+            }
+            $accepted = 0;
+            for ($i = 0; $i < $maxAccepts; $i++) {
+                $conn = @stream_socket_accept($server, $acceptTimeoutSec);
+                if ($conn === false) {
+                    break;
+                }
+                $accepted++;
+                fclose($conn); // the fake-down handshake: accepted, then silence
+            }
+            fclose($server);
+            file_put_contents($countFile, (string) $accepted);
+            exit(0);
+        }
+        return [$pid, $port, $server];
+    }
 }

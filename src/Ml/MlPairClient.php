@@ -65,6 +65,35 @@ use Phpdup\Util\Http;
  * IR lifter: when the ML service is unavailable, phpdup keeps
  * working with reduced precision rather than failing the run.
  *
+ * **Degraded mode (once-S70, php-dup-finder-once-082)**
+ *
+ * Null-per-pair was honest but silent, and the consumers' per-pair
+ * retry made a DOWN sidecar exponentially loud: PairScoreWorker's
+ * batch-then-retry loop and the serial last-chance arm each re-dial
+ * once per candidate pair, so an unreachable endpoint turned every
+ * run into a connect storm against a machine that cannot answer
+ * (the exact shape engine-S21's memoized gate decision was built to
+ * feed, never to amortize-refuse). The client therefore treats the
+ * FIRST dial as a probe and, when that attempt proves the endpoint
+ * unreachable, latches into fallback mode for the whole lifetime of
+ * the instance: every later score()/scoreBatch() call returns null
+ * immediately, with zero further network work, and the latch emits
+ * exactly one warning line on stderr so a degraded run is visibly
+ * distinct from a quiet "no duplicates" run. {@see
+ * self::connectionStatus()} carries the state ('unreachable' is the
+ * value the owner-gated schema-1.8 summary slot will surface).
+ * The latch is keyed on REACHABILITY evidence, not model quality: a
+ * sidecar that answers HTTP — even with junk, non-2xx, or a
+ * deadline-missed reply after an earlier good response — keeps the
+ * established engine-S20 per-pair null-verdict tolerance untouched.
+ * On the stream leg the shared transport surfaces no error detail
+ * (once-S89 layering; Util\Http is outside this lane), so the honest
+ * evidence there is silence-to-date: an endpoint that has never
+ * produced a single HTTP reply is unreachable; once one has
+ * answered, later nulls are verdict fallbacks, not reachability
+ * verdicts (documented residual: mid-run death on that leg is
+ * indistinguishable from a lying body).
+ *
  * "Malformed" is enforced strictly since engine-S20 (php-dup-finder-
  * engine-013/014): every verdict number — similarity/confidence in
  * either endpoint, positional or named — must clear the shared
@@ -519,6 +548,51 @@ final class MlPairClient implements PairScorer
 
     private int $curlHandlePid = 0;
 
+    // -----------------------------------------------------------------
+    // once-S70 degraded mode (php-dup-finder-once-082): one connect
+    // probe, backoff, visible status. The first dispatched dial of
+    // the instance doubles as the probe; a REACHABILITY-class failure
+    // on it (or any later transport-proven death on the curl leg)
+    // latches fallback mode for the rest of the instance's life, so
+    // the consumers' per-pair retry loop never re-POSTs a dead
+    // endpoint. Plain mutable state (not readonly, no constant — the
+    // class-census in MlPairClientTest forbids either).
+    // -----------------------------------------------------------------
+
+    /** Latched fallback mode: every later call answers null without dialling. */
+    private bool $degraded = false;
+
+    /** True once ANY HTTP response body has come back from this endpoint. */
+    private bool $everReached = false;
+
+    /** Reason sentence captured at the latch (echoed by the one-time notice). */
+    private string $degradeReason = '';
+
+    /**
+     * @internal test seam (once-S70 counting): POSTs actually
+     *           dispatched onto a transport (gate refusals and
+     *           pinning refusals dial nothing and stay uncounted).
+     *           The degraded-mode acceptance pin: a fake-down
+     *           sidecar must see EXACTLY 1 however many pairs the
+     *           caller scores.
+     */
+    private int $dialAttempts = 0;
+
+    /** Whether the most recent seam call delegated a real transfer. */
+    private bool $lastCallDialled = false;
+
+    /** Which seam performed the most recent dial ('' = none since last call). */
+    private string $lastCallLeg = '';
+
+    /**
+     * Writer for the one-time degrade notice — php://stderr resolved
+     * lazily by {@see self::errorWriter()}; the property is a test
+     * seam so pins can assert on the ACTUAL writer, not a mirror.
+     *
+     * @var resource|null
+     */
+    private mixed $errorStream = null;
+
     /**
      * The memoized gate decision for this instance's authority.
      *
@@ -587,6 +661,9 @@ final class MlPairClient implements PairScorer
         if ($this->baseUrl === '') {
             return null;
         }
+        if ($this->degraded) {
+            return null; // once-S70 fallback mode: the probe already failed, no re-dial
+        }
         $url = rtrim($this->baseUrl, '/') . '/score-pair';
         $decision = $this->endpointDecision();
         if ($decision === null) {
@@ -599,7 +676,7 @@ final class MlPairClient implements PairScorer
             return null;
         }
 
-        $resp = $this->postJson($url, $body, $decision);
+        $resp = $this->transportPost($url, $body, $decision);
         if ($resp === null) {
             return null;
         }
@@ -692,6 +769,9 @@ final class MlPairClient implements PairScorer
         if ($this->baseUrl === '' || $pairs === []) {
             return null;
         }
+        if ($this->degraded) {
+            return null; // once-S70 fallback mode: the probe already failed, no re-dial
+        }
         $url = rtrim($this->baseUrl, '/') . '/score-batch';
         $decision = $this->endpointDecision();
         if ($decision === null) {
@@ -703,12 +783,44 @@ final class MlPairClient implements PairScorer
             return null;
         }
 
-        $resp = $this->postJson($url, $body, $decision);
+        $resp = $this->transportPost($url, $body, $decision);
         if ($resp === null) {
             return null;
         }
 
         return $this->parseBatchVerdicts($resp, count($pairs));
+    }
+
+    /**
+     * once-S70 visible status (php-dup-finder-once-082): what the
+     * endpoint machinery knows about this instance's dial life.
+     *
+     * - 'off'         — no base URL, the client never dials (disabled tier);
+     * - 'idle'        — nothing reached a transport yet (no call, or only
+     *                   gate/pinning refusals, which are policy verdicts
+     *                   rather than liveness evidence);
+     * - 'reachable'   — at least one HTTP response body has arrived;
+     * - 'unreachable' — the degraded-mode latch fired: a dial attempt
+     *                   proved the endpoint unreachable and every later
+     *                   call has been answering null from fallback mode
+     *                   with zero network work. This is the value the
+     *                   owner-gated schema-1.8 `summary.ml_status`
+     *                   carrier is designed to surface at 1.7+ (the
+     *                   JSON payload itself stays shape-frozen until
+     *                   that window — see reviews/exec/once-S70.impl.md).
+     */
+    public function connectionStatus(): string
+    {
+        if ($this->baseUrl === '') {
+            return 'off';
+        }
+        if ($this->degraded) {
+            return 'unreachable';
+        }
+        if ($this->everReached) {
+            return 'reachable';
+        }
+        return 'idle';
     }
 
     /**
@@ -822,6 +934,118 @@ final class MlPairClient implements PairScorer
     }
 
     /**
+     * Transport orchestration seam (once-S70): the ONLY caller-side
+     * path score()/scoreBatch() take. Delegates to {@see
+     * self::postJson()}, counts real dials for the degraded-mode
+     * acceptance pin, and feeds the liveness classifier, which is
+     * where the one-probe-then-backoff decision lives. Direct seam
+     * calls (the engine-S19b/S92-era transport tests drive the legs
+     * that way with forged decisions) never reach this wrapper, so
+     * they stay pure transport probes and cannot latch a client.
+     *
+     * @param array{host: string, port: int, addresses: list<string>} $decision
+     */
+    private function transportPost(string $url, string $body, array $decision): ?string
+    {
+        $this->lastCallDialled = false;
+        $this->lastCallLeg     = '';
+        $resp = $this->postJson($url, $body, $decision);
+        if ($this->lastCallDialled) {
+            $this->dialAttempts++;
+        }
+        $this->classifyLiveness($resp);
+        return $resp;
+    }
+
+    /**
+     * Read a dial's outcome as LIVENESS evidence and, on a
+     * reachability-class failure, latch fallback mode (once-S70).
+     *
+     * The classification is deliberately narrow — "did this endpoint
+     * ever answer, and if it just failed, is the FAILURE transport-
+     * level?":
+     *
+     * - body in hand → reachable, always (a malformed body is the
+     *   engine-S20 decode fence's problem, not a liveness one);
+     * - curl leg → the reused handle still carries the transfer's
+     *   error code: 0 (an HTTP status arrived, refused for
+     *   non-2xx/over-cap later in Util\Http) or CURLE_WRITE_ERROR
+     *   (bytes were mid-response when the cap aborted them) both
+     *   PROVE an answering endpoint; any other errno means the
+     *   connection was refused, timed out, or died before a reply
+     *   ever started — unreachable;
+     * - stream leg → Util\Http collapses every failure shape into
+     *   null (once-S89 layering; its file is outside this lane), so
+     *   the honest evidence is silence-to-date: no response EVER on
+     *   this instance → the probe failed → unreachable; an endpoint
+     *   that has answered before keeps the per-pair null-verdict
+     *   tolerance (documented residual: mid-run death on this leg
+     *   looks like a lying body).
+     */
+    private function classifyLiveness(?string $body): void
+    {
+        if (!$this->lastCallDialled) {
+            return; // refused without dialling: policy verdict, no liveness evidence
+        }
+        if ($body !== null) {
+            $this->everReached = true;
+            return;
+        }
+        if ($this->lastCallLeg === 'curl') {
+            $errno = $this->curlHandle === null ? 0 : curl_errno($this->curlHandle);
+            if ($errno === 0 || $errno === CURLE_WRITE_ERROR) {
+                $this->everReached = true; // HTTP-level answer received
+                return;
+            }
+            $this->enterDegraded("connection error (curl errno $errno)");
+            return;
+        }
+        if (!$this->everReached) {
+            $this->enterDegraded('no HTTP response received');
+        }
+    }
+
+    /**
+     * Latch fallback mode for the rest of this instance's life and
+     * make it VISIBLE: one warning line on stderr, emitted exactly
+     * once (the guard lives in the callers — a degraded client never
+     * classifies again). The line names the authority from the
+     * gate decision, never the raw base URL, so a URL that carried
+     * userinfo cannot leak credentials through the notice.
+     */
+    private function enterDegraded(string $why): void
+    {
+        $this->degraded      = true;
+        $this->degradeReason = $why;
+        $authority = $this->gateDecision === null
+            ? 'endpoint'
+            : $this->gateDecision['host'] . ':' . $this->gateDecision['port'];
+        $writer = $this->errorWriter();
+        if (is_resource($writer)) {
+            fwrite($writer, "phpdup: warning: ML pair sidecar $authority unreachable ($why) — "
+                . "pair tier disabled for the rest of this run, scoring falls back to the AST tiers "
+                . "(status unreachable; exit status unaffected)\n");
+        }
+    }
+
+    /**
+     * Resolve the degrade-notice writer: the injected resource when
+     * a test (or embedder) supplied one, else php://stderr — the
+     * same "warning on stderr, run keeps going" channel the scanner
+     * skip notes and config warnings already use.
+     *
+     * @return resource|null
+     */
+    private function errorWriter()
+    {
+        if (is_resource($this->errorStream)) {
+            return $this->errorStream;
+        }
+        $stderr = @fopen('php://stderr', 'w');
+        return $stderr === false ? null : $stderr;
+    }
+
+    /**
      * curl seam: pin-computation policy via MlClient (engine-S19b),
      * transport mechanics via Util\Http, connection economics via the
      * one shared handle below (engine-S21 keep-alive). The total
@@ -836,7 +1060,13 @@ final class MlPairClient implements PairScorer
         if ($ch === null) {
             return null;
         }
-        return Http::curlPost($url, $body, MlClient::curlPinEntries($decision), $ch, $this->timeoutSec, MlClient::MAX_RESPONSE_BYTES);
+        $pins = MlClient::curlPinEntries($decision);
+        if ($pins === null) {
+            return null; // pinning refusal: dial nothing (once-S70: no liveness evidence either)
+        }
+        $this->lastCallDialled = true;
+        $this->lastCallLeg     = 'curl';
+        return Http::curlPost($url, $body, $pins, $ch, $this->timeoutSec, MlClient::MAX_RESPONSE_BYTES);
     }
 
     /**
@@ -855,7 +1085,13 @@ final class MlPairClient implements PairScorer
      */
     private function postJsonStream(string $url, string $body, array $decision): ?string
     {
-        return Http::streamPost(MlClient::pinnedStreamRequest($url, $decision), $body, $this->timeoutSec, MlClient::MAX_RESPONSE_BYTES);
+        $pin = MlClient::pinnedStreamRequest($url, $decision);
+        if ($pin === null) {
+            return null; // rewrite refusal: dial nothing (once-S70: no liveness evidence either)
+        }
+        $this->lastCallDialled = true;
+        $this->lastCallLeg     = 'stream';
+        return Http::streamPost($pin, $body, $this->timeoutSec, MlClient::MAX_RESPONSE_BYTES);
     }
 
     /**
