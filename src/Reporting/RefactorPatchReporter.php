@@ -337,9 +337,9 @@ final class RefactorPatchReporter
         // real, current dir instead of a success line over nothing, the
         // same admission as the F1a leg and the sibling dir writers), and
         // drop the previous generation's patches before this run lays its
-        // own (pattern-scoped — see the sweep).
+        // own (trait sweep scoped to OWNED_PATCHES_PATTERN).
         $this->ensureDirectory($dir);
-        $this->sweepOwnedPatches($dir);
+        $this->sweepOwnedNames($dir, self::OWNED_PATCHES_PATTERN, 'refactor patch');
 
         // output-S55: the plain .patch surface writes exactly the pure
         // build() map through the fail-loud venue.
@@ -371,64 +371,6 @@ final class RefactorPatchReporter
             $files[$safeId . '.patch'] = $this->buildPatch($cluster, $safeId, $store);
         }
         return $files;
-    }
-
-    /**
-     * once-074 (once-S65): remove the output dir's stale generation of THIS
-     * reporter's plain-surface patches before the current run writes its
-     * own. Ownership is the mintable name, and only the name: entries
-     * matching {@see OWNED_PATCHES_PATTERN} as regular files (the last
-     * run's patches) or symlinks (removed AS a link, never written
-     * through). Directories wearing an owned name — the extractor's
-     * Refactored/ tree is NOT in the pattern anyway — and everything else
-     * survive: the sweep lists one directory and recurses nothing. A dir
-     * that cannot be listed, or a removal the disk refused while the name
-     * stays, raises {@see ReportWriteException} naming the path: a mixed-
-     * generation patch dir is exactly the silent-success the venue exists
-     * to kill. Same doctrine as the HtmlReporter and RefactorTestReporter
-     * sweeps; the triplication is lock-bounded (WritesReportFile is not a
-     * file of this step) and routed as a trait-rider in the step report.
-     */
-    private function sweepOwnedPatches(string $dir): void
-    {
-        [$entries, $diagnostic] = self::attempt(static fn () => scandir($dir));
-        if (!is_array($entries)) {
-            throw new ReportWriteException(sprintf(
-                'sweeping stale refactor patches in %s failed: directory cannot be listed (%s)',
-                $dir,
-                $diagnostic !== '' ? $diagnostic : 'no diagnostic recorded',
-            ));
-        }
-        foreach ($entries as $entry) {
-            if (!is_string($entry) || preg_match(self::OWNED_PATCHES_PATTERN, $entry) !== 1) {
-                continue;
-            }
-            $path = $dir . DIRECTORY_SEPARATOR . $entry;
-            if (is_link($path)) {
-                $this->removeOwnedPatch($path);
-                continue;
-            }
-            if (is_file($path)) {
-                $this->removeOwnedPatch($path);
-            }
-        }
-    }
-
-    /**
-     * Unlink one owned patch name — or say so (race posture mirrors the
-     * trait's ensureDirectory(): refused-and-still-there is a failure;
-     * raced-away is already clean).
-     */
-    private function removeOwnedPatch(string $path): void
-    {
-        [$ok, $diagnostic] = self::attempt(static fn () => unlink($path));
-        if ($ok === false && (is_link($path) || is_file($path))) {
-            throw new ReportWriteException(sprintf(
-                'removing stale refactor patch %s failed: %s',
-                $path,
-                $diagnostic !== '' ? $diagnostic : 'no diagnostic recorded',
-            ));
-        }
     }
 
     /**

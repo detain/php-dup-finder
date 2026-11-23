@@ -64,8 +64,8 @@ final class RefactorTestReporter
     {
         $this->ensureDirectory($dir);
         // once-074: one generation per dir — drop the previous run's
-        // skeletons before this run lays its own.
-        $this->sweepOwnedSkeletons($dir);
+        // skeletons before this run lays its own (trait sweep, OWNED_SKELETON_PATTERN).
+        $this->sweepOwnedNames($dir, self::OWNED_SKELETON_PATTERN, 'test skeleton');
         foreach ($this->build($report) as $name => $contents) {
             $this->writeFile($dir . DIRECTORY_SEPARATOR . $name, $contents);
         }
@@ -89,63 +89,6 @@ final class RefactorTestReporter
             $files[$this->className($cluster) . '.php'] = $this->buildTest($cluster);
         }
         return $files;
-    }
-
-    /**
-     * once-074 (once-S65): remove the output dir's stale generation of THIS
-     * reporter's skeletons before the current run writes its own. Ownership
-     * is the mintable name, and only the name: entries matching
-     * {@see OWNED_SKELETON_PATTERN} as regular files (the last run's
-     * skeletons) or symlinks (removed AS a link, never written through). A
-     * directory wearing an owned name, and everything outside the pattern,
-     * survives — the sweep lists one directory and recurses nothing. A dir
-     * that cannot be listed, or a removal the disk refused while the name
-     * stays, raises {@see ReportWriteException} naming the path: a mixed-
-     * generation skeleton dir is exactly the silent-success the venue
-     * exists to kill. Same doctrine as HtmlReporter's sweep; the
-     * duplication is lock-bounded (WritesReportFile is not this step's
-     * file) and routed as a trait-rider in the step report.
-     */
-    private function sweepOwnedSkeletons(string $dir): void
-    {
-        [$entries, $diagnostic] = self::attempt(static fn () => scandir($dir));
-        if (!is_array($entries)) {
-            throw new ReportWriteException(sprintf(
-                'sweeping stale test skeletons in %s failed: directory cannot be listed (%s)',
-                $dir,
-                $diagnostic !== '' ? $diagnostic : 'no diagnostic recorded',
-            ));
-        }
-        foreach ($entries as $entry) {
-            if (!is_string($entry) || preg_match(self::OWNED_SKELETON_PATTERN, $entry) !== 1) {
-                continue;
-            }
-            $path = $dir . DIRECTORY_SEPARATOR . $entry;
-            if (is_link($path)) {
-                $this->removeOwnedSkeleton($path);
-                continue;
-            }
-            if (is_file($path)) {
-                $this->removeOwnedSkeleton($path);
-            }
-        }
-    }
-
-    /**
-     * Unlink one owned skeleton name — or say so (race posture mirrors the
-     * trait's ensureDirectory(): refused-and-still-there is a failure;
-     * raced-away is already clean).
-     */
-    private function removeOwnedSkeleton(string $path): void
-    {
-        [$ok, $diagnostic] = self::attempt(static fn () => unlink($path));
-        if ($ok === false && (is_link($path) || is_file($path))) {
-            throw new ReportWriteException(sprintf(
-                'removing stale test skeleton %s failed: %s',
-                $path,
-                $diagnostic !== '' ? $diagnostic : 'no diagnostic recorded',
-            ));
-        }
     }
 
     /**

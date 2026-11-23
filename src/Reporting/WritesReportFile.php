@@ -116,6 +116,79 @@ trait WritesReportFile
     }
 
     /**
+     * once-074 (step once-S65, r1 MEDIUM-1 fold): remove `$dir`'s stale
+     * generation of entries THIS consumer can mint, before the current run
+     * writes its own — the single removal-semantics site shared by every
+     * directory-writing reporter (output-S55's convergence law: a write, a
+     * directory, and now a sweep all fail loud from one venue).
+     *
+     * `$pattern` is the caller's OWNED_* constant — the exact image of the
+     * names that writer mints — and `$what` is the singular noun its refusal
+     * messages speak with. The doctrine, unchanged from the three bodies
+     * this replaces: list `$dir` once through {@see attempt()} (a directory
+     * that cannot be listed cannot be proven clean — refuse, naming it);
+     * touch only string entries matching `$pattern` that are regular files
+     * or symlinks (a link is removed AS a link, never written through; a
+     * directory or exotic type wearing an owned name is user content the
+     * reporter could not have minted and survives — the current run's own
+     * write fails loudly on it if the name is ever needed). Everything
+     * outside the pattern survives, at every level: one dir is listed,
+     * nothing is recursed. A removal the disk refused while the name is
+     * still there raises {@see ReportWriteException}; one that raced away is
+     * already clean — the same race posture as {@see ensureDirectory()}.
+     * A mixed-generation surface is exactly the silent success the venue
+     * exists to kill, so the CLI prints the `phpdup:` line and exits 1 over
+     * an honest refusal instead of a success line over stale bytes.
+     *
+     * @param string $dir     The output directory to clear of this generation's predecessors.
+     * @param string $pattern Ownership regex over bare entry names (the caller's OWNED_* constant).
+     * @param string $what    Singular noun for the refusal messages ('report page', 'refactor patch', ...).
+     */
+    protected function sweepOwnedNames(string $dir, string $pattern, string $what): void
+    {
+        [$entries, $diagnostic] = self::attempt(static fn () => scandir($dir));
+        if (!is_array($entries)) {
+            throw new ReportWriteException(sprintf(
+                'sweeping stale %s in %s failed: directory cannot be listed (%s)',
+                $what,
+                $dir,
+                $diagnostic !== '' ? $diagnostic : 'no diagnostic recorded',
+            ));
+        }
+        foreach ($entries as $entry) {
+            if (!is_string($entry) || preg_match($pattern, $entry) !== 1) {
+                continue; // not a name this reporter can mint — never its business
+            }
+            $path = $dir . DIRECTORY_SEPARATOR . $entry;
+            if (is_link($path)) {
+                $this->removeOwnedName($path, $what);
+                continue;
+            }
+            if (is_file($path)) {
+                $this->removeOwnedName($path, $what);
+            }
+        }
+    }
+
+    /**
+     * Unlink one owned name — or say so (race posture identical to the old
+     * per-reporter arms and to {@see ensureDirectory()}: refused-and-still-
+     * there is a refusal that names the path; raced-away is already clean).
+     */
+    private function removeOwnedName(string $path, string $what): void
+    {
+        [$ok, $diagnostic] = self::attempt(static fn () => unlink($path));
+        if ($ok === false && (is_link($path) || is_file($path))) {
+            throw new ReportWriteException(sprintf(
+                'removing stale %s %s failed: %s',
+                $what,
+                $path,
+                $diagnostic !== '' ? $diagnostic : 'no diagnostic recorded',
+            ));
+        }
+    }
+
+    /**
      * Runs `$operation` under a scoped error handler that captures the
      * first diagnostic the stream machinery emits, and restores the
      * previous handler in a `finally` — so a failed write neither sprays

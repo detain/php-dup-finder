@@ -152,8 +152,8 @@ final class HtmlReporter
     {
         $this->ensureDirectory($dir);
         // once-074: one generation per dir — drop the previous run's pages
-        // before this run lays its own (pattern-scoped, see the sweep).
-        $this->sweepOwnedPages($dir);
+        // before this run lays its own (trait sweep scoped to OWNED_PAGE_PATTERN).
+        $this->sweepOwnedNames($dir, self::OWNED_PAGE_PATTERN, 'report page');
 
         $store = $this->sourceText ?? new SourceTextStore($report->config->paths);
 
@@ -227,71 +227,6 @@ final class HtmlReporter
             $files[sprintf('cluster-%03d.html', $i + 1)] = $this->renderCluster($i + 1, $cluster, $report, $store);
         }
         return $files;
-    }
-
-    /**
-     * once-074 (once-S65): remove the output dir's stale generation of THIS
-     * reporter's cluster pages before the current run writes its own.
-     *
-     * Ownership is the name, and only the name: entries matching
-     * {@see OWNED_PAGE_PATTERN} are regular files (the common case — the
-     * last run's pages), symlinks (removed AS a link so a planted
-     * redirect is never written through, and the current run's page takes
-     * the name), or nothing at all. Directories wearing an owned name are
-     * user content this reporter could not have minted (a page is never a
-     * dir) and survive untouched — as does everything outside the pattern,
-     * at every level: the sweep lists one directory and recurses nothing.
-     *
-     * Failure is loud by the S54 venue's doctrine: a dir the run cannot
-     * enumerate cannot be proven clean, and a page whose removal the disk
-     * refused means the dir would ship mixed generations — either raises
-     * {@see ReportWriteException} naming the path and the captured
-     * diagnostic, so the CLI prints the `phpdup:` line and exits 1 over an
-     * honest refusal instead of a success line over a stale site.
-     */
-    private function sweepOwnedPages(string $dir): void
-    {
-        [$entries, $diagnostic] = self::attempt(static fn () => scandir($dir));
-        if (!is_array($entries)) {
-            throw new ReportWriteException(sprintf(
-                'sweeping stale report pages in %s failed: directory cannot be listed (%s)',
-                $dir,
-                $diagnostic !== '' ? $diagnostic : 'no diagnostic recorded',
-            ));
-        }
-        foreach ($entries as $entry) {
-            if (!is_string($entry) || preg_match(self::OWNED_PAGE_PATTERN, $entry) !== 1) {
-                continue; // not a name this reporter can mint — never its business
-            }
-            $path = $dir . DIRECTORY_SEPARATOR . $entry;
-            if (is_link($path)) {
-                $this->removeOwnedPage($path);
-                continue;
-            }
-            if (is_file($path)) {
-                $this->removeOwnedPage($path);
-            }
-            // is_dir() (and any other exotic type) at an owned name: the
-            // reporter could not have created it; leave it. If it blocks
-            // this run's own page, writeFile fails loudly on that page.
-        }
-    }
-
-    /**
-     * Unlink one owned page name — or say so. Mirrors the race posture of
-     * the trait's ensureDirectory(): a removal that failed while the name
-     * is still there is a refusal; one that raced away is already clean.
-     */
-    private function removeOwnedPage(string $path): void
-    {
-        [$ok, $diagnostic] = self::attempt(static fn () => unlink($path));
-        if ($ok === false && (is_link($path) || is_file($path))) {
-            throw new ReportWriteException(sprintf(
-                'removing stale report page %s failed: %s',
-                $path,
-                $diagnostic !== '' ? $diagnostic : 'no diagnostic recorded',
-            ));
-        }
     }
 
     /**
