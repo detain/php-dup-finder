@@ -8,24 +8,20 @@ use Phpdup\Cli\Config;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
 use Phpdup\Parsing\AstParser;
-use Phpdup\Pipeline\PipelineState;
-use Phpdup\Pipeline\Stages\ClusterStage;
-use Phpdup\Pipeline\Stages\PreprocessStage;
-use Phpdup\Pipeline\Stages\RefactorStage;
-use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Reporting\GraphvizReporter;
 use Phpdup\Reporting\PlantumlReporter;
-use Phpdup\Reporting\Ranker;
 use Phpdup\Reporting\Report;
 use Phpdup\Util\ControlText;
 use Phpdup\Util\LineRange;
-use Symfony\Component\Console\Output\NullOutput;
 
 final class GraphReportersTest extends TestCase
 {
     public function testGraphvizEmitsValidDigraph(): void
     {
-        $report = $this->buildReport();
+        // output-S56b: synthetic 2-member carrier for the retired sql
+        // fixture — the edge regex needs at least one file→cluster arc,
+        // which a two-member cluster guarantees.
+        $report = $this->syntheticReport('G1', ['/scan/alpha.php', '/scan/beta.php']);
         $dot = (new GraphvizReporter())->build($report);
 
         $this->assertStringStartsWith('digraph phpdup {', $dot);
@@ -44,14 +40,15 @@ final class GraphReportersTest extends TestCase
 
     public function testPlantumlEmitsValidUmlDocument(): void
     {
-        $report = $this->buildReport();
+        // output-S56b: synthetic carrier; the cluster exists by
+        // construction, so the body pins are unconditional now
+        // (the fixture-era conditional could silently skip them).
+        $report = $this->syntheticReport('P1', ['/scan/alpha.php', '/scan/beta.php']);
         $puml = (new PlantumlReporter())->build($report);
         $this->assertStringStartsWith('@startuml phpdup', $puml);
         $this->assertStringEndsWith("@enduml\n", $puml);
-        if (count($report->clusters) > 0) {
-            $this->assertStringContainsString('package "', $puml);
-            $this->assertStringContainsString('class ', $puml);
-        }
+        $this->assertStringContainsString('package "', $puml);
+        $this->assertStringContainsString('class ', $puml);
     }
 
     public function testPlantumlEmptyReport(): void
@@ -220,29 +217,6 @@ final class GraphReportersTest extends TestCase
         return new Report(
             files: count($files), blocks: count($files), parseErrors: 0,
             clusters: [$cluster], config: Config::defaults([]),
-        );
-    }
-
-    private function buildReport(): Report
-    {
-        $config = new Config(
-            paths: [__DIR__ . '/../../Fixtures/sql'],
-            exclude: Config::defaults([])->exclude,
-            lazyAst: false,
-        );
-        $state = new PipelineState($config);
-        $out   = new NullOutput();
-        (new ScanningStage())->run($state, $out);
-        (new PreprocessStage(useCache: false))->run($state, $out);
-        (new ClusterStage(exactOnly: true))->run($state, $out);
-        (new RefactorStage(useCache: false))->run($state, $out);
-
-        return new Report(
-            files: count($state->files),
-            blocks: count($state->blocks),
-            parseErrors: $state->parseErrors,
-            clusters: (new Ranker($config->minClusterImpact))->rank($state->clusters),
-            config: $config,
         );
     }
 }
