@@ -25,8 +25,10 @@ phpdup analyze <project-roots> \
   exits `0`.
 - `--plain` keeps `OutputInterface` non-decorated so the plugin's
   console window doesn't accumulate ANSI escapes.
-- Exit codes (identical table to `docs/CLI.md`; every row below was
-  probe-verified or code-verified):
+- Exit codes (a superset of the `docs/CLI.md` table: the same five
+  rows plus the SIGINT `130` convention, with expanded detail on
+  `0`/`1`/`2` here; every row below was probe-verified or
+  code-verified):
   - `0` — analysis completed. Finding clusters is NOT an error: an
     empty `clusters` array is the only "clean" signal.
   - `1` — runtime error: uncaught exception, reporter failure, an
