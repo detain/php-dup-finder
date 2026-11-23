@@ -23,27 +23,47 @@ use Phpdup\Util\ControlText;
  *
  * output-S54 (once-040/output-024): the write leg is fail-loud — directory
  * creation and every skeleton write route through WritesReportFile.
+ *
+ * output-S55 (php-dup-finder-output-023): scaffold convergence. The
+ * per-cluster {@see buildTest()} now sits behind the pure multi-file seam
+ * {@see build()} (filename => skeleton source, the sanctioned
+ * array-shape of the reporting-pattern rule), and writeTo() writes exactly
+ * that map through the fail-loud venue. Output bytes unchanged.
  */
 final class RefactorTestReporter
 {
     use WritesReportFile;
 
     /**
-     * Write one PHPUnit test-skeleton file per cluster under `$dir`.
+     * House-rule entrypoint: write one PHPUnit test-skeleton file per
+     * cluster under `$dir`, exactly as {@see build()} renders them.
      */
     public function writeTo(Report $report, string $dir): void
     {
         $this->ensureDirectory($dir);
+        foreach ($this->build($report) as $name => $contents) {
+            $this->writeFile($dir . DIRECTORY_SEPARATOR . $name, $contents);
+        }
+    }
+
+    /**
+     * Pure seam wrapping {@see buildTest()} (output-S55): nothing is
+     * written here — cluster order is insertion order, and the filename
+     * stem stays the SAME output-S36 derivation the class name uses.
+     *
+     * @return array<string,string> '<Cluster…Test.php>' => skeleton source,
+     *                              one entry per multi-member cluster
+     */
+    public function build(Report $report): array
+    {
+        $files = [];
         foreach ($report->clusters as $cluster) {
             if (count($cluster->members) < 2) {
                 continue;
             }
-            // output-S36 (php-dup-finder-output-033): the filename stem and
-            // the declared class name are ONE derivation now — see
-            // className().
-            $file = $dir . DIRECTORY_SEPARATOR . $this->className($cluster) . '.php';
-            $this->writeFile($file, $this->buildTest($cluster));
+            $files[$this->className($cluster) . '.php'] = $this->buildTest($cluster);
         }
+        return $files;
     }
 
     /**

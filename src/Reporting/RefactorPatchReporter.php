@@ -80,6 +80,21 @@ use Phpdup\Util\ControlText;
  * mostly-hole or gap-riddled generalized template were a sound refactor.
  * Default config (ceiling 1.0) keeps the coverage leg inert; the knob is
  * the operator's stance, shared with the report surfaces.
+ *
+ * output-S55 (php-dup-finder-output-023): scaffold convergence. The plain
+ * .patch surface now writes exactly the pure multi-file seam
+ * {@see build()} (filename => patch text, the sanctioned array-shape of
+ * the reporting-pattern rule) through the fail-loud venue. The entrypoint
+ * width is reduced to state-passed construction: apply/dryRun ride the
+ * constructor (new RefactorPatchReporter($store, apply: true,
+ * dryRun: false)), and writeTo()'s two flags become optional per-call
+ * overrides resolving against that state. The override parameters exist
+ * ONLY because out-of-lock callers — ReportStage's apply leg and the
+ * committed RefactorPatchReporter/ScriptKind pins — pass them; the 2-arg
+ * house call writeTo(Report, string) is now the full contract. The F1b
+ * branch stays imperative by design: it is a write-window transaction
+ * whose summary reports what the extractor VERIFIED on disk — bytes,
+ * counters and refusal wording unchanged.
  */
 final class RefactorPatchReporter
 {
@@ -127,22 +142,42 @@ final class RefactorPatchReporter
      */
     private array $memberParseCache = [];
 
-    public function __construct(private readonly ?SourceTextStore $sourceText = null) {}
+    /**
+     * @param SourceTextStore|null $sourceText shared per-run source store
+     * @param bool $apply    output-S55 state-passed construction: the mode
+     *                       a plain two-argument writeTo() runs in.
+     * @param bool $dryRun   with apply state true: true writes the F1a
+     *                       cumulative apply.diff, false performs the F1b
+     *                       write-window extraction and its summary.
+     */
+    public function __construct(
+        private readonly ?SourceTextStore $sourceText = null,
+        private readonly bool $apply = false,
+        private readonly bool $dryRun = true,
+    ) {}
+
     /**
      * Write one `.patch` file per cluster under `$dir`.
      *
      * @param Report $report
      * @param string $dir Output directory
-     * @param bool $apply When true, write one cumulative artifact under $dir:
-     *                    {@see self::APPLY_DIFF_FILE} in dry-run (F1a scaffold
-     *                    patches) or {@see self::APPLY_SUMMARY_FILE} on real
-     *                    apply (F1b human summary — distinct name AND content
-     *                    kind per output-022).
-     * @param bool $dryRun When true with apply=true: write apply.diff only (F1a behavior).
-     *                    When false with apply=true: perform actual file extraction (F1b).
+     * @param ?bool $apply Per-call override of the construction state (see
+     *                     {@see self::__construct()}); null = use the state.
+     *                     When true, write one cumulative artifact under $dir:
+     *                     {@see self::APPLY_DIFF_FILE} in dry-run (F1a scaffold
+     *                     patches) or {@see self::APPLY_SUMMARY_FILE} on real
+     *                     apply (F1b human summary — distinct name AND content
+     *                     kind per output-022).
+     * @param ?bool $dryRun Per-call override of the state. When true with
+     *                     apply=true: write apply.diff only (F1a behavior).
+     *                     When false with apply=true: perform actual file
+     *                     extraction (F1b).
      */
-    public function writeTo(Report $report, string $dir, bool $apply = false, bool $dryRun = true): void
+    public function writeTo(Report $report, string $dir, ?bool $apply = null, ?bool $dryRun = null): void
     {
+        $apply  ??= $this->apply;
+        $dryRun ??= $this->dryRun;
+
         // Item 1.3 law: refuse the whole report BEFORE writing anything if
         // any cluster carries a 'script' member. Applies to every surface —
         // plain .patch files, F1a dry-run, F1b real apply — because the
@@ -167,9 +202,10 @@ final class RefactorPatchReporter
             }
         }
 
-        $store = $this->sourceText ?? new SourceTextStore($report->config->paths);
-
         if ($apply) {
+            // output-S55: the store resolves inside the apply branch — the
+            // plain surface's reads belong to build() now.
+            $store = $this->sourceText ?? new SourceTextStore($report->config->paths);
             if ($dryRun) {
                 // F1a / preview mode: write apply.diff containing scaffold patches
                 $parts = [];
@@ -268,14 +304,36 @@ final class RefactorPatchReporter
             return;
         }
 
+        // output-S55: the plain .patch surface writes exactly the pure
+        // build() map through the fail-loud venue.
+        foreach ($this->build($report) as $name => $contents) {
+            $this->writeFile($dir . DIRECTORY_SEPARATOR . $name, $contents);
+        }
+    }
+
+    /**
+     * Pure seam for the plain .patch surface (output-S55, the sanctioned
+     * multi-file shape of the reporting-pattern rule): filename => patch
+     * text, nothing written, cluster order is insertion order. The apply
+     * legs are not buildable surfaces — F1a is a single concatenation and
+     * F1b an imperative write-window transaction whose summary reports
+     * verified disk state, not pre-rendered content.
+     *
+     * @return array<string,string> '<safe cluster id>.patch' => patch text,
+     *                              one entry per multi-member cluster
+     */
+    public function build(Report $report): array
+    {
+        $store = $this->sourceText ?? new SourceTextStore($report->config->paths);
+        $files = [];
         foreach ($report->clusters as $cluster) {
             if (count($cluster->members) < 2) {
                 continue;
             }
             $safeId = Slug::safe($cluster->id);
-            $file = $dir . DIRECTORY_SEPARATOR . $safeId . '.patch';
-            $this->writeFile($file, $this->buildPatch($cluster, $safeId, $store));
+            $files[$safeId . '.patch'] = $this->buildPatch($cluster, $safeId, $store);
         }
+        return $files;
     }
 
     /**

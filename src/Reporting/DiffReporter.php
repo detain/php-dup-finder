@@ -30,6 +30,15 @@ use SebastianBergmann\Diff\Output\UnifiedDiffOutputBuilder;
  * output-S54 (once-040/output-024): the write leg is fail-loud — directory
  * creation and every .diff/patch write route through WritesReportFile, so
  * a refused disk raises ReportWriteException before any success line.
+ *
+ * output-S55 (php-dup-finder-output-023): scaffold convergence. The class
+ * now carries the house entrypoint writeTo(Report, string) and the pure
+ * multi-file seam build(Report): array<string,string> (filename => content)
+ * for its per-cluster .diff surface; writeDir() remains as the BC alias the
+ * existing callers use, delegating to writeTo(). writePatch() keeps its own
+ * single-file surface (a concatenation, not a directory of artifacts — its
+ * per-cluster bytes come from the same private builder). Output bytes are
+ * unchanged; the finding's defect was shape, not behavior.
  */
 final class DiffReporter
 {
@@ -37,7 +46,11 @@ final class DiffReporter
 
     public function __construct(private readonly ?SourceTextStore $sourceText = null) {}
 
-    public function writeDir(Report $report, string $dir): void
+    /**
+     * House-rule entrypoint (output-S55): write the per-cluster .diff files
+     * exactly as {@see build()} renders them, through the fail-loud venue.
+     */
+    public function writeTo(Report $report, string $dir): void
     {
         // output-011: a newline-bearing scanned path would forge standalone
         // `--- /dev/null` / `+++ b/…` / `@@ … @@` lines inside every .diff
@@ -46,17 +59,43 @@ final class DiffReporter
         // masquerading as the complete one is the misfeed class).
         $this->requireStreamSafe($report);
 
-        $store = $this->sourceText ?? new SourceTextStore($report->config->paths);
-
         $this->ensureDirectory($dir);
+        foreach ($this->build($report) as $name => $contents) {
+            $this->writeFile($dir . DIRECTORY_SEPARATOR . $name, $contents);
+        }
+    }
+
+    /**
+     * Pure seam for the per-cluster file surface (output-S55, the sanctioned
+     * multi-file shape of the reporting-pattern rule): the single-string
+     * build() of the AGENTS.md exemplar generalizes to a map keyed by
+     * artifact name; the writer composes it through the same venue.
+     * Nothing is written here — cluster order is insertion order.
+     *
+     * @return array<string,string> '<safe cluster id>.diff' => unified diff text
+     */
+    public function build(Report $report): array
+    {
+        $store = $this->sourceText ?? new SourceTextStore($report->config->paths);
+        $files = [];
         foreach ($report->clusters as $cluster) {
             if (count($cluster->members) < 2) {
                 continue;
             }
-            $safeId = Slug::safe($cluster->id);
-            $file = $dir . DIRECTORY_SEPARATOR . $safeId . '.diff';
-            $this->writeFile($file, $this->buildClusterDiff($cluster, $store));
+            $files[Slug::safe($cluster->id) . '.diff'] = $this->buildClusterDiff($cluster, $store);
         }
+        return $files;
+    }
+
+    /**
+     * BC alias for the pre-convergence entrypoint name (ReportStage and the
+     * committed DiffReporter pins still call it): identical surface, one
+     * delegation to the house-rule {@see writeTo()} — refusal-first law and
+     * per-file bytes unchanged.
+     */
+    public function writeDir(Report $report, string $dir): void
+    {
+        $this->writeTo($report, $dir);
     }
 
     public function writePatch(Report $report, string $file): void

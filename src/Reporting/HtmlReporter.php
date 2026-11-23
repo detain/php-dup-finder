@@ -66,6 +66,15 @@ use SebastianBergmann\Diff\Output\StrictUnifiedDiffOutputBuilder;
  * creation and every page/asset write route through the WritesReportFile
  * venue, so a disk that refuses the bytes raises ReportWriteException
  * instead of printing a success line over an absent report.
+ *
+ * output-S55 (php-dup-finder-output-023): scaffold convergence. The site
+ * gains the pure multi-file seam {@see build()} (path => rendered html, the
+ * sanctioned array-shape of the reporting-pattern rule). writeTo() KEEPS
+ * the batched streaming writer as its shipping strategy — output-041's
+ * memory law forbids materializing the whole site in RAM — so this is the
+ * one reporter where the seam and the write loop share the private
+ * renderers rather than the writer draining the map. Same renderers, same
+ * bytes, one documented divergence.
  */
 final class HtmlReporter
 {
@@ -159,6 +168,34 @@ final class HtmlReporter
     public function pageWriteFlushes(): int
     {
         return $this->pageWriteFlushes;
+    }
+
+    /**
+     * Pure seam for the whole site (output-S55, php-dup-finder-output-023):
+     * path => rendered html for the three static assets plus one page per
+     * cluster, nothing written. It is the declared surface of the site;
+     * {@see writeTo()} produces byte-identical files through its batched
+     * streaming strategy (output-041), so callers wanting the map get the
+     * same bytes the writer lands. The Differ memo is render-run scoped here
+     * exactly as in writeTo(): one Differ per pass, construction counted.
+     *
+     * @return array<string,string> 'style.css' | 'app.js' | 'index.html' |
+     *                              'cluster-%03d.html' => html
+     */
+    public function build(Report $report): array
+    {
+        $store = $this->sourceText ?? new SourceTextStore($report->config->paths);
+        $this->differ = null;
+
+        $files = [
+            'style.css'  => $this->css(),
+            'app.js'     => $this->js(),
+            'index.html' => $this->renderIndex($report),
+        ];
+        foreach ($report->clusters as $i => $cluster) {
+            $files[sprintf('cluster-%03d.html', $i + 1)] = $this->renderCluster($i + 1, $cluster, $report, $store);
+        }
+        return $files;
     }
 
     /**
