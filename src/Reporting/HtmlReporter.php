@@ -50,6 +50,17 @@ use SebastianBergmann\Diff\Output\StrictUnifiedDiffOutputBuilder;
  * visible U+FFFD marker shared with the ControlText venue; valid-UTF-8
  * output, including the documented raw-control-byte posture, is
  * byte-identical to the S40 era.
+ *
+ * once-104 (S84): affordance truth on the shipped surface — every
+ * visible instruction names a control that exists (the index hint
+ * points at the ⎘ button; the holes help quotes the export button's
+ * own label), every copy preview shows exactly the bytes its button
+ * copies (output-058's single-line signatures made a first-line-only
+ * preview a misrepresentation risk — the preview IS the payload now),
+ * a zero-cluster index renders an honest empty-state row instead of a
+ * silent empty tbody, and a null-signature row ships no dead copy
+ * button — only an honest marker. Clipboard flashes are gated on the
+ * awaited write outcome, including the legacy fallback's own verdict.
  */
 final class HtmlReporter
 {
@@ -182,13 +193,17 @@ final class HtmlReporter
 <?= $minimap ?>
 <div class="controls">
   <input type="search" id="search" placeholder="filter clusters by signature, file, kind…" autocomplete="off">
-  <span class="hint">Click a column header to sort. Hover signatures to copy.</span>
+  <span class="hint">Click a column header to sort. Click the ⎘ button to copy a suggested signature.</span>
 </div>
 <table class="clusters" id="clusters">
 <!-- Column-index contract (output-053): a header cell's absolute position
      among the thead cells is the body-row cell index app.js sorts by; keep
      header and body cells 1:1 (no colspans) and every data-key aligned with
-     the column it names — HtmlReporterTest pins both sides of this. -->
+     the column it names — HtmlReporterTest pins both sides of this. The one
+     permitted exception is the zero-cluster .empty-state row (once-104):
+     app.js keeps it out of both the sort pool and the filter pool via
+     :not(.empty-state), so every row that is ever reordered or hidden still
+     obeys the contract. -->
 <thead><tr>
   <th data-sort="num"     data-key="num">#</th>
   <th data-sort="num"     data-key="size">Members</th>
@@ -209,11 +224,18 @@ final class HtmlReporter
   <td class="num" data-num="<?= $c->confidence ?>"><?= number_format($c->confidence, 2) ?></td>
   <td><?= htmlspecialchars(implode(', ', $c->patternTags)) ?></td>
   <td>
-    <button class="copy" data-copy="<?= htmlspecialchars((string)$c->signature) ?>" title="Copy suggested signature to clipboard">⎘</button>
-    <code><?= htmlspecialchars($c->signature ? $this->firstLine($c->signature) : '') ?></code>
+<?php if ($c->signature !== null && $c->signature !== ''): ?>
+    <button class="copy" data-copy="<?= htmlspecialchars($c->signature) ?>" title="Copy suggested signature to clipboard">⎘</button>
+    <code><?= htmlspecialchars($c->signature) ?></code>
+<?php else: ?>
+    <em class="no-signature">(no suggested signature)</em>
+<?php endif; ?>
   </td>
 </tr>
 <?php endforeach; ?>
+<?php if ($report->clusters === []): ?>
+<tr class="empty-state"><td colspan="7">No clusters found — nothing to list.</td></tr>
+<?php endif; ?>
 </tbody></table>
 </main>
 <script src="app.js"></script>
@@ -294,7 +316,7 @@ final class HtmlReporter
 <p class="hole-help">
   Edit <em>Suggested</em> / <em>Type</em> below to tweak the abstraction.
   Changes persist in <code>localStorage</code> and don't affect the
-  source file. Click <em>Copy as JSON</em> to export.
+  source file. Click <em>Copy tweaks as JSON</em> to export.
 </p>
 <table class="holes" data-cluster-id="<?= htmlspecialchars($c->id) ?>"><thead><tr>
   <th>Placeholder</th><th>Suggested</th><th>Type</th><th>Kind</th><th>Observed</th>
@@ -555,12 +577,6 @@ final class HtmlReporter
              . '</span>';
     }
 
-    private function firstLine(string $s): string
-    {
-        $i = strpos($s, "\n");
-        return $i === false ? $s : substr($s, 0, $i);
-    }
-
     private function js(): string
     {
         return <<<'JS'
@@ -585,7 +601,10 @@ final class HtmlReporter
         const key  = th.dataset.key;
         const cellIdx = Array.prototype.indexOf.call(th.parentNode.children, th);
         const tbody = table.tBodies[0];
-        const rows = Array.from(tbody.querySelectorAll('tr'));
+        // The zero-cluster .empty-state row (once-104) is not data: it stays
+        // out of the sort pool so the 1:1 cell contract can never be applied
+        // to its single colspan cell.
+        const rows = Array.from(tbody.querySelectorAll('tr:not(.empty-state)'));
         const defaultDesc = th.dataset.defaultDesc === '1';
         if (lastKey === key) {
           asc = !asc;
@@ -616,30 +635,49 @@ final class HtmlReporter
   if (search) {
     search.addEventListener('input', () => {
       const q = search.value.toLowerCase().trim();
-      document.querySelectorAll('#clusters tbody tr').forEach(tr => {
+      // The .empty-state row (once-104) carries no data-search: keep it out
+      // of the filter pool so a search can neither crash on it nor hide the
+      // only honest sentence on a zero-cluster page.
+      document.querySelectorAll('#clusters tbody tr:not(.empty-state)').forEach(tr => {
         tr.style.display = !q || tr.dataset.search.includes(q) ? '' : 'none';
       });
     });
   }
 
-  // Copy-to-clipboard buttons.
+  // Clipboard write with an HONEST outcome (once-104): the async API is
+  // awaited, the legacy fallback's own return value decides, and false
+  // means the bytes provably never reached a clipboard. Every visible
+  // flash downstream is gated on that verdict — a success mark after a
+  // rejected write was the original lie.
+  const writeClipboard = async (text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      try {
+        // Best-effort fallback for non-secure contexts: execCommand's
+        // boolean is the verdict, not its mere survival.
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        const legacy = document.execCommand('copy');
+        ta.remove();
+        return legacy === true;
+      } catch {
+        return false;
+      }
+    }
+  };
+
+  // Copy-to-clipboard buttons (the ⎘ control the index hint names).
   document.querySelectorAll('button.copy').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.preventDefault();
-      try {
-        await navigator.clipboard.writeText(btn.dataset.copy || '');
-        const orig = btn.textContent;
-        btn.textContent = '✓';
-        setTimeout(() => { btn.textContent = orig; }, 1200);
-      } catch {
-        // Best-effort fallback for non-secure contexts.
-        const ta = document.createElement('textarea');
-        ta.value = btn.dataset.copy || '';
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        ta.remove();
-      }
+      const ok = await writeClipboard(btn.dataset.copy || '');
+      const orig = btn.textContent;
+      btn.textContent = ok ? '✓' : '✗ copy failed';
+      setTimeout(() => { btn.textContent = orig; }, 1200);
     });
   });
 
@@ -696,8 +734,12 @@ final class HtmlReporter
         };
       });
       const json = JSON.stringify({ cluster_id: clusterId, holes: data }, null, 2);
-      try { await navigator.clipboard.writeText(json); } catch (e) { /* ignore */ }
+      // once-104: the flash used to claim 'copied!' even when the write was
+      // rejected — now it states the outcome the clipboard actually gave.
+      const ok = await writeClipboard(json);
       if (status) {
+        status.textContent = ok ? 'copied!' : 'copy failed';
+        status.classList.toggle('failed', !ok);
         status.hidden = false;
         setTimeout(() => { status.hidden = true; }, 1200);
       }
@@ -754,6 +796,9 @@ th.sorted-desc::after { content: ' ▼'; font-size: 10px; }
 .hole-actions button { padding: 4px 10px; border: 1px solid var(--border); border-radius: 4px; background: white; cursor: pointer; }
 .hole-actions button:hover { background: var(--bg); }
 .copy-status { color: var(--accent); margin-left: 0.6rem; font-size: 0.9em; }
+/* once-104: a rejected clipboard write must read as a failure, not as an
+   unstyled word — the .failed class rides the honest verdict from app.js. */
+.copy-status.failed { color: #d73a49; font-weight: 600; }
 .hole-optional_block { background: #fffbeb; }
 .hole-optional_block td { border-bottom-color: #fde68a; }
 .absent { color: #d97706; font-style: italic; }
@@ -787,6 +832,11 @@ button.copy {
   font: inherit; cursor: pointer; padding: 2px 8px; border-radius: 4px;
 }
 button.copy:hover { color: var(--accent); border-color: var(--accent); }
+
+/* once-104: honest absence affordances — the empty-state sentence and the
+   null-signature marker are styled to read as states, not as missing UI. */
+.empty-state td { text-align: center; color: var(--muted); font-style: italic; padding: 16px 10px; }
+.no-signature { color: var(--muted); font-style: italic; }
 
 /* Inline syntax highlighting */
 .signature .k, .src .k { color: var(--kw); font-weight: 600; }

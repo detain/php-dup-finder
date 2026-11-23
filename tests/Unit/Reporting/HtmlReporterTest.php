@@ -823,7 +823,10 @@ final class HtmlReporterTest extends TestCase
      * once-S60 adversarial bar on the surface upgrade, two posture legs:
      * (1) PARSED leg — a payload mixing attribute breakout and invalid
      * UTF-8 (standalone lead + truncated multi-byte lead) rides the index
-     * data-copy default-flag site, the firstLine <code> cell, and the
+     * data-copy default-flag site, the signature-preview <code> cell (the
+     * cell's firstLine() derivation was retired by once-S84 — preview==
+     * payload is the affordance rule now, this pin's round-trip holds for
+     * both shapes), and the
      * highlightPhp ENT_QUOTES|ENT_SUBSTITUTE path: parsed DOM stays
      * honest (no forged elements, round-trip identity with visible
      * substitutes, nothing blanked). (2) RAW leg — the same payload plus
@@ -1007,6 +1010,253 @@ final class HtmlReporterTest extends TestCase
         } finally {
             $this->rrmdir($dir);
         }
+    }
+
+    // ------------------------------------------------------------------
+    // php-dup-finder-once-104 (step once-S84): affordance truth. Every
+    // instruction names a control that ships; the copy preview shows
+    // exactly the bytes its button copies; a rejected clipboard write is
+    // visible as a failure instead of a 'copied!'; a zero-cluster index
+    // says so in words; a null signature carries no dead copy button.
+    // Pins are structural (parsed DOM / stable JS markers), not rendered-
+    // text mirrors; escape-order sites honor the once-S60 posture.
+    // ------------------------------------------------------------------
+
+    public function testIndexHintNamesTheControlsThatActuallyShip(): void
+    {
+        $report = $this->buildReport();
+        $dir    = sys_get_temp_dir() . '/phpdup-html-hint-' . uniqid();
+        try {
+            (new HtmlReporter())->writeTo($report, $dir);
+            $doc = $this->parseDom($dir . '/index.html');
+            $x   = new \DOMXPath($doc);
+
+            $hintNode = $x->query('//div[@class="controls"]//span[@class="hint"]')->item(0);
+            $this->assertNotNull($hintNode, 'controls hint missing');
+            $hint = (string)$hintNode->textContent;
+
+            // The lie this step retired: there has never been a hover-copy
+            // control — the real affordance is the ⎘ button.
+            $this->assertStringNotContainsString('Hover', $hint, 'hint advertises a control the page does not ship');
+            $this->assertStringContainsString('⎘', $hint, 'hint must name the copy control that exists');
+            $this->assertStringContainsString('column header to sort', $hint);
+
+            // Both promises have live witnesses on the page.
+            $this->assertGreaterThan(0, $x->query('//th[@data-sort]')->length, 'sort claim without a sortable header');
+            $this->assertGreaterThan(0, $x->query('//button[@class="copy"]')->length, 'copy claim without a copy button');
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
+    public function testCopyPreviewIsExactlyTheBytesItsButtonCopies(): void
+    {
+        // output-S37's de-flatten makes shipped signatures single-line, but
+        // the preview/payload identity is the affordance rule for ANY shape:
+        // the old firstLine()-only preview silently copied bytes it never
+        // showed. Multi-line fixture pins the rule structurally.
+        $body = "<?php\nfunction m()\n{\n    return 1;\n}\n";
+        $multiLine = "function m(string \$s): string\n{\n    return \$s;\n}";
+        $root = sys_get_temp_dir() . '/phpdup-html-preview-' . uniqid();
+        mkdir($root, 0o775, true);
+        $dir = $root . '/out';
+        try {
+            (new HtmlReporter())->writeTo($this->s60SignatureReport($root, 'preview', $body, $multiLine), $dir);
+
+            $doc = $this->parseDom($dir . '/index.html');
+            $x   = new \DOMXPath($doc);
+            $btn  = $x->query('//button[@class="copy"]')->item(0);
+            $code = $x->query('//tbody//code')->item(0);
+            $this->assertNotNull($btn);
+            $this->assertNotNull($code);
+
+            $this->assertSame($multiLine, (string)$code->textContent, 'preview is not the full copied text');
+            $this->assertSame($multiLine, $btn->getAttribute('data-copy'), 'payload is not the previewed text');
+            // The title promise matches the payload it carries.
+            $this->assertStringContainsString('signature', (string)$btn->getAttribute('title'));
+        } finally {
+            $this->rrmdir($root);
+        }
+    }
+
+    public function testNullSignatureRowShipsNoDeadCopyButtonButAnHonestMarker(): void
+    {
+        $root = sys_get_temp_dir() . '/phpdup-html-nulldup-' . uniqid();
+        mkdir($root . '/a', 0o775, true);
+        mkdir($root . '/b', 0o775, true);
+        try {
+            $mkBlock = static function (string $file): Block {
+                file_put_contents($file, "<?php\nfunction m()\n{\n    return 1;\n}\n");
+                $stmts = (new AstParser())->parseCode((string)file_get_contents($file));
+                return new Block(
+                    file: $file, range: new LineRange(2, 4), kind: 'function',
+                    namespace: null, class: null, name: 'm', ast: $stmts[0],
+                );
+            };
+            $nullCluster = new Cluster('N-NULL', [$mkBlock($root . '/a/f.php')], 1.0, false);
+            // $signature stays null — the finding's dead-button shape.
+            $realCluster = new Cluster('N-REAL', [$mkBlock($root . '/b/f.php')], 1.0, false);
+            $realCluster->signature = 'function m(): int';
+            $report = new Report(
+                files: 2, blocks: 2, parseErrors: 0,
+                clusters: [$nullCluster, $realCluster], config: Config::defaults([$root]),
+            );
+
+            $dir = $root . '/out';
+            (new HtmlReporter())->writeTo($report, $dir);
+            $doc = $this->parseDom($dir . '/index.html');
+            $x   = new \DOMXPath($doc);
+
+            // No live button carries an empty payload anywhere on the page.
+            $this->assertSame(0, $x->query('//button[@class="copy" and @data-copy=""]')->length,
+                'dead copy button (data-copy="") is back — once-104 class');
+            $this->assertSame(1, $x->query('//button[@class="copy"]')->length,
+                'exactly the real-signature row keeps a copy button');
+
+            $rows = $x->query('//table[@id="clusters"]/tbody/tr');
+            $this->assertNotNull($rows);
+            $this->assertSame(2, $rows->length);
+            $nullRow = $rows->item(0);
+            $this->assertInstanceOf(\DOMElement::class, $nullRow);
+            $this->assertSame(7, $x->query('td', $nullRow)->length, 'column contract broken by the marker row');
+            $this->assertSame(0, $x->query('.//button', $nullRow)->length);
+            $marker = $x->query('.//em[@class="no-signature"]', $nullRow);
+            $this->assertNotNull($marker);
+            $this->assertSame(1, $marker->length, 'null-signature row lost its honest marker');
+            $this->assertStringContainsString('no suggested signature', strtolower((string)$marker->item(0)->textContent));
+
+            // The detail page for the null-signature cluster keeps no orphan copy button either.
+            $page = $this->parseDom($dir . '/cluster-001.html');
+            $xp   = new \DOMXPath($page);
+            $this->assertSame(0, $xp->query('//button[@class="copy"]')->length);
+        } finally {
+            $this->rrmdir($root);
+        }
+    }
+
+    public function testZeroClusterIndexRendersHonestEmptyStateRowNotAnEmptyTbody(): void
+    {
+        $root = sys_get_temp_dir() . '/phpdup-html-zero-' . uniqid();
+        mkdir($root, 0o775, true);
+        try {
+            $report = new Report(
+                files: 0, blocks: 0, parseErrors: 0,
+                clusters: [], config: Config::defaults([$root]),
+            );
+            $dir = $root . '/out';
+            (new HtmlReporter())->writeTo($report, $dir);
+
+            $doc = $this->parseDom($dir . '/index.html');
+            $x   = new \DOMXPath($doc);
+            $rows = $x->query('//table[@id="clusters"]/tbody/tr');
+            $this->assertNotNull($rows);
+            $this->assertSame(1, $rows->length, 'zero-cluster tbody is silent again');
+            $row = $rows->item(0);
+            $this->assertInstanceOf(\DOMElement::class, $row);
+            $this->assertStringContainsString('empty-state', $row->getAttribute('class'));
+            $tds = $x->query('td', $row);
+            $this->assertNotNull($tds);
+            $this->assertSame(1, $tds->length);
+            $this->assertSame('7', $tds->item(0)->getAttribute('colspan'));
+            $this->assertStringContainsString('No clusters found', (string)$tds->item(0)->textContent);
+
+            // app.js keeps the sentence out of the sortable/filterable pool
+            // (the 1:1 cell contract must never be applied to a colspan row).
+            $js = (string)(new \ReflectionMethod(HtmlReporter::class, 'js'))->invoke(new HtmlReporter());
+            $this->assertStringContainsString("tbody.querySelectorAll('tr:not(.empty-state)')", $js);
+            $this->assertStringContainsString("document.querySelectorAll('#clusters tbody tr:not(.empty-state)')", $js);
+
+            $css = (string)(new \ReflectionMethod(HtmlReporter::class, 'css'))->invoke(new HtmlReporter());
+            $this->assertStringContainsString('.empty-state td', $css);
+
+            // And a non-empty report must NOT grow the row.
+            $report2 = $this->buildReport();
+            $dir2 = $root . '/full';
+            (new HtmlReporter())->writeTo($report2, $dir2);
+            $doc2 = $this->parseDom($dir2 . '/index.html');
+            $x2   = new \DOMXPath($doc2);
+            $this->assertSame(0, $x2->query('//tr[contains(@class,"empty-state")]')->length);
+        } finally {
+            $this->rrmdir($root);
+        }
+    }
+
+    public function testHoleHelpNamesTheExportButtonsOwnLabel(): void
+    {
+        $root = sys_get_temp_dir() . '/phpdup-html-help-' . uniqid();
+        mkdir($root . '/a', 0o775, true);
+        mkdir($root . '/b', 0o775, true);
+        try {
+            $mkBlock = static function (string $file, int $delta): Block {
+                file_put_contents($file, "<?php\nfunction m()\n{\n    return {$delta};\n}\n");
+                $stmts = (new AstParser())->parseCode((string)file_get_contents($file));
+                return new Block(
+                    file: $file, range: new LineRange(2, 4), kind: 'function',
+                    namespace: null, class: null, name: 'm', ast: $stmts[0],
+                );
+            };
+            $cluster = new Cluster('HELP', [$mkBlock($root . '/a/f.php', 1), $mkBlock($root . '/b/f.php', 2)], 1.0, false);
+            $cluster->signature = 'function m(): int';
+            $cluster->holes     = [new Hole('$__P0', 'literal', ['1', '2'], true)];
+            $report = new Report(
+                files: 2, blocks: 2, parseErrors: 0,
+                clusters: [$cluster], config: Config::defaults([$root]),
+            );
+
+            $dir = $root . '/out';
+            (new HtmlReporter())->writeTo($report, $dir);
+            $doc = $this->parseDom($dir . '/cluster-001.html');
+            $x   = new \DOMXPath($doc);
+
+            $btn = $x->query('//button[@class="copy-tweaks"]')->item(0);
+            $this->assertNotNull($btn, 'export button missing');
+            $label = trim((string)$btn->textContent);
+
+            // The help sentence's copy-named <em> must be the button's OWN
+            // label — not a paraphrase a hover/tooltip hunt cannot finish.
+            $copyEm = null;
+            $ems = $x->query('//p[@class="hole-help"]//em');
+            $this->assertNotNull($ems);
+            foreach ($ems as $em) {
+                if (stripos((string)$em->textContent, 'copy') !== false) {
+                    $copyEm = trim((string)$em->textContent);
+                    break;
+                }
+            }
+            $this->assertNotNull($copyEm, 'help paragraph names no copy control at all');
+            $this->assertSame($label, $copyEm, 'help text misnames the export button');
+        } finally {
+            $this->rrmdir($root);
+        }
+    }
+
+    public function testClipboardFlashesAreGatedOnTheAwaitedWriteVerdict(): void
+    {
+        $js = (string)(new \ReflectionMethod(HtmlReporter::class, 'js'))->invoke(new HtmlReporter());
+
+        // One awaited clipboard site feeds every flash — the legacy
+        // fallback's boolean is the verdict, a failed copy never reads done.
+        $this->assertSame(1, substr_count($js, 'await navigator.clipboard.writeText('),
+            'clipboard writes must flow through one awaited verdict path');
+        $this->assertStringContainsString('const writeClipboard = async (text) =>', $js);
+        $this->assertStringContainsString('return legacy === true;', $js);
+
+        // Both copy paths gate their visible flash on that verdict.
+        $this->assertSame(2, substr_count($js, '= await writeClipboard('),
+            'button.copy and copy-tweaks must both consume the verdict');
+        $this->assertStringContainsString("btn.textContent = ok ? '✓' : '✗ copy failed';", $js);
+        $this->assertStringContainsString("status.textContent = ok ? 'copied!' : 'copy failed';", $js);
+
+        // The retired lie: success reveal after an ignored rejection.
+        $this->assertStringNotContainsString(
+            'try { await navigator.clipboard.writeText(json); } catch (e) { /* ignore */ }',
+            $js,
+            'unconditional success flash is back',
+        );
+
+        // Failure is styled, not just worded.
+        $css = (string)(new \ReflectionMethod(HtmlReporter::class, 'css'))->invoke(new HtmlReporter());
+        $this->assertStringContainsString('.copy-status.failed', $css);
     }
 
     private function parseDom(string $file): \DOMDocument
