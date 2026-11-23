@@ -8,26 +8,23 @@ use Phpdup\Cli\Config;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
 use Phpdup\Parsing\AstParser;
-use Phpdup\Pipeline\PipelineState;
-use Phpdup\Pipeline\Stages\ClusterStage;
-use Phpdup\Pipeline\Stages\PreprocessStage;
-use Phpdup\Pipeline\Stages\RefactorStage;
-use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Refactor\Hole;
 use Phpdup\Reporting\HtmlReporter;
-use Phpdup\Reporting\Ranker;
 use Phpdup\Reporting\Report;
 use Phpdup\Reporting\ReportWriteException;
 use Phpdup\Reporting\SourceTextStore;
 use Phpdup\Util\LineRange;
-use Symfony\Component\Console\Output\NullOutput;
 
 final class HtmlReporterTest extends TestCase
 {
     public function testWritesIndexAndPerClusterPagesAndAssets(): void
     {
-        $report = $this->buildReport();
-        $dir    = sys_get_temp_dir() . '/phpdup-html-' . uniqid();
+        // output-S56b: the sql-fixture pipeline is retired; the S39-era
+        // diffCapableReport helper (real temp sources, direct parse, hand-
+        // built clusters) is the carrier. Three clusters by construction —
+        // the page count is a hard vector, not a re-derivation.
+        [$report, $root] = $this->diffCapableReport(3);
+        $dir = $root . '/html';
         try {
             (new HtmlReporter())->writeTo($report, $dir);
 
@@ -36,16 +33,16 @@ final class HtmlReporterTest extends TestCase
             $this->assertFileExists("$dir/app.js");
 
             $clusterFiles = glob("$dir/cluster-*.html");
-            $this->assertCount(count($report->clusters), $clusterFiles);
+            $this->assertCount(3, $clusterFiles, 'one page per cluster, three by construction');
         } finally {
-            $this->rrmdir($dir);
+            $this->rrmdir($root);
         }
     }
 
     public function testIndexIncludesSearchInputAndSortableHeaders(): void
     {
-        $report = $this->buildReport();
-        $dir    = sys_get_temp_dir() . '/phpdup-html-' . uniqid();
+        [$report, $root] = $this->diffCapableReport(2);
+        $dir = $root . '/html';
         try {
             (new HtmlReporter())->writeTo($report, $dir);
             $html = (string)file_get_contents("$dir/index.html");
@@ -54,65 +51,72 @@ final class HtmlReporterTest extends TestCase
             $this->assertStringContainsString('data-key="impact"', $html);
             $this->assertStringContainsString('class="copy"', $html);
         } finally {
-            $this->rrmdir($dir);
+            $this->rrmdir($root);
         }
     }
 
     public function testIndexIncludesMinimap(): void
     {
-        $report = $this->buildReport();
-        $dir    = sys_get_temp_dir() . '/phpdup-html-' . uniqid();
+        [$report, $root] = $this->diffCapableReport(3);
+        $dir = $root . '/html';
         try {
             (new HtmlReporter())->writeTo($report, $dir);
             $html = (string)file_get_contents("$dir/index.html");
             $this->assertStringContainsString('class="minimap"', $html);
             $this->assertStringContainsString('class="bar', $html);
+            // Strengthened (output-S56b): exactly one bar per cluster.
+            $this->assertSame(3, substr_count($html, 'class="bar '));
         } finally {
-            $this->rrmdir($dir);
+            $this->rrmdir($root);
         }
     }
 
     public function testClusterPageHasSyntaxHighlightedCode(): void
     {
-        $report = $this->buildReport();
-        $dir    = sys_get_temp_dir() . '/phpdup-html-' . uniqid();
+        // diffCapableReport members are real on-disk sources carrying a
+        // `function` keyword, so the highlighter leg keeps its bite without
+        // the fixture scan.
+        [$report, $root] = $this->diffCapableReport(1);
+        $dir = $root . '/html';
         try {
             (new HtmlReporter())->writeTo($report, $dir);
             $page = (string)file_get_contents("$dir/cluster-001.html");
             $this->assertStringContainsString('<span class="k">function</span>', $page, 'function keyword should be highlighted');
         } finally {
-            $this->rrmdir($dir);
+            $this->rrmdir($root);
         }
     }
 
     public function testOptionalBlockHolesGetTaggedRowAndAbsentSpan(): void
     {
-        $report = $this->buildOptionalReport();
-        $dir    = sys_get_temp_dir() . '/phpdup-html-' . uniqid();
+        // output-S56b: hand-built optional_block hole on a real 2-member
+        // cluster replaces the optional-fixture scan. The second row is a
+        // VERIFIED absence (degraded=false), so the .absent projection has
+        // bite by construction; cluster #1 is the page by construction too
+        // — no glob-scan needed.
+        [$report, $root] = $this->diffCapableReport(1);
+        $cluster = $report->clusters[0]; // read-through is legal; the Cluster itself is mutable
+        $cluster->patternTags = ['optional-segments'];
+        $cluster->holes = [
+            new Hole('$__P0', 'optional_block', ['return 1 + 0;', Hole::MISSING], false),
+        ];
+        $dir = $root . '/html';
         try {
             (new HtmlReporter())->writeTo($report, $dir);
-            $glob = glob("$dir/cluster-*.html");
-            $this->assertNotEmpty($glob);
+            $body = (string)file_get_contents("$dir/cluster-001.html");
 
-            $found = false;
-            foreach ($glob as $page) {
-                $body = (string)file_get_contents($page);
-                if (str_contains($body, 'hole-optional_block')) {
-                    $found = true;
-                    $this->assertStringContainsString('class="badge optional"', $body, 'optional rows get a "type-3" badge');
-                    $this->assertStringContainsString('class="absent"', $body, 'verified optional absence renders with .absent class (canonical row projected)');
-                }
-            }
-            $this->assertTrue($found, 'expected at least one cluster page to render an optional_block row');
+            $this->assertStringContainsString('hole-optional_block', $body, 'the row is tagged by kind');
+            $this->assertStringContainsString('class="badge optional"', $body, 'optional rows get a "type-3" badge');
+            $this->assertStringContainsString('class="absent"', $body, 'verified optional absence renders with .absent class (canonical row projected)');
         } finally {
-            $this->rrmdir($dir);
+            $this->rrmdir($root);
         }
     }
 
     public function testCssIncludesOptionalBlockStyling(): void
     {
-        $report = $this->buildReport();
-        $dir    = sys_get_temp_dir() . '/phpdup-html-' . uniqid();
+        [$report, $root] = $this->diffCapableReport(1);
+        $dir = $root . '/html';
         try {
             (new HtmlReporter())->writeTo($report, $dir);
             $css = (string)file_get_contents("$dir/style.css");
@@ -120,7 +124,7 @@ final class HtmlReporterTest extends TestCase
             $this->assertStringContainsString('.absent', $css);
             $this->assertStringContainsString('.badge.optional', $css);
         } finally {
-            $this->rrmdir($dir);
+            $this->rrmdir($root);
         }
     }
 
@@ -300,45 +304,30 @@ final class HtmlReporterTest extends TestCase
         );
     }
 
-    private function buildReport(): Report
+    /**
+     * output-S56b synthetic carrier for the index-value arms: one 2-member
+     * cluster with DETERMINISTIC display fields — size 2, similarity 0.85,
+     * impact 60, confidence 0.72, patternTags ['sql-builder'], signature
+     * set — so row-cell pins are literals instead of re-derivations from
+     * the report under test. Member paths are not on disk; the cluster
+     * pages carry their honest "source not read" posture, which nothing
+     * in the index-surface arms consumes.
+     */
+    private function indexRowReport(): Report
     {
-        $config = new Config(
-            paths: [__DIR__ . '/../../Fixtures/sql'],
-            exclude: Config::defaults([])->exclude,
-            lazyAst: false,
+        $stmts  = (new AstParser())->parseCode("<?php\nfunction m() { return 1; }\n");
+        $member = static fn(string $file): Block => new Block(
+            file: $file, range: new LineRange(2, 2), kind: 'function',
+            namespace: null, class: null, name: 'm', ast: $stmts[0],
         );
-        return $this->runPipeline($config, exactOnly: true);
-    }
-
-    private function buildOptionalReport(): Report
-    {
-        $config = new Config(
-            paths: [__DIR__ . '/../../Fixtures/optional'],
-            exclude: Config::defaults([])->exclude,
-            minBlockSize: 4,
-            maxDocumentFrequency: 0.5,
-            minClusterImpact: 1,
-            lazyAst: false,
-        );
-        return $this->runPipeline($config, exactOnly: false);
-    }
-
-    private function runPipeline(Config $config, bool $exactOnly): Report
-    {
-        $state = new PipelineState($config);
-        $out   = new NullOutput();
-        (new ScanningStage())->run($state, $out);
-        (new PreprocessStage(useCache: false))->run($state, $out);
-        (new ClusterStage(exactOnly: $exactOnly))->run($state, $out);
-        (new RefactorStage(useCache: false))->run($state, $out);
-
-        return new Report(
-            files: count($state->files),
-            blocks: count($state->blocks),
-            parseErrors: $state->parseErrors,
-            clusters: (new Ranker($config->minClusterImpact))->rank($state->clusters),
-            config: $config,
-        );
+        $cluster = new Cluster('F00000000000000C1', [
+            $member('/phpdup-syn/h1.php'), $member('/phpdup-syn/h2.php'),
+        ], 0.85, false);
+        $cluster->impact      = 60;
+        $cluster->confidence  = 0.72;
+        $cluster->patternTags = ['sql-builder'];
+        $cluster->signature   = 'function m(): int';
+        return new Report(2, 2, 0, [$cluster], Config::defaults([]));
     }
 
     private function rrmdir(string $dir): void
@@ -958,7 +947,14 @@ final class HtmlReporterTest extends TestCase
         // (b) body/header cell parity with the data the sorted columns
         // promise at those positions; (c) the shipped JS deriving the
         // index from the header position itself.
-        $report = $this->buildReport();
+        //
+        // output-S56b: the carrier is now the hand-built indexRowReport()
+        // (similarity 0.85, impact 60, confidence 0.72, patternTags
+        // ['sql-builder'], 2 members), so the row-cell reads below are
+        // EXACT literals — the fixture era re-derived them from the report
+        // it had just built, a tautology that stayed green under a value
+        // projection swap.
+        $report = $this->indexRowReport();
         $dir = sys_get_temp_dir() . '/phpdup-html-sort-' . uniqid();
         try {
             (new HtmlReporter())->writeTo($report, $dir);
@@ -988,21 +984,20 @@ final class HtmlReporterTest extends TestCase
 
             $rows = $x->query('//table[@id="clusters"]/tbody/tr');
             $this->assertNotNull($rows);
-            $this->assertGreaterThan(0, $rows->length, 'no rows to pin parity against');
+            $this->assertSame(1, $rows->length, 'one data row by construction');
             foreach ($rows as $tr) {
                 $this->assertInstanceOf(\DOMElement::class, $tr);
                 $this->assertSame(7, $x->query('td', $tr)->length ?? 0, 'row/header cell parity broken');
             }
 
-            $first = $report->clusters[0];
             $cells0 = $x->query('td', $rows->item(0));
             $this->assertNotNull($cells0);
             $this->assertSame('1', $cells0->item(0)->getAttribute('data-num'));
-            $this->assertSame((string) $first->size(), $cells0->item(1)->getAttribute('data-num'));
-            $this->assertSame((string) $first->similarity, $cells0->item(2)->getAttribute('data-num'));
-            $this->assertSame((string) $first->impact, $cells0->item(3)->getAttribute('data-num'));
-            $this->assertSame((string) $first->confidence, $cells0->item(4)->getAttribute('data-num'));
-            $this->assertSame(implode(', ', $first->patternTags), trim((string) $cells0->item(5)->textContent));
+            $this->assertSame('2', $cells0->item(1)->getAttribute('data-num'), 'size projection');
+            $this->assertSame('0.85', $cells0->item(2)->getAttribute('data-num'), 'similarity projection');
+            $this->assertSame('60', $cells0->item(3)->getAttribute('data-num'), 'impact projection');
+            $this->assertSame('0.72', $cells0->item(4)->getAttribute('data-num'), 'confidence projection');
+            $this->assertSame('sql-builder', trim((string) $cells0->item(5)->textContent), 'pattern-tags projection');
 
             $js = (string) (new \ReflectionMethod(HtmlReporter::class, 'js'))->invoke(new HtmlReporter());
             $this->assertStringContainsString('Column-index contract', $js, 'the JS contract must ship with the asset');
@@ -1025,8 +1020,11 @@ final class HtmlReporterTest extends TestCase
 
     public function testIndexHintNamesTheControlsThatActuallyShip(): void
     {
-        $report = $this->buildReport();
-        $dir    = sys_get_temp_dir() . '/phpdup-html-hint-' . uniqid();
+        // output-S56b: diffCapableReport carrier — signatures set, so the
+        // copy-button witness ships; sortable headers are static template
+        // bytes. Both hint promises keep live witnesses.
+        [$report, $root] = $this->diffCapableReport(2);
+        $dir = $root . '/html';
         try {
             (new HtmlReporter())->writeTo($report, $dir);
             $doc = $this->parseDom($dir . '/index.html');
@@ -1046,7 +1044,7 @@ final class HtmlReporterTest extends TestCase
             $this->assertGreaterThan(0, $x->query('//th[@data-sort]')->length, 'sort claim without a sortable header');
             $this->assertGreaterThan(0, $x->query('//button[@class="copy"]')->length, 'copy claim without a copy button');
         } finally {
-            $this->rrmdir($dir);
+            $this->rrmdir($root);
         }
     }
 
@@ -1171,7 +1169,7 @@ final class HtmlReporterTest extends TestCase
             $this->assertStringContainsString('.empty-state td', $css);
 
             // And a non-empty report must NOT grow the row.
-            $report2 = $this->buildReport();
+            $report2 = $this->indexRowReport();
             $dir2 = $root . '/full';
             (new HtmlReporter())->writeTo($report2, $dir2);
             $doc2 = $this->parseDom($dir2 . '/index.html');
