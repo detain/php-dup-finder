@@ -35,7 +35,9 @@ final class PrometheusReporterTest extends TestCase
      * the four pipeline stages over tests/Fixtures/sql. Per the AGENTS.md
      * reporter-test convention it now consumes a hand-built report; all six
      * shape vectors (HELP line, the scalar sample regexes, and the
-     * output-026 aggregate family regexes) carry across unchanged.
+     * output-026 aggregate family regexes) carry across unchanged. Venue
+     * belt timing (A4 copy): suite 0.334s/54MB -> 0.312s/36MB; see
+     * reviews/exec/output-S56a.impl.md.
      */
     public function testFixtureReportEmitsNonZeroClusterCount(): void
     {

@@ -36,7 +36,9 @@ final class CsvReporterTest extends TestCase
      * exactly 14 fields. The expected row count is hard-coded instead of
      * being re-derived from the very report handed to the emitter (the old
      * form tautologized against a broken members count), and the identity
-     * columns are pinned per row (disclosed strengthenings).
+     * columns are pinned per row (disclosed strengthenings). Venue belt
+     * timing (A4 copy): suite 0.325s/52MB -> 0.287s/32MB; see
+     * reviews/exec/output-S56a.impl.md.
      */
     public function testFixtureReportProducesOneRowPerMember(): void
     {

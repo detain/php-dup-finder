@@ -97,7 +97,9 @@ final class TimeseriesReporterTest extends TestCase
      * pipeline-driven arm): the record built from a non-empty hand-built
      * report carries the identical key contract — the marker does not depend
      * on the synthetic empty-report shortcut above. The cluster-count pin is
-     * now the exact hand-built count instead of the fixture's > 0.
+     * now the exact hand-built count instead of the fixture's > 0. Venue
+     * belt timing (A4 copy): suite 0.677s/36MB -> 0.663s/32MB; see
+     * reviews/exec/output-S56a.impl.md.
      */
     public function testFixtureRecordCarriesTheMarkerToo(): void
     {

@@ -38,7 +38,8 @@ final class CheckstyleReporterTest extends TestCase
      * grouping and the shared-file 2-error group explicitly, and the
      * member/effect counts are hard-coded here instead of being re-derived
      * from the very report handed to the emitter (disclosed strengthenings,
-     * assertions carried across none weakened).
+     * assertions carried across none weakened). Venue belt timing (A4 copy):
+     * suite 0.330s/52MB -> 0.288s/32MB; see reviews/exec/output-S56a.impl.md.
      */
     public function testFixtureReportProducesParseableXmlWithErrorPerMember(): void
     {
