@@ -11,8 +11,6 @@ use Phpdup\Pipeline\Stages\PreprocessStage;
 use Phpdup\Pipeline\Stages\RefactorStage;
 use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Reporting\JsonReporter;
-use Phpdup\Reporting\Report;
-use Phpdup\Reporting\Ranker;
 use Phpdup\Util\Framing;
 use Symfony\Component\Console\Output\NullOutput;
 
@@ -741,6 +739,14 @@ final class AnalysisWorker
     /**
      * Run the full analysis pipeline for an already-admitted frame.
      *
+     * The state→Report seam is the shared {@see Application::buildServeReport()}
+     * — the same one site the synchronous `POST /analyze` uses — so an
+     * async result byte agrees with a sync one on the payload shape AND on
+     * the once-S41 scan-notes threading: symlink escapes the walk
+     * contained (once-S20) ride onto the Report's `scan_notes` carrier
+     * here, countable at the report layer, with the frozen 1.7 JSON body
+     * otherwise unchanged (the summary key is the owner-gated 1.8 emit).
+     *
      * @param array<string,mixed> $configData
      * @return array{status:int, body?:array<string,mixed>, error?:string}
      */
@@ -762,13 +768,7 @@ final class AnalysisWorker
             (new ClusterStage(exactOnly: Application::exactOnlyPosture($configData), useClusterCache: false))->run($state, $out);
             (new RefactorStage(useCache: false))->run($state, $out);
 
-            $report = new Report(
-                files: count($state->files),
-                blocks: count($state->blocks),
-                parseErrors: $state->parseErrors,
-                clusters: (new Ranker($config->minClusterImpact))->rank($state->clusters),
-                config: $config,
-            );
+            $report = Application::buildServeReport($state, $config);
 
             $body = (new JsonReporter())->build($report);
             return ['status' => 200, 'body' => $body];

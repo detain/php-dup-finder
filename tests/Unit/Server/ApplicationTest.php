@@ -2462,4 +2462,280 @@ final class ApplicationTest extends TestCase
 
         $this->fail("live serve: waited {$deadlineSeconds}s for {$what}; observed: " . json_encode($observed));
     }
+
+    // ------------------------------------------------------------------
+    // once-S41 (php-dup-finder-once-045): symlink-out-of-root refusal —
+    // the serve-chain closure. Two tiers, both pinned here: a SUBMITTED
+    // path that resolves through a symlink out of the root answers the
+    // admission 400 before anything runs (both routes), while a symlink
+    // NESTED inside an admitted tree is contained by the walk (once-S20)
+    // — skipped, never served — and the skip count surfaces on the
+    // once-S37 scan_notes carrier that every serve transport now threads
+    // through the one state→Report seam, Application::buildServeReport().
+    // The summary.scan_notes JSON key itself is the owner-gated schema-
+    // 1.8 emit; the 1.7 result body stays byte-frozen (belt: the
+    // JsonReporterTest shape tripwire from once-S37 fix1).
+    // ------------------------------------------------------------------
+
+    /**
+     * Build a scratch serve tree: two in-root PHP files, an in-root
+     * directory alias (legit symlink), and two escaping links (a
+     * directory link and a file link) pointing at an OUTSIDE tree that
+     * carries a unique sentinel function.
+     *
+     * @return array{root:string,outside:string}
+     */
+    private function s41EscapeTree(): array
+    {
+        $base = sys_get_temp_dir() . '/phpdup-s41-' . uniqid();
+        $root = $base . '/root';
+        $outside = $base . '/outside';
+        mkdir($root . '/keep', 0700, true);
+        mkdir($outside, 0700, true);
+        file_put_contents($root . '/a.php', "<?php\nfunction s41_alpha(\$x) { return \$x * 3 + 1; }\n");
+        file_put_contents($root . '/keep/k.php', "<?php\nfunction s41_beta(\$y) { return \$y * 3 + 1; }\n");
+        file_put_contents($outside . '/Secret.php', "<?php\nfunction secret_marker_zx9(\$z) { return \$z * 3 + 1; }\n");
+        symlink($outside, $root . '/evil');
+        symlink($outside . '/Secret.php', $root . '/sneaky.php');
+        symlink($root . '/keep', $root . '/alias-inside');
+
+        return ['root' => $root, 'outside' => $outside];
+    }
+
+    /** Remove a scratch tree without ever following its links. */
+    private function s41Purge(string $dir): void
+    {
+        foreach (scandir($dir) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            $path = $dir . '/' . $entry;
+            if (is_link($path) || is_file($path)) {
+                @unlink($path);
+                continue;
+            }
+            $this->s41Purge($path);
+            @rmdir($path);
+        }
+        @rmdir($dir);
+    }
+
+    public function testS41SubmittedSymlinkedDirPathRefusedBeforeScan(): void
+    {
+        // Tier one, directory link: naming the escaping link AS the path
+        // resolves (realpath follows every component) outside the root —
+        // the admission 400, before any analysis runs.
+        ['root' => $root, 'outside' => $outside] = $this->s41EscapeTree();
+        $app = new Application(new JobQueue(), $root, null);
+        $cwd = getcwd();
+        chdir($root);
+
+        try {
+            $response = $app->handle('POST', '/analyze', '{"paths":["evil"]}', []);
+
+            $this->assertSame(400, $response['status']);
+            $this->assertStringContainsString('path is outside serve-root: evil', $response['body']);
+        } finally {
+            chdir($cwd);
+            $this->s41Purge($root);
+            $this->s41Purge($outside);
+            @rmdir(dirname($root));
+        }
+    }
+
+    public function testS41SubmittedSymlinkedFilePathRefusedBeforeScan(): void
+    {
+        // Tier one, file link: the same refusal for a symlinked FILE
+        // naming outside content (the NET-02 shape read /etc/passwd
+        // through exactly this door — the file arm must refuse too).
+        ['root' => $root, 'outside' => $outside] = $this->s41EscapeTree();
+        $app = new Application(new JobQueue(), $root, null);
+        $cwd = getcwd();
+        chdir($root);
+
+        try {
+            $response = $app->handle('POST', '/analyze', '{"paths":["sneaky.php"]}', []);
+
+            $this->assertSame(400, $response['status']);
+            $this->assertStringContainsString('path is outside serve-root: sneaky.php', $response['body']);
+        } finally {
+            chdir($cwd);
+            $this->s41Purge($root);
+            $this->s41Purge($outside);
+            @rmdir(dirname($root));
+        }
+    }
+
+    public function testS41JobsSymlinkEscapeRefusedBeforeMintingRow(): void
+    {
+        // Tier one on the async door: the 400 is an admission refusal —
+        // no queue row exists afterwards, so nothing can ever dispatch,
+        // run, or hold a slot for the escaped scan.
+        ['root' => $root, 'outside' => $outside] = $this->s41EscapeTree();
+        $queue = new JobQueue();
+        $app = new Application($queue, $root, null);
+        $cwd = getcwd();
+        chdir($root);
+
+        try {
+            $response = $app->handle('POST', '/jobs', '{"paths":["evil"]}', []);
+
+            $this->assertSame(400, $response['status']);
+            $this->assertStringContainsString('path is outside serve-root: evil', $response['body']);
+            $this->assertSame([], $queue->list(), 'a refused escape must mint no job row');
+        } finally {
+            chdir($cwd);
+            $this->s41Purge($root);
+            $this->s41Purge($outside);
+            @rmdir(dirname($root));
+        }
+    }
+
+    public function testS41NestedSymlinkEscapeScannedNeverServed(): void
+    {
+        // Tier two, wire shape: the submitted path itself is in-root
+        // (admission passes), and only the WALK can see the escapes it
+        // contains. The result is the in-root census — the outside
+        // sentinel and the outside tree's paths are not one byte of the
+        // response, and the legit in-root alias still counts.
+        ['root' => $root, 'outside' => $outside] = $this->s41EscapeTree();
+        $app = new Application(new JobQueue(), $root, null);
+        $cwd = getcwd();
+        chdir($root);
+
+        try {
+            $response = $app->handle('POST', '/analyze', '{"paths":["."]}', []);
+
+            $this->assertSame(200, $response['status']);
+            $decoded = json_decode($response['body'], true);
+            $this->assertIsArray($decoded);
+            $this->assertSame(2, $decoded['summary']['files'], 'a.php + keep/k.php only');
+            $this->assertStringNotContainsString('secret_marker_zx9', $response['body']);
+            $this->assertStringNotContainsString($outside, $response['body']);
+        } finally {
+            chdir($cwd);
+            $this->s41Purge($root);
+            $this->s41Purge($outside);
+            @rmdir(dirname($root));
+        }
+    }
+
+    public function testS41InRootSymlinkStillServedAtLiteralPath(): void
+    {
+        // Straddle pin: confinement must not regress legitimate symlinks.
+        // An in-root alias is scanned at its literal path — the refusal
+        // vocabulary is for escapes only.
+        ['root' => $root, 'outside' => $outside] = $this->s41EscapeTree();
+        $app = new Application(new JobQueue(), $root, null);
+        $cwd = getcwd();
+        chdir($root);
+
+        try {
+            $response = $app->handle('POST', '/analyze', '{"paths":["alias-inside"]}', []);
+
+            $this->assertSame(200, $response['status']);
+            $decoded = json_decode($response['body'], true);
+            $this->assertIsArray($decoded);
+            $this->assertSame(1, $decoded['summary']['files']);
+            $this->assertStringContainsString('alias-inside', $response['body']);
+        } finally {
+            chdir($cwd);
+            $this->s41Purge($root);
+            $this->s41Purge($outside);
+            @rmdir(dirname($root));
+        }
+    }
+
+    public function testS41ServeReportThreadsScanNotesCount(): void
+    {
+        // The seam itself: the run's skip notes ride the once-S37
+        // scan_notes carrier, and an idle scan carries the honest empty
+        // list (never a fabricated count, never null laundering).
+        $config = \Phpdup\Cli\Config::defaults(['.']);
+        $state = new \Phpdup\Pipeline\PipelineState($config);
+        $this->assertSame([], Application::buildServeReport($state, $config)->scanNotes);
+
+        $state->scanNotes = [
+            'skipped symlinked path ./evil (target escapes the scan root)',
+            'skipped symlinked path ./sneaky.php (target escapes the scan root)',
+            'skipped unreadable path ./locked.php (directory is not readable)',
+        ];
+        $report = Application::buildServeReport($state, $config);
+
+        $this->assertSame($state->scanNotes, $report->scanNotes);
+        $this->assertCount(3, $report->scanNotes);
+    }
+
+    public function testS41LiveScanNotesReachServeReportCarrier(): void
+    {
+        // The count that the plan's acceptance names: a REAL serve-shaped
+        // scan (the once-S20 walk containment mints the notes through
+        // ScanningStage's channel drain) ends with exactly those notes —
+        // two escaping links, each a `target escapes the scan root`
+        // skip-note — on the carrier the server report carries. The
+        // legit in-root alias earns no note.
+        ['root' => $root, 'outside' => $outside] = $this->s41EscapeTree();
+        $cwd = getcwd();
+        chdir($root);
+
+        try {
+            $config = \Phpdup\Cli\Config::defaults(['.']);
+            $state = new \Phpdup\Pipeline\PipelineState($config);
+            (new \Phpdup\Pipeline\Stages\ScanningStage())->run($state, new \Symfony\Component\Console\Output\NullOutput());
+
+            $notes = Application::buildServeReport($state, $config)->scanNotes;
+
+            $this->assertCount(2, $notes);
+            $this->assertStringContainsString('skipped symlinked path', $notes[0]);
+            $this->assertStringContainsString('evil', $notes[0]);
+            $this->assertStringContainsString('target escapes the scan root', $notes[0]);
+            $this->assertStringContainsString('sneaky.php', $notes[1]);
+            $this->assertStringNotContainsString('alias-inside', implode('|', $notes));
+        } finally {
+            chdir($cwd);
+            $this->s41Purge($root);
+            $this->s41Purge($outside);
+            @rmdir(dirname($root));
+        }
+    }
+
+    public function testS41WorkerJobConfinesNestedEscape(): void
+    {
+        // Tier two on the async transport: a hand-fed RUN frame naming
+        // the admitted root publishes a result the escapes never entered
+        // — and the worker stays alive to say so. The async leg shares
+        // the sync leg's one Report seam, so the carrier threading is
+        // byte-invisible at the frozen 1.7 shape by construction: the
+        // wire check IS the closure check.
+        ['root' => $root, 'outside' => $outside] = $this->s41EscapeTree();
+        $cwd = getcwd();
+        chdir($root);
+
+        try {
+            [$client, $controller] = $this->makeWorkerPair();
+            $handleClient = new \ReflectionMethod(AnalysisWorker::class, 'handleClient');
+            fwrite($controller, "RUN 0123456789abcdef {\"paths\":[\".\"]}\n");
+            $handleClient->invoke(new AnalysisWorker(
+                '/tmp/phpdup-worker-defence-unused.sock',
+                $this->workerResultDir,
+                $root
+            ), $client);
+            $ack = rtrim((string) fgets($controller), "\r\n");
+
+            $this->assertSame('OK 0123456789abcdef', $ack);
+            $file = $this->workerResultDir . '/0123456789abcdef.json';
+            $this->assertFileExists($file);
+            $body = (string) file_get_contents($file);
+            $decoded = json_decode($body, true);
+            $this->assertIsArray($decoded);
+            $this->assertSame(2, $decoded['summary']['files'], 'a.php + keep/k.php only');
+            $this->assertStringNotContainsString('secret_marker_zx9', $body);
+            $this->assertStringNotContainsString($outside, $body);
+        } finally {
+            chdir($cwd);
+            $this->s41Purge($root);
+            $this->s41Purge($outside);
+            @rmdir(dirname($root));
+        }
+    }
 }

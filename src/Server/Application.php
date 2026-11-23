@@ -133,6 +133,20 @@ use Symfony\Component\Console\Output\NullOutput;
  *   In async mode the worker independently re-runs all three gates
  *   ({@see AnalysisWorker}) using the serve root handed to it as a
  *   spawn argument — defence in depth.
+ * - Symlink confinement is two-tier (once-S41, php-dup-finder-once-045).
+ *   A SUBMITTED path that itself resolves through a symlink outside the
+ *   serve root answers the same 400-before-mint above — the realpath()
+ *   check resolves every symlink component, so naming the link as the
+ *   path cannot smuggle an escape past admission. A symlink NESTED inside
+ *   an admitted tree is instead contained by the walk itself (once-S20):
+ *   a link whose target resolves outside the scan root (or re-enters it,
+ *   or does not resolve) is skipped with a `phpdup: warning:` note and
+ *   never scanned. The skip count therefore surfaces on the `scan_notes`
+ *   channel — {@see self::buildServeReport()} threads the run's notes
+ *   onto the once-S37 Report carrier for both transports; the JSON
+ *   summary key is the owner-gated schema-1.8 emit (once-S37 shared-
+ *   resources row) and the frozen 1.7 payload carries no such key yet.
+ *   Either tier, content outside the serve root cannot enter a result.
  */
 final class Application
 {
@@ -604,13 +618,7 @@ final class Application
             (new PreprocessStage(useCache: $this->useCache))->run($state, $out);
             (new ClusterStage(exactOnly: self::exactOnlyPosture($payload), useClusterCache: $this->useCache))->run($state, $out);
             (new RefactorStage(useCache: $this->useCache))->run($state, $out);
-            $report = new \Phpdup\Reporting\Report(
-                files: count($state->files),
-                blocks: count($state->blocks),
-                parseErrors: $state->parseErrors,
-                clusters: (new \Phpdup\Reporting\Ranker($config->minClusterImpact))->rank($state->clusters),
-                config: $config,
-            );
+            $report = self::buildServeReport($state, $config);
             return $this->json(200, (new JsonReporter())->build($report));
         } catch (\Throwable $e) {
             // once-S97 (php-dup-finder-once-122 / NET-11): the operator
@@ -909,6 +917,43 @@ final class Application
         }
 
         return new Config(...$args);
+    }
+
+    /**
+     * Build the report payload for a server-side analysis run.
+     *
+     * Both serve transports — the synchronous `POST /analyze` inside the
+     * daemon process ({@see self::runAnalyze()}) and the async worker's
+     * pipeline ({@see AnalysisWorker::executeJob()}) — cross the
+     * state→Report seam HERE, at one site, so a scan-signal carrier is
+     * threaded once and can never differ by route (once-065's sync/async
+     * sameness law, extended from the clustering posture to the notes).
+     *
+     * once-S41 (php-dup-finder-once-045): the walk-time symlink-
+     * containment notes produced inside a serve scan surface on the
+     * once-S37 `scan_notes` channel — {@see PipelineState::$scanNotes}
+     * (ScanningStage's drain of `FileScanner::skipNotes()`) rides the
+     * Report carrier, so the count of skipped escapes is readable at the
+     * report layer on both transports. At the frozen schema 1.7 the
+     * JsonReporter payload gains no key from it (the `summary.scan_notes`
+     * emission is the owner-gated 1.8 window — same event as once-S37's
+     * stopped leg); the operator voice stays the per-note
+     * `phpdup: warning:` stderr line the scanner itself writes.
+     * `parseFailures`/`clustersReplayed` are deliberately NOT threaded
+     * here: their serve-side legs are the sibling reuse windows the
+     * once-S37 shared-resources row names (S66/S71), and the carrier
+     * defaults keep them honestly untracked until then.
+     */
+    public static function buildServeReport(PipelineState $state, Config $config): \Phpdup\Reporting\Report
+    {
+        return new \Phpdup\Reporting\Report(
+            files: count($state->files),
+            blocks: count($state->blocks),
+            parseErrors: $state->parseErrors,
+            clusters: (new \Phpdup\Reporting\Ranker($config->minClusterImpact))->rank($state->clusters),
+            config: $config,
+            scanNotes: $state->scanNotes,
+        );
     }
 
     /**

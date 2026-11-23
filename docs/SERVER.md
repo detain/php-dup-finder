@@ -177,8 +177,11 @@ not the *users* — every account on this machine can connect to
 of whoever runs `phpdup serve`. Path confinement (see
 [Path confinement](#path-confinement) below and the `--serve-root`
 paragraph above) limits **what** a caller can scan — absolute paths,
-`..` traversal and symlink escapes are answered `400` before a job is
-minted — but nothing in the tokenless posture limits **who** may ask.
+`..` traversal and submitted paths that resolve through a symlink out of
+the root are answered `400` before a job is minted, while a symlink
+nested inside an admitted tree is contained by the walk itself (see
+[Path confinement](#path-confinement)) — but nothing in the tokenless
+posture limits **who** may ask.
 What follows is the shipped honesty for that choice, three parts:
 
 1. **The server says it out loud.** A tokenless boot prints this line
@@ -313,11 +316,34 @@ path in `paths[]` is validated:
    `400 Bad Request`.
 2. **No `..` traversal** — paths containing `..` are rejected.
 3. **realpath containment** — each path is resolved via `realpath()`
-   and must fall within `realpath(--serve-root)`. Symlinks that point
-   outside the root are also rejected.
+   and must fall within `realpath(--serve-root)`. A submitted path
+   that names a symlink pointing outside the root resolves out of the
+   root and is rejected too — `400 path is outside serve-root: <path>`,
+   answered before any job is minted, on `POST /analyze` and
+   `POST /jobs` alike (and re-run by the async worker against its
+   spawn-time root).
+
+Confinement is two-tier for symlinks (once-S41). Admission can only
+judge the paths a client names; content reached THROUGH a symlink that
+merely sits inside an admitted tree is contained by the walk itself
+(once-S20): a nested symlink whose target resolves outside the scan
+root — or re-enters it, or does not resolve — is **skipped, never
+scanned and never served**, and each skip answers one
+`phpdup: warning: skipped symlinked path <path> (target escapes the
+scan root)` line on the server's stderr. The count of such notes
+surfaces on the `scan_notes` channel: every serve transport threads
+its run's skip notes onto the report's scan-notes carrier (sync
+`POST /analyze` and the async worker share one seam,
+`Application::buildServeReport()`); the `summary.scan_notes` JSON key
+is part of the owner-gated schema-1.8 emit, so a schema-1.7 result
+body stays byte-frozen while the carrier already carries the count.
+Symlinks whose targets stay inside the root keep working — their
+content is scanned at the literal in-root path.
 
 This prevents phpdup from reading arbitrary filesystem paths through
-the HTTP API, even if a client bypasses the above checks.
+the HTTP API: an escape is refused at admission or skipped at walk
+time — either tier, content from outside the serve root never enters a
+serve result.
 
 ### Results on disk: /tmp hygiene
 
