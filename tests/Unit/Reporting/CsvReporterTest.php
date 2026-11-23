@@ -7,18 +7,11 @@ use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\Config;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
-use Phpdup\Pipeline\PipelineState;
-use Phpdup\Pipeline\Stages\ClusterStage;
-use Phpdup\Pipeline\Stages\PreprocessStage;
-use Phpdup\Pipeline\Stages\RefactorStage;
-use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Reporting\CheckstyleReporter;
 use Phpdup\Reporting\CsvReporter;
 use Phpdup\Reporting\GitLabSastReporter;
-use Phpdup\Reporting\Ranker;
 use Phpdup\Reporting\Report;
 use Phpdup\Util\LineRange;
-use Symfony\Component\Console\Output\NullOutput;
 
 final class CsvReporterTest extends TestCase
 {
@@ -35,41 +28,84 @@ final class CsvReporterTest extends TestCase
         );
     }
 
+    /**
+     * php-dup-finder-output-036 (output-S56a migration): this arm used to run
+     * the four pipeline stages over tests/Fixtures/sql. Per the AGENTS.md
+     * reporter-test convention it now consumes a hand-built two-cluster
+     * report — same vectors: header + one row per member, every body row
+     * exactly 14 fields. The expected row count is hard-coded instead of
+     * being re-derived from the very report handed to the emitter (the old
+     * form tautologized against a broken members count), and the identity
+     * columns are pinned per row (disclosed strengthenings).
+     */
     public function testFixtureReportProducesOneRowPerMember(): void
     {
-        $report = $this->buildReport();
-        $csv = (new CsvReporter())->build($report);
+        $report = $this->syntheticTwoClusterReport();
+        $csv    = (new CsvReporter())->build($report);
 
-        $rows = array_filter(explode("\n", trim($csv)));
-        // header + one row per member
-        $expectedMembers = 0;
-        foreach ($report->clusters as $c) {
-            $expectedMembers += count($c->members);
-        }
-        $this->assertCount($expectedMembers + 1, $rows);
+        $rows = array_values(array_filter(explode("\n", trim($csv))));
+        // header + five members across the two clusters
+        $this->assertCount(6, $rows);
 
-        // RFC 4180: every body row should have exactly 14 fields
-        for ($i = 1; $i < count($rows); $i++) {
+        $cells = [];
+        for ($i = 1; $i <= 5; $i++) {
             // CI-85: PHP 8.4/8.5 deprecate omitting $escape; '\\' is
             // verbatim the old default, so parsing behaviour is unchanged.
-            $cells = str_getcsv($rows[$i], ',', '"', '\\');
-            $this->assertCount(14, $cells, "row $i should have 14 cells");
+            $cells[$i] = str_getcsv($rows[$i], ',', '"', '\\');
+            $this->assertCount(14, $cells[$i], "row $i should have 14 cells");
         }
+
+        $this->assertSame(
+            ['F0000000000000021', 'F0000000000000021', 'F0000000000000022', 'F0000000000000022', 'F0000000000000022'],
+            array_values(array_column($cells, 0)),
+            'every member gets a row and the cluster order survives emission',
+        );
+        $this->assertSame(
+            ['2', '2', '3', '3', '3'],
+            array_values(array_column($cells, 1)),
+            'the members column carries the count of the row\'s own cluster',
+        );
     }
 
+    /**
+     * php-dup-finder-output-036 (output-S56a migration): carried from the
+     * retired pipeline arm (RFC 4180 round-trip of comma-bearing rows). The
+     * synthetic payload makes the trigger explicit — the signature leg the
+     * doc-comment always named ('the signature field can contain commas')
+     * plus comma-bearing file/name cells — and the cells must return
+     * byte-equal through the quoting venue, so removing the quoting branch
+     * splits the row (14-cell assert goes RED).
+     */
     public function testFieldsContainingCommasAreEscaped(): void
     {
-        // The signature field can contain commas (parameter list). Verify
-        // the resulting CSV is still parseable round-trip.
-        $report = $this->buildReport();
-        $csv = (new CsvReporter())->build($report);
-        $rows = explode("\n", trim($csv));
-        for ($i = 1; $i < count($rows); $i++) {
-            // CI-85: PHP 8.4/8.5 deprecate omitting $escape; '\\' is
-            // verbatim the old default, so parsing behaviour is unchanged.
-            $cells = str_getcsv($rows[$i], ',', '"', '\\');
-            $this->assertCount(14, $cells, "row {$i} should round-trip cleanly");
-        }
+        $signature = 'function process($userId, string $name): array';
+        $file      = '/scan/we,ird-name.php';
+        $name      = 'handle, compress';
+
+        $member = new Block(
+            file: $file,
+            range: new LineRange(7, 19),
+            kind: 'function',
+            namespace: null,
+            class: null,
+            name: $name,
+            ast: new \PhpParser\Node\Stmt\Nop(),
+        );
+        $cluster            = new Cluster('F0000000000000023', [$member], 0.95, false);
+        $cluster->impact    = 13;
+        $cluster->signature = $signature;
+
+        $csv  = (new CsvReporter())->build(new Report(1, 1, 0, [$cluster], Config::defaults([])));
+        $rows = array_values(array_filter(explode("\n", trim($csv))));
+        $this->assertCount(2, $rows, 'header + the one member row');
+
+        // CI-85: PHP 8.4/8.5 deprecate omitting $escape; '\\' is
+        // verbatim the old default, so parsing behaviour is unchanged.
+        $cells = str_getcsv($rows[1], ',', '"', '\\');
+        $this->assertCount(14, $cells, 'comma-carrying row must round-trip cleanly');
+        $this->assertSame($file, $cells[5], 'file cell returns byte-equal through the quoting venue');
+        $this->assertSame($name, $cells[11], 'name cell returns byte-equal through the quoting venue');
+        $this->assertSame($signature, $cells[12], 'signature cell returns byte-equal through the quoting venue');
     }
 
     public function testEscapeNeutralizesFormulaInjection(): void
@@ -207,26 +243,33 @@ final class CsvReporterTest extends TestCase
         return new Report(1, 1, 0, [$cluster], Config::defaults([]));
     }
 
-    private function buildReport(): Report
+    /**
+     * Hand-built two-cluster report (2 + 3 members) replacing the retired
+     * sql-fixture pipeline run as the row-shape carrier — AGENTS.md
+     * reporter-test convention: synthetic Cluster + Block instances, no
+     * stages.
+     */
+    private function syntheticTwoClusterReport(): Report
     {
-        $config = new Config(
-            paths: [__DIR__ . '/../../Fixtures/sql'],
-            exclude: Config::defaults([])->exclude,
-            lazyAst: false,
+        $member = static fn(string $file, int $start): Block => new Block(
+            file: $file,
+            range: new LineRange($start, $start + 4),
+            kind: 'function',
+            namespace: null,
+            class: null,
+            name: 'm',
+            ast: new \PhpParser\Node\Stmt\Nop(),
         );
-        $state = new PipelineState($config);
-        $out   = new NullOutput();
-        (new ScanningStage())->run($state, $out);
-        (new PreprocessStage(useCache: false))->run($state, $out);
-        (new ClusterStage(exactOnly: true))->run($state, $out);
-        (new RefactorStage(useCache: false))->run($state, $out);
 
-        return new Report(
-            files: count($state->files),
-            blocks: count($state->blocks),
-            parseErrors: $state->parseErrors,
-            clusters: (new Ranker($config->minClusterImpact))->rank($state->clusters),
-            config: $config,
-        );
+        $a            = new Cluster('F0000000000000021', [$member('csv-a1.php', 1), $member('csv-a2.php', 20)], 1.0, true);
+        $a->impact    = 10;
+        $a->signature = 'function alpha($x): int';
+
+        $b            = new Cluster('F0000000000000022', [$member('csv-b1.php', 5), $member('csv-b2.php', 10), $member('csv-b3.php', 15)], 0.9, false);
+        $b->impact    = 15;
+        $b->signature = 'function beta($y): string';
+        $b->patternTags = ['db-op'];
+
+        return new Report(5, 5, 0, [$a, $b], Config::defaults([]));
     }
 }
