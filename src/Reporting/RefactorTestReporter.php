@@ -29,10 +29,32 @@ use Phpdup\Util\ControlText;
  * {@see build()} (filename => skeleton source, the sanctioned
  * array-shape of the reporting-pattern rule), and writeTo() writes exactly
  * that map through the fail-loud venue. Output bytes unchanged.
+ *
+ * once-074 (once-S65): directory hygiene on re-runs. Skeleton files are
+ * keyed by content-derived cluster ids, so a run whose cluster set shrank
+ * or churned used to leave the previous generation's orphan skeletons
+ * beside the new ones (removed clusters' tests surviving as if still
+ * proposed). writeTo() now sweeps the skeleton names IT CAN MINT —
+ * Cluster<identifier>Test.php, exactly the shape {@see className()}
+ * produces — before writing the current set. Pattern-scoped and
+ * non-recursive: other files in the dir are not its business; a planted
+ * symlink at an owned name is removed as a link, never written through;
+ * enumeration or removal the disk refuses raises the venue's
+ * ReportWriteException instead of shipping a mixed-generation dir.
  */
 final class RefactorTestReporter
 {
     use WritesReportFile;
+
+    /**
+     * once-074: the skeleton names THIS reporter can mint, as a
+     * directory-entry pattern — the exact image of
+     * {@see className()}.'Cluster' … 'Test.php' with the identifier-safe
+     * projection between (Slug admits only [a-zA-Z0-9_-], dashes then
+     * tighten to '_'), so anything else in the output dir — the user's own
+     * tests, helpers, a differently-named file — is never swept.
+     */
+    private const OWNED_SKELETON_PATTERN = '/^Cluster[a-zA-Z0-9_]*Test\.php$/';
 
     /**
      * House-rule entrypoint: write one PHPUnit test-skeleton file per
@@ -41,6 +63,9 @@ final class RefactorTestReporter
     public function writeTo(Report $report, string $dir): void
     {
         $this->ensureDirectory($dir);
+        // once-074: one generation per dir — drop the previous run's
+        // skeletons before this run lays its own.
+        $this->sweepOwnedSkeletons($dir);
         foreach ($this->build($report) as $name => $contents) {
             $this->writeFile($dir . DIRECTORY_SEPARATOR . $name, $contents);
         }
@@ -64,6 +89,63 @@ final class RefactorTestReporter
             $files[$this->className($cluster) . '.php'] = $this->buildTest($cluster);
         }
         return $files;
+    }
+
+    /**
+     * once-074 (once-S65): remove the output dir's stale generation of THIS
+     * reporter's skeletons before the current run writes its own. Ownership
+     * is the mintable name, and only the name: entries matching
+     * {@see OWNED_SKELETON_PATTERN} as regular files (the last run's
+     * skeletons) or symlinks (removed AS a link, never written through). A
+     * directory wearing an owned name, and everything outside the pattern,
+     * survives — the sweep lists one directory and recurses nothing. A dir
+     * that cannot be listed, or a removal the disk refused while the name
+     * stays, raises {@see ReportWriteException} naming the path: a mixed-
+     * generation skeleton dir is exactly the silent-success the venue
+     * exists to kill. Same doctrine as HtmlReporter's sweep; the
+     * duplication is lock-bounded (WritesReportFile is not this step's
+     * file) and routed as a trait-rider in the step report.
+     */
+    private function sweepOwnedSkeletons(string $dir): void
+    {
+        [$entries, $diagnostic] = self::attempt(static fn () => scandir($dir));
+        if (!is_array($entries)) {
+            throw new ReportWriteException(sprintf(
+                'sweeping stale test skeletons in %s failed: directory cannot be listed (%s)',
+                $dir,
+                $diagnostic !== '' ? $diagnostic : 'no diagnostic recorded',
+            ));
+        }
+        foreach ($entries as $entry) {
+            if (!is_string($entry) || preg_match(self::OWNED_SKELETON_PATTERN, $entry) !== 1) {
+                continue;
+            }
+            $path = $dir . DIRECTORY_SEPARATOR . $entry;
+            if (is_link($path)) {
+                $this->removeOwnedSkeleton($path);
+                continue;
+            }
+            if (is_file($path)) {
+                $this->removeOwnedSkeleton($path);
+            }
+        }
+    }
+
+    /**
+     * Unlink one owned skeleton name — or say so (race posture mirrors the
+     * trait's ensureDirectory(): refused-and-still-there is a failure;
+     * raced-away is already clean).
+     */
+    private function removeOwnedSkeleton(string $path): void
+    {
+        [$ok, $diagnostic] = self::attempt(static fn () => unlink($path));
+        if ($ok === false && (is_link($path) || is_file($path))) {
+            throw new ReportWriteException(sprintf(
+                'removing stale test skeleton %s failed: %s',
+                $path,
+                $diagnostic !== '' ? $diagnostic : 'no diagnostic recorded',
+            ));
+        }
     }
 
     /**

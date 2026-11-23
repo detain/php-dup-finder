@@ -75,6 +75,21 @@ use SebastianBergmann\Diff\Output\StrictUnifiedDiffOutputBuilder;
  * one reporter where the seam and the write loop share the private
  * renderers rather than the writer draining the map. Same renderers, same
  * bytes, one documented divergence.
+ *
+ * once-074 (once-S65): directory hygiene on re-runs. Pages are POSITIONAL
+ * (cluster-%03d.html), so a run into a reused dir whose cluster count
+ * shrank used to leave the previous generation's orphan pages beside the
+ * new ones — two reports' content posing as one site. writeTo() now sweeps
+ * every page NAME IT CAN EMIT before writing, pattern-scoped and
+ * non-recursive: anything the reporter cannot mint (notes.txt, a
+ * two-digit cluster-10.html, a user directory wearing an owned name) is
+ * never touched; a planted symlink at an owned page name is removed as a
+ * link, never written through; and a removal or enumeration the disk
+ * refuses raises ReportWriteException instead of silently shipping a
+ * mixed-generation site. build() stays pure — it lists nothing and removes
+ * nothing — and its kill pin (testBuildMapEqualsTheLandedSiteByteForByte,
+ * the S55-r1 §7b route landed here) is what makes "same bytes" more than
+ * a prose promise now that the writer also deletes.
  */
 final class HtmlReporter
 {
@@ -82,6 +97,17 @@ final class HtmlReporter
 
     /** Cluster pages rendered into one write batch before it is flushed. */
     public const DEFAULT_WRITE_BATCH = 128;
+
+    /**
+     * once-074: the page names THIS reporter can mint, as a directory-entry
+     * pattern — {@see writeTo()}'s stale-generation sweep is scoped to it
+     * and nothing else in the output dir is ever its business. The shape is
+     * the exact image of `sprintf('cluster-%03d.html', $n)` for $n >= 1:
+     * 'cluster-' + at least three digits + '.html' (0-padded until three,
+     * longer past 999). Near-misses like 'cluster-10.html' or
+     * 'cluster-abc.html' are NOT emittable names and stay untouched.
+     */
+    private const OWNED_PAGE_PATTERN = '/^cluster-\d{3,}\.html$/';
 
     /**
      * The single source of truth for highlighted keywords — lower-case
@@ -125,6 +151,9 @@ final class HtmlReporter
     public function writeTo(Report $report, string $dir): void
     {
         $this->ensureDirectory($dir);
+        // once-074: one generation per dir — drop the previous run's pages
+        // before this run lays its own (pattern-scoped, see the sweep).
+        $this->sweepOwnedPages($dir);
 
         $store = $this->sourceText ?? new SourceTextStore($report->config->paths);
 
@@ -178,6 +207,8 @@ final class HtmlReporter
      * streaming strategy (output-041), so callers wanting the map get the
      * same bytes the writer lands. The Differ memo is render-run scoped here
      * exactly as in writeTo(): one Differ per pass, construction counted.
+     * once-074 note: the writer additionally sweeps stale owned pages;
+     * build() remains PURE — it lists nothing on disk and removes nothing.
      *
      * @return array<string,string> 'style.css' | 'app.js' | 'index.html' |
      *                              'cluster-%03d.html' => html
@@ -196,6 +227,71 @@ final class HtmlReporter
             $files[sprintf('cluster-%03d.html', $i + 1)] = $this->renderCluster($i + 1, $cluster, $report, $store);
         }
         return $files;
+    }
+
+    /**
+     * once-074 (once-S65): remove the output dir's stale generation of THIS
+     * reporter's cluster pages before the current run writes its own.
+     *
+     * Ownership is the name, and only the name: entries matching
+     * {@see OWNED_PAGE_PATTERN} are regular files (the common case — the
+     * last run's pages), symlinks (removed AS a link so a planted
+     * redirect is never written through, and the current run's page takes
+     * the name), or nothing at all. Directories wearing an owned name are
+     * user content this reporter could not have minted (a page is never a
+     * dir) and survive untouched — as does everything outside the pattern,
+     * at every level: the sweep lists one directory and recurses nothing.
+     *
+     * Failure is loud by the S54 venue's doctrine: a dir the run cannot
+     * enumerate cannot be proven clean, and a page whose removal the disk
+     * refused means the dir would ship mixed generations — either raises
+     * {@see ReportWriteException} naming the path and the captured
+     * diagnostic, so the CLI prints the `phpdup:` line and exits 1 over an
+     * honest refusal instead of a success line over a stale site.
+     */
+    private function sweepOwnedPages(string $dir): void
+    {
+        [$entries, $diagnostic] = self::attempt(static fn () => scandir($dir));
+        if (!is_array($entries)) {
+            throw new ReportWriteException(sprintf(
+                'sweeping stale report pages in %s failed: directory cannot be listed (%s)',
+                $dir,
+                $diagnostic !== '' ? $diagnostic : 'no diagnostic recorded',
+            ));
+        }
+        foreach ($entries as $entry) {
+            if (!is_string($entry) || preg_match(self::OWNED_PAGE_PATTERN, $entry) !== 1) {
+                continue; // not a name this reporter can mint — never its business
+            }
+            $path = $dir . DIRECTORY_SEPARATOR . $entry;
+            if (is_link($path)) {
+                $this->removeOwnedPage($path);
+                continue;
+            }
+            if (is_file($path)) {
+                $this->removeOwnedPage($path);
+            }
+            // is_dir() (and any other exotic type) at an owned name: the
+            // reporter could not have created it; leave it. If it blocks
+            // this run's own page, writeFile fails loudly on that page.
+        }
+    }
+
+    /**
+     * Unlink one owned page name — or say so. Mirrors the race posture of
+     * the trait's ensureDirectory(): a removal that failed while the name
+     * is still there is a refusal; one that raced away is already clean.
+     */
+    private function removeOwnedPage(string $path): void
+    {
+        [$ok, $diagnostic] = self::attempt(static fn () => unlink($path));
+        if ($ok === false && (is_link($path) || is_file($path))) {
+            throw new ReportWriteException(sprintf(
+                'removing stale report page %s failed: %s',
+                $path,
+                $diagnostic !== '' ? $diagnostic : 'no diagnostic recorded',
+            ));
+        }
     }
 
     /**

@@ -95,6 +95,23 @@ use Phpdup\Util\ControlText;
  * branch stays imperative by design: it is a write-window transaction
  * whose summary reports what the extractor VERIFIED on disk — bytes,
  * counters and refusal wording unchanged.
+ *
+ * once-074 (once-S65): directory hygiene on the plain .patch surface.
+ * Patch files are keyed by content-derived cluster ids, so a re-run into a
+ * reused dir whose cluster set shrank or churned left the previous
+ * generation's orphan patches beside the new ones — removed proposals still
+ * presented as current. The plain leg now creates the output dir loudly
+ * FIRST (the empty report gets a real, cleared dir — same admission as the
+ * F1a leg and the sibling dir writers) and sweeps the patch names IT CAN
+ * MINT — <slug>.patch, exactly the image of {@see Slug::safe()} plus the
+ * extension — before writing the current set. Pattern-scoped, one dir, no
+ * recursion: other files survive; a planted symlink at an owned name is
+ * removed as a link, never written through; refusal raises the venue's
+ * ReportWriteException. The apply legs are deliberately NOT swept: F1a and
+ * F1b each land one always-overwritten named artifact, and an F1b output dir
+ * holds the extractor's rewritten project tree — wiping anything there is
+ * outside what this reporter owns. build() remains pure: it lists nothing
+ * and removes nothing.
  */
 final class RefactorPatchReporter
 {
@@ -105,6 +122,17 @@ final class RefactorPatchReporter
 
     /** F1b apply artifact (php-dup-finder-output-022): a human summary, markdown. */
     public const APPLY_SUMMARY_FILE = 'apply-summary.md';
+
+    /**
+     * once-074: the patch names the PLAIN leg can mint, as a directory-entry
+     * pattern — {@see writeTo()}'s stale-generation sweep is scoped to it
+     * and nothing else in the output dir is ever its business. The shape is
+     * the exact image of `Slug::safe($id) . '.patch'`: [a-zA-Z0-9_-] bytes
+     * (Slug's whole safe alphabet) plus the extension. Anything else —
+     * apply.diff, apply-summary.md, a user's own foo.patch with a dot or
+     * space in the stem — is not an emittable name and is never swept.
+     */
+    private const OWNED_PATCHES_PATTERN = '/^[a-zA-Z0-9_-]+\.patch$/';
 
     /**
      * Hazards that refuse mechanical hoisting (php-dup-finder-output-008),
@@ -304,6 +332,15 @@ final class RefactorPatchReporter
             return;
         }
 
+        // once-074: the plain surface owns a DIRECTORY of per-cluster
+        // patches — create it loudly first (an empty report then lands a
+        // real, current dir instead of a success line over nothing, the
+        // same admission as the F1a leg and the sibling dir writers), and
+        // drop the previous generation's patches before this run lays its
+        // own (pattern-scoped — see the sweep).
+        $this->ensureDirectory($dir);
+        $this->sweepOwnedPatches($dir);
+
         // output-S55: the plain .patch surface writes exactly the pure
         // build() map through the fail-loud venue.
         foreach ($this->build($report) as $name => $contents) {
@@ -334,6 +371,64 @@ final class RefactorPatchReporter
             $files[$safeId . '.patch'] = $this->buildPatch($cluster, $safeId, $store);
         }
         return $files;
+    }
+
+    /**
+     * once-074 (once-S65): remove the output dir's stale generation of THIS
+     * reporter's plain-surface patches before the current run writes its
+     * own. Ownership is the mintable name, and only the name: entries
+     * matching {@see OWNED_PATCHES_PATTERN} as regular files (the last
+     * run's patches) or symlinks (removed AS a link, never written
+     * through). Directories wearing an owned name — the extractor's
+     * Refactored/ tree is NOT in the pattern anyway — and everything else
+     * survive: the sweep lists one directory and recurses nothing. A dir
+     * that cannot be listed, or a removal the disk refused while the name
+     * stays, raises {@see ReportWriteException} naming the path: a mixed-
+     * generation patch dir is exactly the silent-success the venue exists
+     * to kill. Same doctrine as the HtmlReporter and RefactorTestReporter
+     * sweeps; the triplication is lock-bounded (WritesReportFile is not a
+     * file of this step) and routed as a trait-rider in the step report.
+     */
+    private function sweepOwnedPatches(string $dir): void
+    {
+        [$entries, $diagnostic] = self::attempt(static fn () => scandir($dir));
+        if (!is_array($entries)) {
+            throw new ReportWriteException(sprintf(
+                'sweeping stale refactor patches in %s failed: directory cannot be listed (%s)',
+                $dir,
+                $diagnostic !== '' ? $diagnostic : 'no diagnostic recorded',
+            ));
+        }
+        foreach ($entries as $entry) {
+            if (!is_string($entry) || preg_match(self::OWNED_PATCHES_PATTERN, $entry) !== 1) {
+                continue;
+            }
+            $path = $dir . DIRECTORY_SEPARATOR . $entry;
+            if (is_link($path)) {
+                $this->removeOwnedPatch($path);
+                continue;
+            }
+            if (is_file($path)) {
+                $this->removeOwnedPatch($path);
+            }
+        }
+    }
+
+    /**
+     * Unlink one owned patch name — or say so (race posture mirrors the
+     * trait's ensureDirectory(): refused-and-still-there is a failure;
+     * raced-away is already clean).
+     */
+    private function removeOwnedPatch(string $path): void
+    {
+        [$ok, $diagnostic] = self::attempt(static fn () => unlink($path));
+        if ($ok === false && (is_link($path) || is_file($path))) {
+            throw new ReportWriteException(sprintf(
+                'removing stale refactor patch %s failed: %s',
+                $path,
+                $diagnostic !== '' ? $diagnostic : 'no diagnostic recorded',
+            ));
+        }
     }
 
     /**

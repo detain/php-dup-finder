@@ -17,6 +17,7 @@ use Phpdup\Refactor\Hole;
 use Phpdup\Reporting\HtmlReporter;
 use Phpdup\Reporting\Ranker;
 use Phpdup\Reporting\Report;
+use Phpdup\Reporting\ReportWriteException;
 use Phpdup\Reporting\SourceTextStore;
 use Phpdup\Util\LineRange;
 use Symfony\Component\Console\Output\NullOutput;
@@ -1257,6 +1258,174 @@ final class HtmlReporterTest extends TestCase
         // Failure is styled, not just worded.
         $css = (string)(new \ReflectionMethod(HtmlReporter::class, 'css'))->invoke(new HtmlReporter());
         $this->assertStringContainsString('.copy-status.failed', $css);
+    }
+
+    // ------------------------------------------------------------------
+    // php-dup-finder-once-074 (step once-S65): dir-owned stale-page sweep
+    // + honest mkdir collision on the directory writer. One-generation law:
+    // a re-run into a reused dir presents EXACTLY this run's pages — the
+    // sweep removes only names THIS reporter can mint (pattern-scoped, one
+    // dir, no recursion), refuses loudly (ReportWriteException, the shared
+    // fail-loud venue) when the disk says no, and an unusable target path
+    // never reaches a success line. Also lands the output-S55 §7b pin
+    // (routed to this file's holder by the S55-r1 LOW-1): the build() map
+    // equals the landed site byte for byte.
+    // ------------------------------------------------------------------
+
+    public function testShrunkReRunPresentsExactlyOneGenerationOfPages(): void
+    {
+        [$report8, $root8] = $this->diffCapableReport(8);
+        [$report2, $root2] = $this->diffCapableReport(2);
+        // The page census the reporter itself could have written this run:
+        // mintable names ([cluster-001..N], the cluster-%03d image) that are
+        // regular files. Witness entries planted below are deliberately
+        // OUTSIDE this set (non-mintable names, a directory wearing an
+        // owned name) — the sweep must leave every one of them alone.
+        $mintablePages = static function (string $dir): array {
+            $names = [];
+            foreach (glob($dir . '/cluster-*.html') ?: [] as $path) {
+                if (is_file($path) && preg_match('/^cluster-\d{3,}\.html$/', basename($path)) === 1) {
+                    $names[] = basename($path);
+                }
+            }
+            sort($names);
+            return $names;
+        };
+        try {
+            $dir = $root8 . '/reused';
+            (new HtmlReporter(null, 2))->writeTo($report8, $dir);
+            $this->assertCount(8, $mintablePages($dir), 'premise: the first generation is eight pages');
+
+            // Foreign witnesses for the ownership boundary, seeded BEFORE
+            // the shrinking run: plain files the reporter cannot mint, a
+            // DIRECTORY wearing an owned name (the sweep skips it; had a
+            // page tried to land under it the trait would fail loudly),
+            // and a symlink parked at a stale-page name — the sweep must
+            // remove the LINK, never write through it.
+            file_put_contents($dir . '/notes.txt', 'user file: never the sweep\'s business');
+            file_put_contents($dir . '/cluster-10.html', 'two-digit name is not a cluster-%03d image');
+            file_put_contents($dir . '/cluster-abc.html', 'letters are outside the digit run');
+            mkdir($dir . '/cluster-009.html');
+            $outside = $root2 . '/outside-target.txt';
+            file_put_contents($outside, 'untouched');
+            unlink($dir . '/cluster-007.html');
+            symlink($outside, $dir . '/cluster-007.html');
+
+            (new HtmlReporter(null, 2))->writeTo($report2, $dir);
+
+            // The acceptance shape: 8→2 in a reused dir leaves exactly the
+            // current generation — no cluster-003..008 survivors.
+            $this->assertSame(['cluster-001.html', 'cluster-002.html'], $mintablePages($dir));
+            // Ownership honored: everything the sweep does not own survives,
+            // byte-intact, and the symlink is gone as a LINK only.
+            $this->assertFileExists($dir . '/notes.txt');
+            $this->assertSame(
+                'two-digit name is not a cluster-%03d image',
+                file_get_contents($dir . '/cluster-10.html'),
+            );
+            $this->assertSame(
+                'letters are outside the digit run',
+                file_get_contents($dir . '/cluster-abc.html'),
+            );
+            $this->assertDirectoryExists($dir . '/cluster-009.html');
+            $this->assertFalse(is_link($dir . '/cluster-007.html'), 'stale owned-name symlink removed');
+            $this->assertFileExists($outside);
+            $this->assertSame('untouched', file_get_contents($outside), 'the sweep never writes through a link');
+            // The surviving pages are REGENERATED (not last-run leftovers):
+            // byte-identical to the same report written into a fresh dir.
+            $fresh = $root2 . '/fresh';
+            (new HtmlReporter(null, 2))->writeTo($report2, $fresh);
+            $this->assertFileEquals($fresh . '/cluster-001.html', $dir . '/cluster-001.html');
+            $this->assertFileEquals($fresh . '/index.html', $dir . '/index.html');
+
+            // Empty re-run: the generation clears to zero pages — a removed
+            // cluster's page must not outlive the cluster.
+            $empty = new Report(
+                files: 0, blocks: 0, parseErrors: 0, clusters: [], config: Config::defaults([$root8]),
+            );
+            (new HtmlReporter(null, 2))->writeTo($empty, $dir);
+            $this->assertSame([], $mintablePages($dir), 'zero clusters present zero pages');
+            $this->assertFileExists($dir . '/index.html');
+            $this->assertFileExists($dir . '/notes.txt');
+            $this->assertFileExists($dir . '/cluster-10.html');
+        } finally {
+            $this->rrmdir($root8);
+            $this->rrmdir($root2);
+        }
+    }
+
+    /**
+     * output-S55 future pin (routes to the next HtmlReporterTest holder,
+     * S97 bar — proposed by the convergence lane, verified against the live
+     * class in a scratch copy): the pure build() seam maps the same site
+     * writeTo() lands, byte for byte.
+     */
+    public function testBuildMapEqualsTheLandedSiteByteForByte(): void
+    {
+        [$report, $root] = $this->diffCapableReport(3);
+        try {
+            $map = (new HtmlReporter(null, 2))->build($report);
+            ksort($map);
+            $this->assertSame(
+                ['app.js', 'cluster-001.html', 'cluster-002.html', 'cluster-003.html', 'index.html', 'style.css'],
+                array_keys($map),
+            );
+            $dir = $root . '/build-seam';
+            (new HtmlReporter(null, 2))->writeTo($report, $dir);
+            foreach ($map as $name => $html) {
+                $this->assertSame($html, (string)file_get_contents($dir . '/' . $name), "{$name} diverged");
+            }
+        } finally {
+            $this->rrmdir($root);
+        }
+    }
+
+    public function testReportDirectoryPathHeldByAFileFailsLoudly(): void
+    {
+        [$report, $root] = $this->diffCapableReport(1);
+        try {
+            $blocked = $root . '/site';
+            file_put_contents($blocked, 'I am a file where a directory belongs');
+            try {
+                (new HtmlReporter(null, 2))->writeTo($report, $blocked);
+                $this->fail('target-path-is-a-file must raise ReportWriteException, not print a success line');
+            } catch (ReportWriteException $e) {
+                $this->assertStringContainsString('creating directory', $e->getMessage());
+                $this->assertStringContainsString($blocked, $e->getMessage());
+            }
+            $this->assertStringEqualsFile($blocked, 'I am a file where a directory belongs');
+            $this->assertSame([], glob($blocked . '/*') ?: []);
+        } finally {
+            $this->rrmdir($root);
+        }
+    }
+
+    public function testUnwritableOutputDirRefusesStalePageSweepLoudly(): void
+    {
+        $this->skipIfRoot('chmod-based sweep refusal');
+        [$report, $root] = $this->diffCapableReport(1);
+        $dir = $root . '/locked-site';
+        try {
+            (new HtmlReporter(null, 2))->writeTo($report, $dir);
+            // Owner-readable/listable but NOT writable: the sweep lists its
+            // stale page and the unlink is refused — a mixed-generation
+            // site is exactly the silent success this venue exists to kill.
+            chmod($dir, 0o500);
+            $this->expectException(ReportWriteException::class);
+            $this->expectExceptionMessage('removing stale report page ' . $dir . '/cluster-001.html failed:');
+            (new HtmlReporter(null, 2))->writeTo($report, $dir);
+        } finally {
+            chmod($dir, 0o700);
+            $this->rrmdir($root);
+        }
+    }
+
+    /** DAC-based refusal guard (same posture as WritesReportFileTest). */
+    private function skipIfRoot(string $why): void
+    {
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            $this->markTestSkipped('root bypasses DAC: ' . $why);
+        }
     }
 
     private function parseDom(string $file): \DOMDocument
