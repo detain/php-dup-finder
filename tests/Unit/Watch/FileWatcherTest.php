@@ -180,18 +180,21 @@ final class FileWatcherTest extends TestCase
         $files = $this->splFilesFromPaths([$filePath]);
         $watcher->syncFromFileList($files);
 
-        // Wait for next second to ensure mtime changes (filesystem has 1s precision)
-        sleep(1);
-        clearstatcache(true, $filePath);
-
-        // Touch the file to update its mtime
-        touch($filePath);
+        // once-S93 (deterministic, no sleep): FileWatcher's modification key is the
+        // 'mtime:size' composite (src/Watch/FileWatcher.php statKey()), so an
+        // explicit future mtime with unchanged size isolates the mtime leg —
+        // the old sleep(1) just waited out 1-second timestamp granularity.
+        $sizeBefore = filesize($filePath);
+        $this->assertIsInt($sizeBefore);
+        touch($filePath, time() + 10);
         clearstatcache(true, $filePath);
 
         $modified = $watcher->detectModifiedFiles($files);
 
         $this->assertCount(1, $modified);
         $this->assertStringEndsWith('a.php', $modified[0]);
+        $this->assertSame($sizeBefore, filesize($filePath),
+            'the change must be mtime-only, so the size leg cannot be doing the work');
     }
 
     public function testDetectModifiedFilesReturnsEmptyWhenUnchanged(): void

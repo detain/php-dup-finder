@@ -36,7 +36,15 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
-          extensions: hash, mbstring, gmp
+          # once-S93 (once-116): inotify joined on purpose.
+          # tests/Unit/Watch/FileWatcherTest pins that startInotify()/
+          # stopInotify() leave no file-descriptor litter behind, but the
+          # arm can only RUN where ext-inotify loads — without it the test
+          # states its precondition and skips, which is legal on odd boxes
+          # yet would silently un-serve CI. Loading the extension here
+          # turns that fd-leak fence into a standing CI fact instead of a
+          # permanent skip.
+          extensions: hash, mbstring, gmp, inotify
           coverage: ${{ matrix.primary && 'pcov' || 'none' }}
           tools: composer:v2
 
@@ -91,11 +99,53 @@ jobs:
         if: ${{ ! matrix.primary }}
         # --display-deprecations: the 8.4 legs reported 2 deprecations with
         # only position markers ('DD' ~#744/745); naming them needs the text.
-        run: vendor/bin/phpunit --display-deprecations
+        # once-S93 (once-116): @group network is excluded from every bare
+        # suite leg — those arms fetch live external endpoints, and the
+        # old shape let a blocked-egress box PASS them vacuously (assertNull
+        # is also the shape of 'could not connect'). They run ONCE, loudly,
+        # in the dedicated Network-group leg below, which preflights the
+        # endpoints and fails-not-passes when unreachable.
+        run: vendor/bin/phpunit --display-deprecations --exclude-group network
 
       - name: Run test suite with coverage
         if: ${{ matrix.primary }}
-        run: vendor/bin/phpunit --display-deprecations --coverage-clover coverage.xml --coverage-text
+        run: vendor/bin/phpunit --display-deprecations --exclude-group network --coverage-clover coverage.xml --coverage-text
+
+      - name: Golden suite floor (once-S93 — skips fail)
+        # The finding: GoldenTest's UPDATE_SNAPSHOTS branch marked itself
+        # 'skipped' and stayed silent, and nothing in CI ever looked at
+        # skip state at all. The regen now verifies its own write and
+        # refuses a vacuous empty rewrite (see tests/Golden/GoldenTest.php);
+        # this leg closes the loop CI-side — on the runner the Golden
+        # suite has ZERO legitimate skips, so any skip (including an
+        # UPDATE_SNAPSHOTS regen that leaked into a push) is a hard red
+        # with the reason printed. The env var is deliberately not set
+        # here; a regen can only ever come from an interactive run.
+        run: vendor/bin/phpunit --testsuite Golden --fail-on-skipped --display-skipped
+
+      - name: Network group (once-S93 — fail not pass)
+        if: ${{ matrix.primary }}
+        # External egress is the precondition of these arms; without a
+        # gate the arms 'pass' on a blocked runner by returning null
+        # (once-116: 'fails-not-passes when unreachable'). The preflight
+        # pins each endpoint's HTTP answer first and names the outage as
+        # the cause; only then does the group run, under --fail-on-skipped
+        # so a future skip-launder cannot hide behind it either.
+        run: |
+          set -euo pipefail
+          probe() {
+            local want url code
+            want="$1"; url="$2"
+            code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$url" || true)"
+            if [ "$code" != "$want" ]; then
+              echo "::error::once-S93 network preflight: $url answered HTTP '$code', expected '$want' — the external endpoint is unreachable/wrong, and the @group network arms would pass vacuously. Failing the leg loudly (fail-not-pass)."
+              exit 1
+            fi
+            echo "network preflight OK: $url -> $code"
+          }
+          probe 500 https://httpbin.org/status/500
+          probe 200 https://httpbin.org/status/200
+          vendor/bin/phpunit --group network --fail-on-skipped --display-skipped
 
       - name: Smoke-test CLI on fixtures (accounting contract)
         # Genuinely strict (0.4): exit code alone was false confidence —

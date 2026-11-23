@@ -51,6 +51,65 @@ use Symfony\Component\Console\Output\BufferedOutput;
  */
 final class SignalHandlerTest extends TestCase
 {
+    /**
+     * Entry snapshot taken by the once-S93 leave-as-found fence:
+     * [pcntl_async_signals() mode, SIGINT disposition] — null on
+     * pcntl-less boxes where the fence has nothing to fence.
+     *
+     * @var null|array{0: bool, 1: int|callable}
+     */
+    private ?array $s93EntrySignalState = null;
+
+    protected function setUp(): void
+    {
+        // once-S93 (once-116 'leaves pcntl_async_signals as found'): the
+        // class-level fence under the per-test restorers once-S75 landed.
+        // Whatever the process enters with — async-signal mode plus the
+        // SIGINT disposition — must be exactly what it carries out, and
+        // that is asserted for EVERY arm in this file, not just the ones
+        // that remember to finally().
+        if (
+            function_exists('pcntl_async_signals')
+            && function_exists('pcntl_signal_get_handler')
+            && defined('SIGINT')
+        ) {
+            $this->s93EntrySignalState = [
+                pcntl_async_signals(),
+                pcntl_signal_get_handler(SIGINT),
+            ];
+        }
+    }
+
+    protected function tearDown(): void
+    {
+        if ($this->s93EntrySignalState === null) {
+            return;
+        }
+        [$entryAsync, $entryHandler] = $this->s93EntrySignalState;
+        $this->s93EntrySignalState = null;
+
+        // The verdict is computed from the state AS FOUND, BEFORE the
+        // repair — asserting on the repaired value could never fail, and
+        // a fence that cannot fail is the exact vacuity this step is here
+        // to remove.
+        $leakedAsync = pcntl_async_signals() !== $entryAsync;
+        $leakedHandler = pcntl_signal_get_handler(SIGINT) !== $entryHandler;
+        if ($leakedAsync) {
+            pcntl_async_signals($entryAsync);
+        }
+        if ($leakedHandler) {
+            pcntl_signal(SIGINT, $entryHandler);
+        }
+        $this->assertFalse(
+            $leakedAsync,
+            'an arm in this file left pcntl_async_signals flipped (once-S93 leave-as-found fence)'
+        );
+        $this->assertFalse(
+            $leakedHandler,
+            'an arm in this file left the SIGINT disposition changed (once-S93 leave-as-found fence)'
+        );
+    }
+
     private function requireSignals(): void
     {
         if (

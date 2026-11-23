@@ -25,28 +25,43 @@ use Symfony\Component\Console\Output\NullOutput;
  *
  * Snapshot updates: set the env var `UPDATE_SNAPSHOTS=1` and rerun
  * the test. The snapshot file is rewritten in place; review the diff
- * before committing.
+ * before committing. Since once-S93 the regen leg is not silent: the
+ * write is read back and asserted against the payload, a vacuous
+ * empty rewrite is refused by the per-fixture cluster floor, and the
+ * run still ends marked skipped — which the dedicated CI
+ * `--fail-on-skipped` Golden leg turns into a hard red, so an
+ * unreviewed regeneration can never merge as green.
  *
  * Path / timing fields are stripped so snapshots stay portable across
  * machines and CI runners (see {@see normalize()}).
  */
 final class GoldenTest extends TestCase
 {
-    /** @return array<string, array{0: string, 1: string, 2: bool}> */
+    /**
+     * Each row: [fixture dir, snapshot file, exactOnly, minClusters].
+     * The minClusters floor (once-S93) is the structural guard that a
+     * golden is REAL input: the file asserts detections happened, so an
+     * empty-clusters manifest — by drift or by an UPDATE_SNAPSHOTS
+     * rewrite over a regressed pipeline — fails loud instead of passing
+     * vacuously. Floors sit at the committed-content cluster counts'
+     * safe minimum of 1; the exact content is still pinned by the diff.
+     *
+     * @return array<string, array{0: string, 1: string, 2: bool, 3: int}>
+     */
     public static function fixtures(): array
     {
         $base = __DIR__ . '/../Fixtures/';
         return [
-            'notify-exact'         => ['notify',   'notify-exact.json',         true],
-            'sql-exact'            => ['sql',      'sql-exact.json',            true],
-            'optional-near-dups'   => ['optional', 'optional-near-dups.json',   false],
+            'notify-exact'         => ['notify',   'notify-exact.json',         true,  1],
+            'sql-exact'            => ['sql',      'sql-exact.json',            true,  1],
+            'optional-near-dups'   => ['optional', 'optional-near-dups.json',   false, 1],
         ];
     }
 
     /**
      * @dataProvider fixtures
      */
-    public function testFixtureMatchesGoldenSnapshot(string $fixtureName, string $snapshot, bool $exactOnly): void
+    public function testFixtureMatchesGoldenSnapshot(string $fixtureName, string $snapshot, bool $exactOnly, int $minClusters): void
     {
         $fixtureDir = realpath(__DIR__ . '/../Fixtures/' . $fixtureName);
         $this->assertNotFalse($fixtureDir, "fixture not found: $fixtureName");
@@ -55,16 +70,58 @@ final class GoldenTest extends TestCase
         $snapshotFile = __DIR__ . '/' . $snapshot;
 
         if (getenv('UPDATE_SNAPSHOTS') === '1') {
-            file_put_contents(
+            // once-S93 / once-116: a regen is a WRITE that has to prove it
+            // landed, and an empty write is never a pass. Every arm below
+            // fails the test loudly; only a fully verified rewrite is
+            // allowed to reach the (now genuinely loud) skip marker.
+            $written = file_put_contents(
                 $snapshotFile,
                 (string)json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n",
             );
-            $this->markTestSkipped("snapshot updated: $snapshotFile (rerun without UPDATE_SNAPSHOTS=1 to verify)");
+            $this->assertNotFalse(
+                $written,
+                "UPDATE_SNAPSHOTS: the write to $snapshotFile failed — no snapshot was updated."
+            );
+            $roundTrip = json_decode((string) file_get_contents($snapshotFile), true);
+            $this->assertIsArray(
+                $roundTrip,
+                "UPDATE_SNAPSHOTS: $snapshotFile did not read back as a JSON object."
+            );
+            $this->assertEquals(
+                $payload,
+                $roundTrip,
+                "UPDATE_SNAPSHOTS: $snapshotFile does not round-trip the payload it claimed to write."
+            );
+            $this->assertGreaterThanOrEqual(
+                $minClusters,
+                count($roundTrip['clusters'] ?? []),
+                "UPDATE_SNAPSHOTS: refusing a vacuous regen of $snapshot to fewer than $minClusters cluster(s) — the golden must carry real detections (once-116)."
+            );
+            $this->markTestSkipped(
+                "snapshot REGENERATED at $snapshotFile — a WRITE, not a PASS: review the git diff, "
+                . "then rerun without UPDATE_SNAPSHOTS=1. The CI Golden --fail-on-skipped leg keeps "
+                . "this skip from merging silently."
+            );
         }
 
         $this->assertFileExists($snapshotFile, "missing snapshot $snapshotFile — generate with UPDATE_SNAPSHOTS=1");
         $expected = json_decode((string)file_get_contents($snapshotFile), true);
         $this->assertIsArray($expected);
+
+        // Structural floor on both sides of the diff (once-S93): the
+        // committed manifest is real input, and the freshly built payload
+        // really detects — so the equality below can never be an
+        // empty-equals-empty ceremony.
+        $this->assertGreaterThanOrEqual(
+            $minClusters,
+            count($expected['clusters'] ?? []),
+            "golden manifest $snapshot is vacuous: fewer than $minClusters cluster(s) — regenerate from real input, never from a regressed pipeline (once-116)."
+        );
+        $this->assertGreaterThanOrEqual(
+            $minClusters,
+            count($payload['clusters'] ?? []),
+            "fixture $fixtureName currently yields fewer than $minClusters cluster(s) while $snapshot claims detections — the pipeline lost what the golden pins."
+        );
 
         $this->assertEquals($expected, $payload, "Fixture $fixtureName drifted from $snapshot");
     }

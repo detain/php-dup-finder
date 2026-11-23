@@ -688,14 +688,44 @@ final class ApplicationTest extends TestCase
     /** @var list<resource> streams to close after each wire test */
     private array $workerStreams = [];
 
+    /** Entry CWD captured by the once-S93 chdir-leak fence. */
+    private string $s93EntryCwd = '';
+
     protected function setUp(): void
     {
+        // once-S93 (once-116 'ApplicationTest restores CWD'): fence the
+        // entry working directory before any arm can move. The escape
+        // arms chdir on purpose and the live-serve legs boot children
+        // with their own cwd; a LEAKED chdir silently redefines '.' for
+        // every later test in the process, so the class promises — and
+        // now proves — that it leaves as it found.
+        $entry = getcwd();
+        $this->assertNotFalse($entry, 'entry CWD is unreadable — this class needs a working directory');
+        $this->s93EntryCwd = $entry;
+
         $this->workerResultDir = sys_get_temp_dir() . '/phpdup-s02-' . uniqid() . '-results';
         mkdir($this->workerResultDir, 0700);
     }
 
     protected function tearDown(): void
     {
+        // Restore (a leak must not poison siblings), but the VERDICT is
+        // computed from the as-found value — asserting on the repaired
+        // CWD could never fail, and that is the vacuity class this step
+        // removes.
+        if ($this->s93EntryCwd !== '') {
+            $now = getcwd();
+            $leaked = $now !== $this->s93EntryCwd;
+            if ($leaked) {
+                @chdir($this->s93EntryCwd);
+            }
+            $this->assertFalse(
+                $leaked,
+                'an arm in this file leaked its working directory (once-S93 chdir fence); leaked to: '
+                    . var_export($now, true)
+            );
+        }
+
         foreach ($this->workerStreams as $stream) {
             @fclose($stream);
         }
@@ -2034,11 +2064,49 @@ final class ApplicationTest extends TestCase
             // era), killing only N leaves the actual worker analyzing. The
             // kill leg therefore identifies the process by what it holds:
             // the daemon-unique worker socket path in its argv.
-            $workers = $this->s94WorkerPids($serve['servePid']);
-            $this->assertNotEmpty($workers, 'test setup: a real analysis worker must be running mid-job');
+            //
+            // once-S93 (once-116 'Server kill-setup' load-flake family):
+            // the old arm did ONE liveness census and then asserted each
+            // posix_kill(9) returned true. A worker exiting on its own
+            // between the census and the signal made a perfectly healthy
+            // contract fail as 'test setup', and an empty census (the
+            // per-job worker churn landing in the same instant) failed
+            // the premise outright. Both halves are now OBSERVED, bounded
+            // facts, and the leg stands or falls on the end state it is
+            // here to create — every census pid provably dead. A timeout
+            // never launders into success: each window below fails loud
+            // with everything it saw.
+            [, $workers] = $this->s94PollUntil(
+                fn(): array => $this->s94WorkerPids($serve['servePid']),
+                static fn(array $pids): bool => $pids !== [],
+                10.0,
+                'a real analysis worker to be running mid-job (kill-time census)'
+            );
             foreach ($workers as $pid) {
-                $this->assertTrue(posix_kill($pid, 9), "test setup: kill -9 worker pid {$pid}");
+                $delivered = posix_kill($pid, 9);
+                if ($delivered) {
+                    continue;
+                }
+                // ESRCH is only an acceptable substitute for a delivered
+                // kill when death is then OBSERVED within a bound: the
+                // census raced the worker's own exit, and the state the
+                // signal was meant to create must be proven anyway.
+                $this->s94PollUntil(
+                    fn(): bool => !$this->s94ProcLive($pid),
+                    static fn(bool $dead): bool => $dead,
+                    5.0,
+                    "worker pid {$pid} to be provably dead after the kill raced its exit"
+                );
             }
+            $this->s94PollUntil(
+                fn(): array => array_values(array_filter(
+                    $workers,
+                    fn(int $pid): bool => $this->s94ProcLive($pid)
+                )),
+                static fn(array $stillLive): bool => $stillLive === [],
+                10.0,
+                'every census worker to be dead after kill -9 (kill leg never established otherwise)'
+            );
 
             // Every row that was live at the kill must settle as the
             // OBSERVED death — never success, never the absence-deadline
@@ -2289,8 +2357,22 @@ final class ApplicationTest extends TestCase
         if ($this->s94ProcLive($workerPid)) {
             posix_kill($workerPid, 9);
         }
-        $this->assertSame([], $this->s94WorkerPids($servePid), 'the spawned worker must not outlive the test');
-        $this->assertFalse($this->s94ProcLive($servePid), 'the serve daemon must not outlive the test');
+        // once-S93: these final death checks were spot-censuses that raced
+        // signal delivery under load (same kill-setup family as the arm in
+        // the killed-worker test). Bounded observation decides the fact now;
+        // window expiry still fails loud with the full observation trail.
+        $this->s94PollUntil(
+            fn(): array => $this->s94WorkerPids($servePid),
+            static fn(array $pids): bool => $pids === [],
+            5.0,
+            'the spawned worker not to outlive the test'
+        );
+        $this->s94PollUntil(
+            fn(): bool => !$this->s94ProcLive($servePid),
+            static fn(bool $dead): bool => $dead,
+            5.0,
+            'the serve daemon not to outlive the test'
+        );
 
         // Belt cleanup for a crash-skipped handler. Both paths are
         // pid-name-keyed to THIS daemon (never the shared startup sweep).

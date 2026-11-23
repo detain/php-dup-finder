@@ -82,14 +82,36 @@ final class IndexStoreTest extends TestCase
 
     public function testFileChangeInvalidates(): void
     {
+        // once-S93 (deterministic, no sleep): IndexStore invalidates on the
+        // sha1 of the file CONTENT (src/Persistence/IndexStore.php load()
+        // gates on sha1_file — there is no mtime logic), so a same-second
+        // content change must invalidate instantly. The old sleep(1)
+        // pretended a timestamp contract the class does not have and could
+        // have passed unchanged even if the content gate broke.
         $blocks = $this->extract($this->sourceFile);
         $store = new IndexStore($this->cacheDir, 'cfg-key-1');
         $store->save($this->sourceFile, $blocks);
 
-        sleep(1);
+        $original = (string) file_get_contents($this->sourceFile);
+
+        // Baseline: unchanged content still hits — the proof of life that
+        // turns the null below into a real discriminator.
+        $hit = $store->load($this->sourceFile);
+        $this->assertNotNull($hit, 'unmodified source must keep its cached snapshot');
+        $this->assertCount(count($blocks), $hit);
+
+        // Change the content; invalidation must be immediate (no clock waits).
         file_put_contents($this->sourceFile, '<?php class A { public function f($x) { return $x; } }');
         $this->assertNull($store->load($this->sourceFile),
             'modified source must invalidate the snapshot');
+
+        // Restore the original content: the snapshot is keyed by content, so
+        // the hit must come back — the null above was caused by the content
+        // change, never by elapsed time.
+        file_put_contents($this->sourceFile, $original);
+        $restored = $store->load($this->sourceFile);
+        $this->assertNotNull($restored, 'content-addressed cache must return after content is restored');
+        $this->assertSame($blocks[0]->structuralHash, $restored[0]->structuralHash);
     }
 
     public function testConfigKeyChangeInvalidates(): void
