@@ -10,7 +10,9 @@ namespace Phpdup\Ir;
  * of a block's *operations* — what it reads, writes, computes, and
  * branches on — stripped of the surface syntax that distinguishes
  * an Eloquent call from a raw `pg_query`. It is the foundation of
- * option 5 of `docs/plans/orm-db-semantic-dedup.md`.
+ * option 5 of the retired ORM/DB-semantic-dedup plan (fd74e30), wired
+ * as the `--scorer=ir` tier — see docs/adr/0003-similarity-stack.md
+ * and docs/algorithms/clustering.md.
  *
  * **Why a separate IR**
  *

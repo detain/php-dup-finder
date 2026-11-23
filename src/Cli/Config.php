@@ -145,8 +145,8 @@ final class Config
         // `--db-aware` or `db_aware: true` in phpdup.json.
         // See docs/ML.md (sidecar tiers) and docs/adr/0003-similarity-stack.md
         // (normalization beneath the stack) for the wired surface; the
-        // original plan document, docs/plans/orm-db-semantic-dedup.md, was
-        // deleted from the tree in fd74e30, 2026-05 — the option numbers in
+        // original ORM/DB-semantic-dedup plan document was deleted
+        // from the tree in fd74e30, 2026-05 — the option numbers in
         // the docblocks below refer to that retired plan's list.
         public readonly bool $dbAware = false,
         // Trinity-collapse (option 2): when true, the Normalizer runs
@@ -183,8 +183,8 @@ final class Config
         // as edges with the IR similarity as the edge weight, after
         // AST Jaccard + TED + containment have all rejected.
         public readonly float $irThreshold = 0.85,
-        // Pair-similarity ML sidecar URL (option 6 of
-        // docs/plans/orm-db-semantic-dedup.md — clusterer wiring).
+        // Pair-similarity ML sidecar URL (option 6 of the retired plan
+        // above — clusterer wiring per docs/algorithms/clustering.md).
         // Empty = disabled (the default). When set, the Clusterer
         // and PairScoreWorker fall through to MlPairClient::score()
         // as the *last* tier — after structural-hash, AST Jaccard +

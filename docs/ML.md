@@ -138,7 +138,8 @@ predated the pair tier and contradicted itself; it is retired here.
 ## Pair similarity: `POST /score-pair` and `POST /score-batch`
 
 For **block pair** similarity — the ORM ↔ raw-SQL deduplication work
-(option 6 of `docs/plans/orm-db-semantic-dedup.md`) — `Phpdup\Ml\MlPairClient`
+(option 6 of the retired ORM/DB-semantic-dedup plan; corpus format in
+[`docs/ml-corpus-format.md`](ml-corpus-format.md)) — `Phpdup\Ml\MlPairClient`
 POSTs the combined feature vector produced by `Phpdup\Ml\PairFeatures`
 to `/score-pair` and consumes a single `{similarity, confidence}`
 response. The vector is `feature_version` plus EXACTLY the 11 feature

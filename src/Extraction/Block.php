@@ -44,8 +44,8 @@ final class Block
      * tokens), populated by {@see \Phpdup\Parallel\PreprocessWorker}
      * only when `--scorer=ir` is on. Null otherwise — and null is what
      * {@see \Phpdup\Clustering\Clusterer} treats as "fall back to
-     * AST-level scoring", per option 5 of
-     * `docs/plans/orm-db-semantic-dedup.md`'s risk-mitigation note.
+     * AST-level scoring", per the risk-mitigation note of option 5 in
+     * the retired ORM/DB-semantic-dedup plan (fd74e30).
      *
      * @var array<string,int>|null
      */

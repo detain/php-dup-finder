@@ -1,9 +1,8 @@
 # ML pair-similarity corpus format
 
 The ML pair-similarity model (option 6 of the ORM/DB semantic-dedup
-plan — the plan document `docs/plans/orm-db-semantic-dedup.md` was
-deleted in fd74e30, 2026-05, and is no longer in the tree; the wired
-surface is documented in
+plan — that plan document was deleted in fd74e30, 2026-05, and is no
+longer in the tree; the wired surface is documented in
 [`docs/ML.md`](ML.md)) expects a labelled corpus of
 `(blockA, blockB, label)` triples. This
 document specifies the expected on-disk format so the Python sidecar

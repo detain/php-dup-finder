@@ -61,7 +61,8 @@ final class Clusterer
         private readonly bool $optionalBlocksEnabled = true,
         private readonly float $containmentThreshold = 0.85,
         private readonly float $optionalBlocksMinOverlap = 0.6,
-        // IR-tier (option 5 of docs/plans/orm-db-semantic-dedup.md):
+        // IR-tier (option 5 of the retired ORM/DB-semantic-dedup plan;
+        // cascade wiring documented in docs/algorithms/clustering.md):
         // when enabled, after the AST-level Jaccard / TED / containment
         // chain rejects a pair, fall back to multiset-Jaccard over the
         // pre-computed IR token bags ({@see Block::$irBag}). Pairs at

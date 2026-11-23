@@ -485,8 +485,9 @@ final class ConfigLoader
     }
 
     /**
-     * Extract a DB-symbol equivalence map (option 4 of
-     * docs/plans/orm-db-semantic-dedup.md) from a parsed config and
+     * Extract a DB-symbol equivalence map (option 4 of the retired
+     * ORM/DB-semantic-dedup plan — retirement note in
+     * {@see Config::$dbAware}) from a parsed config and
      * the override dict, lower-casing keys and discarding entries
      * whose op-tag is not one of the recognised `db.*` constants.
      *

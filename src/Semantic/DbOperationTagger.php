@@ -21,7 +21,7 @@ use Phpdup\Normalization\DbOpRegistry;
  * through the ML sidecar only — {@see \Phpdup\Ml\PairFeatures}
  * builds DB-tag pair features with this tagger (default constructor
  * injection). The type-4 tag-Jaccard scoring band of option 3 of
- * `docs/plans/orm-db-semantic-dedup.md` rides
+ * the retired ORM/DB-semantic-dedup plan (fd74e30) rides
  * {@see \Phpdup\Similarity\BehaviouralSimilarity}, which is a
  * PLANNED tier NOT WIRED into the Clusterer (engine-S31a ledger
  * row 3; docs/adr/0003 erratum 2026-11-21) — so no clustering

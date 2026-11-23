@@ -15,7 +15,8 @@ use Phpdup\Similarity\JaccardSimilarity;
  * Feature vector extractor for a pair of {@see Block} instances.
  *
  * Implements the input shape consumed by an external pair-scoring
- * ML model (option 6 of `docs/plans/orm-db-semantic-dedup.md`).
+ * ML model (option 6 of the retired ORM/DB-semantic-dedup plan;
+ * corpus format in docs/ml-corpus-format.md).
  *
  * The extractor is intentionally *read-only* — it derives every
  * feature from existing phpdup machinery (subtree hash, n-gram

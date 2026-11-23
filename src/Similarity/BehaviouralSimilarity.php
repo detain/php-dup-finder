@@ -20,7 +20,7 @@ use Phpdup\Semantic\DbOperationTagger;
  *   - return-shape Jaccard (weight 2)
  *   - matching side-effect flag (weight 1)
  *   - **DB op-tag multiset Jaccard (weight 2 — option 3 of
- *     `docs/plans/orm-db-semantic-dedup.md`)**: when both blocks
+ *     the retired ORM/DB-semantic-dedup plan)**: when both blocks
  *     touch the database, the tag-shape (`db.read`, `db.write`,
  *     `db.delete`, `db.query`, `db.execute`) collapses across
  *     library/extension swaps so an Eloquent two-read/one-write

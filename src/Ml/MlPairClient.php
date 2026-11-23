@@ -9,7 +9,9 @@ use Phpdup\Util\Http;
 
 /**
  * HTTP client for an external **pair-similarity** ML scoring
- * service (option 6 of `docs/plans/orm-db-semantic-dedup.md`).
+ * service (option 6 of the retired ORM/DB-semantic-dedup plan;
+ * wire contract in docs/ML.md, clusterer wiring in
+ * docs/algorithms/clustering.md).
  *
  * Companion to {@see MlClient}, which scores cluster *safety*.
  * MlPairClient scores the **similarity** of a single block pair
