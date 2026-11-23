@@ -109,63 +109,91 @@ final class WatchRunner
 
     public function run(): int
     {
-        $this->output->writeln('<info>phpdup</info> watch mode (Ctrl+C to exit)');
+        $noop = static function (): void {
+        };
 
-        // once-S08 (php-dup-finder-once-008 closure): the boot dispatch is
-        // the SAME guarded seam every event uses. Was: a throw from the
-        // initial rebuildState (the finding's misplaced-config vector) or
-        // the seeding resync propagated out of run() and Symfony's
-        // throwable renderer killed `phpdup watch` before it ever entered
-        // the loop. Now it logs one failure line and the loop starts
-        // anyway — the next save gets a real pass.
-        $this->announceWatching($this->dispatchGuarded());
-
-        $loop = Loop::get();
-        $running = true;
-        $watcher = $this->fileWatcher;
-
-        $watcher->watch([$this, 'handleChange']);
-
-        if (function_exists('pcntl_signal')) {
-            $stop = function () use ($loop, &$running): void {
-                if (!$running) return;
-                $running = false;
-                $this->output->writeln("\n<info>phpdup</info> watch mode stopping");
-                $this->fileWatcher->stop();
-                $loop->stop();
-            };
-            $loop->addSignal(SIGINT, $stop);
-            $loop->addSignal(SIGTERM, $stop);
-
-            // once-S75 (php-dup-finder-once-090): a scoped pcntl arm for
-            // SIGINT, installed AFTER the React listeners so it displaces
-            // the loop-tick-dispatched one (a later pcntl_signal wins, and
-            // async dispatch runs the sink mid-tick instead of between
-            // ticks — the finding's minutes-delayed Ctrl+C). First press:
-            // cancel the in-flight pass AND take the exact same $stop seam
-            // the old listener owned, so single-press watch keeps its
-            // graceful stop-and-return-0 posture. Second press: the scope
-            // reaps children and exits 130 now. SIGTERM stays on the
-            // React listener — its belt is untouched.
-            $restoreSignals = SignalHandler::install(function () use ($stop): void {
-                $this->cancelRequested = true;
-                if ($this->liveState !== null) {
-                    $this->liveState->cancelled = true;
-                }
-                $stop();
-            });
-        } else {
-            $restoreSignals = static function (): void {
-            };
-        }
+        // once-S75 (php-dup-finder-once-090): the BOOT dispatch is minutes
+        // long on a real corpus, and until this line it ran with SIGINT at
+        // the OS default — a Ctrl+C during boot raw-killed the process (and
+        // the controlling shell) with the pool mid-fan-out. The boot scope
+        // arms the cancellation contract before anything spawns: first
+        // press marks cancelRequested (+ the in-flight pass's state via
+        // liveState), second press reaps children and exits 130 now.
+        $restoreBoot = SignalHandler::install(function (): void {
+            $this->cancelRequested = true;
+            if ($this->liveState !== null) {
+                $this->liveState->cancelled = true;
+            }
+        });
 
         try {
-            $loop->run();
+            $this->output->writeln('<info>phpdup</info> watch mode (Ctrl+C to exit)');
+
+            // once-S08 (php-dup-finder-once-008 closure): the boot dispatch is
+            // the SAME guarded seam every event uses. Was: a throw from the
+            // initial rebuildState (the finding's misplaced-config vector) or
+            // the seeding resync propagated out of run() and Symfony's
+            // throwable renderer killed `phpdup watch` before it ever entered
+            // the loop. Now it logs one failure line and the loop starts
+            // anyway — the next save gets a real pass.
+            $this->announceWatching($this->dispatchGuarded());
+
+            if ($this->cancelRequested) {
+                // once-S75: a single press during boot stops before the
+                // loop ever opens — the same graceful return-0 the loop
+                // press has always had, not a raw signal death.
+                return 0;
+            }
+
+            $loop    = Loop::get();
+            $running = true;
+            $watcher = $this->fileWatcher;
+
+            $watcher->watch([$this, 'handleChange']);
+
+            $restoreSignals = $noop;
+            if (function_exists('pcntl_signal')) {
+                $stop = function () use ($loop, &$running): void {
+                    if (!$running) return;
+                    $running = false;
+                    $this->output->writeln("\n<info>phpdup</info> watch mode stopping");
+                    $this->fileWatcher->stop();
+                    $loop->stop();
+                };
+                $loop->addSignal(SIGINT, $stop);
+                $loop->addSignal(SIGTERM, $stop);
+
+                // once-S75: a second scope, installed AFTER the React
+                // listeners so it displaces the loop-tick-dispatched SIGINT
+                // one (a later pcntl_signal wins, and async dispatch runs
+                // the sink mid-tick instead of between ticks — the
+                // finding's minutes-delayed Ctrl+C). First press: cancel
+                // the in-flight pass AND take the exact same $stop seam the
+                // old listener owned, so single-press watch keeps its
+                // graceful stop-and-return-0 posture. Second press: exit
+                // 130 now, children reaped. SIGTERM stays on the React
+                // listener — its belt is untouched. Closing this scope
+                // returns the disposition to the boot scope's handler,
+                // which the outer finally then unwinds to as-found.
+                $restoreSignals = SignalHandler::install(function () use ($stop): void {
+                    $this->cancelRequested = true;
+                    if ($this->liveState !== null) {
+                        $this->liveState->cancelled = true;
+                    }
+                    $stop();
+                });
+            }
+
+            try {
+                $loop->run();
+            } finally {
+                $restoreSignals();
+            }
+            return 0;
         } finally {
-            $restoreSignals();
+            $restoreBoot();
             $this->liveState = null;
         }
-        return 0;
     }
 
     /**

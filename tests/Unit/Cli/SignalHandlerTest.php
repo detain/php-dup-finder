@@ -106,13 +106,19 @@ final class SignalHandlerTest extends TestCase
         self::assertIsString($file);
 
         $outcome = $this->forkChild(function () use ($file): void {
+            // Establish — never inherit — the process-global signal
+            // environment: full-suite runs walk in with foreign async
+            // mode/handlers (the pollution once-090 documents), so the
+            // as-found below is the baseline THIS probe set.
+            pcntl_signal(SIGINT, SIG_DFL);
+            pcntl_async_signals(false);
             $entryDisp = pcntl_signal_get_handler(SIGINT);
             $restore   = SignalHandler::install($this->freshState());
             $inAsync   = pcntl_async_signals();
             $inDisp    = pcntl_signal_get_handler(SIGINT);
             $restore();
             file_put_contents($file, json_encode([
-                // A fresh process walks in with the OS default (int 0).
+                // The child established this baseline (never assumed suite state):
                 'entryDefault' => $entryDisp === 0,
                 // Inside the scope async dispatch is live and the
                 // disposition is OURS (a callable), not the default.
@@ -126,7 +132,7 @@ final class SignalHandlerTest extends TestCase
         $seen = json_decode((string) file_get_contents($file), true);
         unlink($file);
 
-        $this->assertTrue($seen['entryDefault'], 'a fresh process starts at the SIGINT default (probe sanity)');
+        $this->assertTrue($seen['entryDefault'], 'baseline established by the child reads back SIG_DFL (int 0)');
         $this->assertTrue($seen['inAsync'], 'install() switches async dispatch on INSIDE the scope');
         $this->assertTrue($seen['inScoped'], 'install() replaces the SIGINT disposition with the scope handler');
     }
@@ -139,6 +145,12 @@ final class SignalHandlerTest extends TestCase
         self::assertIsString($file);
 
         $outcome = $this->forkChild(function () use ($file): void {
+            // Set, don't assume: suite order can pollute async mode
+            // globally (once-090's own finding class). The plan's
+            // literal "async false after scope" is probed from a
+            // baseline this child owns.
+            pcntl_signal(SIGINT, SIG_DFL);
+            pcntl_async_signals(false);
             $entryAsync = pcntl_async_signals();
             $entryDisp  = pcntl_signal_get_handler(SIGINT);
             $restore    = SignalHandler::install($this->freshState());
@@ -163,7 +175,7 @@ final class SignalHandlerTest extends TestCase
         $seen = json_decode((string) file_get_contents($file), true);
         unlink($file);
 
-        $this->assertTrue($seen['asyncWasOff'], 'probe sanity: a fresh process has async off');
+        $this->assertTrue($seen['asyncWasOff'], 'baseline established by the child: async off at entry');
         $this->assertTrue($seen['asyncRestored'], 'pcntl_async_signals(false) after scope — the restorer returns async mode to as-found');
         $this->assertTrue($seen['dispRestored'], 'handler restored: the scope leaves the disposition it found');
         $this->assertTrue($seen['stillRestored'], 'idempotent restorer: the second close changes nothing');
@@ -333,11 +345,17 @@ final class SignalHandlerTest extends TestCase
         }; // stands in for sugar-core Program's arm
 
         try {
-            pcntl_signal(SIGINT, $foreign);
+            pcntl_signal(SIGINT, SIG_DFL);
             pcntl_async_signals(false);
 
-            $outer  = SignalHandler::captureEnvironment(); // TuiRunner entry snapshot
-            $scoped = SignalHandler::install($this->freshState()); // timer scope stacked over the foreign arm
+            // The TuiRunner sequence: snapshot at method entry, BEFORE the
+            // program installs its own cooperative arm + async mode.
+            $outer = SignalHandler::captureEnvironment();
+
+            pcntl_signal(SIGINT, $foreign);   // Program::run() arming...
+            pcntl_async_signals(true);         // ...and its async switch
+
+            $scoped = SignalHandler::install($this->freshState()); // first-tick timer scope
 
             $this->assertTrue(pcntl_async_signals(), 'the stacked scope owns async while open');
             $this->assertNotSame($foreign, pcntl_signal_get_handler(SIGINT), 'the stacked scope displaces the foreign arm');
@@ -347,8 +365,8 @@ final class SignalHandlerTest extends TestCase
             $this->assertTrue(pcntl_async_signals(), 'inner scope returns async to what the foreign owner had set');
 
             $outer();
-            $this->assertSame($entryDisp, pcntl_signal_get_handler(SIGINT), 'the entry snapshot — last word — leaves the process exactly as TuiRunner found it');
-            $this->assertSame($entryAsync, pcntl_async_signals(), 'and async mode too (the S93 leave-as-found dependency)');
+            $this->assertSame(0, pcntl_signal_get_handler(SIGINT), 'the entry snapshot — last word — returns the disposition its call site walked into (TuiRunner: exactly what Command saw)');
+            $this->assertSame(false, pcntl_async_signals(), 'and its async mode too (the S93 leave-as-found dependency)');
         } finally {
             pcntl_signal(SIGINT, is_int($entryDisp) ? $entryDisp : SIG_DFL);
             pcntl_async_signals($entryAsync);
@@ -365,10 +383,20 @@ final class SignalHandlerTest extends TestCase
         try {
             $scoped = SignalHandler::install($this->freshState());
             $scoped();
+
+            // A late second close must be a true no-op — it may never
+            // replay its restoration over state the caller re-armed in
+            // between (an unguarded restorer would clobber this foreign
+            // arm back to the scope's as-found values).
+            pcntl_signal(SIGINT, static function (): void {
+            });
+            pcntl_async_signals(true);
+            $foreignDisp  = pcntl_signal_get_handler(SIGINT);
             $scoped();
-            $scoped();
-            $this->assertSame($entryDisp, pcntl_signal_get_handler(SIGINT), 're-calling the install restorer changes nothing further');
-            $this->assertSame($entryAsync, pcntl_async_signals(), '...including async mode');
+            $this->assertSame($foreignDisp, pcntl_signal_get_handler(SIGINT), 'a re-called install restorer is inert — it does not overwrite a later foreign arm');
+            $this->assertTrue(pcntl_async_signals(), '...and leaves async mode where the caller put it');
+            pcntl_async_signals($entryAsync);
+            pcntl_signal(SIGINT, is_int($entryDisp) ? $entryDisp : SIG_DFL);
 
             $outer = SignalHandler::captureEnvironment();
             $outer();
@@ -384,16 +412,21 @@ final class SignalHandlerTest extends TestCase
 
     public function testWatchGateBootsNoNewPassAfterCancelRequest(): void
     {
+        // A NARROW fixture root — the watcher resyncs its own enumeration
+        // and sys_get_temp_dir() would walk every lane tree under /tmp.
+        $root = sys_get_temp_dir() . '/s75-watchgate-' . bin2hex(random_bytes(4));
+        mkdir($root, 0o777, true);
+
         $built  = 0;
         $runner = new WatchRunner(
             new Pipeline([]),
-            static function () use (&$built): PipelineState {
+            static function () use (&$built, $root): PipelineState {
                 $built++;
-                return new PipelineState(Config::defaults([sys_get_temp_dir()]));
+                return new PipelineState(Config::defaults([$root]));
             },
             new BufferedOutput(),
             new NullLogger(),
-            sys_get_temp_dir(),
+            $root,
         );
 
         // Gate closed: an event boots exactly one pass (baseline so the
@@ -413,5 +446,6 @@ final class SignalHandlerTest extends TestCase
             $built,
             'after cancelRequested the watch gate boots no new pass — without the early return this is 2'
         );
+        rmdir($root);
     }
 }

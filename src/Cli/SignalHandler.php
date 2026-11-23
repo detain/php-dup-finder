@@ -117,7 +117,7 @@ final class SignalHandler
     private static function reapDirectChildren(): void
     {
         $self = function_exists('posix_getpid') ? posix_getpid() : getmypid();
-        if ($self === false || $self === null || $self <= 0) {
+        if ($self === false || $self <= 0) {
             return;
         }
 
@@ -145,8 +145,8 @@ final class SignalHandler
             if ($close === false) {
                 continue;
             }
-            $fields = explode(' ', substr($bytes, $close + 1));
-            // $fields[0] = state, $fields[1] = PPID.
+            $fields = explode(' ', ltrim(substr($bytes, $close + 1)));
+            // trimmed tail: $fields[0] = state, $fields[1] = PPID.
             if (($fields[1] ?? '') !== (string) $self) {
                 continue;
             }
