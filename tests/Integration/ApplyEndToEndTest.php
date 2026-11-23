@@ -1012,4 +1012,458 @@ final class ApplyEndToEndTest extends TestCase
         }
         return $root;
     }
+
+    // ====================================================== once-S04 safety closure
+    //
+    // php-dup-finder-once-004 ("dormant stays dormant until gated"): the
+    // armed apply path's three new honest arms — the CLI-level git-dirty
+    // gate, the durable backup-before-write window, and the post-write
+    // `php -l` belt — plus the dormancy and zero-clobber proofs around
+    // them. Everything above (the S53 legs) stays exactly as shipped;
+    // these legs only ADD. Red-before-green discipline: each safety arm
+    // has a named pin that cannot pass on the pre-closure extractor or
+    // the pre-gate Command; the dormancy and tally legs are cure-
+    // verifications allowed to pre-green.
+
+    public function testArmedApplyOnCleanGitTreeBacksUpEveryOriginalBeforeRewriting(): void
+    {
+        // The finding's "backs up before write" acceptance leg, driven at
+        // the real bin level: a clean git work tree arms the CLI, and a
+        // successful apply leaves each member file's EXACT original bytes
+        // readable back under refactored/backup/ — the durable undo that
+        // outlives the transaction — while the rewrite and tallies land
+        // as the S53 happy leg pinned them. RED on master: no backup
+        // concept exists there.
+        self::skipWithoutGit();
+        $dir = $this->makeScratchDir();
+        $tree = $this->materialize('namespaced_strict', $dir . '/tree');
+        $fileHigh = $tree . '/src/NotifyHigh.php';
+        $fileLow = $tree . '/src/NotifyLow.php';
+        $preHigh = (string) file_get_contents($fileHigh);
+        $preLow = (string) file_get_contents($fileLow);
+        $this->gitIn($dir, 'init', '-q');
+        $this->gitIn($dir, 'add', '-A');
+        $this->gitIn($dir, '-c', 'user.name=e2e', '-c', 'user.email=e2e@example.invalid', 'commit', '-q', '-m', 'clean baseline');
+
+        $run = $this->cli(['analyze', $tree, '--apply', '--dry-run=false',
+            '--max-df=0.5', '--min-block-size=3', '--workers=1'], $dir);
+        $this->assertSame(0, $run['exit'], 'clean git tree arms the apply — output: ' . $run['combined']);
+        $this->assertStringContainsString('real apply armed', $run['combined'],
+            'the armed posture announces itself, with the backup location');
+        $this->assertStringContainsString('/backup', $run['combined']);
+
+        $summary = (string) file_get_contents($dir . '/refactored/' . RefactorPatchReporter::APPLY_SUMMARY_FILE);
+        $this->assertStringContainsString('# Applied: 1 clusters', $summary);
+        $this->assertStringContainsString('# Verified member rewrites: 2 files', $summary);
+
+        foreach ([[$fileHigh, $preHigh], [$fileLow, $preLow]] as [$member, $original]) {
+            $backupPath = ApplyExtractor::backupPath($dir . '/refactored', $member);
+            $this->assertFileExists($backupPath,
+                'the durable original for ' . basename($member) . ' lands under the named backup path');
+            $this->assertSame($original, (string) file_get_contents($backupPath),
+                'the backup holds the EXACT pre-apply bytes — the undo is real');
+            $this->assertSame('0644', substr(sprintf('%o', (int) fileperms($backupPath)), -4),
+                'backups ride the generated-file mode (S52 family)');
+            $this->assertNotSame((string) file_get_contents($member), (string) file_get_contents($backupPath),
+                'the backup is the original — distinct from the file the apply rewrote');
+        }
+
+        $this->assertStringContainsString('\\Refactored\\', (string) file_get_contents($fileHigh),
+            'the member file itself really was rewritten');
+        $artifacts = glob($dir . '/refactored/Refactored/*.php');
+        $this->assertIsArray($artifacts);
+        $this->assertCount(2, $artifacts, 'backups live OUTSIDE the artifact namespace (the stub globs *.php)');
+        foreach ($artifacts as $buffer) {
+            $this->assertPhpLints($buffer);
+        }
+        $this->assertPhpLints($fileHigh);
+        $this->assertPhpLints($fileLow);
+    }
+
+    public function testArmedApplyRefusesGitDirtyTreeAndUntrackedScratchStillProceeds(): void
+    {
+        // The finding's "refuses on dirty target tree" acceptance leg at
+        // the CLI gate: a TRACKED uncommitted change under the scan root
+        // refuses the armed run before any analysis — loud, exit 3 (the
+        // gate-trip class), naming the tree and the changed file — and
+        // the whole tree stays byte-identical, apply-dir untouched.
+        // Scenario B proves the disclosed posture of --untracked-files=no:
+        // untracked scratch is not the apply path's business, so the same
+        // tree with an UNTRACKED file added still runs clean. RED on
+        // master: no gate there — scenario A's exit would be 0.
+        self::skipWithoutGit();
+
+        // --- A: tracked change refuses the run.
+        $dir = $this->makeScratchDir();
+        $tree = $this->materialize('namespaced_strict', $dir . '/tree');
+        $fileHigh = $tree . '/src/NotifyHigh.php';
+        $fileLow = $tree . '/src/NotifyLow.php';
+        $this->gitIn($dir, 'init', '-q');
+        $this->gitIn($dir, 'add', '-A');
+        $this->gitIn($dir, '-c', 'user.name=e2e', '-c', 'user.email=e2e@example.invalid', 'commit', '-q', '-m', 'clean baseline');
+        $this->assertNotFalse(file_put_contents($fileHigh, (string) file_get_contents($fileHigh) . "\n// dirty\n"));
+        $preHigh = (string) file_get_contents($fileHigh);
+        $preLow = (string) file_get_contents($fileLow);
+
+        $run = $this->cli(['analyze', $tree, '--apply', '--dry-run=false',
+            '--max-df=0.5', '--min-block-size=3', '--workers=1'], $dir);
+        $this->assertSame(3, $run['exit'], 'dirty work tree trips the gate, exit 3 — output: ' . $run['combined']);
+        $this->assertStringContainsString('real apply refused', $run['combined']);
+        $this->assertStringContainsString('the target tree is dirty', $run['combined']);
+        $this->assertStringContainsString('NotifyHigh.php', $run['combined'], 'the changed file is named');
+        $this->assertStringContainsString('No analysis was run and no file was written', $run['combined']);
+        $this->assertStringNotContainsString('real apply armed', $run['combined'],
+            'a refused gate never announces the armed posture');
+        $this->assertSame($preHigh, (string) file_get_contents($fileHigh), 'dirty tree byte-unchanged');
+        $this->assertSame($preLow, (string) file_get_contents($fileLow));
+        $this->assertDirectoryDoesNotExist($dir . '/refactored', 'the refusal is zero-write');
+
+        // --- B: untracked scratch does NOT refuse (posture proof).
+        $dirB = $this->makeScratchDir();
+        $treeB = $this->materialize('namespaced_strict', $dirB . '/tree');
+        $this->gitIn($dirB, 'init', '-q');
+        $this->gitIn($dirB, 'add', '-A');
+        $this->gitIn($dirB, '-c', 'user.name=e2e', '-c', 'user.email=e2e@example.invalid', 'commit', '-q', '-m', 'clean baseline');
+        $this->assertNotFalse(file_put_contents($dirB . '/tree/notes.txt', "scratch, not tracked\n"));
+
+        $runB = $this->cli(['analyze', $treeB, '--apply', '--dry-run=false',
+            '--max-df=0.5', '--min-block-size=3', '--workers=1'], $dirB);
+        $this->assertSame(0, $runB['exit'], 'untracked noise never blocks the armed apply — output: ' . $runB['combined']);
+        $this->assertFileExists($dirB . '/refactored/' . RefactorPatchReporter::APPLY_SUMMARY_FILE);
+    }
+
+    public function testDormantApplyPathsNeverTouchTreeBytesAndWriteNoGeneratedTree(): void
+    {
+        // "Dormant stays dormant until gated", pinned from both sides:
+        // bare `--apply` (preview posture, the S28 default) writes ONLY
+        // the apply.diff scaffold into the apply dir and leaves every
+        // member byte untouched — no artifact tree, no backups, no
+        // summary claim; without --apply at all nothing lands either.
+        // Cure-verification leg (may pre-green on master by design — the
+        // closure must not move it).
+        $dir = $this->makeScratchDir();
+        $tree = $this->materialize('namespaced_strict', $dir . '/tree');
+        $before = $this->treeDigests($tree);
+
+        $run = $this->cli(['analyze', $tree, '--apply',
+            '--max-df=0.5', '--min-block-size=3', '--workers=1'], $dir);
+        $this->assertSame(0, $run['exit'], 'preview apply still exits 0 — output: ' . $run['combined']);
+        $this->assertStringNotContainsString('real apply armed', $run['combined'],
+            'the preview posture never announces the armed apply');
+        $this->assertSame($before, $this->treeDigests($tree),
+            '--apply without --dry-run=false rewrites NOTHING');
+        $this->assertFileExists($dir . '/refactored/' . RefactorPatchReporter::APPLY_DIFF_FILE);
+        $this->assertDirectoryDoesNotExist($dir . '/refactored/Refactored');
+        $this->assertDirectoryDoesNotExist($dir . '/refactored/backup');
+        $this->assertFileDoesNotExist($dir . '/refactored/' . RefactorPatchReporter::APPLY_SUMMARY_FILE);
+
+        $dir2 = $this->makeScratchDir();
+        $tree2 = $this->materialize('namespaced_strict', $dir2 . '/tree');
+        $before2 = $this->treeDigests($tree2);
+        $run2 = $this->cli(['analyze', $tree2, '--max-df=0.5', '--min-block-size=3', '--workers=1'], $dir2);
+        $this->assertSame(0, $run2['exit'], 'bare analyze still exits 0 — output: ' . $run2['combined']);
+        $this->assertDirectoryDoesNotExist($dir2 . '/refactored', 'no apply flag, no apply dir, ever');
+        $this->assertSame($before2, $this->treeDigests($tree2));
+    }
+
+    public function testDriftedMemberBetweenPlanAndWindowRefusesTheClusterDirtyAgainstThePlan(): void
+    {
+        // The window's own DIRTY PRE-WINDOW RE-CHECK: captureSnapshots
+        // re-reads each planned member and refuses when the bytes moved
+        // after the plan read them — narrowing the scan→apply race and
+        // keeping the promised zero-write refusal honest even for callers
+        // that bypass the CLI gate. Crafted directly (the race window is
+        // microscopic end-to-end): plan bytes recorded, disk drifted.
+        // RED on master: captureSnapshots is 4-arg there and trusts the
+        // plan bytes outright (ArgumentCountError, not a refusal).
+        $dir = $this->makeScratchDir();
+        $tree = $this->materialize('namespaced_strict', $dir . '/tree');
+        $fileHigh = $tree . '/src/NotifyHigh.php';
+        $cluster = $this->findClusterWithMembers($this->runPipeline($tree), ['notify', 'notify']);
+        $this->assertNotNull($cluster);
+        $original = (string) file_get_contents($fileHigh);
+
+        // --- changed-after-plan: drift the member bytes on disk.
+        $this->assertNotFalse(file_put_contents($fileHigh, $original . "\n// raced\n"));
+        $planned = [$fileHigh => ['original' => $original, 'rewritten' => $original . "\n// plan\n"]];
+        $method = new \ReflectionMethod(ApplyExtractor::class, 'captureSnapshots');
+        $outDir = $dir . '/out';
+        try {
+            $method->invoke(new ApplyExtractor(), $cluster, $planned, $outDir . '/Refactored/f.php', $outDir . '/Refactored/_autoload.php', []);
+            $this->fail('a drifted member must refuse the snapshot leg');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('the target tree is dirty against the recorded plan', $e->getMessage());
+            $this->assertStringContainsString('changed after the plan read it', $e->getMessage());
+            $this->assertStringContainsString($fileHigh, $e->getMessage());
+            $this->assertStringContainsString('no files were written', $e->getMessage());
+        }
+        $this->assertDirectoryDoesNotExist($outDir, 'the refusal still precedes every mkdir');
+
+        // --- unreadable-after-plan: the same voice for a vanished reader.
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            return; // house root-guard (S44b precedent): chmod cannot refuse uid 0
+        }
+        chmod($fileHigh, 0o000);
+        try {
+            try {
+                $method->invoke(new ApplyExtractor(), $cluster, $planned, $outDir . '/Refactored/f.php', $outDir . '/Refactored/_autoload.php', []);
+                $this->fail('an unreadable member must refuse the snapshot leg');
+            } catch (\RuntimeException $e) {
+                $this->assertStringContainsString('became unreadable after the plan read it', $e->getMessage());
+                $this->assertStringContainsString('no files were written', $e->getMessage());
+            }
+        } finally {
+            @chmod($fileHigh, 0o644);
+        }
+    }
+
+    public function testExistingBackupEvidenceIsNeverClobberedAndProjectedCollisionsRefuse(): void
+    {
+        // "Backs up before write" carries a non-negotiable corollary:
+        // the earliest original is the evidence. A full apply through the
+        // REAL flow meets a pre-planted file at its projected backup path
+        // and must refuse loudly, keeping the planted bytes and the whole
+        // tree untouched, artifact namespace absent. The duplicate-name
+        // class (the slug maps `b_c.php` and `b.c.php` onto one file) is
+        // refused by the planner itself. RED on master: no backupPlan, no
+        // clobber refusal — the first apply would simply succeed.
+        $dir = $this->makeScratchDir();
+        $tree = $this->materialize('namespaced_strict', $dir . '/tree');
+        $fileHigh = $tree . '/src/NotifyHigh.php';
+        $cluster = $this->findClusterWithMembers($this->runPipeline($tree), ['notify', 'notify']);
+        $this->assertNotNull($cluster);
+        $preHigh = (string) file_get_contents($fileHigh);
+
+        $outDir = $dir . '/out';
+        $planted = ApplyExtractor::backupPath($outDir, $fileHigh);
+        $this->assertNotFalse(mkdir($dir . '/out/backup', 0o775, true));
+        $this->assertNotFalse(file_put_contents($planted, "MARKER original evidence"));
+
+        try {
+            (new ApplyExtractor())->apply($cluster, $outDir);
+            $this->fail('a planted backup target must refuse the whole cluster');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString($planted, $e->getMessage(), 'the refusal names the path');
+            $this->assertStringContainsString('refusing to overwrite the original evidence', $e->getMessage());
+            $this->assertStringContainsString('no files were written', $e->getMessage());
+        }
+        $this->assertSame('MARKER original evidence', (string) file_get_contents($planted),
+            'the earlier evidence survives untouched');
+        $this->assertSame($preHigh, (string) file_get_contents($fileHigh), 'zero member churn');
+        $this->assertDirectoryDoesNotExist($outDir . '/Refactored', 'no artifact namespace residue');
+
+        // Projected-slug twins: two distinct members, one backup name.
+        $planner = new \ReflectionMethod(ApplyExtractor::class, 'backupPlan');
+        $planned = [
+            '/a/b_c.php' => ['original' => 'x', 'rewritten' => 'y'],
+            '/a/b.c.php' => ['original' => 'z', 'rewritten' => 'w'],
+        ];
+        try {
+            $planner->invoke(new ApplyExtractor(), $cluster, $planned, $outDir,
+                $outDir . '/Refactored/f.php', $outDir . '/Refactored/_autoload.php');
+            $this->fail('one backup path cannot serve two sources');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('project onto the same backup path', $e->getMessage());
+            $this->assertStringContainsString('no files were written', $e->getMessage());
+        }
+    }
+
+    public function testPostWriteLintGateRefusesDivergentBufferAndRollbackComposesItLoudly(): void
+    {
+        // The finding's "post-rewrite php -l gate fails-closed with
+        // rollback". The gate speaks the INTERPRETER, the re-parse guard
+        // speaks php-parser, and the two genuinely diverge: S46's named
+        // abstract-method-with-body family parses fine and `php -l`
+        // fatals — the pinned positive control below. The belt itself is
+        // driven two ways: directly over a poisoned buffer (refuses,
+        // naming it, quoting the linter), and through the real rollback
+        // composition so the user-facing voice carries BOTH the lint
+        // clause and the restored-tree clause. RED on master: no gate,
+        // no composition.
+        $dir = $this->makeScratchDir();
+
+        // Positive control (disclosed doctrine): php-parser accepts what
+        // php -l refuses — this is why a belt is needed at all.
+        $divergent = "<?php declare(strict_types=1);\nabstract class Divergent {\n"
+            . "    abstract public function f(): void { return; }\n}\n";
+        $this->assertNotNull((new AstParser())->parseCode($divergent),
+            'php-parser accepts the abstract-body shape (the divergence the lint gate belts)');
+        $control = $dir . '/divergent.php';
+        $this->assertNotFalse(file_put_contents($control, $divergent));
+        exec(escapeshellarg(PHP_BINARY) . ' -l ' . escapeshellarg($control) . ' 2>&1', $lintOut, $lintRc);
+        $this->assertNotSame(0, $lintRc, 'the real interpreter refuses exactly what the parser accepted');
+
+        $lintGate = new \ReflectionMethod(ApplyExtractor::class, 'lintAppliedFiles');
+        $tree = $this->materialize('namespaced_strict', $dir . '/tree');
+        $cluster = $this->findClusterWithMembers($this->runPipeline($tree), ['notify', 'notify']);
+        $this->assertNotNull($cluster);
+
+        $poison = $dir . '/poison_member.php';
+        $this->assertNotFalse(file_put_contents($poison, "<?php\nfunction broken( { }\n"));
+        try {
+            $lintGate->invoke(
+                new ApplyExtractor(),
+                $cluster,
+                $control,                       // the artifact slot carries the divergent buffer — checked first
+                $tree . '/src/NotifyHigh.php',
+                [$tree . '/src/NotifyLow.php']
+            );
+            $this->fail('the lint gate must refuse buffers php -l refuses');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('failed the post-write `php -l` gate', $e->getMessage());
+            $this->assertStringContainsString($control, $e->getMessage(), 'the refusal names the buffer');
+            $this->assertStringNotContainsString($poison, $e->getMessage(),
+                'the gate stops at the FIRST refusal (per-buffer voice), never a laundry list');
+        }
+
+        // The gate walks the MEMBER slots too (clean artifact/stub, poisoned member).
+        try {
+            $lintGate->invoke(new ApplyExtractor(), $cluster,
+                $tree . '/src/NotifyHigh.php', $tree . '/src/NotifyLow.php', [$poison]);
+            $this->fail('a poisoned member must refuse the lint gate');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('failed the post-write `php -l` gate', $e->getMessage());
+            $this->assertStringContainsString($poison, $e->getMessage(), 'the member refusal names its path');
+        }
+
+        // Clean paths pass the same gate (no false refusal on the happy
+        // corpus — the direct driver the real window just exercised).
+        $lintGate->invoke(new ApplyExtractor(), $cluster,
+            $tree . '/src/NotifyLow.php', $tree . '/src/NotifyHigh.php', []);
+
+        // Rollback composition: the in-window cause clause joins the
+        // restored-tree voice in ONE loud refusal and the tree comes back
+        // byte-exact. A real member, a real snapshot, the lint voice as
+        // cause; the window-created backup rides as an absent-before
+        // entry — a rolled-back window leaves NO backup residue, it never
+        // claims an undo it then deletes under the user's feet.
+        $member = $tree . '/src/NotifyHigh.php';
+        $before = (string) file_get_contents($member);
+        $this->assertNotFalse(file_put_contents($member, "// overwritten by the poisoned window\n" . $before));
+        $backup = ApplyExtractor::backupPath($dir . '/out', $member);
+        $snapshot = [$member => $before, $backup => false];
+        $rollback = new \ReflectionMethod(ApplyExtractor::class, 'rollbackWriteWindow');
+        $cause = sprintf('the rewrite of %s failed the post-write `php -l` gate (Parse error)', $member);
+        $exception = $rollback->invoke(
+            new ApplyExtractor(), $cluster, $snapshot, $dir . '/out', $dir . '/out/Refactored',
+            false, false, $cause, $dir . '/out/backup', false
+        );
+        $this->assertInstanceOf(\RuntimeException::class, $exception);
+        $this->assertStringContainsString('failed the post-write `php -l` gate', $exception->getMessage(),
+            'the lint clause reaches the user');
+        $this->assertStringContainsString('write window rolled back', $exception->getMessage());
+        $this->assertStringContainsString($member, $exception->getMessage());
+        $this->assertSame($before, (string) file_get_contents($member),
+            'the rollback restores the tree byte-for-byte under the lint refusal');
+        $this->assertFileDoesNotExist($backup,
+            'the rolled-back window removes the backup it created — zero residue');
+    }
+
+    public function testAppliedTallyEqualsTheReParsedGitDiffCount(): void
+    {
+        // The finding's count-honesty acceptance: "'Applied: N' count
+        // equals re-parsed diff hunks" — operationalised against git
+        // itself: the summary's verified-rewrite tally equals the number
+        // of changed TRACKED files in `git diff` equals `git status`
+        // entries, and 'Applied: N' equals the artifact count minus the
+        // stub. Cure-verification leg (the tallies pre-date this closure;
+        // the git cross-check is the new proof).
+        self::skipWithoutGit();
+        $dir = $this->makeScratchDir();
+        $tree = $this->materialize('namespaced_strict', $dir . '/tree');
+        $this->gitIn($dir, 'init', '-q');
+        $this->gitIn($dir, 'add', '-A');
+        $this->gitIn($dir, '-c', 'user.name=e2e', '-c', 'user.email=e2e@example.invalid', 'commit', '-q', '-m', 'clean baseline');
+
+        $run = $this->cli(['analyze', $tree, '--apply', '--dry-run=false',
+            '--max-df=0.5', '--min-block-size=3', '--workers=1'], $dir);
+        $this->assertSame(0, $run['exit'], 'output: ' . $run['combined']);
+
+        $summary = (string) file_get_contents($dir . '/refactored/' . RefactorPatchReporter::APPLY_SUMMARY_FILE);
+        $this->assertSame(1, preg_match('/# Applied: (\d+) clusters/', $summary, $applied));
+        $this->assertSame(1, preg_match('/# Verified member rewrites: (\d+) files/', $summary, $rewrites));
+
+        $diff = $this->gitIn($dir, '-c', 'core.quotepath=false', 'diff', '--unified=0');
+        $diffFiles = array_values(preg_grep('/^\\+\\+\\+ b\\//', explode("\n", $diff['out'])));
+        $status = $this->gitIn($dir, 'status', '--porcelain', '--untracked-files=no');
+        $statusRows = array_values(array_filter(
+            explode("\n", $status['out']),
+            static fn (string $l): bool => trim($l) !== ''
+        ));
+
+        $this->assertCount((int) $rewrites[1], $statusRows,
+            'git sees exactly as many changed tracked files as the summary tallied');
+        $this->assertCount((int) $rewrites[1], $diffFiles,
+            'the re-parsed diff carries one +++ header per verified rewrite');
+        $this->assertSame(2, (int) $rewrites[1], 'the notify pair: two member rewrites');
+        $this->assertSame(1, (int) $applied[1], 'one cluster applied');
+        $artifacts = glob($dir . '/refactored/Refactored/*.php');
+        $this->assertIsArray($artifacts);
+        $this->assertCount((int) $applied[1] + 1, $artifacts, 'Applied: N artifacts == generated files minus the stub');
+    }
+
+    // ------------------------------------------------------ S04 helpers
+
+    /**
+     * Skip (named, honestly) when the machine has no git at all — the
+     * gate legs and the diff cross-check are about git, and the house
+     * precedent for environment-absent legs is a named markTestSkipped,
+     * never a silent pass.
+     */
+    private static function skipWithoutGit(): void
+    {
+        exec('git --version 2>&1', $out, $rc);
+        if ($rc !== 0) {
+            self::markTestSkipped('git is not available on this machine (' . implode(' ', $out) . ')');
+        }
+    }
+
+    /**
+     * Run one git child inside $cwd (test-harness sibling of the
+     * production gate helper, same doctrine: argv form, closed stdin,
+     * proc_close authoritative). Asserts success — a red test on git
+     * tooling failure is honest, never a silent skip.
+     *
+     * @return array{exit: int, out: string}
+     */
+    private function gitIn(string $cwd, string ...$args): array
+    {
+        $proc = proc_open(array_merge(['git'], $args),
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $cwd);
+        $this->assertIsResource($proc, 'proc_open refused git ' . implode(' ', $args));
+        fclose($pipes[0]);
+        $out = (string) stream_get_contents($pipes[1]);
+        $err = (string) stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exit = proc_close($proc);
+        $this->assertSame(0, $exit, 'git ' . implode(' ', $args) . ' failed: ' . $out . $err);
+
+        return ['exit' => $exit, 'out' => $out];
+    }
+
+    /** @return array<string, string> path => sha256 over every file under $root */
+    private function treeDigests(string $root): array
+    {
+        $digests = [];
+        $stack = [$root];
+        while ($stack !== []) {
+            $dir = array_pop($stack);
+            foreach ((array) scandir($dir) as $entry) {
+                if ($entry === '.' || $entry === '..') {
+                    continue;
+                }
+                $path = $dir . '/' . $entry;
+                if (is_dir($path) && !is_link($path)) {
+                    $stack[] = $path;
+                } elseif (is_file($path)) {
+                    $digest = hash_file('sha256', $path);
+                    $this->assertNotFalse($digest);
+                    $digests[$path] = $digest;
+                }
+            }
+        }
+        ksort($digests);
+        return $digests;
+    }
 }

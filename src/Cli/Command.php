@@ -22,6 +22,7 @@ use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Normalization\PluginRegistry;
 use Phpdup\Parsing\AstCache;
 use Phpdup\Reporting\BaselineStore;
+use Phpdup\Reporting\ReportWriteException;
 use Phpdup\Scanning\FileScanner;
 use Symfony\Component\Console\Command\Command as SymfonyCommand;
 use Symfony\Component\Console\Exception\RuntimeException as ConsoleRuntimeException;
@@ -706,6 +707,47 @@ HELP;
             }
         }
 
+        // once-S04 (php-dup-finder-once-004): ARMED-APPLY DIRTY GATE.
+        // "Dormant stays dormant until gated": the armed posture is
+        // --apply with --dry-run=false, and opening it must never land on
+        // a tree the operator has uncommitted work in — the apply window
+        // rewrites member files IN PLACE, so an interrupted or later-
+        // regretted run needs the work tree itself to be the undo sheet.
+        // When armed, every scan root is consulted with git: a root whose
+        // work tree carries uncommitted TRACKED changes (untracked files
+        // are deliberately not the apply path's business) refuses the run
+        // BEFORE any analysis or byte — loud, exit 3 like the other
+        // safety gates, remedy named. A root outside any git work tree,
+        // or a machine without git, is honestly inapplicable (the window
+        // belt below still refuses mid-run drift and post-write lint);
+        // a work tree whose cleanliness cannot be decided fails CLOSED.
+        // This sits after every admission door (exit-2 posture untouched,
+        // parseRuntimeOptions order unmoved) and before the pipeline is
+        // ever built.
+        $applyArmed = is_string($pipelineOpts['reportArgs']['applyDir'])
+            && $pipelineOpts['reportArgs']['applyDryRun'] === false;
+        if ($applyArmed) {
+            $dirtyTrees = self::dirtyGitWorkTrees($pipelineConfig->paths);
+            if ($dirtyTrees !== []) {
+                foreach ($dirtyTrees as $entry) {
+                    $output->writeln('<error>phpdup: real apply refused — '
+                        . self::escapeMarkup($entry['root'])
+                        . ' is a git work tree with ' . count($entry['rows'])
+                        . ' uncommitted tracked change(s); the target tree is dirty</error>');
+                    foreach (array_slice($entry['rows'], 0, 8) as $row) {
+                        $output->writeln('  <error>' . self::escapeMarkup($row) . '</error>');
+                    }
+                }
+                $output->writeln('<comment>phpdup: commit or restore the changes above, or '
+                    . 'drop --dry-run=false to keep the preview posture. '
+                    . 'No analysis was run and no file was written.</comment>');
+                return 3;
+            }
+            $output->writeln('<comment>phpdup: real apply armed (--dry-run=false) — '
+                . 'member files will be rewritten; originals back up under '
+                . self::escapeMarkup((string) $pipelineOpts['reportArgs']['applyDir']) . '/backup</comment>');
+        }
+
         $buildPipeline = $this->buildPipelineFactory($pipelineOpts);
 
         // engine-006 read-path trust gate. The default cache_dir is the
@@ -829,6 +871,170 @@ HELP;
             $roots[] = $abs;
         }
         return $roots;
+    }
+
+    /**
+     * Wall deadline for one armed-apply cleanliness child (seconds).
+     * once-S04 (php-dup-finder-once-004).
+     */
+    private const APPLY_GIT_TIMEOUT_S = 20.0;
+
+    /**
+     * once-S04 (php-dup-finder-once-004): the git work trees under the
+     * scan paths that are DIRTY against their index — the armed-apply
+     * gate's verdict input. Tracked changes only (--untracked-files=no):
+     * the apply path rewrites tracked member files, and unrelated scratch
+     * files in the tree are not its business. Each returned entry names
+     * one toplevel plus its porcelain rows (or, when cleanliness could
+     * not be DECIDED, the single fail-closed reason row). Truth table,
+     * honestly disclosed: path not inside any git work tree, or git
+     * cannot be spawned at all => inapplicable, no entry (the ApplyExtractor
+     * window belts — pre-window re-read and post-write `php -l` — still
+     * guard the run); a work tree whose rev-parse or status is killed on
+     * deadline or fails after a good rev-parse => refused as undecidable;
+     * tracked rows => refused as dirty; clean => no entry.
+     *
+     * @param list<string> $scanPaths absolutized scan roots/files
+     * @return list<array{root: string, rows: list<string>}>
+     */
+    private static function dirtyGitWorkTrees(array $scanPaths): array
+    {
+        /** @var array<string, list<string>> $consulted toplevel => rows, insertion-ordered */
+        $consulted = [];
+        foreach ($scanPaths as $path) {
+            $probe = is_dir($path) ? $path : dirname($path);
+            $rev = self::runGit(['git', '-C', $probe, 'rev-parse', '--show-toplevel'], $probe);
+            if ($rev === null || $rev['exit'] > 0) {
+                // git itself absent, or this path sits outside every work
+                // tree — the gate is inapplicable here (matrix row above).
+                continue;
+            }
+            if ($rev['exit'] < 0) {
+                $consulted[$probe] = ['git rev-parse was killed at the deadline — cleanliness undecidable'];
+                continue;
+            }
+            $root = trim($rev['out']);
+            if ($root === '' || isset($consulted[$root])) {
+                continue; // already consulted by an earlier sibling path
+            }
+            $status = self::runGit(['git', '-C', $root, 'status', '--porcelain', '--untracked-files=no'], $root);
+            if ($status === null || $status['exit'] !== 0) {
+                // rev-parse says this IS a work tree but status could not
+                // answer cleanly — fail CLOSED: an armed apply onto a
+                // tree we cannot prove clean is exactly the accident the
+                // gate exists to refuse.
+                $consulted[$root] = [sprintf(
+                    'git status failed (exit %d) — cleanliness undecidable',
+                    $status === null ? -1 : $status['exit'],
+                )];
+                continue;
+            }
+            $rows = [];
+            foreach (explode("\n", $status['out']) as $line) {
+                if ($line !== '') {
+                    $rows[] = $line;
+                }
+            }
+            // Clean trees are remembered as consulted too, so a sibling
+            // path in the same tree is not re-spawned; they contribute no
+            // refusal rows below.
+            $consulted[$root] = $rows;
+        }
+        $dirty = [];
+        foreach ($consulted as $root => $rows) {
+            if ($rows !== []) {
+                $dirty[] = ['root' => $root, 'rows' => $rows];
+            }
+        }
+        return $dirty;
+    }
+
+    /**
+     * Run one argv child (git) to EOF under a wall deadline: closed
+     * stdin, non-blocking drained stdout (stderr rides along drained to
+     * keep the pipes from filling), proc_close as the authoritative
+     * exit code. Returns null when the child could not be spawned at all
+     * — the caller's "git is simply absent" signal — else
+     * ['exit' => code, 'out' => stdout], with exit -1 marking a kill at
+     * the deadline (distinct from git's own positive codes).
+     *
+     * @param list<string> $args
+     * @return array{exit: int, out: string}|null
+     */
+    private static function runGit(array $args, string $cwd): ?array
+    {
+        $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+        $proc = @proc_open($args, $descriptors, $pipes, $cwd);
+        if (!is_resource($proc)) {
+            return null;
+        }
+        fclose($pipes[0]);
+        stream_set_blocking($pipes[1], false);
+        stream_set_blocking($pipes[2], false);
+
+        $out = '';
+        $err = '';
+        $outEof = false;
+        $errEof = false;
+        $timedOut = false;
+        $deadline = microtime(true) + self::APPLY_GIT_TIMEOUT_S;
+        while (!$outEof || !$errEof) {
+            $read = [];
+            if (!$outEof) {
+                $read[1] = $pipes[1];
+            }
+            if (!$errEof) {
+                $read[2] = $pipes[2];
+            }
+            $remaining = $deadline - microtime(true);
+            if ($remaining <= 0) {
+                proc_terminate($proc, 9);
+                $timedOut = true;
+                break;
+            }
+            $write = $except = null;
+            $secs = (int) floor($remaining);
+            $usecs = (int) (($remaining - $secs) * 1e6);
+            if (@stream_select($read, $write, $except, $secs, $usecs) === false) {
+                continue; // signal-interrupted: retry inside the deadline
+            }
+            foreach ($read as $pipe) {
+                $chunk = fread($pipe, 65536);
+                if ($chunk === false || $chunk === '') {
+                    if ($pipe === $pipes[1]) {
+                        $outEof = true;
+                    } else {
+                        $errEof = true;
+                    }
+                    continue;
+                }
+                if ($pipe === $pipes[1]) {
+                    $out .= $chunk;
+                } else {
+                    $err .= $chunk;
+                }
+            }
+        }
+        // one last non-blocking drain after EOF/kill so buffered bytes
+        // are not lost (an exited writer's tail can sit in the pipe).
+        foreach ([1 => true, 2 => false] as $fd => $isOut) {
+            while (true) {
+                $chunk = fread($pipes[$fd], 65536);
+                if ($chunk === false || $chunk === '') {
+                    break;
+                }
+                if ($isOut) {
+                    $out .= $chunk;
+                } else {
+                    $err .= $chunk;
+                }
+            }
+        }
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exit = proc_close($proc);
+
+        return ['exit' => $timedOut ? -1 : $exit, 'out' => $out];
     }
 
     /**
@@ -1591,7 +1797,7 @@ HELP;
                     break;
                 }
             }
-        } catch (CandidateBudgetException | ScriptKindApplyRefusal $e) {
+        } catch (CandidateBudgetException | ScriptKindApplyRefusal | ReportWriteException $e) {
             // ft-n2: the budget halt is a runtime stop, not an invalid
             // invocation — its message already names every remedy. Render
             // it as the clean `phpdup:` error line (the same posture the
@@ -1603,6 +1809,12 @@ HELP;
             // posture — a typed runtime refusal, not a crash, not exit 2.
             // shell-S34: its forBlock message embeds the offending file's
             // raw path bytes — escape at the render.
+            // once-S04 (output-S54 rider, adopted in this lock): the
+            // fail-loud report-write family rides the SAME posture — a
+            // ReportWriteException (including one raised by the apply
+            // window's WritesReportFile spine) is a loud typed runtime
+            // halt, never a Symfony throwable dump, and never a laundered
+            // success: it reaches this render, exit 1, no summary claim.
             $output->writeln('<error>phpdup: ' . self::escapeMarkup($e->getMessage()) . '</error>');
             return 1;
         } finally {

@@ -152,13 +152,43 @@ use Phpdup\Util\AstSerializer;
  * resolve refuses construction fail-closed. Roots-less library mode
  * stays the S38-pinned unconstrained-by-design posture, but it still
  * gets the absolute link refusals: no mode writes through a link. The
- * two files this window GENERATES land chmod'ed to GENERATED_FILE_MODE
- * (0644, the cache-family measured mode; member files are rewritten in
- * place and keep their own modes — the finding names only generated
- * files). Defended at entry only: a mid-window ancestor symlink swap is
+ * files this window GENERATES land chmod'ed to GENERATED_FILE_MODE
+ * (0644, the cache-family measured mode; the once-S04 backups ride the
+ * same mode — member files are rewritten in place and keep their own
+ * modes — the finding names only generated files). Defended at entry
+ * only: a mid-window ancestor symlink swap is
  * not detectable through the portable write API — the byte-verify
  * proves content, not location — and the durable scan-side follow-up
  * lives at the scanner (see the S52 report's honest IS/IS-NOT matrix).
+ *
+ * once-S04 (php-dup-finder-once-004 safety closure): the armed window
+ * now owns three more honest arms, all riding the existing spine.
+ * BACKUP-BEFORE-WRITE — every member file's exact original bytes land
+ * under {$outDir}/backup/ (BACKUP_SUBDIR, name BACKUP_SUFFIX) as the
+ * window's FIRST writes, so a successful apply leaves a durable undo
+ * the user can read back long after the transaction closed; an
+ * existing backup target is refused, never overwritten (the earliest
+ * original is the evidence), and a rolled-back window removes every
+ * backup it created. DIRTY PRE-WINDOW RE-CHECK — the snapshot leg
+ * RE-READS each planned member file and demands it still match the
+ * bytes the plan took: a file that changed or became unreadable
+ * between planning and the window means the target tree is dirty
+ * against the recorded plan, and the whole cluster is refused loudly
+ * before the first byte (this narrows the scan→apply race to
+ * plan→window). POST-WRITE `php -l` GATE — after the byte-verify and
+ * still inside the window, every path the window generated or rewrote
+ * (member files, artifact, stub — not the backups, which carry the
+ * user's own original bytes) runs through a real `php -l` child
+ * process; a refusal aborts the window from the inside, the rollback
+ * restores the tree byte-for-byte, and the loud failure names the
+ * buffer and the linter's own diagnostic. The re-parse guard is
+ * php-parser-shaped; this gate is the interpreter-shaped belt the
+ * finding's bare-return/stub class demanded (php-parser accepts some
+ * text `php -l` refuses — the documented abstract-method divergence
+ * S46 names at collection). The dormancy doctrine is unchanged: the
+ * window still opens only for callers that pass dryRun:false through
+ * the shell gate, and the CLI refuses armed runs on a git-dirty work
+ * tree BEFORE any analysis (see Command's apply gate).
  */
 final class ApplyExtractor
 {
@@ -185,6 +215,26 @@ final class ApplyExtractor
      * assert against the same constant, not a re-spelled literal.
      */
     public const GENERATED_FILE_MODE = 0o644;
+
+    /**
+     * once-S04 (php-dup-finder-once-004): the directory under the apply
+     * root where the window lands the durable pre-write originals of every
+     * member file it rewrites. Deliberately a SIBLING of
+     * {@see ARTIFACT_NAMESPACE}, never inside it: the bootstrap stub globs
+     * `Refactored/*.php` and must never require the user's originals back
+     * into the generated namespace.
+     */
+    public const BACKUP_SUBDIR = 'backup';
+
+    /**
+     * once-S04: backup files carry the ORIGINAL member bytes under a
+     * suffix that keeps them out of every `*.php` glob (scanner, stub,
+     * lint census) while staying human-readable next to their source name.
+     */
+    public const BACKUP_SUFFIX = '.orig';
+
+    /** once-S04: wall deadline for one post-write `php -l` child (seconds). */
+    private const LINT_TIMEOUT_S = 30.0;
 
     private readonly Standard $printer;
 
@@ -327,6 +377,13 @@ final class ApplyExtractor
             ));
         }
 
+        // once-S04 (php-dup-finder-once-004): the backup plan. One durable
+        // copy of each member file's exact original bytes lands under
+        // $outDir/backup/ BEFORE the first rewrite. Every refusal here —
+        // projected-name collision, path identity with a landing, or a
+        // backup target that already exists — is zero-write.
+        $backups = $this->backupPlan($cluster, $planned, $outDir, $functionPath, $bootstrapPath);
+
         /** @var array<string, string> $landings path => planned bytes, window order */
         $landings = [
             $functionPath => $functionFile,
@@ -352,7 +409,8 @@ final class ApplyExtractor
         //    "no files were written" true (half-A posture), and $outCreated
         //    / $dirCreated mark the trees the window itself added.
         $outPreExisted = is_dir($outDir);
-        $snapshot = $this->captureSnapshots($cluster, $planned, $functionPath, $bootstrapPath);
+        $backupDir = $outDir . '/' . self::BACKUP_SUBDIR;
+        $snapshot = $this->captureSnapshots($cluster, $planned, $functionPath, $bootstrapPath, $backups);
         $dirCreated = false;
         if (!is_dir($refactoredDir)) {
             // Sibling arms run error_clear_last() immediately before their
@@ -371,6 +429,33 @@ final class ApplyExtractor
             }
             $dirCreated = true;
         }
+        // once-S04: the backup tree is created under the same zero-write
+        // posture as the artifact tree — a refused mkdir still leaves
+        // "no files were written" true, and $backupCreated marks the tree
+        // the window itself added so the rollback takes it back down.
+        $backupCreated = false;
+        if ($backups !== [] && !is_dir($backupDir)) {
+            error_clear_last();
+            if (!@mkdir($backupDir, 0o775, true) && !is_dir($backupDir)) {
+                throw new \RuntimeException(sprintf(
+                    'ApplyExtractor: refusing cluster %s — could not create %s (%s); no files were written.',
+                    $cluster->id,
+                    $backupDir,
+                    self::describeLastFailure($backupDir),
+                ));
+            }
+            $backupCreated = true;
+        }
+
+        /** @var array<string, string> $backupLandings backup path => the member's ORIGINAL bytes, window-first */
+        $backupLandings = [];
+        foreach ($backups as $file => $backupPath) {
+            $backupLandings[$backupPath] = $planned[$file]['original'];
+        }
+        // once-S04 "backs up before write": the durable originals are the
+        // window's FIRST landings — every rewrite byte follows a landed,
+        // verified copy of what it replaces.
+        $writeOrder = $backupLandings + $landings;
 
         // 6. The window: write every landing once, then read every landing
         //    back and byte-compare it against the plan. A refused write,
@@ -379,17 +464,29 @@ final class ApplyExtractor
         //    first, byte-for-byte, then the loud failure leaves. The tree
         //    never exists in a half-rewritten state (php-dup-finder-output-004).
         try {
-            foreach ($landings as $path => $bytes) {
+            foreach ($writeOrder as $path => $bytes) {
                 $this->writeFile($path, $bytes);
             }
-            $this->verifyLandings($landings);
+            $this->verifyLandings($writeOrder);
+            // once-S04: the post-write `php -l` gate — interpreter-shaped,
+            // belt-and-braces over the php-parser re-parse. Runs INSIDE
+            // the window, after the byte-verify and before the mode leg:
+            // a buffer the real interpreter refuses aborts the whole
+            // window, so the rollback restores every prior byte and the
+            // loud refusal names the buffer plus the linter's own
+            // diagnostic. The backups are deliberately NOT linted — they
+            // carry the user's original bytes; the gate vouches for what
+            // THIS apply produced, and refusing a run over pre-existing
+            // source the linter dislikes is not the apply path's remit.
+            $this->lintAppliedFiles($cluster, $functionPath, $bootstrapPath, array_keys($planned));
             // output-010 (S52) chmod leg: inside the window, while a
-            // refused chmod can still be rolled back — the two files this
-            // window GENERATES go to the measured mode before the window
-            // commits. A pre-existing generated file keeps its old bytes
-            // on rollback but a mode already raised to 0644 is not part
-            // of the byte snapshot (disclosed in the S52 report).
-            $this->chmodGenerated([$functionPath, $bootstrapPath]);
+            // refused chmod can still be rolled back — the files this
+            // window GENERATES (artifact, stub, and the once-S04 backups)
+            // go to the measured mode before the window commits. A
+            // pre-existing generated file keeps its old bytes on rollback
+            // but a mode already raised to 0644 is not part of the byte
+            // snapshot (disclosed in the S52 report).
+            $this->chmodGenerated([$functionPath, $bootstrapPath, ...array_values($backups)]);
         } catch (\Throwable $failure) {
             throw $this->rollbackWriteWindow(
                 $cluster,
@@ -399,6 +496,8 @@ final class ApplyExtractor
                 !$outPreExisted,
                 $dirCreated,
                 $failure->getMessage(),
+                $backupDir,
+                $backupCreated,
             );
         }
 
@@ -433,12 +532,71 @@ final class ApplyExtractor
 
         $this->confinePath($cluster, 'the apply directory', $outDir);
         $this->confinePath($cluster, 'the generated-artifact directory', $outDir . '/' . self::ARTIFACT_NAMESPACE);
+        // once-S04: the backup tree is a write target like every other —
+        // a planted link there would route the originals outside.
+        $this->confinePath($cluster, 'the backup directory', $outDir . '/' . self::BACKUP_SUBDIR);
 
         foreach ($cluster->members as $member) {
             $this->confinePath($cluster, 'member file', $member->file);
         }
 
         return $outDir;
+    }
+
+    /**
+     * once-S04: the durable backup plan — one original-bytes copy per
+     * planned member file, projected onto {$outDir}/backup/ via
+     * {@see backupPath()}. Three refusal classes, all before any byte of
+     * the window (the half-A posture): two distinct member files whose
+     * paths project onto ONE backup name (the slug is many-to-one by
+     * construction — `a_c.php` and `a.c.php` agree), a projected path
+     * that IS one of the window's other landings (one path one
+     * snapshot), and a backup target that already exists on disk — the
+     * earliest original is the evidence, this window refuses to clobber
+     * it and says so loudly instead of quietly trading the first undo
+     * for the second.
+     *
+     * @param array<string, array{original: string, rewritten: string}> $planned
+     * @return array<string, string> member file => backup path (plan order)
+     */
+    private function backupPlan(Cluster $cluster, array $planned, string $outDir, string $functionPath, string $bootstrapPath): array
+    {
+        $backups = [];
+        /** @var array<string, string> $owner backup path => the member file that claimed it */
+        $owner = [];
+        foreach (array_keys($planned) as $file) {
+            $backupPath = self::backupPath($outDir, $file);
+            if (isset($owner[$backupPath])) {
+                throw new \RuntimeException(sprintf(
+                    'ApplyExtractor: refusing cluster %s — member files %s and %s project onto the same backup path %s; '
+                    . 'one snapshot cannot serve two sources; no files were written.',
+                    $cluster->id,
+                    $owner[$backupPath],
+                    $file,
+                    $backupPath,
+                ));
+            }
+            if ($backupPath === $functionPath || $backupPath === $bootstrapPath || array_key_exists($backupPath, $planned)) {
+                throw new \RuntimeException(sprintf(
+                    'ApplyExtractor: refusing cluster %s — the backup path %s collides with another landing of this '
+                    . 'window (one path one snapshot); no files were written.',
+                    $cluster->id,
+                    $backupPath,
+                ));
+            }
+            if (is_file($backupPath)) {
+                throw new \RuntimeException(sprintf(
+                    'ApplyExtractor: refusing cluster %s — the backup target %s already holds earlier bytes; refusing '
+                    . 'to overwrite the original evidence. Remove it (or choose a fresh apply directory) to re-baseline; '
+                    . 'no files were written.',
+                    $cluster->id,
+                    $backupPath,
+                ));
+            }
+            $owner[$backupPath] = $file;
+            $backups[$file] = $backupPath;
+        }
+        return $backups;
     }
 
     /**
@@ -581,6 +739,23 @@ final class ApplyExtractor
     }
 
     /**
+     * once-S04: the backup path a window opening on $outDir lands for one
+     * member file — the durable pre-write original. Built exactly the way
+     * apply() builds it (same pure projection), so the refusal messages,
+     * the window's write list and the pins in the e2e suite all name the
+     * very path the transaction created. The projected name is the
+     * member's absolute path through the {@see Slug::safe()} byte class
+     * plus {@see BACKUP_SUFFIX}: reversible enough for a human to match
+     * (the basename rides through), total enough to never produce a path
+     * separator, and never `*.php`-shaped so nothing that globs PHP files
+     * can pick it up.
+     */
+    public static function backupPath(string $outDir, string $memberFile): string
+    {
+        return $outDir . '/' . self::BACKUP_SUBDIR . '/' . Slug::safe($memberFile) . self::BACKUP_SUFFIX;
+    }
+
+    /**
      * The deterministic bootstrap stub (output-003). A generated
      * abstraction required by nothing is dead weight: PHP only resolves
      * the rewritten `\Refactored\fn()` calls once a file declaring them
@@ -671,9 +846,10 @@ final class ApplyExtractor
      * message is a pinned diagnostic.
      *
      * @param array<string, array{original: string, rewritten: string}> $planned
+     * @param array<string, string> $backups member file => backup path
      * @return array<string, string|false> path => pre-write bytes, false = absent
      */
-    private function captureSnapshots(Cluster $cluster, array $planned, string $functionPath, string $bootstrapPath): array
+    private function captureSnapshots(Cluster $cluster, array $planned, string $functionPath, string $bootstrapPath, array $backups): array
     {
         $snapshot = [];
         if (is_file($functionPath)) {
@@ -706,7 +882,53 @@ final class ApplyExtractor
         } else {
             $snapshot[$bootstrapPath] = false;
         }
+        // once-S04 backup race belt: backupPlan refused every existing
+        // target; anything that appeared since is refused here too, while
+        // nothing has been written yet. Every backup this window may land
+        // is therefore snapshotted as absent — the rollback's unlink arm
+        // owns its removal.
+        foreach ($backups as $backupPath) {
+            if (is_file($backupPath)) {
+                throw new \RuntimeException(sprintf(
+                    'ApplyExtractor: refusing cluster %s — the backup target %s appeared between planning and the write '
+                    . 'window; refusing to overwrite the original evidence; no files were written.',
+                    $cluster->id,
+                    $backupPath,
+                ));
+            }
+            $snapshot[$backupPath] = false;
+        }
+        // once-S04 (php-dup-finder-once-004) DIRTY PRE-WINDOW RE-CHECK:
+        // the member files are RE-READ, not trusted. The plan read them
+        // first; if anything rewrote, truncated, or deleted a member in
+        // the meantime, the tree is dirty against the recorded plan and
+        // applying the plan would overwrite changes the scan never saw.
+        // Refusing here keeps the half-A posture honest — this leg still
+        // precedes the mkdirs and the window's first byte. (The durable
+        // CLI-level gate additionally refuses armed runs on a git-dirty
+        // work tree; see Command's apply gate.)
         foreach ($planned as $file => $pair) {
+            error_clear_last();
+            $now = @file_get_contents($file);
+            if ($now === false) {
+                throw new \RuntimeException(sprintf(
+                    'ApplyExtractor: refusing cluster %s — the target tree is dirty against the recorded plan: %s '
+                    . 'became unreadable after the plan read it (%s); no files were written.',
+                    $cluster->id,
+                    $file,
+                    self::describeLastFailure($file),
+                ));
+            }
+            if ($now !== $pair['original']) {
+                throw new \RuntimeException(sprintf(
+                    'ApplyExtractor: refusing cluster %s — the target tree is dirty against the recorded plan: %s '
+                    . 'changed after the plan read it (%d bytes then, %d bytes now); no files were written.',
+                    $cluster->id,
+                    $file,
+                    strlen($pair['original']),
+                    strlen($now),
+                ));
+            }
             $snapshot[$file] = $pair['original'];
         }
         return $snapshot;
@@ -744,6 +966,114 @@ final class ApplyExtractor
     }
 
     /**
+     * once-S04 (php-dup-finder-once-004): the POST-WRITE `php -l` gate.
+     * Every path the window generated or rewrote — the artifact, the
+     * bootstrap stub, and each member file — must pass the REAL
+     * interpreter's lint, inside the window, while a refusal still rolls
+     * the whole thing back. The pre-write re-parse guard
+     * ({@see assertBuffersReparse()}) speaks php-parser; this gate speaks
+     * PHP itself, the belt for exactly the divergence class the finding
+     * names (a body php-parser accepts that `php -l` refuses — the
+     * abstract-method shape S46 names, injected bare returns, stub
+     * tails). A failed lint throws the in-window cause clause; the
+     * window catch turns it into the rollback and the composed loud
+     * refusal, so "Applied" can never be printed over bytes the
+     * interpreter itself rejects.
+     *
+     * @param list<string> $memberPaths the planned member files as landed
+     * @throws \RuntimeException naming the first buffer the linter refuses
+     */
+    private function lintAppliedFiles(Cluster $cluster, string $functionPath, string $bootstrapPath, array $memberPaths): void
+    {
+        unset($cluster); // the composed refusal is built by the window catch; the clause voice stays path-first
+        foreach ([$functionPath, $bootstrapPath, ...$memberPaths] as $path) {
+            $verdict = self::lintFile($path);
+            if ($verdict === null) {
+                continue;
+            }
+            throw new \RuntimeException(sprintf(
+                'the rewrite of %s failed the post-write `php -l` gate (%s)',
+                $path,
+                $verdict,
+            ));
+        }
+    }
+
+    /**
+     * Run one `php -l` child over $path: closed stdin, non-blocking
+     * drained pipes, wall deadline (the S53 child-harness doctrine rides
+     * production here). Returns null on a clean pass — exit 0 AND the
+     * linter's own success line — else the diagnostic text the refusal
+     * carries. Fail-closed by construction: an unspawnable child or an
+     * expired deadline is reported as a refusal, never waved through.
+     */
+    private static function lintFile(string $path): ?string
+    {
+        $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+        error_clear_last();
+        $proc = @proc_open([PHP_BINARY, '-l', $path], $descriptors, $pipes);
+        if (!is_resource($proc)) {
+            return sprintf('php -l could not be started: %s', self::describeLastFailure($path));
+        }
+        fclose($pipes[0]);
+        foreach ([1, 2] as $fd) {
+            stream_set_blocking($pipes[$fd], false);
+        }
+
+        $out = '';
+        $err = '';
+        $deadline = microtime(true) + self::LINT_TIMEOUT_S;
+        $timedOut = false;
+        while (true) {
+            $out .= self::drainPipe($pipes[1]);
+            $err .= self::drainPipe($pipes[2]);
+            $status = proc_get_status($proc);
+            if (!$status['running']) {
+                break;
+            }
+            if (microtime(true) > $deadline) {
+                proc_terminate($proc, 9);
+                $timedOut = true;
+                break;
+            }
+            usleep(20_000);
+        }
+        $out .= self::drainPipe($pipes[1]);
+        $err .= self::drainPipe($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        // proc_close is the authoritative reaper (S53 harness law): the
+        // real exit code, never the -1 placeholder of a racy
+        // proc_get_status.
+        $exit = proc_close($proc);
+        if ($timedOut) {
+            return sprintf('the `php -l` child exceeded the %d s deadline and was killed', self::LINT_TIMEOUT_S);
+        }
+        if ($exit === 0 && str_contains($out, 'No syntax errors detected')) {
+            return null;
+        }
+        $diagnostic = trim(str_replace("\n", ' ', $err !== '' ? $err : $out));
+
+        return $diagnostic !== '' ? $diagnostic : sprintf('exit code %d', $exit);
+    }
+
+    /**
+     * Read whatever a non-blocking pipe holds right now, up to
+     * no-more-data; never waits (the deadline loop owns the waiting).
+     *
+     * @param resource $pipe
+     */
+    private static function drainPipe($pipe): string
+    {
+        $chunk = '';
+        while (($data = fread($pipe, 8192)) !== false && $data !== '') {
+            $chunk .= $data;
+        }
+
+        return $chunk;
+    }
+
+    /**
      * Restore every snapshotted path to its pre-first-write state and turn
      * the window failure into the final loud refusal.
      *
@@ -763,7 +1093,9 @@ final class ApplyExtractor
         string $refactoredDir,
         bool $outCreated,
         bool $dirCreated,
-        string $cause
+        string $cause,
+        string $backupDir = '',
+        bool $backupCreated = false
     ): \RuntimeException {
         $restored = 0;
         /** @var list<string> $problems */
@@ -805,6 +1137,17 @@ final class ApplyExtractor
             ++$restored;
         }
 
+        // once-S04: a backup directory the window created is undone HERE,
+        // before the artifact/outDir empty-dir removals — the backups'
+        // files were already unlinked by the snapshot loop (they were
+        // snapshotted as absent), and $outDir can only be reclaimed if
+        // its backup child is gone first.
+        if ($backupCreated) {
+            $problem = $this->removeOwnEmptyDir($backupDir);
+            if ($problem !== null) {
+                $problems[] = $problem;
+            }
+        }
         if ($dirCreated) {
             $problem = $this->removeOwnEmptyDir($refactoredDir);
             if ($problem !== null) {
