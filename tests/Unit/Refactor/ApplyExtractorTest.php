@@ -1932,7 +1932,9 @@ final class ApplyExtractorTest extends TestCase
         // as FREE VARIABLES and every rewritten call was live broken code.
         $dir = $this->makeScratchDir();
         [$cluster, $fileA, $fileB] = $this->s49SharedFormalCluster($dir, 'S49PS1');
-        $this->assertMatchesRegularExpression('/\(\n    \$value,\n    \$user,\n/', (string) $cluster->signature,
+        // output-S37 re-pin: the builder renders signatures on one line, so
+        // the leading promoted formals are pinned in the single-line shape.
+        $this->assertMatchesRegularExpression('/\(\$value, \$user, /', (string) $cluster->signature,
             'fixture: the promoted shared formals lead the emitted signature');
 
         $returned = (new ApplyExtractor())->apply($cluster, $dir . '/out');
@@ -2084,7 +2086,9 @@ final class ApplyExtractorTest extends TestCase
         // passes the arity and RUNS.
         $dir = $this->makeScratchDir();
         [$cluster, $fileA, $fileB] = $this->s49SharedFormalCluster($dir, 'S49REA');
-        $this->assertMatchesRegularExpression('/\(\n    \$value,\n    \$user,\n/', (string) $cluster->signature,
+        // output-S37 re-pin: single-line render — promoted formals leading
+        // the parameter list is the property this fixture pins.
+        $this->assertMatchesRegularExpression('/\(\$value, \$user, /', (string) $cluster->signature,
             'fixture: the signature carries the promoted formals (built while ASTs were loaded)');
 
         foreach ($cluster->members as $member) {

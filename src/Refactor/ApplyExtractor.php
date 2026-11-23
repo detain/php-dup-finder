@@ -1172,7 +1172,7 @@ final class ApplyExtractor
      */
     private function extractFunctionName(string $signature, string $clusterId = ''): string
     {
-        // signature is like "function notifyByThreshold(\n    mixed $threshold,\n): mixed"
+        // output-S37: signature is like "function notifyByThreshold(mixed $threshold): mixed"
         return FunctionNameRegistry::nameOf($signature) ?? 'f_' . $clusterId;
     }
 
@@ -1207,7 +1207,7 @@ final class ApplyExtractor
             " * Auto-generated abstraction for phpdup cluster {$cluster->id}.",
             " * Extracted from {$memberCount} members via anti-unification — REVIEW BEFORE MERGE.",
             ' *',
-            ' * Original signature: ' . str_replace(["\n", "\r"], ' ', (string)($cluster->signature ?? '')),
+            ' * Original signature: ' . (string)($cluster->signature ?? ''),
             ' */',
             "function {$funcName}({$params}): mixed",
             '{',
@@ -1265,14 +1265,15 @@ final class ApplyExtractor
 
     private function extractParameters(string $signature): string
     {
-        // Extract parameters from signature string like:
-        // "function name(\n    int $threshold,\n    string $value,\n): mixed"
+        // output-S37: builder signatures now render on ONE line, so the
+        // happy path is a plain read. The /s + whitespace collapse stays as
+        // the tolerant arm for hand-written multi-line signatures — legacy
+        // shapes from before the de-flatten, pinned byte-exactly by
+        // ApplyExtractorTest's reflection-driven extractParameters case.
         if (preg_match('/\((.*)\)\s*:/s', $signature, $m)) {
-            $params = trim($m[1]);
-            // Remove leading/trailing whitespace and normalize internal whitespace
-            $params = preg_replace('/\s+/', ' ', $params);
-            return $params;
+            return trim(preg_replace('/\s+/', ' ', $m[1]) ?? '');
         }
+
         return '';
     }
 

@@ -11,9 +11,14 @@ use PhpParser\Node;
  * Renders a PHP-style function signature for a Cluster's suggested
  * abstraction.
  *
- *   function clusterMembersFnName(
- *       <synthesized parameters>,
- *   ): mixed
+ *   function clusterMembersFnName(<synthesized parameters>): mixed
+ *
+ * output-S37 (php-dup-finder-output-058): the signature is a SINGLE
+ * line — parameters are joined with ', ' and there is no trailing
+ * comma, no indent and no embedded newline (a zero-parameter cluster
+ * renders `function name(): mixed`). Value consumers (docs, TUI,
+ * patch/builders) that need line breaks wrap for display instead of
+ * re-fragmenting the stored string.
  *
  * The function name is derived from the most common base name across
  * cluster members, suffixed with "By" + the holes' role names if a
@@ -58,9 +63,9 @@ final class SignatureBuilder
                 // Optional segment → default-false bool. PHP requires defaulted
                 // params at the end of the parameter list, so collect them
                 // separately and append after the required ones.
-                $optional[] = sprintf('    bool %s = false,', $var);
+                $optional[] = sprintf('bool %s = false', $var);
             } else {
-                $required[] = sprintf('    %s%s,', $type ? $type . ' ' : '', $var);
+                $required[] = sprintf('%s%s', $type ? $type . ' ' : '', $var);
             }
         }
         // output-S49a (php-dup-finder-output-006): the members' own
@@ -80,14 +85,18 @@ final class SignatureBuilder
         $promoted = [];
         foreach (ParamIntersection::promote($cluster->members, $renderedVars) as $param) {
             $promoted[] = sprintf(
-                '    %s%s,',
+                '%s%s',
                 $param->type !== null && $param->type !== '' ? $param->type . ' ' : '',
                 $param->varName(),
             );
         }
+        // output-S37 (php-dup-finder-output-058): the whole parameter list
+        // renders on ONE line. The old multi-line shape was flattened into
+        // unreadable single-line mush (or escaped-literal noise) by every
+        // downstream consumer that treats signatures as one field — the
+        // data carries ', '-joined parameters, reporters wrap for display.
         $params = array_merge($promoted, $required, $optional);
-        $body = $params ? "\n" . implode("\n", $params) . "\n" : '';
-        $cluster->signature = "function {$name}({$body}): mixed";
+        $cluster->signature = "function {$name}(" . implode(', ', $params) . "): mixed";
     }
 
     /**

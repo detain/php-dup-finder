@@ -233,6 +233,32 @@ final class CliReporterHonestyTest extends TestCase
     }
 
     /**
+     * output-S37 companion to the hostile multi-line signature above: the
+     * builder now renders signatures on ONE line, so a forger riding a
+     * signature reaches the reporter WITHOUT any line break to scope it.
+     * The per-line scrub must still leave zero ESC bytes, and the de-flattened
+     * line must reach the stream as one contiguous box row (the old shape
+     * could never print 'function extracted($a' in one piece).
+     */
+    public function testSingleLineHostileSignatureStaysScrubbedAndContiguous(): void
+    {
+        $cluster = $this->hostileCluster();
+        $cluster->signature = 'function extracted($a' . "\x1b" . 'b, int $v): mixed';
+
+        $config = new Config(paths: [$this->tmp], exclude: [], maxHoleCoverage: 1.0);
+        $out = new BufferedOutput(OutputInterface::VERBOSITY_NORMAL, decorated: false);
+        (new CliReporter())->render(
+            new Report(files: 2, blocks: 2, parseErrors: 0, clusters: [$cluster], config: $config),
+            $out,
+        );
+        $rendered = $out->fetch();
+
+        $this->assertStringNotContainsString("\x1b", $rendered, 'single-line forger must not smuggle ESC onto a --no-ansi stream');
+        $this->assertStringContainsString("\u{FFFD}b", $rendered, 'the injected fragment survives only behind the visible replacement char');
+        $this->assertStringContainsString('function extracted($a', $rendered, 'one-line render reaches the box contiguously');
+    }
+
+    /**
      * output-046 cross-check on the two-root placement line: the advisor
      * already drops non-charset composer keys, so the plain render names the
      * shared host and neither the newline-forged key nor the ESC key appears

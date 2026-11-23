@@ -34,7 +34,7 @@
             ],
             "outlier_members": [],
             "architectural_findings": [],
-            "signature": "function extractedFunction(\n    bool $includeSomeOtherLogic = false,\n    bool $includeAndMore = false,\n): mixed",
+            "signature": "function extractedFunction(bool $includeSomeOtherLogic = false, bool $includeAndMore = false): mixed",
             "members": [
                 {
                     "file": "tests/Fixtures/optional/Pair.php",

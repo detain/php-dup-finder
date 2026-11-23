@@ -292,8 +292,10 @@ final class ParamIntersectionTest extends TestCase
 
         // Promoted shared formals first, in declaration order, then the
         // hole params exactly as today.
+        // output-S37 re-pin: single-line render of the same promoted-first
+        // order (this mirrors the notify-exact golden's signature value).
         $this->assertSame(
-            "function notifyByThreshold(\n    \$user,\n    int \$score,\n    int \$threshold,\n    string \$value,\n): mixed",
+            "function notifyByThreshold(\$user, int \$score, int \$threshold, string \$value): mixed",
             (string)$cluster->signature,
         );
     }
@@ -335,7 +337,8 @@ final class ParamIntersectionTest extends TestCase
         $this->assertSame([], $cluster->holePaths);
         (new SignatureBuilder())->buildSignature($cluster);
 
-        $this->assertSame("function f(\n    int \$x,\n): mixed", (string)$cluster->signature);
+        // output-S37 re-pin: one-line render, promoted int $x is the whole list.
+        $this->assertSame("function f(int \$x): mixed", (string)$cluster->signature);
     }
 
     public function testPromotedSignatureIsValidPhp(): void

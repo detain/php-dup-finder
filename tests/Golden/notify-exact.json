@@ -34,7 +34,7 @@
             ],
             "outlier_members": [],
             "architectural_findings": [],
-            "signature": "function notifyByThreshold(\n    $user,\n    int $score,\n    int $threshold,\n    string $value,\n): mixed",
+            "signature": "function notifyByThreshold($user, int $score, int $threshold, string $value): mixed",
             "members": [
                 {
                     "file": "tests/Fixtures/notify/Notify.php",
@@ -145,7 +145,7 @@
             ],
             "outlier_members": [],
             "architectural_findings": [],
-            "signature": "function sendMailer(\n    int $threshold,\n    string $value,\n): mixed",
+            "signature": "function sendMailer(int $threshold, string $value): mixed",
             "members": [
                 {
                     "file": "tests/Fixtures/notify/Notify.php",
