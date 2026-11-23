@@ -20,6 +20,12 @@ use Phpdup\Util\Version;
  * the *scanned* repository, packed refs included), the corpus shape
  * (files / blocks / parse errors), and the top-line cluster aggregates
  * (count, duplicated lines, total impact, per-tag counters).
+ *
+ * output-S54 (once-040/output-024): append stays append — FILE_APPEND |
+ * LOCK_EX is the documented venue exception — but it is now a CHECKED
+ * append: a row that does not land throws ReportWriteException naming the
+ * file and the byte delta, instead of a missing ledger row under a green
+ * exit.
  */
 final class TimeseriesReporter
 {
@@ -43,8 +49,9 @@ final class TimeseriesReporter
 
     public function writeTo(Report $report, string $file): void
     {
-        $this->ensureDir($file);
-        file_put_contents($file, $this->buildLine($report) . "\n", FILE_APPEND | LOCK_EX);
+        // output-S54: the append venue — FILE_APPEND | LOCK_EX kept for the
+        // growing ledger, but the line must land or the call throws.
+        $this->appendFile($file, $this->buildLine($report) . "\n");
     }
 
     public function buildLine(Report $report): string

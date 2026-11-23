@@ -11,7 +11,9 @@ use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Parsing\AstParser;
+use Phpdup\Reporting\ReportWriteException;
 use Phpdup\Reporting\Slug;
+use Phpdup\Reporting\WritesReportFile;
 use Phpdup\Util\AstSerializer;
 
 /**
@@ -160,6 +162,8 @@ use Phpdup\Util\AstSerializer;
  */
 final class ApplyExtractor
 {
+    use WritesReportFile;
+
     /**
      * The one home of the generated abstraction namespace. The artifact's
      * `namespace` line, the members' fully qualified call, the reporter's
@@ -376,7 +380,7 @@ final class ApplyExtractor
         //    never exists in a half-rewritten state (php-dup-finder-output-004).
         try {
             foreach ($landings as $path => $bytes) {
-                $this->writeFileLoud($path, $bytes);
+                $this->writeFile($path, $bytes);
             }
             $this->verifyLandings($landings);
             // output-010 (S52) chmod leg: inside the window, while a
@@ -787,9 +791,10 @@ final class ApplyExtractor
             if ($current === $original) {
                 continue; // the window never changed this path
             }
-            error_clear_last();
-            if (@file_put_contents($path, $original) === false) {
-                $problems[] = sprintf('%s could not be restored (%s)', $path, self::describeLastFailure($path));
+            try {
+                $this->writeFile($path, $original);
+            } catch (ReportWriteException $failure) {
+                $problems[] = sprintf('%s could not be restored (%s)', $path, $failure->getMessage());
                 continue;
             }
             error_clear_last();
@@ -1079,26 +1084,6 @@ final class ApplyExtractor
     }
 
     /**
-     * Write one artifact or throw with the suppressed diagnostic — the old
-     * @file_put_contents swallow is gone: an IO failure aborts the apply
-     * loudly, naming the file. The message is the CAUSE clause of the
-     * transaction refusal built in apply() (half B), which prepends the
-     * cluster id and the rollback outcome.
-     */
-    private function writeFileLoud(string $path, string $content): void
-    {
-        error_clear_last();
-        $written = @file_put_contents($path, $content);
-        if ($written === false) {
-            throw new \RuntimeException(sprintf(
-                'writing %s failed (%s)',
-                $path,
-                self::describeLastFailure($path),
-            ));
-        }
-    }
-
-    /**
      * output-010 (S52): put every file this window GENERATES on
      * GENERATED_FILE_MODE. Members are untouched — rewritten in place,
      * they keep the mode the repository gave them (the finding names only
@@ -1134,7 +1119,7 @@ final class ApplyExtractor
     {
         $failure = error_get_last();
         $message = is_array($failure) ? $failure['message'] : '';
-        foreach (['file_get_contents', 'file_put_contents', 'mkdir', 'unlink', 'rmdir', 'scandir', 'chmod'] as $op) {
+        foreach (['file_get_contents', 'mkdir', 'unlink', 'rmdir', 'scandir', 'chmod'] as $op) {
             $preamble = sprintf('%s(%s): ', $op, $path);
             if (str_starts_with($message, $preamble)) {
                 $message = substr($message, strlen($preamble));

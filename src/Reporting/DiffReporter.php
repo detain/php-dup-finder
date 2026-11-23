@@ -26,9 +26,15 @@ use SebastianBergmann\Diff\Output\UnifiedDiffOutputBuilder;
  * `<source unavailable: …>` / `<unreadable: …>` strings are gone, they
  * used to ride INSIDE the diff payload as fabricated hunk bytes (and
  * leak into the JSON evidence surface that shares this reader).
+ *
+ * output-S54 (once-040/output-024): the write leg is fail-loud — directory
+ * creation and every .diff/patch write route through WritesReportFile, so
+ * a refused disk raises ReportWriteException before any success line.
  */
 final class DiffReporter
 {
+    use WritesReportFile;
+
     public function __construct(private readonly ?SourceTextStore $sourceText = null) {}
 
     public function writeDir(Report $report, string $dir): void
@@ -42,16 +48,14 @@ final class DiffReporter
 
         $store = $this->sourceText ?? new SourceTextStore($report->config->paths);
 
-        if (!is_dir($dir)) {
-            @mkdir($dir, 0o775, true);
-        }
+        $this->ensureDirectory($dir);
         foreach ($report->clusters as $cluster) {
             if (count($cluster->members) < 2) {
                 continue;
             }
             $safeId = Slug::safe($cluster->id);
             $file = $dir . DIRECTORY_SEPARATOR . $safeId . '.diff';
-            file_put_contents($file, $this->buildClusterDiff($cluster, $store));
+            $this->writeFile($file, $this->buildClusterDiff($cluster, $store));
         }
     }
 
@@ -61,10 +65,7 @@ final class DiffReporter
         // stream before the parent directory is even created.
         $this->requireStreamSafe($report);
 
-        $parentDir = dirname($file);
-        if ($parentDir !== '' && !is_dir($parentDir)) {
-            @mkdir($parentDir, 0o775, true);
-        }
+        $this->ensureDirectory(dirname($file));
         $store = $this->sourceText ?? new SourceTextStore($report->config->paths);
         $parts = [];
         foreach ($report->clusters as $cluster) {
@@ -73,7 +74,7 @@ final class DiffReporter
             }
             $parts[] = $this->buildClusterDiff($cluster, $store);
         }
-        file_put_contents($file, implode("\n", $parts));
+        $this->writeFile($file, implode("\n", $parts));
     }
 
     private function buildClusterDiff(Cluster $cluster, SourceTextStore $store): string

@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace Phpdup\Testing;
 
+use Phpdup\Reporting\WritesReportFile;
+
 /**
  * Generates synthetic PHP corpora with controlled duplication for
  * detection-rate fuzz testing.
@@ -28,6 +30,8 @@ namespace Phpdup\Testing;
  */
 final class FuzzCorpusGenerator
 {
+    use WritesReportFile;
+
     /**
      * Whitelist for a template name. It doubles as the path-segment
      * guard (no `/`, no `.` → no traversal) and as the identifier
@@ -66,9 +70,7 @@ final class FuzzCorpusGenerator
             }
         }
 
-        if (!is_dir($dir)) {
-            @mkdir($dir, 0o775, true);
-        }
+        $this->ensureDirectory($dir);
         // Seeded mt_rand keeps generation deterministic for fuzz tests.
         // We explicitly avoid \Random\Randomizer because that class is
         // PHP 8.2+ and this codebase's floor is 8.1.
@@ -79,7 +81,12 @@ final class FuzzCorpusGenerator
             foreach ($rows as $idx => $holes) {
                 $code = $this->renderTemplate((string)$template, $holes, (int)$idx);
                 $file = sprintf('%s/%s_%03d.php', $dir, $template, $idx);
-                file_put_contents($file, $code);
+                // output-S54 (once-040/output-024): the manifest is a CLAIM
+                // about ground truth — it may only be appended once the file
+                // has actually landed byte-for-byte. A refused write now
+                // aborts loudly instead of shipping a corpus whose manifest
+                // lists files that were never written.
+                $this->writeFile($file, $code);
                 $manifest[] = ['file' => $file, 'template' => (string)$template, 'row' => (int)$idx];
             }
         }

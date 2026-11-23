@@ -20,17 +20,20 @@ use Phpdup\Util\ControlText;
  * The parameter header is CODE, so it projects Hole display fields
  * through CodeParam (sigil passthrough + code-safe types) instead of
  * re-prepending `$` — review r2 N-1 cured the 128/159 `$$arg` skeletons.
+ *
+ * output-S54 (once-040/output-024): the write leg is fail-loud — directory
+ * creation and every skeleton write route through WritesReportFile.
  */
 final class RefactorTestReporter
 {
+    use WritesReportFile;
+
     /**
      * Write one PHPUnit test-skeleton file per cluster under `$dir`.
      */
     public function writeTo(Report $report, string $dir): void
     {
-        if ($dir !== '' && !is_dir($dir)) {
-            @mkdir($dir, 0o775, true);
-        }
+        $this->ensureDirectory($dir);
         foreach ($report->clusters as $cluster) {
             if (count($cluster->members) < 2) {
                 continue;
@@ -39,7 +42,7 @@ final class RefactorTestReporter
             // the declared class name are ONE derivation now — see
             // className().
             $file = $dir . DIRECTORY_SEPARATOR . $this->className($cluster) . '.php';
-            file_put_contents($file, $this->buildTest($cluster));
+            $this->writeFile($file, $this->buildTest($cluster));
         }
     }
 

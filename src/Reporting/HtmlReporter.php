@@ -61,9 +61,16 @@ use SebastianBergmann\Diff\Output\StrictUnifiedDiffOutputBuilder;
  * silent empty tbody, and a null-signature row ships no dead copy
  * button — only an honest marker. Clipboard flashes are gated on the
  * awaited write outcome, including the legacy fallback's own verdict.
+ *
+ * output-S54 (once-040/output-024): the write leg is fail-loud — directory
+ * creation and every page/asset write route through the WritesReportFile
+ * venue, so a disk that refuses the bytes raises ReportWriteException
+ * instead of printing a success line over an absent report.
  */
 final class HtmlReporter
 {
+    use WritesReportFile;
+
     /** Cluster pages rendered into one write batch before it is flushed. */
     public const DEFAULT_WRITE_BATCH = 128;
 
@@ -108,9 +115,7 @@ final class HtmlReporter
 
     public function writeTo(Report $report, string $dir): void
     {
-        if (!is_dir($dir)) {
-            @mkdir($dir, 0o775, true);
-        }
+        $this->ensureDirectory($dir);
 
         $store = $this->sourceText ?? new SourceTextStore($report->config->paths);
 
@@ -118,9 +123,9 @@ final class HtmlReporter
         // own instance (the construction counter below stays cumulative).
         $this->differ = null;
 
-        file_put_contents($dir . '/style.css', $this->css());
-        file_put_contents($dir . '/app.js', $this->js());
-        file_put_contents($dir . '/index.html', $this->renderIndex($report));
+        $this->writeFile($dir . '/style.css', $this->css());
+        $this->writeFile($dir . '/app.js', $this->js());
+        $this->writeFile($dir . '/index.html', $this->renderIndex($report));
 
         // output-041: batched page writes — pages render into the batch and
         // flush as a group, so a large report no longer interleaves one
@@ -166,7 +171,7 @@ final class HtmlReporter
         }
         $this->pageWriteFlushes++;
         foreach ($pages as $name => $html) {
-            file_put_contents($dir . '/' . $name, $html);
+            $this->writeFile($dir . '/' . $name, $html);
         }
     }
 
