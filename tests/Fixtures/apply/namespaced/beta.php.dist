@@ -1,0 +1,23 @@
+<?php
+// output-S53 namespaced unit — the short twin (fixture contract, see
+// ../README.md). Same namespace + same shared shape; NO trailing sealRun()
+// (its knob row is false). laterBeta uses a different body shape than
+// laterAlpha on purpose: literal-only sibling differences would form a
+// SECOND cluster over this file, and the first cluster's rewrite shifts the
+// recorded ranges out from under the second cluster's locate pass (the
+// multi-cluster stale-span report-row this suite disclosed).
+namespace App\Old;
+
+function auditRun($id): int
+{
+    emitLine();
+    captureTail($id);
+    return 1;
+}
+
+function laterBeta(): string
+{
+    $tail = 'BETA';
+
+    return "LATER-{$tail}\n";
+}

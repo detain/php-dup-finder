@@ -1,0 +1,45 @@
+<?php
+// output-S53 samesite unit (fixture contract, see ../README.md): TWO clone
+// members in ONE file. Both classes declare post($value): void sharing the
+// formal $value (promoted by S49b); the bodies differ by exactly the
+// trailing stamper() call — the real AntiUnifier surfaces that as the ONE
+// optional_block hole, so the rewritten delegation carries a per-member
+// true/false knob (S45) and the plan must collect BOTH members from a
+// single read+parse of this file with the count-verify honest (S44b half A).
+// helperA/helperB are the S46 sibling-declaration survivors: the rewrite
+// must keep them at all costs.
+class LedgerA
+{
+    public function post($value): void
+    {
+        logEntry();
+        sealRow($value);
+        stamper();
+    }
+
+    public function helperA(int $n): int
+    {
+        $acc = 0;
+        for ($i = 0; $i < $n; $i++) {
+            $acc += $i;
+        }
+        return $acc;
+    }
+}
+
+class LedgerB
+{
+    public function post($value): void
+    {
+        logEntry();
+        sealRow($value);
+    }
+
+    public function helperB(): string
+    {
+        static $ticker = 0;
+        $ticker++;
+
+        return "B-HELPER-{$ticker}\n";
+    }
+}

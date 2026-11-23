@@ -1,0 +1,20 @@
+<?php
+// output-S53 unsafe unit (fixture contract, see ../README.md): both paint
+// members reference $this — the S50 AST hazard gate must refuse the whole
+// cluster from apply with the named '$this' reason and touch zero bytes.
+// The literals differ ONLY inside the echoed string positions so the pair
+// still clusters (one required hole) while the hazard dominates the gate.
+class WidgetA
+{
+    public function paint(string $color): string
+    {
+        $this->prep($color);
+
+        return $color . ':' . 'PAINT-A' . "\n";
+    }
+
+    public function prep(string $color): void
+    {
+        $this->primer = $color;
+    }
+}

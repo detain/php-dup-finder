@@ -1,0 +1,10 @@
+<?php
+// output-S53 rollback unit — member B, the blocked twin (fixture
+// contract, see ../README.md). Readable (0444) so PLAN and snapshot pass,
+// unwritable so the WRITE inside the window fails: the exact mid-window
+// partial-failure shape output-004 half B promises to roll back whole.
+function syncCache(string $key): void
+{
+    drainQueue();
+    flushOne($key);
+}

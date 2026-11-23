@@ -1,0 +1,17 @@
+<?php
+// output-S53 unsafe unit — the $this twin (fixture contract, see
+// ../README.md).
+class WidgetB
+{
+    public function paint(string $color): string
+    {
+        $this->prep($color);
+
+        return $color . ':' . 'PAINT-B' . "\n";
+    }
+
+    public function prep(string $color): void
+    {
+        $this->primer = $color;
+    }
+}

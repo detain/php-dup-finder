@@ -1,0 +1,21 @@
+<?php
+// output-S53 links unit — member A (fixture contract, see ../README.md).
+// The suite materializes twin-b at a second in-root PATH and plants a
+// SYMLINK over it, so the scanner (which admits in-root links, shell-006)
+// records a link path as a cluster member and ApplyExtractor::confinePath
+// must refuse writing through it with zero bytes touched (output-010/S52).
+function linkSync(int $row): void
+{
+    pushRow($row);
+    emitLedger();
+}
+
+function anchorOne(): int
+{
+    $acc = 0;
+    foreach ([1, 2, 3] as $n) {
+        $acc += $n * $n;
+    }
+
+    return $acc;
+}

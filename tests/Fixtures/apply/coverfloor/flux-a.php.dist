@@ -1,0 +1,14 @@
+<?php
+// output-S53 coverfloor unit (fixture contract, see ../README.md): every
+// matched statement of this pair carries a differing literal, so the
+// generalized template is mostly holes. At the shipped default ceiling
+// (max_hole_coverage 1.0) the S51 leg is inert and this cluster would
+// APPLY; the suite passes --max-hole-coverage=0.10 and demands the NAMED
+// refusal reason, zero member writes and no artifact tree.
+function fluxRun(string $mode): int
+{
+    setStage($mode, 'INIT');
+    paintStep($mode, 'ALPHA');
+
+    return finishStage($mode, 'DONE');
+}

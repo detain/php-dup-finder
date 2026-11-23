@@ -1,0 +1,240 @@
+<?php
+// output-S53 storm unit (fixture contract, see ../README.md): 33 byte-identical
+// members exceed AntiUnifier::MAX_UNIFY_MEMBERS (32), so RefactorStage ROUTES the
+// cluster through representatives; identical reps leave ZERO real holes, and
+// AntiUnifier::unify() injects the whole-template sentinel hole __cap
+// (degraded) so the capped=>degraded=>refused invariant must keep apply away
+// from this tree — while SignatureBuilder stays sentinel-inert (the emitted
+// signature carries no __cap formal).
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+
+function stormRun($seed): int
+{
+    kickOff();
+
+    return $seed * 2;
+}
+

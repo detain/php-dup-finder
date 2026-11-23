@@ -1,0 +1,23 @@
+<?php
+// output-S53 namespaced unit (fixture contract, see ../README.md): member
+// inside `namespace App\Old;` — the S47 law under test. The rewritten
+// delegation MUST be emitted as \Refactored\auditRun(...) (fully qualified
+// by Node\Name\FullyQualified); the pre-S47 qualified-relative shape would
+// be resolved by PHP as App\Old\Refactored\auditRun and fatal at the first
+// call. The bodies differ by the trailing sealRun() statement (the ONE
+// optional_block hole; knob true here, false in beta); $id is the shared
+// formal promoted by S49b. laterAlpha is the sibling survivor (S46).
+namespace App\Old;
+
+function auditRun($id): int
+{
+    emitLine();
+    captureTail($id);
+    sealRun();
+    return 1;
+}
+
+function laterAlpha(): string
+{
+    return \implode('', ['LATER', '-ALPHA']) . "\n";
+}

@@ -1,0 +1,16 @@
+<?php
+// output-S53 links unit — member B, the short twin (fixture contract, see
+// ../README.md). anchorTwo is shape-distinct from anchorOne on purpose
+// (see the namespaced beta note: same-file sibling pairs that cluster
+// across files collide with the first rewrite's shifted ranges).
+function linkSync(int $row): void
+{
+    pushRow($row);
+}
+
+function anchorTwo(): string
+{
+    static $seq = 'L';
+
+    return $seq . '-TWO' . "\n";
+}

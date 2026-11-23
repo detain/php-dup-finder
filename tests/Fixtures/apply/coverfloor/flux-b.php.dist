@@ -1,0 +1,10 @@
+<?php
+// output-S53 coverfloor unit — the twin with three different literals
+// (fixture contract, see ../README.md).
+function fluxRun(string $mode): int
+{
+    setStage($mode, 'BOOT');
+    paintStep($mode, 'BETA');
+
+    return finishStage($mode, 'FINI');
+}

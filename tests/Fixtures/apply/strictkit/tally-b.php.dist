@@ -1,0 +1,11 @@
+<?php
+// output-S53 strictkit unit — the twin with literal 'BETA' (fixture
+// contract, see ../README.md).
+declare (strict_types=1);
+
+function tallyRow(int $count, string $tag): int
+{
+    seedCounter();
+
+    return $count + checkGate('BETA');
+}
