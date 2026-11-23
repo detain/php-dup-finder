@@ -10,6 +10,11 @@ use Phpdup\Cli\Command;
 use Symfony\Component\Console\Application;
 use Symfony\Component\Console\Tester\CommandTester;
 use Symfony\Component\Console\Output\OutputInterface;
+// once-S37 fix-1: wiring pins drive the state→Report seam through ReportStage.
+use Phpdup\Cli\Config;
+use Phpdup\Pipeline\PipelineState;
+use Phpdup\Pipeline\Stages\ReportStage;
+use Symfony\Component\Console\Output\NullOutput;
 
 final class FileScannerTest extends TestCase
 {
@@ -1764,5 +1769,54 @@ final class FileScannerTest extends TestCase
             $this->markTestSkipped('cannot produce a real read refusal on a file for this user (running as root?)');
         }
         return $dir;
+    }
+
+    /**
+     * once-S37 fix-1 (r1-granted carrier threading): ReportStage must move the
+     * run's real scan-signal channels — skip notes, parse failures with their
+     * parser messages, the cluster-cache replay verdict — across the
+     * state→Report seam unchanged. No reporter reads these fields until the
+     * owner-gated schema-1.8 emit lands, so this pin is the only proof the
+     * wiring survives until then. Populated state in, identical lists out.
+     */
+    public function testS37Fix1WiredCarriersReachReportLayer(): void
+    {
+        $dir = sys_get_temp_dir() . '/phpdup-s37-tree-' . getmypid() . '-fix1-wired';
+        mkdir($dir . '/cache', 0777, true);
+        $notes = ['skipped unreadable path ' . $dir . '/blocked.php (file is not readable)'];
+        $failures = [['file' => $dir . '/broken.php', 'message' => 'Syntax error, unexpected ";" on line 2']];
+        $state = new PipelineState(new Config(paths: [$dir], exclude: [], cacheDir: $dir . '/cache'));
+        $state->files = ['a.php'];
+        $state->scanNotes = $notes;
+        $state->parseFailures = $failures;
+        $state->clustersReplayed = true;
+
+        (new ReportStage(limit: 50, showStats: false))->run($state, new NullOutput());
+
+        $this->assertNotNull($state->report);
+        $this->assertSame($notes, $state->report->scanNotes);
+        $this->assertSame($failures, $state->report->parseFailures);
+        $this->assertTrue($state->report->clustersReplayed);
+    }
+
+    /**
+     * once-S37 fix-1 companion: an idle CLI run threads DECIDED values —
+     * empty lists and clustersReplayed=false ("the run checked; nothing was
+     * replayed") — never the legacy untracked null a hand-built Report keeps.
+     * Discriminates real threading from a constant write and from null.
+     */
+    public function testS37Fix1IdleStateReachesReportAsDecidedZeros(): void
+    {
+        $dir = sys_get_temp_dir() . '/phpdup-s37-tree-' . getmypid() . '-fix1-idle';
+        mkdir($dir . '/cache', 0777, true);
+        $state = new PipelineState(new Config(paths: [$dir], exclude: [], cacheDir: $dir . '/cache'));
+        $state->files = ['a.php'];
+
+        (new ReportStage(limit: 50, showStats: false))->run($state, new NullOutput());
+
+        $this->assertNotNull($state->report);
+        $this->assertSame([], $state->report->scanNotes);
+        $this->assertSame([], $state->report->parseFailures);
+        $this->assertFalse($state->report->clustersReplayed);
     }
 }

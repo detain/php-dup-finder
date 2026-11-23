@@ -20,6 +20,8 @@ final class Report
     /**
      * @param list<Cluster> $clusters
      * @param list<array<string, mixed>> $declaredTwins
+     * @param list<string> $scanNotes
+     * @param list<array{file:string,message:string}> $parseFailures
      */
     public function __construct(
         public readonly int $files,
@@ -42,6 +44,22 @@ final class Report
         // reporters then omit their fields honestly rather than fabricating
         // a build-time clock read. Not part of the JSON payload shape.
         public readonly ?ScanWindow $scanWindow = null,
+        // once-S37 fix-1 (r1-granted carrier threading): the run's scan-signal
+        // channels ride the Report as trailing params — §5f, payload lists
+        // ride trailing params. Defaults keep every legacy producer honest
+        // (library API, server workers at AnalysisWorker): empty lists mean
+        // "this producer did not track them", clustersReplayed null means
+        // "unknown", never a fabricated zero or false. ReportStage threads
+        // the real PipelineState values. The JSON emit of
+        // summary.scan_notes[] / summary.parse_failures[] /
+        // summary.clusters_replayed (plan §37 acceptance) is a schema-1.8
+        // event: it lands only in the same commit that moves SCHEMA_VERSION
+        // 1.7→1.8, so until that owner-gated window the carrier is read by
+        // no reporter and the payload stays exactly 1.7. The skipNotes
+        // channel contract is reused by once-S41/S66/S71.
+        public readonly array $scanNotes = [],
+        public readonly array $parseFailures = [],
+        public readonly ?bool $clustersReplayed = null,
     ) {
     }
 

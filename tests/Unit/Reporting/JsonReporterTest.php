@@ -261,4 +261,54 @@ final class JsonReporterTest extends TestCase
             config: $config,
         );
     }
+
+    /**
+     * once-S37 fix-1: the scan-signal carriers (skip notes, parse failures,
+     * replay verdict) ride the Report's trailing params. Legacy producers
+     * that omit them — library API, server workers hand-building a Report —
+     * stay honestly UNTRACKED (empty lists, clustersReplayed null), never a
+     * fabricated zero.
+     */
+    public function testS37Fix1CarriersRideTrailingParamsLegacyProducersStayUntracked(): void
+    {
+        $populated = new Report(
+            0, 0, 0, [], Config::defaults([]),
+            scanNotes: ['n1'],
+            parseFailures: [['file' => 'f.php', 'message' => 'm']],
+            clustersReplayed: true,
+        );
+        $this->assertSame(['n1'], $populated->scanNotes);
+        $this->assertSame([['file' => 'f.php', 'message' => 'm']], $populated->parseFailures);
+        $this->assertTrue($populated->clustersReplayed);
+
+        $legacy = new Report(0, 0, 0, [], Config::defaults([]));
+        $this->assertSame([], $legacy->scanNotes);
+        $this->assertSame([], $legacy->parseFailures);
+        $this->assertNull($legacy->clustersReplayed);
+    }
+
+    /**
+     * once-S37 fix-1 schema-event tripwire: emitting summary.scan_notes[],
+     * summary.parse_failures[] or summary.clusters_replayed is a JSON schema
+     * 1.7→1.8 event that lands ONLY together with SCHEMA_VERSION and a golden
+     * regen in one no-broken-tip commit (plan §37 shared-resources: "the ONLY
+     * sanctioned bumps … once-S37 (1.7→1.8, owner-approved row)"). The owner
+     * window is closed, so while carriers are populated the payload must stay
+     * exactly the frozen 1.7 keyset. This pin turns RED the day a summary key
+     * is added without moving the version — the breach r1 warned about.
+     */
+    public function testS37Fix1JsonShapeFrozenWhileCarriersPopulated(): void
+    {
+        $payload = (new JsonReporter())->build(new Report(
+            0, 0, 0, [], Config::defaults([]),
+            scanNotes: ['skipped unreadable path /tmp/x (directory is not readable)'],
+            parseFailures: [['file' => '/tmp/x/broken.php', 'message' => 'Syntax error, unexpected ";" on line 2']],
+            clustersReplayed: true,
+        ));
+        $this->assertSame('1.7', $payload['schema_version']);
+        $this->assertSame(array_keys(JsonSchemaSpec::summaryShape()), array_keys($payload['summary']));
+        $this->assertArrayNotHasKey('scan_notes', $payload['summary']);
+        $this->assertArrayNotHasKey('parse_failures', $payload['summary']);
+        $this->assertArrayNotHasKey('clusters_replayed', $payload['summary']);
+    }
 }

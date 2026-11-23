@@ -218,6 +218,16 @@ final class ReportStage implements StageInterface
             skippedFiles: $state->skippedFiles,
             declaredTwins: $declaredTwins,
             scanWindow: $scanWindow,
+            // once-S37 fix-1 (r1-granted carrier threading, plan §37):
+            // the run's real scan-signal channels cross the state→Report
+            // seam here so the owner-gated schema-1.8 emit commit has
+            // data to report and nothing to invent. The CLI has already
+            // surfaced all three honestly (r0 rounds); this is the
+            // machine-readable carrier only — no reporter reads it yet,
+            // so the JSON payload stays byte-exactly 1.7.
+            scanNotes: $state->scanNotes,
+            parseFailures: $state->parseFailures,
+            clustersReplayed: $state->clustersReplayed,
         );
         $state->report   = $report;
         $state->clusters = $clusters;
