@@ -7,18 +7,11 @@ use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\Config;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
-use Phpdup\Pipeline\PipelineState;
-use Phpdup\Pipeline\Stages\ClusterStage;
-use Phpdup\Pipeline\Stages\PreprocessStage;
-use Phpdup\Pipeline\Stages\RefactorStage;
-use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Refactor\Hole;
 use Phpdup\Reporting\JsonReporter;
 use Phpdup\Reporting\JsonSchemaSpec;
-use Phpdup\Reporting\Ranker;
 use Phpdup\Reporting\Report;
 use Phpdup\Util\LineRange;
-use Symfony\Component\Console\Output\NullOutput;
 
 final class JsonReporterTest extends TestCase
 {
@@ -75,92 +68,6 @@ final class JsonReporterTest extends TestCase
         $this->assertSame(4, $payload['summary']['files_scanned']);
     }
 
-    public function testFixtureReportPopulatesClusters(): void
-    {
-        $report  = $this->buildReport(__DIR__ . '/../../Fixtures/sql', exactOnly: true);
-        $payload = (new JsonReporter())->build($report);
-
-        $this->assertGreaterThan(0, $payload['summary']['clusters']);
-        $this->assertNotEmpty($payload['clusters']);
-
-        foreach ($payload['clusters'] as $c) {
-            $this->assertArrayHasKey('id', $c);
-            $this->assertArrayHasKey('exact', $c);
-            $this->assertArrayHasKey('similarity', $c);
-            $this->assertArrayHasKey('signature', $c);
-            $this->assertArrayHasKey('members', $c);
-            $this->assertArrayHasKey('holes', $c);
-            $this->assertArrayHasKey('kind', $c, 'cluster.kind populated from member[0].kind');
-        }
-    }
-
-    public function testWriteToCreatesParseableJsonFile(): void
-    {
-        $tmp = sys_get_temp_dir() . '/phpdup-json-' . uniqid() . '.json';
-        try {
-            (new JsonReporter())->writeTo(
-                $this->buildReport(__DIR__ . '/../../Fixtures/sql', exactOnly: true),
-                $tmp,
-            );
-            $this->assertFileExists($tmp);
-            $decoded = json_decode((string)file_get_contents($tmp), true);
-            $this->assertIsArray($decoded);
-            $this->assertSame('0.1.0', $decoded['phpdup_version']);
-        } finally {
-            @unlink($tmp);
-        }
-    }
-
-    public function testOptionalBlockHolesIncludePresentInMembers(): void
-    {
-        $report  = $this->buildReport(
-            __DIR__ . '/../../Fixtures/optional',
-            exactOnly: false,
-            minBlockSize: 4,
-            maxDf: 0.5,
-        );
-        $payload = (new JsonReporter())->build($report);
-
-        // Locate the optional-segments cluster.
-        $optional = null;
-        foreach ($payload['clusters'] as $c) {
-            if (in_array('optional-segments', $c['pattern_tags'], true)) {
-                $optional = $c;
-                break;
-            }
-        }
-        $this->assertNotNull($optional, 'fixture should produce an optional-segments cluster');
-
-        $optionalHoles = array_filter($optional['holes'], static fn($h) => $h['kind'] === 'optional_block');
-        $this->assertNotEmpty($optionalHoles, 'cluster has at least one optional_block hole');
-
-        foreach ($optionalHoles as $h) {
-            $this->assertArrayHasKey('present_in_members', $h, 'optional_block holes carry present_in_members[]');
-            $this->assertIsArray($h['present_in_members']);
-            $this->assertNotEmpty($h['present_in_members'], 'at least one member must have the segment');
-            // output-S27 wire law: the printable impostors are render-time
-            // only — the wire never carries them, and an absence row that
-            // is not listed as present serializes as JSON null.
-            $this->assertNotContains('<absent>', $h['observed'], 'sentinel string never reaches the wire');
-            $this->assertNotContains('<missing>', $h['observed']);
-            $this->assertNotContains('', $h['observed'], 'canonical absence must not serialize as empty string');
-            // Indices should be valid integer offsets into cluster.members.
-            foreach ($h['present_in_members'] as $idx) {
-                $this->assertIsInt($idx);
-                $this->assertGreaterThanOrEqual(0, $idx);
-                $this->assertLessThan(count($optional['members']), $idx);
-            }
-        }
-
-        $sawNull = false;
-        foreach ($optionalHoles as $h) {
-            if (in_array(null, $h['observed'], true)) {
-                $sawNull = true;
-            }
-        }
-        $this->assertTrue($sawNull, 'the short members verify an absence — wire shows null');
-    }
-
     /**
      * output-S27 (schema 1.7) full projection matrix on synthetic holes:
      * verified absence (canonical, honest hole), never-gathered row
@@ -215,10 +122,155 @@ final class JsonReporterTest extends TestCase
         );
     }
 
+    /**
+     * output-S56b synthetic carrier for the retired sql/optional/notify
+     * fixture pipelines: two clusters over hand-built blocks — A2 with a
+     * signature, one literal and one optional_block hole; B2 a plain
+     * near-duplicate. Deterministic ids/kinds feed the exact-vector pins.
+     *
+     * @return list<Cluster>
+     */
+    private function syntheticClusters(): array
+    {
+        $a = new Cluster('F00000000000000A2', [
+            $this->blk('/phpdup-syn/p1.php'), $this->blk('/phpdup-syn/p2.php'),
+        ], 0.92, false);
+        $a->signature = 'function q(string $x): mixed';
+        $a->patternTags = ['optional-segments'];
+        $a->holes = [
+            new Hole('__L0', 'literal', ["'a';", "'b';"], false),
+            new Hole('__O0', 'optional_block', ["'s();'", Hole::MISSING], false),
+        ];
+
+        $b = new Cluster('F00000000000000B2', [
+            $this->blk('/phpdup-syn/q1.php'), $this->blk('/phpdup-syn/q2.php'),
+            $this->blk('/phpdup-syn/q3.php'),
+        ], 1.0, true);
+
+        return [$a, $b];
+    }
+
+    /**
+     * output-S56b (was testFixtureReportPopulatesClusters): the fixture
+     * era re-derived nothing here, but the summary count was an open
+     * range; the synthetic report carries exactly 2 clusters, now pinned.
+     */
+    public function testSyntheticReportPopulatesClusters(): void
+    {
+        $payload = (new JsonReporter())->build(
+            new Report(5, 5, 0, $this->syntheticClusters(), Config::defaults([])),
+        );
+
+        $this->assertSame(2, $payload['summary']['clusters']);
+        $this->assertNotEmpty($payload['clusters']);
+
+        foreach ($payload['clusters'] as $c) {
+            $this->assertArrayHasKey('id', $c);
+            $this->assertArrayHasKey('exact', $c);
+            $this->assertArrayHasKey('similarity', $c);
+            $this->assertArrayHasKey('signature', $c);
+            $this->assertArrayHasKey('members', $c);
+            $this->assertArrayHasKey('holes', $c);
+            $this->assertArrayHasKey('kind', $c, 'cluster.kind populated from member[0].kind');
+        }
+
+        // Strengthened (output-S56b): identity vectors ride the synthetic
+        // ids — the fixture never allowed pinning these.
+        $this->assertSame('F00000000000000A2', $payload['clusters'][0]['id']);
+        $this->assertSame('function q(string $x): mixed', $payload['clusters'][0]['signature']);
+        $this->assertSame('method', $payload['clusters'][0]['kind']);
+        $this->assertSame(3, $payload['clusters'][1]['size'] ?? count($payload['clusters'][1]['members']));
+    }
+
+    public function testWriteToCreatesParseableJsonFile(): void
+    {
+        $tmp = sys_get_temp_dir() . '/phpdup-json-' . uniqid() . '.json';
+        try {
+            (new JsonReporter())->writeTo(
+                new Report(5, 5, 0, $this->syntheticClusters(), Config::defaults([])),
+                $tmp,
+            );
+            $this->assertFileExists($tmp);
+            $decoded = json_decode((string)file_get_contents($tmp), true);
+            $this->assertIsArray($decoded);
+            $this->assertSame('0.1.0', $decoded['phpdup_version']);
+            // output-S56b strengthening: round-trip keeps the cluster count.
+            $this->assertSame(2, $decoded['summary']['clusters']);
+        } finally {
+            @unlink($tmp);
+        }
+    }
+
+    public function testOptionalBlockHolesIncludePresentInMembers(): void
+    {
+        // output-S56b: a hand-built optional-segments cluster on 4 members
+        // replaces the optional-fixture scan — two optional_block holes
+        // with real absences, so every wire law below has bite by
+        // construction (the fixture only "should" produce this shape).
+        $cluster = new Cluster('OPT_WIRE', [
+            $this->blk('o1.php'), $this->blk('o2.php'), $this->blk('o3.php'), $this->blk('o4.php'),
+        ], 0.9, false);
+        $cluster->patternTags = ['optional-segments'];
+        $cluster->holes = [
+            new Hole('__O0', 'optional_block', ["'s();'", "'s();'", Hole::MISSING, Hole::MISSING], false),
+            new Hole('__O1', 'optional_block', [Hole::MISSING, "'t();'", Hole::MISSING, "'t();'"], false),
+        ];
+        $report  = new Report(4, 4, 0, [$cluster], Config::defaults([]));
+        $payload = (new JsonReporter())->build($report);
+
+        // Locate the optional-segments cluster.
+        $optional = null;
+        foreach ($payload['clusters'] as $c) {
+            if (in_array('optional-segments', $c['pattern_tags'], true)) {
+                $optional = $c;
+                break;
+            }
+        }
+        $this->assertNotNull($optional, 'synthetic report carries an optional-segments cluster');
+
+        $optionalHoles = array_filter($optional['holes'], static fn($h) => $h['kind'] === 'optional_block');
+        $this->assertNotEmpty($optionalHoles, 'cluster has at least one optional_block hole');
+
+        foreach ($optionalHoles as $h) {
+            $this->assertArrayHasKey('present_in_members', $h, 'optional_block holes carry present_in_members[]');
+            $this->assertIsArray($h['present_in_members']);
+            $this->assertNotEmpty($h['present_in_members'], 'at least one member must have the segment');
+            // output-S27 wire law: the printable impostors are render-time
+            // only — the wire never carries them, and an absence row that
+            // is not listed as present serializes as JSON null.
+            $this->assertNotContains('<absent>', $h['observed'], 'sentinel string never reaches the wire');
+            $this->assertNotContains('<missing>', $h['observed']);
+            $this->assertNotContains('', $h['observed'], 'canonical absence must not serialize as empty string');
+            // Indices should be valid integer offsets into cluster.members.
+            foreach ($h['present_in_members'] as $idx) {
+                $this->assertIsInt($idx);
+                $this->assertGreaterThanOrEqual(0, $idx);
+                $this->assertLessThan(count($optional['members']), $idx);
+            }
+        }
+
+        // Strengthened (output-S56b): the presence lists are exact.
+        $this->assertSame([0, 1], $optionalHoles[0]['present_in_members']);
+        $this->assertSame([1, 3], $optionalHoles[1]['present_in_members']);
+
+        $sawNull = false;
+        foreach ($optionalHoles as $h) {
+            if (in_array(null, $h['observed'], true)) {
+                $sawNull = true;
+            }
+        }
+        $this->assertTrue($sawNull, 'the short members verify an absence — wire shows null');
+    }
+
     public function testNonOptionalHolesOmitPresentInMembers(): void
     {
-        $report  = $this->buildReport(__DIR__ . '/../../Fixtures/notify', exactOnly: false);
-        $payload = (new JsonReporter())->build($report);
+        // output-S56b: synthetic carrier (was a notify-fixture scan): one
+        // literal hole must serialize WITHOUT present_in_members, and the
+        // companion optional hole must still carry it — the contrast is
+        // pinned inside the same cluster, not left to fixture luck.
+        $payload = (new JsonReporter())->build(
+            new Report(5, 5, 0, $this->syntheticClusters(), Config::defaults([])),
+        );
 
         $sawAnyHole = false;
         foreach ($payload['clusters'] as $c) {
@@ -229,36 +281,13 @@ final class JsonReporterTest extends TestCase
                 }
             }
         }
-        $this->assertTrue($sawAnyHole, 'fixture should have produced at least one non-optional hole');
-    }
+        $this->assertTrue($sawAnyHole, 'synthetic clusters carry a non-optional hole');
 
-    private function buildReport(
-        string $path,
-        bool $exactOnly = true,
-        int $minBlockSize = 8,
-        float $maxDf = 0.01,
-    ): Report {
-        $config = new Config(
-            paths: [$path],
-            exclude: Config::defaults([])->exclude,
-            minBlockSize: $minBlockSize,
-            maxDocumentFrequency: $maxDf,
-            minClusterImpact: 1,
-            lazyAst: false,
-        );
-        $state = new PipelineState($config);
-        $out   = new NullOutput();
-        (new ScanningStage())->run($state, $out);
-        (new PreprocessStage(useCache: false))->run($state, $out);
-        (new ClusterStage(exactOnly: $exactOnly))->run($state, $out);
-        (new RefactorStage(useCache: false))->run($state, $out);
-
-        return new Report(
-            files: count($state->files),
-            blocks: count($state->blocks),
-            parseErrors: $state->parseErrors,
-            clusters: (new Ranker($config->minClusterImpact))->rank($state->clusters),
-            config: $config,
+        // Direct contrast pin (strengthened): cluster A2 hole index 1 is
+        // the optional_block and DOES carry the key.
+        $this->assertArrayHasKey(
+            'present_in_members',
+            $payload['clusters'][0]['holes'][1],
         );
     }
 
