@@ -1,0 +1,28 @@
+<?php
+// output-S53 namespaced_strict unit — member A (fixture contract, see
+// ../README.md): strict_types + typed shared formals ($user, $score) that
+// S49b promotes through apply; the 'high'/'low' literal inside the matched
+// render() call is the required hole whose per-member row S45 re-binds at
+// the rewritten call site; keepMe is the S46 sibling survivor (and, per the
+// disclosed multi-cluster range-shift law, a SECOND cluster this suite
+// deliberately never applies). The delegation must be \Refactored\...
+// FULLY QUALIFIED — S47 (a relative name resolves under App\Ledger and
+// fatals at runtime).
+declare(strict_types=1);
+
+namespace App\Ledger;
+
+final class NotifyHigh
+{
+    public function notify(string $user, int $score): string
+    {
+        $tag = strtoupper($user);
+        $line = render($tag, 'high');
+        return $line;
+    }
+
+    public function keepMe(): string
+    {
+        return 'HIGH-KEPT';
+    }
+}

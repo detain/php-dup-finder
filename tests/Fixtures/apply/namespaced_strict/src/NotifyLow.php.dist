@@ -1,4 +1,6 @@
 <?php
+// output-S53 namespaced_strict unit — the twin with literal 'low' (fixture
+// contract, see ../README.md). Same shape; keepMe returns 'LOW-KEPT'.
 declare(strict_types=1);
 
 namespace App\Ledger;

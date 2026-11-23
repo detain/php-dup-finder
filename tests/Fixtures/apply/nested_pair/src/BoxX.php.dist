@@ -1,0 +1,25 @@
+<?php
+// output-S53 nested_pair unit — ONE file, TWO members, nested (fixture
+// contract, see ../README.md). nestOuterX's body contains nestInnerX's
+// declaration, and the outer body minus that declaration is exactly the
+// inner body, so at the suite's documented loose knobs the real
+// AntiUnifier merges the pair into a template with a single optional_block
+// knob for the nested declaration. Both members then locate inside THIS
+// one file — and the single replacement pass must face the S44a truth:
+// replacing the outer node removes the inner one from the tree, so the
+// count-verify refuses with 'only 1 of 2 collected member nodes' and zero
+// writes. The leg pins exactly that; a neutered guard would half-write.
+declare(strict_types=1);
+
+function nestOuterX(): int
+{
+    logEntry();
+    function nestInnerX(): int
+    {
+        logEntry();
+        stampRow();
+        return 1;
+    }
+    stampRow();
+    return 1;
+}
