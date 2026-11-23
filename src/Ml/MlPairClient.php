@@ -565,9 +565,6 @@ final class MlPairClient implements PairScorer
     /** True once ANY HTTP response body has come back from this endpoint. */
     private bool $everReached = false;
 
-    /** Reason sentence captured at the latch (echoed by the one-time notice). */
-    private string $degradeReason = '';
-
     /**
      * @internal test seam (once-S70 counting): POSTs actually
      *           dispatched onto a transport (gate refusals and
@@ -588,8 +585,10 @@ final class MlPairClient implements PairScorer
      * Writer for the one-time degrade notice — php://stderr resolved
      * lazily by {@see self::errorWriter()}; the property is a test
      * seam so pins can assert on the ACTUAL writer, not a mirror.
-     *
-     * @var resource|null
+     * Left un-narrowed on purpose: a `resource|null` annotation would
+     * invite the static analyser to collapse it to null, since
+     * in-class code only ever READS it and the resource arrives from
+     * outside the class (MlPairClientTest's once-S70 capture helper).
      */
     private mixed $errorStream = null;
 
@@ -925,6 +924,11 @@ final class MlPairClient implements PairScorer
      *
      * @param array{host: string, port: int, addresses: list<string>} $decision
      * @return string|null Raw response body, or null on transport error or non-2xx response.
+     *
+     * The seam bookkeeping (lastCallDialled / lastCallLeg) stamped by the legs is a
+     * deliberate side effect the liveness classifier reads.
+     *
+     * @phpstan-impure
      */
     private function postJson(string $url, string $body, array $decision): ?string
     {
@@ -944,6 +948,10 @@ final class MlPairClient implements PairScorer
      * they stay pure transport probes and cannot latch a client.
      *
      * @param array{host: string, port: int, addresses: list<string>} $decision
+     *
+     * Counters + latch are the point of this wrapper (once-S70).
+     *
+     * @phpstan-impure
      */
     private function transportPost(string $url, string $body, array $decision): ?string
     {
@@ -1015,8 +1023,7 @@ final class MlPairClient implements PairScorer
      */
     private function enterDegraded(string $why): void
     {
-        $this->degraded      = true;
-        $this->degradeReason = $why;
+        $this->degraded = true;
         $authority = $this->gateDecision === null
             ? 'endpoint'
             : $this->gateDecision['host'] . ':' . $this->gateDecision['port'];
@@ -1053,6 +1060,10 @@ final class MlPairClient implements PairScorer
      * whole transfer in-call (once-S92 wording pin).
      *
      * @param array{host: string, port: int, addresses: list<string>} $decision
+     *
+     * Stamps the dial bookkeeping the classifier consumes (once-S70).
+     *
+     * @phpstan-impure
      */
     private function postJsonCurl(string $url, string $body, array $decision): ?string
     {
@@ -1082,6 +1093,10 @@ final class MlPairClient implements PairScorer
      * per-arm granularities).
      *
      * @param array{host: string, port: int, addresses: list<string>} $decision
+     *
+     * Stamps the dial bookkeeping the classifier consumes (once-S70).
+     *
+     * @phpstan-impure
      */
     private function postJsonStream(string $url, string $body, array $decision): ?string
     {
