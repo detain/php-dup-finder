@@ -19,6 +19,7 @@ use Phpdup\Pipeline\Stages\PreprocessStage;
 use Phpdup\Pipeline\Stages\RefactorStage;
 use Phpdup\Pipeline\Stages\ReportStage;
 use Phpdup\Pipeline\Stages\ScanningStage;
+use Phpdup\Normalization\PluginRegistry;
 use Phpdup\Parsing\AstCache;
 use Phpdup\Reporting\BaselineStore;
 use Phpdup\Scanning\FileScanner;
@@ -632,6 +633,50 @@ HELP;
         if ($runtimeOptions['tuiMode']) {
             $pipelineOpts['reportArgs']['pagerMode'] = Pager::MODE_NEVER;
         }
+
+        // once-S66 (finding once-075): screen the configured plugin list ONCE
+        // in this parent process. A throwing plugin ctor used to detonate
+        // inside every worker (and the refactor-side BlockAstLoader reload)
+        // as a raw RuntimeException — Symfony usage dump, rc 1, no report.
+        // Failing entries are excluded instead: one warning line each here,
+        // one scan_notes note each via the factory, and the whole pipeline —
+        // preprocess AND refactor — runs degraded on surviving names only
+        // (the $pipelineConfig copy below is what dispatch() builds
+        // PipelineState from, so no consumer ever sees a dead name again).
+        // Severity is never laundered: a degraded-but-produced run stays
+        // honestly exit 0 with its notes — the 0/1/2/3 contract (docs/CLI.md)
+        // reserves nonzero for refused runs, and the plan asks for a warning,
+        // not a failure.
+        $pluginFailures = [];
+        try {
+            $pluginFailures = PluginRegistry::screenClassNames($pipelineConfig->normalizationPlugins);
+        } catch (\RuntimeException | \InvalidArgumentException | \TypeError $e) {
+            // Malformed entries are admission-class (same door as the config
+            // load above). ConfigLoader::assertListOfStrings already bounds
+            // every supported path here; belt discipline keeps the arm.
+            $output->writeln('<error>phpdup: ' . self::escapeMarkup($e->getMessage()) . '</error>');
+            return 2;
+        }
+        $pluginNotes = [];
+        if ($pluginFailures !== []) {
+            $survivingPlugins = [];
+            foreach ($pipelineConfig->normalizationPlugins as $pluginName) {
+                if (!isset($pluginFailures[$pluginName])) {
+                    $survivingPlugins[] = $pluginName;
+                    continue;
+                }
+                $note = sprintf(
+                    "normalization plugin '%s' excluded (run degraded): %s",
+                    $pluginName,
+                    $pluginFailures[$pluginName],
+                );
+                $pluginNotes[] = $note;
+                $output->writeln('<comment>phpdup: warning: ' . self::escapeMarkup($note) . '</comment>');
+            }
+            $pipelineConfig = self::withNormalizationPlugins($pipelineConfig, $survivingPlugins);
+        }
+        $pipelineOpts['pluginExclusionNotes'] = $pluginNotes;
+
         $buildPipeline = $this->buildPipelineFactory($pipelineOpts);
 
         // engine-006 read-path trust gate. The default cache_dir is the
@@ -772,6 +817,33 @@ HELP;
     private static function escapeMarkup(string $bytes): string
     {
         return OutputFormatter::escape($bytes);
+    }
+
+    /**
+     * Copy of $config with `normalizationPlugins` replaced by $plugins.
+     *
+     * once-S66: the degraded run must carry the SURVIVING plugin names all
+     * the way into the pipeline state (worker forks and BlockAstLoader
+     * reloads included), but Config is fully readonly and
+     * {@see Config::withOverrides()} only ever appends this field — it can
+     * never replace it. The copy therefore rebuilds through the
+     * constructor, following the named-argument reflection precedent of
+     * {@see \Phpdup\Server\Application::buildAnalyzeConfig()}: every Config
+     * ctor parameter is a public promoted property, so untouched fields
+     * read straight back off the source object.
+     *
+     * @param list<string> $plugins
+     */
+    private static function withNormalizationPlugins(Config $config, array $plugins): Config
+    {
+        $constructor = (new \ReflectionClass(Config::class))->getConstructor();
+        $args = [];
+        foreach ($constructor?->getParameters() ?? [] as $param) {
+            $name = $param->getName();
+            $args[$name] = $name === 'normalizationPlugins' ? $plugins : $config->{$name};
+        }
+
+        return new Config(...$args);
     }
 
     /**
@@ -1356,7 +1428,7 @@ HELP;
     /**
      * Build the pipeline factory closure.
      *
-     * @param array{useCache: bool, exactOnly: bool, showStats: bool, maxMemoryMb: int, stopAfter: Stage|null, reportArgs: array<string, mixed>} $opts
+     * @param array{useCache: bool, exactOnly: bool, showStats: bool, maxMemoryMb: int, stopAfter: Stage|null, reportArgs: array<string, mixed>, pluginExclusionNotes: list<string>} $opts
      * @return \Closure(?ProgressListener): Pipeline
      */
     private function buildPipelineFactory(array $opts): \Closure
@@ -1365,7 +1437,7 @@ HELP;
             return new Pipeline(
                 stages: [
                     new ScanningStage($listener),
-                    new PreprocessStage($opts['useCache'], $opts['showStats'], $listener, $opts['maxMemoryMb']),
+                    new PreprocessStage($opts['useCache'], $opts['showStats'], $listener, $opts['maxMemoryMb'], $opts['pluginExclusionNotes']),
                     new ClusterStage($opts['exactOnly'], $opts['maxMemoryMb'], $listener),
                     new RefactorStage($opts['useCache'], $listener),
                     new ReportStage(

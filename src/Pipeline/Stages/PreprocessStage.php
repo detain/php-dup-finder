@@ -33,11 +33,17 @@ final class PreprocessStage implements CooperativeStageInterface
 
     private readonly ProgressListener $listener;
 
+    /**
+     * @param list<string> $pluginExclusionNotes once-S66: notes for plugins
+     *        the Command-side screen excluded; appended to
+     *        PipelineState::$scanNotes when this stage runs.
+     */
     public function __construct(
         private readonly bool $useCache,
         private readonly bool $showStats = false,
         ?ProgressListener $listener = null,
         private readonly int $maxMemoryMb = 0,
+        private readonly array $pluginExclusionNotes = [],
     ) {
         $this->listener = $listener ?? new NullProgressListener();
     }
@@ -88,6 +94,16 @@ final class PreprocessStage implements CooperativeStageInterface
     {
         $config = $state->config;
         $files  = $state->files;
+
+        // once-S66 (finding once-075): the Command-side plugin screen
+        // excluded broken entries and handed their notes here. ScanningStage
+        // snapshotted $state->scanNotes BEFORE this stage runs, so these are
+        // appends onto the once-S37 channel — ReportStage threads the full
+        // list into the report payload (summary.scan_notes rides the
+        // owner-gated 1.8 emit window; the carriage itself is live).
+        foreach ($this->pluginExclusionNotes as $note) {
+            $state->scanNotes[] = $note;
+        }
 
         $configKey = $this->indexStoreConfigKey($config);
         $store = ($this->useCache && $config->incremental)

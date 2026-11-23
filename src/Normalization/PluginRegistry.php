@@ -74,4 +74,56 @@ final class PluginRegistry
         }
         return $registry;
     }
+
+    /**
+     * Parent-process screen: which config-named plugins fail to load?
+     *
+     * once-S66 (finding once-075). A plugin whose constructor throws used
+     * to detonate inside every worker fork (and every refactor-side
+     * BlockAstLoader reload) as a raw RuntimeException — a Symfony usage
+     * dump, no report. Command screens the whole list HERE, once, and
+     * degrades the run instead: failing entries come back keyed by name
+     * with the human-readable reason as value, and the run is rebuilt on
+     * the surviving names alone.
+     *
+     * The gate order mirrors {@see self::fromClassNames()} exactly — the
+     * interface gate still runs BEFORE construction, so a non-plugin name
+     * never reaches `new` and leaks constructor side effects — but
+     * load/shape/construct failures are COLLECTED, not thrown. Malformed
+     * entries (non-strings) do throw: that is an admission-class config
+     * defect, the same door {@see self::fromClassNames()} guards bare.
+     *
+     * Healthy plugins are constructed once here and discarded; the real
+     * instances are still built per-normalizer from the surviving names,
+     * exactly as before (constructor side effects: the docs treat plugin
+     * construction as once-per-normalizer-run and cheap).
+     *
+     * @param list<string> $classNames
+     * @return array<string, string> failing FQCN => exclusion reason
+     */
+    public static function screenClassNames(array $classNames): array
+    {
+        $failures = [];
+        foreach ($classNames as $fqcn) {
+            if (!is_string($fqcn) || $fqcn === '') {
+                throw new \RuntimeException('normalization.plugins entries must be non-empty strings');
+            }
+            if (!class_exists($fqcn)) {
+                $failures[$fqcn] = 'class not found';
+                continue;
+            }
+            if (!is_subclass_of($fqcn, NormalizationPlugin::class)) {
+                // Same pre-construction gate as fromClassNames(): the
+                // class is never instantiated here, side-effect-free.
+                $failures[$fqcn] = 'does not implement NormalizationPlugin';
+                continue;
+            }
+            try {
+                new $fqcn();
+            } catch (\Throwable $e) {
+                $failures[$fqcn] = 'could not be constructed: ' . $e->getMessage();
+            }
+        }
+        return $failures;
+    }
 }
