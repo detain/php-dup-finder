@@ -24,6 +24,29 @@ use Phpdup\Extraction\Block;
  * unrelated subsystems coincidentally look alike. Counting the
  * spread per repo measures the thing the penalty was always meant
  * to measure.
+ *
+ * output-S42 (php-dup-finder-output-059) adds a run-scoped spread
+ * memo WITHOUT giving up that posture. One report run reads the
+ * same member facts 3-4 times per cluster (Ranker::confidenceOf,
+ * SafetyScorer, the JSON 'scope', the --scope filter); each accessor
+ * used to re-walk the members. Now the first read inside a run
+ * window computes the spread struct ONCE and every later read
+ * serves the identical struct — the members stay the single source
+ * of truth, the memo is a per-run cache of the walk, not state on
+ * the cluster.
+ *
+ * Determinism law — the memo is RUN-SCOPED, never process-scoped:
+ * {@see self::beginRun()} swaps in a fresh storage (and zeroes the
+ * walk counter) at the top of every report run, and reads outside
+ * any window compute fresh and attach nothing. Members are
+ * re-stamped by RepoLabels::stampAll at each run's start, and
+ * cluster-cache replay / Watch / Server re-enter the pipeline
+ * in-process over objects that may still be alive — without the
+ * per-run swap, a spread computed against the SAVING run's roots
+ * could answer this run's readers. Same lifecycle contract the
+ * W4-B FunctionNameRegistry law states for report-run state: fresh
+ * per run(), NEVER static across runs. The walk counter and the
+ * ClusterScopeTest pins hold every arm of this law honest.
  */
 final class ClusterScope
 {
@@ -37,8 +60,51 @@ final class ClusterScope
     public const FILTER_SINGLE = 'single';
     public const FILTER_MULTI  = 'multi';
 
+    /**
+     * Spread memo of the open run window, keyed by cluster IDENTITY
+     * (SplObjectStorage keeps its keys alive, so two clusters can
+     * never alias a slot while both exist). Null outside every window:
+     * pure compute path, attach nothing.
+     *
+     * @var \SplObjectStorage<Cluster, array{repos: list<string>, crossRepo: bool, maxSpread: int, byRepo: array<string, array<string, true>>, hasUnlabeled: bool}>|null
+     */
+    private static ?\SplObjectStorage $spreadMemo = null;
+
+    /** Actual member walks (spread computes) since the window opened. */
+    private static int $memberWalkCount = 0;
+
     private function __construct()
     {
+    }
+
+    /**
+     * Open a fresh run window: swap in an empty spread memo and zero
+     * the walk counter. ReportStage::run() calls this BEFORE any
+     * consumer reads scope (and before the restamp that mutates
+     * members), so every cluster pays at most one walk for the whole
+     * run. Calling it again invalidates ALL memoized spreads — the
+     * next read recomputes from the members as they are NOW, which
+     * is what makes the cross-run restamp case safe.
+     */
+    public static function beginRun(): void
+    {
+        self::$spreadMemo    = new \SplObjectStorage();
+        self::$memberWalkCount = 0;
+    }
+
+    /**
+     * Honest observability counter: number of member walks actually
+     * computed since the current run window opened (reset by
+     * beginRun(); since process start when no window has been
+     * opened). The memo's whole point is measurable through it:
+     * once per cluster per run, never the 3-4 repeats of
+     * php-dup-finder-output-059. Pinned by ClusterScopeTest arms —
+     * it increments ONLY inside compute(), so a vacuous always-zero
+     * or always-grow read is impossible while the pins stay green.
+     */
+    public static function memberWalks(): int
+    {
+        return self::$memberWalkCount;
     }
 
     /**
@@ -46,13 +112,13 @@ final class ClusterScope
      */
     public static function of(Cluster $c): string
     {
-        return self::isCrossRepo($c) ? self::MULTI : self::SINGLE;
+        return self::spread($c)['crossRepo'] ? self::MULTI : self::SINGLE;
     }
 
     /** True when members carry ≥ 2 distinct non-empty repo labels. */
     public static function isCrossRepo(Cluster $c): bool
     {
-        return count(self::repos($c)) > 1;
+        return self::spread($c)['crossRepo'];
     }
 
     /**
@@ -62,16 +128,7 @@ final class ClusterScope
      */
     public static function repos(Cluster $c): array
     {
-        $repos = [];
-        foreach ($c->members as $m) {
-            /** @var Block $m */
-            if ($m->repo !== '') {
-                $repos[$m->repo] = true;
-            }
-        }
-        $out = array_keys($repos);
-        sort($out);
-        return $out;
+        return self::spread($c)['repos'];
     }
 
     /**
@@ -82,12 +139,7 @@ final class ClusterScope
      */
     public static function namespacesByRepo(Cluster $c): array
     {
-        $byRepo = [];
-        foreach ($c->members as $m) {
-            /** @var Block $m */
-            $byRepo[$m->repo][$m->namespace ?? ''] = true;
-        }
-        return $byRepo;
+        return self::spread($c)['byRepo'];
     }
 
     /**
@@ -99,11 +151,7 @@ final class ClusterScope
      */
     public static function maxRepoNamespaceSpread(Cluster $c): int
     {
-        $max = 0;
-        foreach (self::namespacesByRepo($c) as $namespaces) {
-            $max = max($max, count($namespaces));
-        }
-        return $max;
+        return self::spread($c)['maxSpread'];
     }
 
     /**
@@ -131,14 +179,78 @@ final class ClusterScope
                 if ($scope === self::FILTER_SINGLE) {
                     return !self::isCrossRepo($c);
                 }
-                foreach ($c->members as $m) {
-                    /** @var Block $m */
-                    if ($m->repo === $scope) {
-                        return true;
-                    }
+                // output-S42: the label branch consumes the same spread
+                // struct as every other reader (the old per-call foreach
+                // over members was the 4th walk of the finding). The
+                // legacy semantics are kept exactly: a non-empty label
+                // matches when it is one of the member repos, and '' —
+                // reachable only via a literal empty scope — matches
+                // clusters holding at least one unlabeled member.
+                if ($scope === '') {
+                    return self::spread($c)['hasUnlabeled'];
                 }
-                return false;
+                return in_array($scope, self::repos($c), true);
             },
         ));
+    }
+
+    /**
+     * The cluster's spread for this read: from the run-window memo
+     * when one is open (compute at most once per cluster per run),
+     * from a direct walk otherwise. Both paths run the SAME
+     * compute(), so a memoized answer is by construction identical
+     * to a fresh one.
+     *
+     * @return array{repos: list<string>, crossRepo: bool, maxSpread: int, byRepo: array<string, array<string, true>>, hasUnlabeled: bool}
+     */
+    private static function spread(Cluster $c): array
+    {
+        $memo = self::$spreadMemo;
+        if ($memo === null) {
+            return self::compute($c);
+        }
+        if ($memo->contains($c)) {
+            return $memo[$c];
+        }
+        $spread       = self::compute($c);
+        $memo[$c]     = $spread;
+        return $spread;
+    }
+
+    /**
+     * One pass over the members yields every spread fact the run
+     * reads; this is the ONLY place a member walk happens, and the
+     * ONLY place the walk counter increments.
+     *
+     * @return array{repos: list<string>, crossRepo: bool, maxSpread: int, byRepo: array<string, array<string, true>>, hasUnlabeled: bool}
+     */
+    private static function compute(Cluster $c): array
+    {
+        self::$memberWalkCount++;
+        $repos        = [];
+        $byRepo       = [];
+        $hasUnlabeled = false;
+        foreach ($c->members as $m) {
+            /** @var Block $m */
+            if ($m->repo !== '') {
+                $repos[$m->repo] = true;
+            } else {
+                $hasUnlabeled = true;
+            }
+            $byRepo[$m->repo][$m->namespace ?? ''] = true;
+        }
+        $out = array_keys($repos);
+        sort($out);
+        $max = 0;
+        foreach ($byRepo as $namespaces) {
+            $max = max($max, count($namespaces));
+        }
+        return [
+            'repos'        => $out,
+            'crossRepo'    => count($out) > 1,
+            'maxSpread'    => $max,
+            'byRepo'       => $byRepo,
+            'hasUnlabeled' => $hasUnlabeled,
+        ];
     }
 }

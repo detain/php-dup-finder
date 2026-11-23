@@ -132,6 +132,251 @@ final class ClusterScopeTest extends TestCase
         $this->assertSame([], ClusterScope::filter($clusters, 'no-such-repo'));
     }
 
+    // ── output-S42 (php-dup-finder-output-059) — run-scoped spread memo ─
+    // Each pin names the arm it guards (S15-vacuity discipline); the
+    // walk counter is observed as a DELTA after this test's own
+    // beginRun(), so no assertion depends on leftover window state
+    // from earlier classes in the process.
+
+    public function testSpreadMemoServesEveryAccessorFromOneWalkPerRun(): void
+    {
+        // Guarded arm: spread() memo hit + compute() attach. Without
+        // the memo the last counter assert reads 5 (the finding's
+        // repeat pattern), not 1.
+        $c = $this->cluster('MEMO', [
+            self::member('/r1/A.php', 'Acme\\A', 'repo1'),
+            self::member('/r1/B.php', 'Acme\\B', 'repo1'),
+            self::member('/r2/A.php', 'Other\\A', 'repo2'),
+            self::member('/g/B.php', 'Ghost\\B', ''),
+        ]);
+        ClusterScope::beginRun();
+        $this->assertSame(0, ClusterScope::memberWalks(), 'beginRun() zeroes the walk counter');
+
+        $repos  = ClusterScope::repos($c);
+        $this->assertSame(1, ClusterScope::memberWalks(), 'the first read walks the members once');
+        $scope  = ClusterScope::of($c);
+        $cross  = ClusterScope::isCrossRepo($c);
+        $spread = ClusterScope::maxRepoNamespaceSpread($c);
+        $byRepo = ClusterScope::namespacesByRepo($c);
+        $this->assertSame(1, ClusterScope::memberWalks(),
+            'every later accessor rides the memo — one spread computation per cluster per run');
+
+        // The memoized answers are the real semantics, not vacuous reads.
+        $this->assertSame(['repo1', 'repo2'], $repos);
+        $this->assertSame(ClusterScope::MULTI, $scope);
+        $this->assertTrue($cross);
+        $this->assertSame(2, $spread);
+        $this->assertSame(
+            [
+                'repo1' => ['Acme\\A' => true, 'Acme\\B' => true],
+                'repo2' => ['Other\\A' => true],
+                ''      => ['Ghost\\B' => true],
+            ],
+            $byRepo,
+        );
+    }
+
+    public function testMemoizedReadsEqualFreshComputesOnATwinCluster(): void
+    {
+        // Guarded arm: memo() and the direct compute() serve the SAME
+        // values — two structurally identical clusters (one object
+        // first, then its freshly built twin, so the twin's first read
+        // is an unavoidable cold compute) agree on every accessor.
+        $members = static fn(): array => [
+            self::member('/r1/A.php', 'Acme\\A', 'repo1'),
+            self::member('/r1/B.php', 'Acme\\B', 'repo1'),
+            self::member('/r2/A.php', 'Other\\A', 'repo2'),
+        ];
+        $first = $this->cluster('TWIN1', $members());
+        ClusterScope::beginRun();
+        $firstReads = [
+            'repos'    => ClusterScope::repos($first),
+            'of'       => ClusterScope::of($first),
+            'cross'    => ClusterScope::isCrossRepo($first),
+            'spread'   => ClusterScope::maxRepoNamespaceSpread($first),
+            'byRepo'   => ClusterScope::namespacesByRepo($first),
+        ];
+
+        $twin  = $this->cluster('TWIN2', $members());
+        $twins = [
+            'repos'  => ClusterScope::repos($twin),
+            'of'     => ClusterScope::of($twin),
+            'cross'  => ClusterScope::isCrossRepo($twin),
+            'spread' => ClusterScope::maxRepoNamespaceSpread($twin),
+            'byRepo' => ClusterScope::namespacesByRepo($twin),
+        ];
+        $this->assertSame($firstReads, $twins, 'memo-served reads == fresh cold-compute reads');
+        $this->assertSame(2, ClusterScope::memberWalks(), 'still one walk per cluster, not per read');
+    }
+
+    public function testRestampedMembersRecomputeAfterWindowSwap(): void
+    {
+        // Guarded arm: the beginRun() invalidation — THE determinism
+        // contract. Neutering the window swap leaves run 2 answering
+        // this cluster from run 1's memo and this pin goes RED on the
+        // stale MULTI. Mirrors the live hazard exactly: cluster-cache
+        // replay hands the SAME Cluster objects to the next run, whose
+        // stampAll mutates members before the next report reads them.
+        $c = $this->cluster('RESTAMP', [
+            self::member('/r1/A.php', 'Acme\\A', 'repo1'),
+            self::member('/r2/B.php', 'Acme\\B', 'repo2'),
+        ]);
+        ClusterScope::beginRun();
+        $this->assertSame(ClusterScope::MULTI, ClusterScope::of($c),
+            'run 1 reads the roots it was stamped with');
+
+        // The restamp itself (Block::$repo is public-mutable by design —
+        // RepoLabels::stampAll assigns it the same way).
+        $c->members[0]->repo = 'solo';
+        $c->members[1]->repo = 'solo';
+
+        ClusterScope::beginRun(); // run 2 opens
+        $this->assertSame(ClusterScope::SINGLE, ClusterScope::of($c),
+            'no spread of the previous run leaks across the window boundary');
+        $this->assertSame(['solo'], ClusterScope::repos($c));
+        $this->assertSame(1, ClusterScope::memberWalks(),
+            'the swapped window recomputes once, then re-memoizes');
+    }
+
+    public function testScopeFilterConsumesTheMemo(): void
+    {
+        // Guarded arm: the label branch reads the spread struct — the
+        // finding's 4th walk. Routing it back to a raw member foreach
+        // makes the total-walks assert read >1 and goes RED.
+        $c = $this->cluster('FILTER', [
+            self::member('/r1/A.php', 'Acme\\A', 'repo1'),
+            self::member('/g/B.php', 'Ghost\\B', ''),
+            self::member('/r2/A.php', 'Other\\A', 'repo2'),
+        ]);
+        ClusterScope::beginRun();
+        ClusterScope::of($c);
+        $this->assertSame(1, ClusterScope::memberWalks(), 'pre-read walks once');
+
+        $this->assertSame([$c], ClusterScope::filter([$c], 'repo1'));
+        $this->assertSame([], ClusterScope::filter([$c], 'no-such-repo'));
+        $this->assertSame([$c], ClusterScope::filter([$c], ''),
+            "literal '' scope keeps the legacy unlabeled-member reading");
+        $this->assertSame([$c], ClusterScope::filter([$c], ClusterScope::FILTER_MULTI));
+        $this->assertSame([], ClusterScope::filter([$c], ClusterScope::FILTER_SINGLE));
+        $this->assertSame(1, ClusterScope::memberWalks(),
+            'every filter arm rides the memo — zero extra walks');
+    }
+
+    public function testFilterAndAccessorsCarryNoMemberWalkSite(): void
+    {
+        // Guarded arm (structural, S34 doctrine): output-059's cure is
+        // that compute() is the ONLY method in ClusterScope that walks
+        // a cluster's members. A raw `foreach ($c->members …)` re-added
+        // to any other reader (even without touching the counter) would
+        // resurrect the repeat walk invisibly to every delta assert —
+        // this pin catches it at the source level, where a counter
+        // alone cannot reach.
+        $r = new \ReflectionClass(ClusterScope::class);
+        $lines = \file($r->getFileName());
+        foreach (
+            [
+                'of', 'isCrossRepo', 'repos', 'namespacesByRepo',
+                'maxRepoNamespaceSpread', 'spread', 'filter',
+            ] as $name
+        ) {
+            $method = $r->getMethod($name);
+            $body   = \implode('', \array_slice(
+                $lines,
+                $method->getStartLine() - 1,
+                $method->getEndLine() - $method->getStartLine() + 1,
+            ));
+            $this->assertStringNotContainsString(
+                '->members',
+                $body,
+                "ClusterScope::$name() must read through the spread memo, never walk members itself",
+            );
+        }
+        $compute = $r->getMethod('compute');
+        $body    = \implode('', \array_slice(
+            $lines,
+            $compute->getStartLine() - 1,
+            $compute->getEndLine() - $compute->getStartLine() + 1,
+        ));
+        $this->assertSame(
+            1,
+            \substr_count($body, 'foreach ($c->members'),
+            'compute() is the single member-walk site of the class',
+        );
+    }
+
+    public function testRealConsumersPayOneWalkPerClusterPerRun(): void
+    {
+        // Guarded arm: the FULL consumer chain (Ranker::confidenceOf +
+        // SafetyScorer::score, both spread readers) shares one spread
+        // per cluster instead of the pre-S42 2-3 walks per scorer.
+        $multi = $this->cluster('RCM', [
+            self::member('/r1/A.php', 'Acme\\A', 'repo1'),
+            self::member('/r1/B.php', 'Acme\\B', 'repo1'),
+            self::member('/r2/A.php', 'Other\\A', 'repo2'),
+            self::member('/r2/B.php', 'Other\\B', 'repo2'),
+        ]);
+        $single = $this->cluster('RCS', [
+            self::member('/r1/C.php', 'Acme\\C', 'repo1'),
+            self::member('/r1/D.php', 'Acme\\D', 'repo1'),
+        ]);
+
+        ClusterScope::beginRun();
+        (new \Phpdup\Reporting\Ranker(
+            minImpact: 0,
+            scoreMode: \Phpdup\Cli\Config::SCORE_MODE_PER_REPO,
+        ))->rank([$multi, $single]);
+        $this->assertSame(2, ClusterScope::memberWalks(),
+            'per-repo rank + safety across two clusters: one walk each');
+
+        ClusterScope::beginRun();
+        (new \Phpdup\Reporting\Ranker(
+            minImpact: 0,
+            scoreMode: \Phpdup\Cli\Config::SCORE_MODE_TYPED,
+        ))->rank([$multi, $single]);
+        $this->assertSame(2, ClusterScope::memberWalks(), 'typed arm identical');
+
+        // Non-vacuity control: the GLOBAL (default) path runs the legacy
+        // inline math and must enter the memo ZERO times — proves the
+        // counter is not just tracking every rank call, and that the
+        // memoized path did not silently widen the default scoring route.
+        ClusterScope::beginRun();
+        (new \Phpdup\Reporting\Ranker(
+            minImpact: 0,
+            scoreMode: \Phpdup\Cli\Config::SCORE_MODE_GLOBAL,
+        ))->rank([$multi, $single]);
+        $this->assertSame(0, ClusterScope::memberWalks(),
+            'global score mode never touches the spread memo (legacy math untouched)');
+    }
+
+    public function testReadsAreIdenticalAcrossConsecutiveWindowSwaps(): void
+    {
+        // Guarded arm: determinism of the whole memo cycle — the same
+        // unmuted cluster read across three window swaps answers the
+        // SAME values (including array key order), i.e. a recompute can
+        // never disagree with the memo it replaced.
+        $c = $this->cluster('DETERMINISM', [
+            self::member('/r1/A.php', 'Acme\\A', 'repo1'),
+            self::member('/r1/B.php', 'Acme\\B', 'repo1'),
+            self::member('/r2/A.php', 'Other\\A', 'repo2'),
+        ]);
+        $reads = [];
+        $walks = [];
+        for ($run = 0; $run < 3; $run++) {
+            ClusterScope::beginRun();
+            $reads[] = [
+                'repos'  => ClusterScope::repos($c),
+                'of'     => ClusterScope::of($c),
+                'spread' => ClusterScope::maxRepoNamespaceSpread($c),
+                'byRepo' => ClusterScope::namespacesByRepo($c),
+            ];
+            $walks[] = ClusterScope::memberWalks();
+        }
+        $this->assertSame($reads[0], $reads[1], 'run 2 recompute agrees byte-for-byte');
+        $this->assertSame($reads[1], $reads[2], 'run 3 likewise — key order included');
+        $this->assertSame([1, 1, 1], $walks,
+            'each swapped window pays its one walk — no cross-window serving, no repeat walks within one');
+    }
+
     private function cluster(string $id, array $members): Cluster
     {
         return new Cluster($id, $members, 1.0, true);

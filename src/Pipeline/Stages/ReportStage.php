@@ -81,6 +81,17 @@ final class ReportStage implements StageInterface
 
         $config = $state->config;
 
+        // output-S42 (php-dup-finder-output-059): open the run-scoped
+        // spread memo window before the restamp below mutates any member
+        // and before any consumer (Ranker, SafetyScorer via it, the
+        // --scope filter, the JSON 'scope') reads. Watch/Server and
+        // cluster-cache replay re-enter run() in the same process, so
+        // invalidation must sit on THIS side of the walk — the memo then
+        // serves every reader of this run from exactly one compute per
+        // cluster, and no spread of a previous run's roots can leak.
+        // See the ClusterScope determinism law.
+        ClusterScope::beginRun();
+
         // Item 5.1: labels are run context. Blocks reached here via the
         // normal path were stamped by PreprocessStage from this run's
         // roots; cluster-cache replay, however, deserializes whole
