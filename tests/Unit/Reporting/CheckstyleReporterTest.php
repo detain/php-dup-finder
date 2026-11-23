@@ -7,16 +7,9 @@ use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\Config;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
-use Phpdup\Pipeline\PipelineState;
-use Phpdup\Pipeline\Stages\ClusterStage;
-use Phpdup\Pipeline\Stages\PreprocessStage;
-use Phpdup\Pipeline\Stages\RefactorStage;
-use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Reporting\CheckstyleReporter;
-use Phpdup\Reporting\Ranker;
 use Phpdup\Reporting\Report;
 use Phpdup\Util\LineRange;
-use Symfony\Component\Console\Output\NullOutput;
 
 final class CheckstyleReporterTest extends TestCase
 {
@@ -33,19 +26,80 @@ final class CheckstyleReporterTest extends TestCase
         $this->assertTrue($doc->loadXML($xml));
     }
 
+    /**
+     * php-dup-finder-output-036 (output-S56a migration): this arm used to run
+     * the four pipeline stages over tests/Fixtures/sql to obtain its Report.
+     * Per the AGENTS.md reporter-test convention it now consumes a
+     * hand-built Report — same emission surface: parseable XML, one
+     * `<error>` per cluster member, the constant source cell, and a
+     * non-empty line attribute on every entry. The retired sql fixture was
+     * a single file, so the `<file>`-grouping leg only ever ran in its
+     * degenerate 1-group shape; the synthetic report pins multi-file
+     * grouping and the shared-file 2-error group explicitly, and the
+     * member/effect counts are hard-coded here instead of being re-derived
+     * from the very report handed to the emitter (disclosed strengthenings,
+     * assertions carried across none weakened).
+     */
     public function testFixtureReportProducesParseableXmlWithErrorPerMember(): void
     {
-        $xml = (new CheckstyleReporter())->build($this->buildReport());
+        $member = static fn(string $file, int $line): Block => new Block(
+            file: $file,
+            range: new LineRange($line, $line + 4),
+            kind: 'function',
+            namespace: null,
+            class: null,
+            name: 'm',
+            ast: new \PhpParser\Node\Stmt\Nop(),
+        );
+
+        $shared = 'checkstyle-shared.php';
+        $exact  = new Cluster('F0000000000000009', [$member($shared, 10), $member($shared, 30)], 1.0, true);
+        $exact->impact = 10;
+        $near  = new Cluster('F0000000000000010', [$member('checkstyle-alone.php', 5)], 0.9, false);
+        $near->impact = 5;
+        $far   = new Cluster('F0000000000000011', [$member('checkstyle-third.php', 1)], 0.8, false);
+        $far->impact = 5;
+
+        $xml = (new CheckstyleReporter())->build(
+            new Report(3, 4, 0, [$exact, $near, $far], Config::defaults([])),
+        );
 
         $doc = new \DOMDocument();
         $this->assertTrue($doc->loadXML($xml));
 
         $errors = $doc->getElementsByTagName('error');
-        $this->assertGreaterThan(0, $errors->length);
+        // One <error> per member — four members, four errors (was: > 0).
+        $this->assertCount(4, $errors);
+        $lines = [];
         foreach ($errors as $err) {
             $this->assertSame('phpdup.duplicate-logic', $err->getAttribute('source'));
             $this->assertNotEmpty($err->getAttribute('line'));
+            $lines[] = $err->getAttribute('line');
         }
+        // Emission walks clusters in order, so the line cells map the
+        // member ranges 1:1 (was: presence-only).
+        $this->assertSame(['10', '30', '5', '1'], $lines);
+
+        // File grouping: three distinct paths, the shared file carrying two.
+        $files = [];
+        foreach ($doc->getElementsByTagName('file') as $fileNode) {
+            $files[$fileNode->getAttribute('name')]
+                = $fileNode->getElementsByTagName('error')->length;
+        }
+        $this->assertSame(
+            [$shared => 2, 'checkstyle-alone.php' => 1, 'checkstyle-third.php' => 1],
+            $files,
+            'members of one file group under a single <file> node',
+        );
+
+        // Message-cell format leg the fixture report implicitly exercised
+        // (byte hygiene of the cell is pinned by the once-S60 arms below).
+        $first = $errors->item(0);
+        $this->assertInstanceOf(\DOMElement::class, $first);
+        $this->assertStringStartsWith(
+            $shared . ':10-14 duplicates cluster F0000000000000009 (2 members, similarity 1.00, impact 10)',
+            $first->getAttribute('message'),
+        );
     }
 
     /**
@@ -199,28 +253,5 @@ final class CheckstyleReporterTest extends TestCase
         $this->assertStringStartsWith("' ", $names[1], 'tab-leading value must keep its defuse marker');
         // ESC lead → substituted, value identity kept (no XML poisoning).
         $this->assertSame($sub . '.php', $names[2]);
-    }
-
-    private function buildReport(): Report
-    {
-        $config = new Config(
-            paths: [__DIR__ . '/../../Fixtures/sql'],
-            exclude: Config::defaults([])->exclude,
-            lazyAst: false,
-        );
-        $state = new PipelineState($config);
-        $out   = new NullOutput();
-        (new ScanningStage())->run($state, $out);
-        (new PreprocessStage(useCache: false))->run($state, $out);
-        (new ClusterStage(exactOnly: true))->run($state, $out);
-        (new RefactorStage(useCache: false))->run($state, $out);
-
-        return new Report(
-            files: count($state->files),
-            blocks: count($state->blocks),
-            parseErrors: $state->parseErrors,
-            clusters: (new Ranker($config->minClusterImpact))->rank($state->clusters),
-            config: $config,
-        );
     }
 }
