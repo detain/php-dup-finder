@@ -5,18 +5,20 @@ namespace Phpdup\Tests\Unit\Reporting;
 
 use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\Config;
+use Phpdup\Clustering\Cluster;
+use Phpdup\Extraction\Block;
+use Phpdup\Parsing\AstParser;
 use Phpdup\Pipeline\Pipeline;
 use Phpdup\Pipeline\PipelineState;
-use Phpdup\Pipeline\Stages\ClusterStage;
-use Phpdup\Pipeline\Stages\PreprocessStage;
-use Phpdup\Pipeline\Stages\RefactorStage;
+use Phpdup\Pipeline\Stage;
+use Phpdup\Pipeline\StageInterface;
 use Phpdup\Pipeline\Stages\ReportStage;
-use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Reporting\GitLabSastReporter;
-use Phpdup\Reporting\Ranker;
 use Phpdup\Reporting\Report;
 use Phpdup\Reporting\ScanWindow;
+use Phpdup\Util\LineRange;
 use Symfony\Component\Console\Output\NullOutput;
+use Symfony\Component\Console\Output\OutputInterface;
 
 final class GitLabSastReporterTest extends TestCase
 {
@@ -47,7 +49,9 @@ final class GitLabSastReporterTest extends TestCase
     public function testTwoBuildsOfIdenticalSyntheticReportAreByteIdentical(): void
     {
         $reporter = new GitLabSastReporter();
-        $report   = $this->buildReport(); // real fixture pipeline, hand-built Report → no window
+        // output-S56b: hand-built synthetic clusters replace the sql
+        // fixture pipeline; still no pipeline metadata, so no window.
+        $report   = new Report(2, 5, 0, $this->syntheticClusters(), Config::defaults([]));
 
         $first  = (string) json_encode($reporter->build($report), JSON_PRETTY_PRINT);
         $second = (string) json_encode($reporter->build($report), JSON_PRETTY_PRINT);
@@ -124,22 +128,37 @@ final class GitLabSastReporterTest extends TestCase
      * real ScanWindow on the Report, and the written SAST file shows a
      * window whose end is strictly after its start (a real scan is never
      * presented as an instant).
+     *
+     * output-S56b: the sql-fixture scan legs are retired — Pipeline stamps
+     * the start itself (Pipeline::iter, src/Pipeline/Pipeline.php:57) and
+     * ReportStage carries it, so the state is hand-populated and a 5ms
+     * pacing stage stands in for the multi-stage work that used to create
+     * the measured duration. The pinned contract is unchanged: stamped
+     * window, positive duration, RFC3339 pair with start != end in the
+     * written artifact. What the report now carries is zero clusters (the
+     * per-member payload is pinned by the synthetic-vector arm below).
      */
     public function testPipelineRunCarriesRealWindowIntoSastReport(): void
     {
         $out = sys_get_temp_dir() . '/phpdup-s59-sast-' . uniqid('', true) . '.json';
         try {
-            $config = new Config(
-                paths: [__DIR__ . '/../../Fixtures/sql'],
-                exclude: Config::defaults([])->exclude,
-                lazyAst: false,
-            );
-            $state = new PipelineState($config);
+            $state = new PipelineState(Config::defaults([]));
+            // ReportStage short-circuits on an empty scan (output-041 law),
+            // so the state must carry files — the paths are count-only for
+            // this arm; nothing reads them.
+            $state->files = ['/phpdup-syn/a.php', '/phpdup-syn/b.php'];
             (new Pipeline([
-                new ScanningStage(),
-                new PreprocessStage(useCache: false),
-                new ClusterStage(exactOnly: true),
-                new RefactorStage(useCache: false),
+                new class implements StageInterface {
+                    public function name(): Stage
+                    {
+                        return Stage::Scanning;
+                    }
+
+                    public function run(PipelineState $state, OutputInterface $output): void
+                    {
+                        usleep(5000); // deterministic measured window, no fixture scan
+                    }
+                },
                 new ReportStage(limit: 50, showStats: false, gitlabSastFile: $out),
             ]))->run($state, new NullOutput());
 
@@ -152,7 +171,7 @@ final class GitLabSastReporterTest extends TestCase
             $this->assertMatchesRegularExpression(self::RFC3339Z, (string) $payload['scan']['start_time']);
             $this->assertMatchesRegularExpression(self::RFC3339Z, (string) $payload['scan']['end_time']);
             $this->assertNotSame($payload['scan']['start_time'], $payload['scan']['end_time'],
-                'a real multi-stage run is never a zero-duration scan');
+                'a paced pipeline run is never a zero-duration scan');
         } finally {
             @unlink($out);
         }
@@ -163,45 +182,69 @@ final class GitLabSastReporterTest extends TestCase
         return new Report(0, 0, 0, [], Config::defaults([]), scanWindow: $window);
     }
 
-    public function testFixtureReportEmitsVulnerabilityPerMember(): void
+    /**
+     * output-S56b (was testFixtureReportEmitsVulnerabilityPerMember): the
+     * re-derived member count and the membership-only vectors of the
+     * fixture era are replaced by exact per-entry pins over the synthetic
+     * clusters — five member slots, severity tier per impact
+     * (120 > 100 High; 30 >= 20 Low — Severity::forImpact), confidence
+     * tier per exact/score (exact 'High'; 0.7 >= 0.65 Medium —
+     * Severity::forScore), and the id/location/range projection.
+     */
+    public function testSyntheticReportEmitsVulnerabilityPerMember(): void
     {
-        $report  = $this->buildReport();
-        $payload = (new GitLabSastReporter())->build($report);
+        $payload = (new GitLabSastReporter())->build(
+            new Report(2, 5, 0, $this->syntheticClusters(), Config::defaults([])),
+        );
 
-        $expected = 0;
-        foreach ($report->clusters as $c) {
-            $expected += count($c->members);
-        }
-        $this->assertCount($expected, $payload['vulnerabilities']);
-
-        foreach ($payload['vulnerabilities'] as $v) {
-            $this->assertContains($v['severity'], ['High', 'Medium', 'Low', 'Info']);
-            $this->assertContains($v['confidence'], ['High', 'Medium', 'Low']);
-            $this->assertArrayHasKey('location', $v);
-            $this->assertArrayHasKey('start_line', $v['location']);
-        }
+        $vulns = $payload['vulnerabilities'];
+        $this->assertCount(5, $vulns);
+        $this->assertSame(['High', 'High', 'Low', 'Low', 'Low'], array_column($vulns, 'severity'));
+        $this->assertSame(['High', 'High', 'Medium', 'Medium', 'Medium'], array_column($vulns, 'confidence'));
+        $this->assertSame('F0000000000000071::M71a', $vulns[0]['id']);
+        $this->assertSame('/phpdup-syn/alpha.php', $vulns[0]['location']['file']);
+        $this->assertSame([11, 21, 31, 41, 51], array_column(array_column($vulns, 'location'), 'start_line'));
+        $this->assertSame([15, 25, 35, 45, 55], array_column(array_column($vulns, 'location'), 'end_line'));
     }
 
-    private function buildReport(): Report
+    /**
+     * Hand-built carrier for the retired sql-fixture pipeline report.
+     * Every vector pinned in the tests above derives from these exact
+     * numbers: F…071 exact, impact 120, 2 members (ranges 11-15, 21-25);
+     * F…072 near at similarity 0.72 / confidence 0.7, impact 30, 3 members
+     * (ranges 31-35, 41-45, 51-55).
+     *
+     * @return list<Cluster>
+     */
+    private function syntheticClusters(): array
     {
-        $config = new Config(
-            paths: [__DIR__ . '/../../Fixtures/sql'],
-            exclude: Config::defaults([])->exclude,
-            lazyAst: false,
-        );
-        $state = new PipelineState($config);
-        $out   = new NullOutput();
-        (new ScanningStage())->run($state, $out);
-        (new PreprocessStage(useCache: false))->run($state, $out);
-        (new ClusterStage(exactOnly: true))->run($state, $out);
-        (new RefactorStage(useCache: false))->run($state, $out);
+        $stmts  = (new AstParser())->parseCode('<?php $x;');
+        $member = static function (string $id, string $file, int $start) use ($stmts): Block {
+            $b = new Block(
+                file: $file,
+                range: new LineRange($start, $start + 4),
+                kind: 'function',
+                namespace: null, class: null, name: $id,
+                ast: $stmts[0],
+            );
+            $b->id = $id;
+            return $b;
+        };
 
-        return new Report(
-            files: count($state->files),
-            blocks: count($state->blocks),
-            parseErrors: $state->parseErrors,
-            clusters: (new Ranker($config->minClusterImpact))->rank($state->clusters),
-            config: $config,
-        );
+        $high = new Cluster('F0000000000000071', [
+            $member('M71a', '/phpdup-syn/alpha.php', 11),
+            $member('M71b', '/phpdup-syn/beta.php', 21),
+        ], 1.0, true);
+        $high->impact = 120;
+
+        $near = new Cluster('F0000000000000072', [
+            $member('M72a', '/phpdup-syn/gamma.php', 31),
+            $member('M72b', '/phpdup-syn/delta.php', 41),
+            $member('M72c', '/phpdup-syn/epsilon.php', 51),
+        ], 0.72, false);
+        $near->impact      = 30;
+        $near->confidence  = 0.7;
+
+        return [$high, $near];
     }
 }
