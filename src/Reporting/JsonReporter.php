@@ -46,6 +46,27 @@ use PhpParser\PrettyPrinter\Standard as PrettyPrinter;
  * `<source unavailable: …>` placeholder string that used to ride inside
  * these values is gone. Schema shape untouched: both keys already declare
  * null, and no golden member sits in a previously-placeholdered case.
+ *
+ * output-S41 (php-dup-finder-output-044, cost-only, payload-preserving):
+ * two gates stop paying for output the caps discard. (1) The evidence
+ * diff caps AFTER computing a full-text LCS — for multi-thousand-line
+ * members that is a quadratic DP whose result is then cut to
+ * DIFF_MAX_LINES/DIFF_MAX_BYTES. The fix bounds the DIFFER, not the
+ * output: sources longer than {@see EVIDENCE_WINDOW_LINES} lines are
+ * sliced to a head window before the single `diff()` call, and the
+ * bounded payload discloses itself — `truncated: true` plus a
+ * window-note marker line, never a silently narrowed comparison.
+ * (2) `HoleCoverage::coverage()` walked the whole template AST even
+ * when a cluster carries NO hole paths — the walk's answer is always
+ * `[≥1, 0]` then, i.e. float `0.0`, so zero-hole clusters now answer
+ * `0.0` at the caller without the walk. `hole_coverage` keeps its
+ * emit-for-every-cluster posture (1.7 shape untouched, no new keys, no
+ * flag); clusters WITH holes tally exactly as before. The counters
+ * {@see coverageTallies()}, {@see evidenceDiffComputations()},
+ * {@see evidenceWindowSlices()} and {@see evidenceDiffMaxInputLines()}
+ * are the spy surface for those claims, per the
+ * SourceTextStore::readCount() / RefactorPatchReporter::detectUnsafeComputations()
+ * precedent.
  */
 final class JsonReporter
 {
@@ -59,9 +80,51 @@ final class JsonReporter
     private const FRAGMENT_MAX_LINES = 80;
     private const FRAGMENT_MAX_BYTES = 4000;
 
+    /**
+     * output-S41 (php-dup-finder-output-044): per-side line budget handed
+     * to the Differ for `evidence_diff`. Two times the cap's line budget:
+     * a fully-different window still overflows DIFF_MAX_LINES into the
+     * cap marker, and the LCS DP stays bounded at this size squared no
+     * matter how huge the members get (the old code diffed whole
+     * multi-thousand-line blocks to throw >90% of the bytes away).
+     */
+    private const EVIDENCE_WINDOW_LINES = self::DIFF_MAX_LINES * 2;
+
     private ?PrettyPrinter $printer = null;
 
+    // ── output-S41 cost spies (assertion surface for the two gates; same
+    //    posture as SourceTextStore::readCount() and
+    //    RefactorPatchReporter::detectUnsafeComputations()) ────────────────
+    private int $coverageTallies = 0;
+    private int $evidenceDiffComputations = 0;
+    private int $evidenceWindowSlices = 0;
+    private int $evidenceDiffMaxInputLines = 0;
+
     public function __construct(private readonly ?SourceTextStore $sourceText = null) {}
+
+    /** Clusters whose coverage went through the full AST tally (gate: only hole-carrying ones do). */
+    public function coverageTallies(): int
+    {
+        return $this->coverageTallies;
+    }
+
+    /** Real Differ invocations the evidence leg performed (window-equal slices answer without one). */
+    public function evidenceDiffComputations(): int
+    {
+        return $this->evidenceDiffComputations;
+    }
+
+    /** Evidence diffs taken on a head window instead of the full member sources. */
+    public function evidenceWindowSlices(): int
+    {
+        return $this->evidenceWindowSlices;
+    }
+
+    /** Max lines fed to the Differ on ANY side, across all evidence diffs this instance ran. */
+    public function evidenceDiffMaxInputLines(): int
+    {
+        return $this->evidenceDiffMaxInputLines;
+    }
 
     /**
      * Render-projection classifier (output-S27): is this observed row an
@@ -138,9 +201,13 @@ final class JsonReporter
     {
         // One coverage measurement per cluster, reused by the three keys
         // that depend on it (item 5.4 walking an AST twice would only
-        // disagree with itself).
-        $coverage    = HoleCoverage::coverage($c);
+        // disagree with itself). output-S41: the walk happens only when
+        // it can change the answer — coverageOf() documents the law.
+        $coverage    = $this->coverageOf($c);
         $reExpressed = $coverage !== null && $coverage > $config->maxHoleCoverage;
+        // output-S41: canonical template resolved once per cluster —
+        // template/source/evidence all ask the same question.
+        $template    = HoleCoverage::canonicalTemplate($c);
         return [
             'id'           => $c->id,
             // Governed by JsonSchemaSpec::clusterShape() as string|null:
@@ -238,9 +305,9 @@ final class JsonReporter
             // persisted on Cluster, so it cannot drift from its evidence.
             'scope' => ClusterScope::of($c),
             // ── Item 5.4 trailing-additive extraction evidence ─────────────
-            'template'      => self::templatePayload($c),
-            'source'        => self::sourcePayload($c, $store),
-            'evidence_diff' => self::evidencePayload($c, $store),
+            'template'      => self::templatePayload($template),
+            'source'        => $this->sourcePayload($template, $store),
+            'evidence_diff' => $this->evidencePayload($c, $template, $store),
             'hole_coverage' => $coverage === null ? null : Num::json($coverage),
             're_expressed'  => $reExpressed,
             'hole_fragment' => $reExpressed ? $this->fragmentPayload($c) : null,
@@ -251,16 +318,40 @@ final class JsonReporter
     }
 
     /**
+     * output-S41 (php-dup-finder-output-044) lazy-tally leg: the coverage
+     * walk only runs when it can still change the answer.
+     *
+     * HoleCoverage::coverage()'s contract is preserved to the bit:
+     *  - no generalized AST → null (delegated: the callee's own guard);
+     *  - generalized AST + NO hole paths → the tally can only ever return
+     *    [total ≥ 1, covered = 0] — a Node root counts itself — so its
+     *    answer is the float 0.0 WITHOUT the walk (0/N === 0.0 exactly,
+     *    IEEE). `re_expressed` stays unreachable on such clusters because
+     *    Config validates max_hole_coverage within 0..1 and
+     *    0.0 > (0..1) is never true;
+     *  - generalized AST + holes present → full tally, unchanged.
+     */
+    private function coverageOf(Cluster $c): ?float
+    {
+        if ($c->generalizedAst instanceof Node && $c->holePaths === []) {
+            return 0.0;
+        }
+        $this->coverageTallies++;
+        return HoleCoverage::coverage($c);
+    }
+
+    /**
      * The canonical template identity (item 5.4a): the cluster's medoid
      * representative when recorded, else members[0] — see
      * {@see HoleCoverage::canonicalTemplate()} for what this is NOT
-     * (AntiUnifier's internal seed, which is not persisted).
+     * (AntiUnifier's internal seed, which is not persisted). Resolved once
+     * per cluster by clusterPayload() (output-S41) and shared by the three
+     * template consumers.
      *
      * @return array{id:string|null,file:string|null,start:int|null,end:int|null}|null
      */
-    private static function templatePayload(Cluster $c): ?array
+    private static function templatePayload(?Block $t): ?array
     {
-        $t = HoleCoverage::canonicalTemplate($c);
         if ($t === null) {
             return null;
         }
@@ -281,9 +372,8 @@ final class JsonReporter
      *
      * @return array{text:string|null,truncated:bool}
      */
-    private function sourcePayload(Cluster $c, SourceTextStore $store): array
+    private function sourcePayload(?Block $t, SourceTextStore $store): array
     {
-        $t = HoleCoverage::canonicalTemplate($c);
         if ($t === null) {
             return ['text' => null, 'truncated' => false];
         }
@@ -302,11 +392,22 @@ final class JsonReporter
      * Null when there is no peer, no pair evidence, or the texts are
      * byte-identical (an empty diff would be noise masquerading as proof).
      *
+     * output-S41 (php-dup-finder-output-044) cap-before-Differ leg: the
+     * emitted blob is cut to DIFF_MAX_LINES/DIFF_MAX_BYTES, so for members
+     * longer than EVIDENCE_WINDOW_LINES the Differ is fed only that head
+     * window — the quadratic LCS can no longer be paid in full just to
+     * throw most of the bytes away. The narrowing is DISCLOSED, never
+     * silent: a windowed slice always answers `truncated: true` plus a
+     * marker line naming the compared prefix, and a window whose two sides
+     * are equal answers the header + marker WITHOUT a Differ run (an
+     * empty-hunk diff is predictable without paying LCS for it). Sources
+     * at or under the window take the untouched pre-S41 path: identical
+     * bytes, truncation as computed by cap() alone.
+     *
      * @return null|array{member:string,file:string,start:int,end:int,diff:string,truncated:bool}
      */
-    private function evidencePayload(Cluster $c, SourceTextStore $store): ?array
+    private function evidencePayload(Cluster $c, ?Block $t, SourceTextStore $store): ?array
     {
-        $t = HoleCoverage::canonicalTemplate($c);
         if ($t === null || count($c->members) < 2) {
             return null;
         }
@@ -338,10 +439,52 @@ final class JsonReporter
             // as proof — say "no evidence" instead of showing a header.
             return null;
         }
+        $header = "--- a/{$t->file}\n+++ b/{$rep->file}\n";
+
+        // ── output-S41 cap-before-Differ ───────────────────────────────────
+        $linesT = self::evidenceLines($srcT);
+        $linesR = self::evidenceLines($srcR);
+        $windowed = count($linesT) > self::EVIDENCE_WINDOW_LINES
+            || count($linesR) > self::EVIDENCE_WINDOW_LINES;
+        if ($windowed) {
+            $this->evidenceWindowSlices++;
+            $winT = implode("\n", array_slice($linesT, 0, self::EVIDENCE_WINDOW_LINES)) . "\n";
+            $winR = implode("\n", array_slice($linesR, 0, self::EVIDENCE_WINDOW_LINES)) . "\n";
+            if ($winT === $winR) {
+                // The window holds no hunk and no Differ run is owed: the
+                // disclosure states exactly what was compared — and that
+                // nothing beyond it was.
+                return $this->evidenceFields($rep, self::note(
+                    $header,
+                    self::windowNote($linesT, $linesR) . ' are identical; no hunk in the window.',
+                ), true);
+            }
+            $srcT = $winT;
+            $srcR = $winR;
+        }
+
+        $this->evidenceDiffComputations++;
+        $this->evidenceDiffMaxInputLines = max(
+            $this->evidenceDiffMaxInputLines,
+            $windowed ? self::EVIDENCE_WINDOW_LINES : count($linesT),
+            $windowed ? self::EVIDENCE_WINDOW_LINES : count($linesR),
+        );
         $differ = new \SebastianBergmann\Diff\Differ(
-            new \SebastianBergmann\Diff\Output\UnifiedDiffOutputBuilder("--- a/{$t->file}\n+++ b/{$rep->file}\n", false),
+            new \SebastianBergmann\Diff\Output\UnifiedDiffOutputBuilder($header, false),
         );
         [$diff, $truncated] = self::cap($differ->diff($srcT, $srcR), self::DIFF_MAX_LINES, self::DIFF_MAX_BYTES);
+        if ($windowed) {
+            // The cap marker (when present) counts the WINDOW diff's bytes;
+            // the note below is what tells the truth about the comparison
+            // never having seen the rest of either side.
+            $diff      = self::note($diff, self::windowNote($linesT, $linesR) . ' were diffed.');
+            $truncated = true;
+        }
+        return $this->evidenceFields($rep, $diff, $truncated);
+    }
+
+    private function evidenceFields(Block $rep, string $diff, bool $truncated): array
+    {
         return [
             'member'    => $rep->id,
             'file'      => $rep->file,
@@ -350,6 +493,29 @@ final class JsonReporter
             'diff'      => $diff,
             'truncated' => $truncated,
         ];
+    }
+
+    /** Cap-marker dialect: one honest `# …` line appended to a text blob. */
+    private static function note(string $text, string $note): string
+    {
+        return rtrim($text, "\n") . "\n" . $note;
+    }
+
+    /** One side's lines in cap()'s grammar (rtrim the terminator, then split). */
+    private static function evidenceLines(string $source): array
+    {
+        return explode("\n", rtrim($source, "\n"));
+    }
+
+    /**
+     * @param list<string> $linesT
+     * @param list<string> $linesR
+     */
+    private static function windowNote(array $linesT, array $linesR): string
+    {
+        return '# … evidence window: first ' . self::EVIDENCE_WINDOW_LINES
+            . ' of ' . count($linesT) . '/' . count($linesR)
+            . ' template/peer lines';
     }
 
     private static function representativePeer(Cluster $c, Block $t): ?Block
