@@ -266,42 +266,39 @@ final class ClusterScopeTest extends TestCase
     {
         // Guarded arm (structural, S34 doctrine): output-059's cure is
         // that compute() is the ONLY method in ClusterScope that walks
-        // a cluster's members. A raw `foreach ($c->members …)` re-added
-        // to any other reader (even without touching the counter) would
-        // resurrect the repeat walk invisibly to every delta assert —
-        // this pin catches it at the source level, where a counter
-        // alone cannot reach.
-        $r = new \ReflectionClass(ClusterScope::class);
-        $lines = \file($r->getFileName());
-        foreach (
-            [
-                'of', 'isCrossRepo', 'repos', 'namespacesByRepo',
-                'maxRepoNamespaceSpread', 'spread', 'filter',
-            ] as $name
-        ) {
-            $method = $r->getMethod($name);
-            $body   = \implode('', \array_slice(
+        // a cluster's members. A raw member walk re-added to any other
+        // reader (even without touching the counter) would resurrect
+        // the repeat walk invisibly to every delta assert — this pin
+        // catches it at the source level, where a counter alone cannot
+        // reach. The scan is NAME-INDEPENDENT (r1 M-1 cure): every
+        // method the class declares is checked, so a walk smuggled
+        // into a brand-new method — reachable via one indirection from
+        // a scanned reader, counter-blind behind its own loop — flips
+        // this pin regardless of what the method is called or who
+        // calls it. compute() keeps its exactly-one-site assertion.
+        $r     = new \ReflectionClass(ClusterScope::class);
+        $lines = \file((string) $r->getFileName());
+        foreach ($r->getMethods() as $method) {
+            $body = \implode('', \array_slice(
                 $lines,
                 $method->getStartLine() - 1,
                 $method->getEndLine() - $method->getStartLine() + 1,
             ));
+            if ($method->getName() === 'compute') {
+                $this->assertSame(
+                    1,
+                    \substr_count($body, 'foreach ($c->members'),
+                    'compute() is the single member-walk site of the class',
+                );
+                continue;
+            }
             $this->assertStringNotContainsString(
                 '->members',
                 $body,
-                "ClusterScope::$name() must read through the spread memo, never walk members itself",
+                'ClusterScope::' . $method->getName()
+                    . '() must read through the spread memo, never walk members itself',
             );
         }
-        $compute = $r->getMethod('compute');
-        $body    = \implode('', \array_slice(
-            $lines,
-            $compute->getStartLine() - 1,
-            $compute->getEndLine() - $compute->getStartLine() + 1,
-        ));
-        $this->assertSame(
-            1,
-            \substr_count($body, 'foreach ($c->members'),
-            'compute() is the single member-walk site of the class',
-        );
     }
 
     public function testRealConsumersPayOneWalkPerClusterPerRun(): void
