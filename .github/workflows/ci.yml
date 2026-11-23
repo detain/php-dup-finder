@@ -397,3 +397,84 @@ jobs:
             if (($s["clusters"] ?? 0) < 1) { fwrite(STDERR, "artifact-smoke: planted relative-root dup pair disappeared (clusters=0)\n"); exit(1); }
             echo "artifact-smoke ok: relative-root scan through the built phar analyzed {$s["files_scanned"]} files, {$s["clusters"]} clusters\n";
           '
+  docs-links:
+    name: README anchor resolution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve every local link in README.md against the docs tree
+        # once-S13 (php-dup-finder-once-011, HIGH): the Phase-12 DOC-1 cut
+        # (47cd3c4) moved the long README guide into docs/ and left the
+        # Table of contents pointing at the removed headings — 18 of 36
+        # local links dead at the wave's start, #examples the sole survivor.
+        # The index is now rebuilt against the real docs tree; this leg is
+        # the standing guard: every [text](target) in README.md must
+        # resolve — the file exists, and any #fragment matches a
+        # GitHub-style slug of a real heading in that file (headings inside
+        # fenced code blocks do not count). Fail-loud: each dead link is
+        # printed with file:line, then the step exits 1. Slug rule:
+        # lowercase, keep [a-z0-9_ -], spaces to hyphens, duplicates get
+        # GitHub's -1/-2/… suffix.
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/anchorcheck.awk" <<'AWK'
+          function slugify(h) {
+            h = tolower(h)
+            gsub(/[^a-z0-9_ -]/, "", h)   # GitHub keeps letters, digits, '_', '-', space (→ '-')
+            gsub(/ /, "-", h)
+            return h
+          }
+          function load(file,   line, fence, s, n) {
+            if (file in loaded) return
+            loaded[file] = 1
+            fence = 0
+            while ((getline line < file) > 0) {
+              if (line ~ /^[ \t]*(```|~~~)/) { fence = !fence; continue }
+              if (fence) continue
+              if (line !~ /^#{1,6}[ \t]+/) continue
+              sub(/^#{1,6}[ \t]+/, "", line)
+              sub(/[ \t]+#+[ \t]*$/, "", line)
+              s = slugify(line)
+              n = ++dcnt[file SUBSEP s]
+              if (n > 1) s = s "-" (n - 1)      # GitHub dedup suffix: foo, foo-1, ...
+              have[file SUBSEP s] = 1
+            }
+            close(file)
+          }
+          BEGIN { dead = 0; total = 0 }
+          {
+            line = $0
+            while (match(line, /\]\([^)]*\)/)) {
+              t = substr(line, RSTART + 2, RLENGTH - 3)
+              line = substr(line, RSTART + RLENGTH)
+              sub(/[ \t].*$/, "", t)                        # drop any "title" portion
+              if (t == "") continue                         # [x]() — nothing to resolve
+              if (t ~ /^[A-Za-z][A-Za-z0-9+.-]*:/) continue # scheme (http/https/mailto/…)
+              total++
+              f = t; a = ""
+              p = index(f, "#")
+              if (p) { a = substr(f, p + 1); f = substr(f, 1, p - 1) }
+              if (f == "") f = SCAN
+              if ((getline probe < f) < 0) {
+                close(f)
+                printf "DEAD  %s:%d  %s  (file not found)\n", SCAN, NR, t
+                dead++
+                continue
+              }
+              close(f)
+              if (a != "") {
+                load(f)
+                if (!((f SUBSEP a) in have)) {
+                  printf "DEAD  %s:%d  %s  (no heading with slug \"%s\")\n", SCAN, NR, t, a
+                  dead++
+                }
+              }
+            }
+          }
+          END {
+            printf "README anchor census: %d local links, %d dead\n", total, dead
+            exit (dead > 0 ? 1 : 0)
+          }
+          AWK
+          awk -v SCAN=README.md -f "$RUNNER_TEMP/anchorcheck.awk" README.md

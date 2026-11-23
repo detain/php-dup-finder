@@ -142,27 +142,36 @@ Full reference: [`docs/CLI.md`](docs/CLI.md)
 
 ## Table of contents
 
-- [Features](docs/CLI.md#features) — semantic detection, type-3, parameter discovery, pattern tags
-- [Installation](docs/CLI.md#installation) — PHAR, Composer, from source
-- [Self-update](docs/CLI.md#self-update) — `phpdup self-update`
-- [How it works](docs/CLI.md#how-it-works) — 5-stage pipeline, normalization modes, clustering, anti-unification
-- [Type-3 / optional-segment detection](docs/CLI.md#type-3--optional-segment-detection)
-- [ORM- / DB-aware deduplication](docs/CLI.md#orm---db-aware-semantic-deduplication) — `--db-aware`, `--trinity-collapse`
-- [TUI mode](docs/CLI.md#tui-mode) — `--tui`, `--theme`, keyboard shortcuts
-- [Watch mode](docs/CLI.md#watch-mode) — `--watch`
-- [SIGINT soft-cancel](docs/CLI.md#sigint-soft-cancel)
-- [`phpdup serve` REST API](docs/SERVER.md) — health, sync/async analyze, job polling
-- [Output formats](docs/CLI.md#output-formats) — JSON, HTML, SARIF, GitLab SAST, diff, checkstyle, CSV, Prometheus, time-series, Graphviz, PlantUML, refactor patches, PHPUnit skeletons
-- [Configuration](docs/CLI.md#configuration) — `phpdup.json` schema, per-directory overrides, project profiles
-- [Programmatic use](docs/CLI.md#programmatic-use) — use the pipeline from PHP
+The long-form guide sections were moved into the docs tree; this index maps
+each topic to where it actually lives. Every link is checked in CI.
+
+- [Quick start](#quick-start) — install the phar, or from source
+- [Key CLI flags](#key-cli-flags) — the everyday table
+- [CLI reference](docs/CLI.md#cli-reference) — full flag and sub-command reference
+- [Sub-commands](docs/CLI.md#sub-commands) — `analyze` / `serve` / `init` / `self:update` / `completion`
+- [Tuning & Type-3 detection](docs/CLI.md#tuning) — thresholds, normalization modes, `--optional-blocks`, `--db-aware`, `--trinity-collapse`
+- [Output formats](docs/CLI.md#output) — JSON, HTML, SARIF, GitLab SAST, diff, checkstyle, CSV, Prometheus, time-series, Graphviz, PlantUML, refactor patches, PHPUnit skeletons
+- [File counters](docs/CLI.md#what-the-file-counters-mean) — scan signals, skips, exclude typos, parse failures
+- [Runtime flags](docs/CLI.md#runtime) — workers, memory ceiling, cache toggles
+- [Cache retention and pruning](docs/CLI.md#cache-retention-and-pruning) — content-addressed disk cache, documented rm-based reclaim
+- [TUI and watch mode](docs/CLI.md#tui--watch) — `--tui`, `--theme`, `--watch`, keyboard shortcuts
+- [CI baseline gate](docs/CLI.md#ci--baseline) — `--baseline` / `--baseline-out`, incremental exit-code 3 workflow
+- [Config validation](docs/CLI.md#validation) — `--validate-config`
+- [Self-update](docs/CLI.md#selfupdate--options) — `phpdup self:update` and the signed-manifest contract
+- [Exit codes](docs/CLI.md#exit-codes) — 0 / 1 / 2 / 3, plus the SIGINT `130` soft-cancel convention
+- [Configuration file](docs/CLI.md#configuration-file) — `phpdup.json` fields (+ machine-readable schema above)
+- [Configuration precedence](docs/CLI.md#configuration-precedence) — per-directory overrides, project profiles
+- [`exclude` glob dialect](docs/CLI.md#exclude-stacks--the-glob-dialect) — how exclude lists stack
 - [Examples](docs/CLI.md#examples) — threshold-gated, CRUD, optional segments, strategy dispatch
-- [Static analysis & validation](docs/CLI.md#static-analysis--config-validation) — PHPStan, Psalm, `--validate-config`
+- [`phpdup serve` REST API](docs/SERVER.md#routes) — health, sync/async analyze, job polling
+- [Server security](docs/SERVER.md#security) — bind defaults, bearer token, path confinement
+- [Clustering algorithm](docs/algorithms/clustering.md#clustering-algorithm) — phases, medoid-ball split, complexity
+- [Anti-unification](docs/algorithms/anti-unification.md#anti-unification-algorithm) — hole typing
+- [Architecture](docs/adr/0001-cooperative-pipeline.md) — cooperative-pipeline ADR (with 0002/0003 siblings)
+- [CI integration](docs/CI.md) — composite action, GitLab/Jenkins/Circle/Travis recipes
+- [Tutorials](docs/tutorials/refactoring-10k-lines.md) — 10k-line walkthrough (also `laravel.md`, `anti-unification-deep-dive.md`)
 - [Benchmarks](bench/README.md) — comparative harness, feature matrix, committed raw results (`bench/results/`)
-- [Architecture](docs/CLI.md#architecture) — module map
-- [Testing](docs/CLI.md#testing) — PHPUnit suites, coverage
-- [Performance](docs/CLI.md#performance) — complexity, caches
-- [Roadmap](docs/CLI.md#roadmap)
-- [FAQ](docs/CLI.md#faq)
+- [License](#license) — MIT
 
 ---
 
