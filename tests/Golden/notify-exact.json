@@ -118,7 +118,7 @@
                 "file": "tests/Fixtures/notify/Notify.php",
                 "start": 17,
                 "end": 22,
-                "diff": "--- a/tests/Fixtures/notify/Notify.php\n+++ b/tests/Fixtures/notify/Notify.php\n@@ @@\n-    public function notifyHigh($user, int $score): void\n+    public function notifyMid($user, int $score): void\n     {\n-        if ($score > 10) {\n-            $this->mailer->send('admin', $user);\n+        if ($score > 20) {\n+            $this->mailer->send('moderator', $user);\n         }\n     }\n",
+                "diff": "--- atests/Fixtures/notify/Notify.php\n+++ btests/Fixtures/notify/Notify.php\n@@ @@\n-    public function notifyHigh($user, int $score): void\n+    public function notifyMid($user, int $score): void\n     {\n-        if ($score > 10) {\n-            $this->mailer->send('admin', $user);\n+        if ($score > 20) {\n+            $this->mailer->send('moderator', $user);\n         }\n     }\n",
                 "truncated": false
             },
             "hole_coverage": 0.087,
@@ -229,7 +229,7 @@
                 "file": "tests/Fixtures/notify/Notify.php",
                 "start": 19,
                 "end": 21,
-                "diff": "--- a/tests/Fixtures/notify/Notify.php\n+++ b/tests/Fixtures/notify/Notify.php\n@@ @@\n-        if ($score > 10) {\n-            $this->mailer->send('admin', $user);\n+        if ($score > 20) {\n+            $this->mailer->send('moderator', $user);\n         }\n",
+                "diff": "--- atests/Fixtures/notify/Notify.php\n+++ btests/Fixtures/notify/Notify.php\n@@ @@\n-        if ($score > 10) {\n-            $this->mailer->send('admin', $user);\n+        if ($score > 20) {\n+            $this->mailer->send('moderator', $user);\n         }\n",
                 "truncated": false
             },
             "hole_coverage": 0.16,

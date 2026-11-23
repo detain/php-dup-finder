@@ -117,7 +117,7 @@
                 "file": "tests/Fixtures/optional/Pair.php",
                 "start": 21,
                 "end": 27,
-                "diff": "--- a/tests/Fixtures/optional/Pair.php\n+++ b/tests/Fixtures/optional/Pair.php\n@@ @@\n             // more logic\n             base64_encode($stuff);\n             $ret = other_stuff($blah);\n-            some_other_logic($here);\n-            and_more($f);\n         } else {\n             return false;\n         }\n",
+                "diff": "--- atests/Fixtures/optional/Pair.php\n+++ btests/Fixtures/optional/Pair.php\n@@ @@\n             // more logic\n             base64_encode($stuff);\n             $ret = other_stuff($blah);\n-            some_other_logic($here);\n-            and_more($f);\n         } else {\n             return false;\n         }\n",
                 "truncated": false
             },
             "hole_coverage": 0.36,

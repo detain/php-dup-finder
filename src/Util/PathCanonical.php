@@ -123,4 +123,23 @@ final class PathCanonical
         $real = realpath($path);
         return $real !== false ? $real : self::separators($path);
     }
+
+    /**
+     * Unified-diff header operand (once-S101, php-dup-finder-once-126
+     * XP-11): the path that follows the `a/` / `b/` prefix in a
+     * `--- a/<path>` / `+++ b/<path>` header line.
+     *
+     * Git's own convention, proven against `git diff --no-index
+     * /tmp/x/f.php /tmp/y/f.php`: absolute operands print as
+     * `--- a/tmp/x/f.php` — the leading slash IS consumed by the prefix
+     * join, it does not double. Plain interpolation (`"--- a/{$file}"`)
+     * minted `--- a//tmp/...` for every absolute scan path, a spelling no
+     * unified-diff reader produces. This join folds separators first —
+     * the class-wide Windows law — then sheds leading slashes, so the
+     * header always reads like git's.
+     */
+    public static function diffOperand(string $path): string
+    {
+        return ltrim(self::separators($path), '/');
+    }
 }

@@ -12,6 +12,7 @@ use Phpdup\Refactor\PlacementAdvisor;
 use Phpdup\Util\ControlText;
 use Phpdup\Util\Json;
 use Phpdup\Util\Num;
+use Phpdup\Util\PathCanonical;
 use Phpdup\Util\Version;
 use PhpParser\Node;
 use PhpParser\PrettyPrinter\Standard as PrettyPrinter;
@@ -439,7 +440,13 @@ final class JsonReporter
             // as proof — say "no evidence" instead of showing a header.
             return null;
         }
-        $header = "--- a/{$t->file}\n+++ b/{$rep->file}\n";
+        // Git-style header operands (once-S101 fix1, php-dup-finder-once-126
+        // XP-11): absolute scan paths used to interpolate as `--- a//abs/…`
+        // — a doubled slash git itself never emits. Only the header join is
+        // canonicalised; the `file` member fields below keep the raw
+        // scanner path (JSON consumers match them against scan output).
+        $header = '--- a/' . PathCanonical::diffOperand($t->file) . "\n"
+            . '+++ b/' . PathCanonical::diffOperand($rep->file) . "\n";
 
         // ── output-S41 cap-before-Differ ───────────────────────────────────
         $linesT = self::evidenceLines($srcT);

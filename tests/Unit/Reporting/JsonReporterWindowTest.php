@@ -118,7 +118,11 @@ final class JsonReporterWindowTest extends TestCase
 
         $this->assertIsArray($ev, 'evidence is annotated, never dropped (no silent null)');
         $this->assertTrue($ev['truncated']);
-        $this->assertStringStartsWith("--- a/", (string)$ev['diff']);
+        // once-S101 fix1: git-style join for these ABSOLUTE fixture paths —
+        // git prints `--- a` + '/' + leading-slash-stripped operand (proven
+        // against `git diff --no-index /tmp/x …` → `--- a/tmp/x`). Built
+        // here with plain string ops so the pin stays independent.
+        $this->assertStringStartsWith('--- a/' . substr($this->tmp, 1) . '/q0.php' . "\n", (string)$ev['diff']);
         $this->assertStringContainsString('are identical; no hunk in the window', (string)$ev['diff']);
         $this->assertStringNotContainsString('@@', (string)$ev['diff']);
         $this->assertSame(1, $reporter->evidenceWindowSlices());

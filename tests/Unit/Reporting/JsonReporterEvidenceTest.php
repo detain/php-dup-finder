@@ -14,6 +14,7 @@ use Phpdup\Refactor\Hole;
 use Phpdup\Reporting\JsonReporter;
 use Phpdup\Reporting\JsonSchemaSpec;
 use Phpdup\Reporting\Report;
+use Phpdup\Util\PathCanonical;
 
 /**
  * Item 5.4(e): the trailing-additive evidence keys on every cluster —
@@ -202,9 +203,12 @@ final class JsonReporterEvidenceTest extends TestCase
         $this->assertSame(JsonSchemaSpec::SCHEMA_VERSION, $payload['schema_version']);
         $ev = $payload['clusters'][0]['evidence_diff'];
         $this->assertNotNull($ev);
-        // The evidence diff's own header still pairs the real paths.
+        // The evidence diff's own header still pairs the real paths — in
+        // git's join convention (once-S101 fix1: these fixture paths are
+        // absolute, so the leading slash rides inside the `--- a` + operand
+        // pair — `--- a/tmp/...`, never the double-slash `--- a//tmp/...`).
         $this->assertStringContainsString(
-            '--- a/' . $cluster->members[0]->file . "\n+++ b/" . $cluster->members[1]->file . "\n",
+            '--- a' . $cluster->members[0]->file . "\n+++ b" . $cluster->members[1]->file . "\n",
             (string)$ev['diff'],
         );
     }
@@ -233,6 +237,42 @@ final class JsonReporterEvidenceTest extends TestCase
         $clusterData = $payload['clusters'][0];
         $this->assertIsString($clusterData['source']['text'], 'the fetchable template still serializes its real bytes');
         $this->assertNull($clusterData['evidence_diff'], 'no evidence can be built against bytes never fetched — null, not a placeholder diff');
+    }
+
+    // ── once-S101 fix1 (php-dup-finder-once-126 XP-11): git-style operands ──
+
+    public function testEvidenceHeadersNeverMintDoubleSlashForAbsolutePaths(): void
+    {
+        $cluster = $this->pairCluster();
+        $ev      = $this->payloadFor($cluster, 1.0)['clusters'][0]['evidence_diff'];
+        $diff    = (string)$ev['diff'];
+        $fileA   = $cluster->members[0]->file;
+        $fileB   = $cluster->members[1]->file;
+        $this->assertStringStartsWith('/', $fileA, 'fixture members carry absolute paths');
+
+        // The bug shape was `--- a//tmp/...` — a doubled slash no
+        // unified-diff reader produces. Git's convention consumes the
+        // leading slash into the a//b/ join; assert both spellings.
+        $this->assertStringStartsWith('--- a' . $fileA . "\n", $diff);
+        $this->assertStringContainsString('+++ b' . $fileB . "\n", $diff);
+        $this->assertStringNotContainsString('--- a//', $diff);
+        $this->assertStringNotContainsString('+++ b//', $diff);
+
+        // The fix is the header join ONLY: payload member fields keep the
+        // raw scanner path JSON consumers match against scan output.
+        $this->assertSame($fileB, $ev['file']);
+    }
+
+    public function testDiffOperandJoinSpellsBothPosturesAsLiterals(): void
+    {
+        // Literals, not a mirror of the implementation: relative paths
+        // keep the git-style `a/` prefix join; absolute operands shed
+        // exactly the leading slash into that join; a backslash-joined
+        // Windows path arrives in canonical slash form (PathCanonical's
+        // class-wide separator law).
+        $this->assertSame('a/tests/Fixtures/Pair.php', 'a/' . PathCanonical::diffOperand('tests/Fixtures/Pair.php'));
+        $this->assertSame('a/tmp/phpdup-ev-1/m0.php', 'a/' . PathCanonical::diffOperand('/tmp/phpdup-ev-1/m0.php'));
+        $this->assertSame('a/C:/proj/src/A.php', 'a/' . PathCanonical::diffOperand('C:\proj\src\A.php'));
     }
 
     // ── fixtures ────────────────────────────────────────────────────────────

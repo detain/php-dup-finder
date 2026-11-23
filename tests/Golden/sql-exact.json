@@ -108,7 +108,7 @@
                 "file": "tests/Fixtures/sql/Repos.php",
                 "start": 17,
                 "end": 23,
-                "diff": "--- a/tests/Fixtures/sql/Repos.php\n+++ b/tests/Fixtures/sql/Repos.php\n@@ @@\n     public function findById(\\PDO $db, int $id): ?array\n     {\n-        $sql = \"SELECT * FROM users WHERE id = ?\";\n+        $sql = \"SELECT * FROM products WHERE id = ?\";\n         $stmt = $db->prepare($sql);\n         $stmt->execute([$id]);\n         return $stmt->fetch() ?: null;\n",
+                "diff": "--- atests/Fixtures/sql/Repos.php\n+++ btests/Fixtures/sql/Repos.php\n@@ @@\n     public function findById(\\PDO $db, int $id): ?array\n     {\n-        $sql = \"SELECT * FROM users WHERE id = ?\";\n+        $sql = \"SELECT * FROM products WHERE id = ?\";\n         $stmt = $db->prepare($sql);\n         $stmt->execute([$id]);\n         return $stmt->fetch() ?: null;\n",
                 "truncated": false
             },
             "hole_coverage": 0.029,
