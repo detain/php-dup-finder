@@ -192,7 +192,7 @@ once-S68	150	engine-S10,engine-S15,engine-S18b,engine-S31c,output-S01,shell-S37	
 once-S80	105	once-S10,once-S24,once-S34,once-S54,once-S64,once-S68,once-S79,shell-S24	REPORT-ONLY	done
 engine-S33	240	engine-S18b,engine-S32,engine-S34b	src/Fingerprint/NgramFingerprint.php;src/Fingerprint/SubtreeHasher.php;tests/Unit/Fingerprint/NgramFingerprintTest.php;tests/Unit/Fingerprint/SubtreeHasherTest.php	done
 once-S47	240	shell-S33,shell-S40	src/Watch/FileWatcher.php;src/Watch/WatchRunner.php;tests/Unit/Watch/FileWatcherTest.php;tests/Unit/Watch/WatchRunnerTest.php	done
-once-S72	240	engine-S10,once-S06,once-S07,once-S61,shell-S12	src/Pipeline/CooperativeStageInterface.php;src/Pipeline/Stages/ReportStage.php;src/Tui/Msg/StagePumpedMsg.php;src/Tui/PhpdupModel.php;tests/Unit/Pipeline/PipelineTest.php;tests/Unit/Tui/PhpdupModelTest.php	running
+once-S72	240	engine-S10,once-S06,once-S07,once-S61,shell-S12	src/Pipeline/CooperativeStageInterface.php;src/Pipeline/Stages/ReportStage.php;src/Tui/Msg/StagePumpedMsg.php;src/Tui/PhpdupModel.php;tests/Unit/Pipeline/PipelineTest.php;tests/Unit/Tui/PhpdupModelTest.php	pending
 once-S76	45	once-S61,once-S72,output-S07	src/Cli/Pager.php;tests/Unit/Cli/PagerTest.php	blocked
 once-S96	60	once-S06,once-S07,once-S61,once-S62,once-S63,once-S72,once-S75,once-S76	src/Tui/PhpdupModel.php;src/Tui/ViewState.php;tests/Unit/Tui/PhpdupModelTest.php	blocked
 output-S26	240	output-S25	src/Refactor/AntiUnifier.php;src/Refactor/Hole.php;src/Refactor/HoleCoverage.php;tests/Unit/Refactor/	done
