@@ -1,248 +1,248 @@
 # id	est_min	prereqs	locks	status — Phase-4 plan queue; order = severity-first Kahn (ready steps owning a CRITICAL finding pop first, then ready-first shortest-first (est_min, id) min-heap — owner ruling D1(b)); prereqs comma-separated; locks path-prefix overlap (trailing "/" = directory token; "tests/Golden/" = golden single-writer (regen lanes); "REPORT-ONLY" = no repo writes) · 247 steps · order re-derived at Phase-5 r1 (11 DD parents split; once-S81 absorbed) · order re-derived at Phase-5 owner decisions (D1(b) severity-first; D2(a) ceiling 240 verified — 0 violations, no new splits)
-engine-S01	120		src/Index/NgramInvertedIndex.php;tests/Fuzz/DetectionRateTest.php;tests/Golden/;tests/Golden/optional-near-dups.json;tests/Unit/Index/NgramInvertedIndexTest.php	pending
-engine-S02a	150		src/Clustering/Clusterer.php;src/Normalization/Normalizer.php;tests/Unit/Normalization/NormalizerBareReturnTest.php;tests/Unit/Normalization/NormalizerTest.php	pending
-engine-S02b	150	engine-S02a	src/Clustering/Clusterer.php;src/Normalization/Normalizer.php;tests/Golden/;tests/Unit/Normalization/NormalizerBareReturnTest.php;tests/Unit/Normalization/NormalizerTest.php	pending
-engine-S23a	150		src/Parsing/;src/Util/;tests/Unit/Parsing/AstCacheTest.php;tests/Unit/Parsing/TokenCacheTest.php	pending
-engine-S23b	120	engine-S23a	src/Parsing/;src/Parsing/AstCache.php;src/Parsing/TokenCache.php;src/Util/;tests/Unit/Parsing/AstCacheTest.php;tests/Unit/Parsing/TokenCacheTest.php;tests/Unit/Persistence/SerializedClassAllowListTest.php	pending
-engine-S06a	160		docs/config-schema.json;profiles/;src/Normalization/DbOpCanonicalizer.php;src/Normalization/DbOpRegistry.php;tests/Unit/Normalization/CustomDbSymbolsTest.php;tests/Unit/Normalization/DbOpCanonicalizerTest.php;tests/Unit/Normalization/DbOpRegistryTest.php	pending
-engine-S06b	140	engine-S06a	docs/config-schema.json;profiles/;src/Normalization/DbOpCanonicalizer.php;src/Normalization/DbOpRegistry.php;tests/Unit/Normalization/CustomDbSymbolsTest.php;tests/Unit/Normalization/DbOpCanonicalizerTest.php;tests/Unit/Normalization/DbOpRegistryTest.php	pending
-shell-S01	160		bin/phpdup-worker;src/Cli/ServeCommand.php;src/Server/AnalysisWorker.php;src/Server/Application.php;tests/Unit/Cli/ServeCommandTest.php;tests/Unit/Server/ApplicationTest.php	pending
-output-S10	5		src/Architecture/ArchitecturalAnalyzer.php	pending
-output-S04	10		src/Reporting/GitLabSastReporter.php;tests/Unit/Reporting/GitLabSastReporterTest.php	pending
-shell-S38	10		src/Phpdup.php;tests/Unit/PhpdupTest.php	pending
-output-S08	15		src/Testing/BenchmarkResultsRenderer.php;tests/Unit/Bench/BenchmarkResultsRendererTest.php	pending
-shell-S29	15		src/Pipeline/DebugLogger.php;tests/Unit/Pipeline/DebugLoggerTest.php	pending
-once-S69	10	shell-S29	src/Pipeline/DebugLogger.php;tests/Unit/Pipeline/PipelineTest.php	pending
-engine-S35	20		src/Util/MemoryDebug.php;tests/Unit/Cli/CliStatsTest	pending
-output-S06	20		src/Refactor/PlacementAdvisor.php;tests/Unit/Refactor/PlacementAdvisorTest.php	pending
-output-S11	25		src/Cli/Config.php;src/Refactor/AntiUnifier.php;src/Reporting/CoherenceAnalyzer.php;src/Reporting/Ranker.php;tests/Unit/Cli/ConfigTest.php;tests/Unit/Reporting/CoherenceAnalyzerTest.php	pending
-engine-S27	30		src/Parsing/AstParser.php;tests/Unit/Parsing/AstParserTest.php	pending
-engine-S36	30		src/Index/BlockIndex.php;tests/Unit/Index/BlockIndexTest.php	pending
-once-S59	30	output-S04	src/Reporting/GitLabSastReporter.php;tests/Unit/Reporting/GitLabSastReporterTest.php	pending
-once-S82	30		findings.md;plan.md;prompt.md	pending
-output-S01	30		psalm-baseline.xml;psalm.xml;src/Refactor/PatternRecognizer.php	pending
-output-S09	30		src/Testing/FuzzCorpusGenerator.php;tests/Unit/	pending
-output-S12	30		src/Reporting/CoherenceAnalyzer.php;tests/Unit/Reporting/CoherenceAnalyzerTest.php	pending
-output-S13	30		src/Reporting/BaselineStore.php;tests/Unit/Reporting/BaselineStoreTest.php	pending
-output-S17	35		src/Refactor/ApplyExtractor.php;src/Reporting/DiffReporter.php;src/Reporting/RefactorPatchReporter.php;src/Reporting/RefactorTestReporter.php;src/Reporting/Slug.php;tests/Unit/Reporting/SlugTest.php	pending
-shell-S06	35		src/Server/JobQueue.php;tests/Unit/Server/JobQueueTest.php	pending
-output-S14	40		src/Reporting/ClusterSort.php;tests/Unit/Reporting/ClusterSortTest.php	pending
-output-S16	40		src/Testing/BenchmarkScoreCalculator.php;tests/Unit/Bench/BenchmarkScoreCalculatorTest.php	pending
-once-S09	240	output-S16	bench/corpora;bench/run.php;bench/score.php;src/Testing/BenchmarkScoreCalculator.php;tests/Unit/Bench/BenchmarkScoreCalculatorTest.php	pending
-output-S21	40		src/Reporting/CheckstyleReporter.php;src/Reporting/SarifReporter.php;src/Reporting/Severity.php;tests/Unit/Reporting/	pending
-shell-S20	40		src/Scanning/FileScanner.php;tests/Unit/Scanning/FileScannerTest.php	pending
-shell-S21	40	shell-S20	src/Scanning/FileScanner.php;tests/Unit/Cli/ExcludeSemanticsTest.php;tests/Unit/Scanning/FileScannerTest.php	pending
-once-S78	10	shell-S21	src/Scanning/FileScanner.php;tests/Unit/Scanning/FileScannerTest.php	pending
-shell-S36	40		src/Cli/UpdateCommand.php;tests/Unit/Cli/UpdateCommandTest.php	pending
-once-S05	150	shell-S36	.github/workflows/release.yml;docs/RELEASE.md;src/Cli/UpdateCommand.php;tests/Unit/Cli/UpdateCommandTest.php	pending
-engine-S12	45		src/Clustering/Clusterer.php;src/Extraction/Block.php;tests/Unit/Clustering/ClustererTest.php	pending
-engine-S13	45	engine-S12	src/Clustering/Clusterer.php;tests/Unit/Clustering/ClustererTest.php	pending
-engine-S26	45	engine-S23b	src/Parallel/PreprocessWorker.php;src/Pipeline/Stages/PreprocessStage.php;tests/Unit/Parallel/PreprocessWorkerIsolationTest.php	pending
-engine-S28	45		src/Normalization/PluginRegistry.php;tests/Fixtures/;tests/Unit/Normalization/PluginRegistryTest.php	pending
-engine-S32	45		src/Fingerprint/CompactNgramBag.php;src/Fingerprint/NgramFingerprint.php;tests/Integration/FingerprintModeAcceptanceTest.php;tests/Unit/Fingerprint/CompactNgramBagTest.php	pending
-engine-S37	45		src/Normalization/SqlTableExtractor.php;tests/Unit/Normalization/SqlTableExtractorTest.php	pending
-engine-S38	45		src/Util/IdentifierIds.php;tests/Unit/Util/IdentifierIdsTest.php	pending
-engine-S39	45	engine-S23b	src/Persistence/SerializedClassAllowList.php;tests/Unit/Persistence/SerializedClassAllowListTest.php	pending
-output-S07	45		src/Reporting/CliReporter.php;tests/Unit/Reporting/CliReporterHonestyTest.php;tests/Unit/Reporting/CliReporterVerbosityTest.php	pending
-output-S15	45		src/Validation/MutationTester.php;tests/Unit/Validation/MutationTesterTest.php	pending
-shell-S14	45		src/Parallel/PairScoreWorker.php;src/Pipeline/Stages/ClusterStage.php;tests/Unit/Clustering/TedSizeGateTest.php;tests/Unit/Parallel/PairScoreWorkerTedParityTest.php	pending
-once-S25	15	shell-S14	src/Clustering/Clusterer.php;src/Parallel/PairScoreWorker.php;tests/Unit/Clustering/ClustererTest.php	pending
-shell-S23	45		src/Cli/Command.php;src/Pipeline/Stages/ScanningStage.php;tests/Unit/Pipeline/Stages/ScanningStageTest.php	pending
-once-S34	45	shell-S23	src/Cli/Command.php;src/Scanning/FileScanner.php;tests/Unit/Scanning/FileScannerTest.php	pending
-shell-S32	45		src/Cli/ProjectProfileDetector.php;tests/Unit/Cli/ProjectProfileDetectorTest.php	pending
-output-S02	60		src/Reporting/GitLabSastReporter.php;src/Reporting/JsonReporter.php;src/Reporting/SarifReporter.php;src/Reporting/TimeseriesReporter.php;src/Util/Json.php;tests/Unit/Util/JsonTest.php	pending
-once-S52	10	output-S02	src/Reporting/SarifReporter.php;tests/Unit/Reporting/SarifReporterTest.php	pending
-output-S03	45	output-S02	docs/JETBRAINS_PLUGIN.md;src/Reporting/CheckstyleReporter.php;src/Reporting/GitLabSastReporter.php;src/Reporting/JsonReporter.php;src/Reporting/SarifReporter.php;src/Reporting/TimeseriesReporter.php;src/Util/Version.php;tests/Unit/Util/VersionTest.php	pending
-output-S05	45	output-S02	src/Reporting/TimeseriesReporter.php;tests/Unit/Reporting/TimeseriesReporterTest.php	pending
-once-S38	15	output-S02,output-S05	src/Reporting/TimeseriesReporter.php;tests/Integration/CliSmokeTest.php;tests/Unit/Reporting/TimeseriesReporterTest.php	pending
-shell-S02	60	shell-S01	src/Cli/ServeCommand.php;src/Server/AnalysisWorker.php;tests/Unit/Server/ApplicationTest.php;tests/Unit/Server/ServeCommandTest.php	pending
-shell-S07	15	shell-S02	src/Server/AnalysisWorker.php;tests/Unit/Server/ApplicationTest.php	pending
-shell-S03	45	shell-S02	bin/phpdup-worker;src/Cli/ServeCommand.php;src/Server/AnalysisWorker.php;tests/Unit/Server/ServeCommandTest.php	pending
-shell-S04	40	shell-S03	src/Cli/ServeCommand.php;tests/Unit/Server/ServeCommandTest.php	pending
-once-S43	40	shell-S04	docs/SERVER.md;src/Cli/ServeCommand.php	pending
-shell-S05	50	shell-S04	src/Cli/ServeCommand.php;tests/Unit/Server/ServeCommandTest.php	pending
-shell-S15	60		src/Parallel/PreprocessWorker.php;src/Pipeline/Stages/PreprocessStage.php;tests/Unit/Parallel/PreprocessWorkerIsolationTest.php;tests/Unit/Pipeline/Stages/PreprocessStageTest.php	pending
-shell-S16	45	shell-S15	src/Parallel/PreprocessWorker.php;src/Pipeline/Stages/PreprocessStage.php;tests/Unit/Parallel/PreprocessWorkerIsolationTest.php;tests/Unit/Persistence/IndexStoreTest.php	pending
-shell-S17	45	shell-S16	src/Cli/Config.php;src/Parallel/PreprocessWorker.php;tests/Unit/Cli/PerDirectoryConfigTest.php;tests/Unit/Parallel/PreprocessWorkerIsolationTest.php	pending
-engine-S30	75		src/Fingerprint/ShapeletSketch.php;src/Index/BloomFilter.php;src/Util;tests/Unit/Fingerprint/ShapeletSketchTest.php;tests/Unit/Index/BloomFilterTest.php	pending
-engine-S24	90	engine-S23b	src/Parsing/AstCache.php;src/Parsing/TokenCache.php;tests/Unit/Extraction/BlockAstLoaderTest.php;tests/Unit/Parsing/AstCacheTest.php;tests/Unit/Parsing/TokenCacheTest.php	pending
-once-S10	90	engine-S30,output-S01	.github/workflows/ci.yml;README.md;composer.json	pending
-once-S40	90	output-S13,shell-S20,shell-S21	src/Reporting/BaselineStore.php;src/Reporting/FindingId.php;src/Scanning/FileScanner.php;src/Util/PathCanonical.php;tests/Unit/Scanning/FileScannerTest.php	pending
-output-S25	90		src/Refactor/AntiUnifier.php;tests/Unit/Refactor/AntiUnifierTest.php	pending
-shell-S26	90		src/Cli/ConfigLoader.php;tests/Unit/Cli/ConfigLoaderTest.php;tests/Unit/Cli/PerDirectoryConfigTest.php	pending
-shell-S22	45	shell-S17,shell-S26	docs/config-schema.json;src/Cli/Config.php;src/Cli/ConfigLoader.php;tests/Unit/Cli/PerDirOverrideBeltTest.php;tests/Unit/Cli/PerDirectoryConfigTest.php	pending
-shell-S24	60	shell-S22,shell-S23	docs/CLI.md;src/Cli/Command.php;src/Cli/ConfigLoader.php;tests/Integration/CliSmokeTest.php;tests/Unit/Cli/CliDefaultShadowingTest.php;tests/Unit/Cli/NumericFlagCoercionTest.php	pending
-once-S49	10	shell-S24	docs/CLI.md;tests/Unit/Cli/NumericFlagCoercionTest.php	pending
-once-S20	15	shell-S24	src/Cli/Command.php;src/Reporting/Ranker.php;tests/Unit/Cli/NumericFlagCoercionTest.php	pending
-once-S19	40	shell-S24	README.md;bin/phpdup;docs/CLI.md;tests/Unit/Cli/CliDefaultShadowingTest.php	pending
-shell-S27	40	shell-S22,shell-S24	docs/config-schema.json;src/Cli/Command.php;src/Cli/Config.php;src/Cli/ConfigLoader.php;tests/Unit/Cli/ConfigLoaderTest.php;tests/Unit/Cli/PerDirOverrideBeltTest.php	pending
-shell-S28	30	shell-S24,shell-S27	docs/CLI.md;src/Cli/Command.php;tests/Unit/Cli/CliDefaultShadowingTest.php	pending
-once-S06	45	shell-S27,shell-S28	src/Cli/Command.php;src/Pipeline/Stages/ReportStage.php	pending
-once-S07	60	once-S06	src/Tui/PhpdupModel.php;src/Tui/TuiRunner.php;tests/Unit/Tui/PhpdupModelTest.php;tests/Unit/Tui/TuiRunnerTest.php	pending
-once-S22	20	once-S06,shell-S24	src/Cli/Command.php;src/Tui/TuiRunner.php	pending
-once-S15	45	shell-S24	.github/actions/phpdup/action.yml;docs/CI.md;docs/CLI.md;src/Cli/Command.php	pending
-once-S50	45	output-S13,shell-S28	docs/CLI.md;src/Reporting/BaselineStore.php;tests/Unit/Reporting/BaselineStoreTest.php	pending
-shell-S25	45	shell-S24	src/Cli/AutoTuner.php;src/Cli/Command.php;tests/Unit/Cli/AutoTunerTest.php;tests/Unit/Cli/ConfigLoaderTest.php	pending
-once-S16	60	shell-S25,shell-S32	docs/CLI.md;profiles/;src/Cli/Command.php;src/Cli/ProjectProfileDetector.php;tests/Unit/Cli/ProjectProfileDetectorTest.php	pending
-once-S100	40	engine-S06b,once-S16	profiles/db-aware-illuminate.json;profiles/db-aware-laravel.json;profiles/db-aware-thinkorm.json;src/Normalization/DbOpRegistry.php;tests/Unit/Normalization/DbOpRegistryTest.php	pending
-once-S18	60	shell-S28	docs/CLI.md;tests/Unit/Cli/DocFlagParityTest.php	pending
-once-S26	60	shell-S25	src/Cli/AutoTuner.php;src/Cli/Command.php;tests/Unit/Cli/AutoTunerTest.php	pending
-engine-S07	120		src/Normalization/TrinityCollapser.php;tests/Unit/Normalization/TrinityCollapserTest.php	pending
-engine-S22	120		src/Ml/PairFeatures.php;tests/Unit/Ml/PairFeaturesTest.php	pending
-once-S28	120	shell-S20,shell-S21,shell-S22,shell-S26	docs/CLI.md;src/Cli/ConfigLoader.php;src/Pipeline/Stages/ScanningStage.php;src/Scanning/FileScanner.php;tests/Unit/Cli/PerDirectoryConfigTest.php	pending
-once-S85	120	once-S09	README.md;bench/comparative.php;bench/feature-matrix.md;bench/results;bench/score-audit.php;docs/algorithms/clustering.md	pending
-shell-S08	120	shell-S01,shell-S02,shell-S07	src/Cli/ServeCommand.php;src/Server/AnalysisWorker.php;src/Server/Application.php;tests/Unit/Cli/ServeCommandTest.php;tests/Unit/Server/ApplicationTest.php	pending
-once-S02	90	shell-S06,shell-S08	src/Server/Application.php;src/Server/JobQueue.php;tests/Unit/Server/ApplicationTest.php;tests/Unit/Server/JobQueueTest.php	pending
-shell-S09	30	shell-S01,shell-S02,shell-S03,shell-S04,shell-S05,shell-S08	docs/SERVER.md;src/Cli/ServeCommand.php;src/Server/Application.php	pending
-once-S03	45	once-S02,shell-S09	src/Server/AnalysisWorker.php;src/Server/Application.php;tests/Unit/Server/ApplicationTest.php	pending
-once-S57	15	shell-S09	README.md;docs/SERVER.md	pending
-once-S17	20	shell-S09	docs/PLAYGROUND.md;docs/SERVER.md;src/Server/Application.php	pending
-shell-S35	45	shell-S03,shell-S09	build-phar.php;docs/SERVER.md;src/Cli/ServeCommand.php;tests/Unit/Cli/ServeCommandTest.php	pending
-once-S42	90	once-S02,shell-S05,shell-S08	docs/SERVER.md;src/Cli/ServeCommand.php;src/Server/Application.php	pending
-shell-S10	120		src/Cli/ConfigLoader.php;src/Parallel/WorkerPool.php;tests/Unit/Cli/NumericFlagCoercionTest.php;tests/Unit/Parallel/WorkerPoolTest.php;tests/Unit/Parallel/WorkerPoolWireTest.php	pending
-once-S46	10	once-S02,shell-S10	src/Server/AnalysisWorker.php;tests/Unit/Server/AnalysisWorkerTest.php	pending
-shell-S11	45	shell-S10	src/Parallel/WorkerPool.php;src/Persistence/SerializedClassAllowList.php;tests/Unit/Parallel/WorkerPoolTest.php;tests/Unit/Persistence/SerializedClassAllowListTest.php	pending
-shell-S12	40	shell-S10,shell-S11,shell-S14,shell-S15	src/Parallel/WorkerPool.php;src/Pipeline/Stages/ClusterStage.php;src/Pipeline/Stages/PreprocessStage.php;src/Pipeline/Stages/RefactorStage.php;tests/Unit/Parallel/WorkerPoolTest.php	pending
-once-S77	60	shell-S10	docs/CLI.md;src/Cli/Command.php;src/Parallel/WorkerPool.php;tests/Unit/Parallel/WorkerPoolTest.php	pending
-shell-S18	120		src/Persistence/ClusterCache.php;src/Persistence/IndexStore.php;tests/Unit/Persistence/ClusterCacheTest.php;tests/Unit/Persistence/ClusterCacheVersionTest.php;tests/Unit/Persistence/IndexStoreTest.php	pending
-shell-S19	60	shell-S11,shell-S18	src/Persistence/ClusterCache.php;src/Persistence/IndexStore.php;tests/Unit/Persistence/ClusterCacheTest.php;tests/Unit/Persistence/IndexStoreTest.php	pending
-shell-S30	60	shell-S14,shell-S18	src/Pipeline/Stages/ClusterStage.php;tests/Unit/Persistence/ClusterCacheTest.php;tests/Unit/Persistence/ClusterCacheVersionTest.php;tests/Unit/Pipeline/Stages/ClusterStageTest.php	pending
-shell-S31	45	shell-S10,shell-S22,shell-S26,shell-S27,shell-S30	docs/config-schema.json;src/Cli/ConfigLoader.php;tests/Unit/Cli/ConfigSchemaParityTest.php	pending
-once-S83	45	output-S06,shell-S28,shell-S29,shell-S31	docs/CLI.md;docs/config-schema.json;src/Cli/AutoTuner.php;src/Cli/Command.php;src/Clustering/Clusterer.php;src/Refactor/PlacementAdvisor.php	pending
-shell-S39	60	engine-S39,shell-S01,shell-S02,shell-S08,shell-S11,shell-S18	src/Cli/Config.php;src/Cli/ServeCommand.php;src/Persistence/IndexStore.php;src/Persistence/SerializedClassAllowList.php;src/Server/AnalysisWorker.php;src/Server/Application.php	pending
-shell-S13	25	shell-S12,shell-S39	src/Parallel/WorkerPool.php;tests/Unit/Parallel/WorkerPoolTest.php	pending
-once-S45	30	shell-S13	src/Parallel/WorkerPool.php;tests/Unit/Parallel/WorkerPoolTest.php	pending
-once-S44	20	once-S45,shell-S03,shell-S39	bin/phpdup-worker;src/Cli/ServeCommand.php;src/Server/AnalysisWorker.php	pending
-once-S71	45	once-S02,shell-S02,shell-S39	docs/SERVER.md;src/Cli/ServeCommand.php;src/Server/Application.php	pending
-once-S97	30	once-S42,once-S71,shell-S05,shell-S39	docs/SERVER.md;src/Cli/ServeCommand.php;src/Server/Application.php	pending
-once-S64	90	engine-S23b,engine-S24,shell-S18,shell-S19,shell-S39	docs/CLI.md;src/Cli/Command.php;src/Persistence/ClusterCache.php;src/Persistence/IndexStore.php;tests/Unit/Persistence/ClusterCacheTest.php	pending
-once-S73	90	once-S71,shell-S08,shell-S35	docs/PLAYGROUND.md;src/Cli/ServeCommand.php;src/Server/Application.php	pending
-once-S74	90	shell-S03,shell-S07,shell-S10,shell-S13,shell-S39	src/Cli/Command.php;src/Parallel/WorkerPool.php;src/Server/AnalysisWorker.php;src/Util/Framing.php;tests/Unit/Parallel/WorkerPoolTest.php	pending
-shell-S33	120		src/Watch/FileWatcher.php;src/Watch/WatchRunner.php;tests/Unit/Watch/FileWatcherTest.php;tests/Unit/Watch/WatchRunnerTest.php	pending
-once-S08	15	shell-S33	src/Watch/WatchRunner.php;tests/Unit/Watch/WatchRunnerTest.php	pending
-shell-S40	40	shell-S33	src/Pipeline/Stages/ReportStage.php;src/Tui/PhpdupModel.php;src/Watch/FileWatcher.php;tests/Unit/Pipeline/Stages/ReportStageTest.php;tests/Unit/Tui/PhpdupModelTest.php	pending
-shell-S34	45	shell-S20,shell-S21,shell-S23,shell-S28,shell-S33	src/Cli/Command.php;src/Pipeline/Stages/ScanningStage.php;src/Scanning/FileScanner.php;src/Watch/WatchRunner.php;tests/Unit/Pipeline/Stages/ScanningStageTest.php;tests/Unit/Scanning/FileScannerTest.php	pending
-shell-S37	30	shell-S12,shell-S15,shell-S16,shell-S23,shell-S30,shell-S34	src/Pipeline/Stages/ClusterStage.php;src/Pipeline/Stages/PreprocessStage.php;src/Pipeline/Stages/RefactorStage.php;src/Pipeline/Stages/ScanningStage.php	pending
-once-S23	45	engine-S24,shell-S16,shell-S37	src/Pipeline/Stages/ClusterStage.php;src/Pipeline/Stages/PreprocessStage.php;tests/Unit/Cli/CacheKeyKnobReplayTest.php	pending
-once-S75	75	once-S07,once-S45,shell-S33	src/Cli/Command.php;src/Cli/SignalHandler.php;src/Tui/TuiRunner.php;src/Watch/WatchRunner.php;tests/Unit/Cli/SignalHandlerTest.php	pending
-engine-S18a	140	engine-S01,engine-S12,engine-S32	src/Extraction/Block.php;src/Fingerprint/NgramFingerprint.php;src/Index/NgramInvertedIndex.php;src/Parallel/PreprocessWorker.php;src/Pipeline/Stages/PreprocessStage.php;tests/Unit/Fingerprint/NgramFingerprintModeTest.php;tests/Unit/Fingerprint/NgramFingerprintTest.php;tests/Unit/Index/NgramInvertedIndexTest.php	pending
-engine-S08a	150	engine-S01	src/Similarity/AptedDistance.php;tests/Unit/Clustering/ClustererRunningMinTest.php;tests/Unit/Similarity/AptedDistanceModeTest.php;tests/Unit/Similarity/AptedDistanceTest.php;tests/Unit/Similarity/EditCostModelTest.php	pending
-engine-S08b	150	engine-S01,engine-S08a	src/Similarity/AptedDistance.php;tests/Golden/;tests/Golden/optional-near-dups.json;tests/Unit/Clustering/ClustererRunningMinTest.php;tests/Unit/Similarity/AptedDistanceModeTest.php;tests/Unit/Similarity/AptedDistanceTest.php;tests/Unit/Similarity/EditCostModelTest.php	pending
-engine-S19a	150		src/Ml/MlClient.php;src/Ml/MlPairClient.php;tests/Unit/Ml/MlClientTest.php;tests/Unit/Ml/MlPairClientTest.php	pending
-engine-S19b	150	engine-S19a	src/Ml/MlClient.php;src/Ml/MlPairClient.php;tests/Unit/Ml/MlClientTest.php;tests/Unit/Ml/MlPairClientTest.php	pending
-engine-S20	120	engine-S19b	src/Ml/MlClient.php;src/Ml/MlPairClient.php;tests/Unit/Ml/MlClientTest.php;tests/Unit/Ml/MlPairClientTest.php	pending
-once-S48	15	engine-S20	src/Ml/MlPairClient.php;src/Ml/PairFeatures.php;tests/Unit/Ml/MlPairClientTest.php	pending
-once-S53	60	engine-S19b,once-S48,shell-S08	docs/ML.md;docs/SERVER.md;src/Ml/MlPairClient.php;tools/ml-sidecar-example.php	pending
-once-S54	90	engine-S19b,engine-S20,once-S48,shell-S22	docs/CLI.md;docs/ML.md;docs/config-schema.json;src/Cli/Config.php;src/Cli/ConfigLoader.php;src/Ml/MlPairClient.php;tests/Unit/Cli/MlPairUrlValidationTest.php	pending
-once-S51	10	once-S54,shell-S27,shell-S31	docs/config-schema.json	pending
-engine-S21	150	engine-S20	src/Clustering/Clusterer.php;src/Ml/MlClient.php;src/Ml/MlPairClient.php;src/Parallel/PairScoreWorker.php;tests/Unit/Ml/	pending
-engine-S31a	150	engine-S22,engine-S23b	src/Fingerprint/MinHashSignature.php;src/Index/LshIndex.php;src/Semantic/CallGraph.php;src/Semantic/ControlFlowGraph.php;src/Semantic/NullTypeProvider.php;src/Semantic/PsalmTypeProvider.php;src/Semantic/TypeProvider.php;src/Similarity/BehaviouralSimilarity.php;tests/Unit/Fingerprint/MinHashSignatureTest.php;tests/Unit/Index/LshIndexTest.php;tests/Unit/Semantic/;tests/Unit/Similarity/BehaviouralSimilarityTest.php	pending
-engine-S31b	120	engine-S31a	src/Extraction/BlockHeader.php;src/Index/BloomCandidateIndex.php;src/Index/ExternalSort.php;src/Ir/IrSimilarity.php;tests/Unit/Index/;tests/Unit/Ir/IrSimilarityTest.php	pending
-engine-S31c	130	engine-S23b,engine-S31b	README.md;docs/ML.md;docs/adr/0003-similarity-stack.md;src/Normalization/LiteralCanonicalizer.php;src/Normalization/NameCanonicalizer.php;src/Parsing/TokenCache.php;src/Semantic/DataflowSummarizer.php;tests/Unit/Normalization/;tests/Unit/Parsing/TokenCacheTest.php;tests/Unit/Semantic/DataflowSummarizerTest.php	pending
-once-S32	30	engine-S31c	README.md;docs/adr/0003-similarity-stack.md;docs/algorithms/clustering.md;src/Semantic/;src/Validation/	pending
-once-S89	45	engine-S19b,engine-S20,engine-S21,engine-S31c,once-S54	src/Ml/MlClient.php;src/Ml/MlPairClient.php;src/Util/Http.php	pending
-once-S90	20	engine-S20,once-S89	src/Ml/MlPairClient.php;tests/Unit/Ml/MlPairClientTest.php	pending
-once-S92	45	engine-S19b,once-S89	src/Ml/MlPairClient.php;src/Util/Http.php;tests/Unit/Ml/MlPairClientTest.php	pending
-once-S79	60	engine-S31c,output-S10,shell-S28	.gitlab/phpdup-ci.yml;docs/CI.md;docs/CLI.md;docs/ML.md;docs/config-schema.json;docs/ml-corpus-format.md;src/Cli/Command.php;src/Cli/Config.php;src/Cli/ConfigLoader.php;src/Clustering/Clusterer.php;src/Extraction/Block.php;src/Ir/IrNode.php;src/Ir/IrSimilarity.php;src/Ml/MlPairClient.php;src/Ml/PairFeatures.php;src/Semantic/DbOperationTagger.php;src/Similarity/BehaviouralSimilarity.php	pending
-output-S18	150		src/Reporting/DiffReporter.php;src/Reporting/GraphvizReporter.php;src/Reporting/JsonReporter.php;src/Reporting/PlantumlReporter.php;src/Reporting/PrometheusReporter.php;src/Reporting/RefactorPatchReporter.php;src/Util/ControlText.php;tests/Unit/Reporting/;tests/Unit/Util/ControlTextTest.php	pending
-output-S20	60	output-S02,output-S18	docs/CLI.md;src/Reporting/PrometheusReporter.php;tests/Unit/Reporting/PrometheusReporterTest.php	pending
-output-S19	90	output-S18	src/Refactor/PlacementAdvisor.php;src/Reporting/CliReporter.php;tests/Unit/Refactor/PlacementAdvisorTest.php;tests/Unit/Reporting/CliReporterHonestyTest.php	pending
-once-S21	30	output-S18,output-S19	src/Tui/ViewState.php;tests/Unit/Tui/ViewStateTest.php	pending
-output-S22	90	output-S18	src/Reporting/CsvReporter.php;src/Reporting/DiffReporter.php;src/Reporting/RefactorPatchReporter.php;src/Reporting/RefactorTestReporter.php;tests/Unit/Reporting/	pending
-once-S58	45	output-S18,output-S22	src/Reporting/CheckstyleReporter.php;src/Reporting/CsvReporter.php;src/Reporting/GitLabSastReporter.php;tests/Unit/Reporting/CsvReporterTest.php	pending
-once-S61	120	once-S06,once-S21	src/Tui/PhpdupModel.php;src/Tui/ViewState.php;tests/Unit/Tui/ViewStateTest.php	pending
-once-S62	20	once-S61	src/Tui/PhpdupModel.php;src/Tui/ViewState.php	pending
-once-S63	90	once-S21,once-S61	src/Tui/PhpdupModel.php;src/Tui/ViewState.php	pending
-engine-S18b	160	engine-S01,engine-S12,engine-S18a,engine-S32	src/Extraction/Block.php;src/Fingerprint/NgramFingerprint.php;src/Index/NgramInvertedIndex.php;src/Parallel/PreprocessWorker.php;src/Pipeline/Stages/PreprocessStage.php;tests/Unit/Fingerprint/NgramFingerprintModeTest.php;tests/Unit/Fingerprint/NgramFingerprintTest.php;tests/Unit/Index/NgramInvertedIndexTest.php	pending
-engine-S09	180	engine-S08b,engine-S30	src/Similarity/AptedDistance.php;src/Similarity/TreeEditDistance.php;tests/Unit/Similarity/AptedDistanceTest.php	pending
-engine-S25	180	engine-S24	docs/CLI.md;docs/config-schema.json;src/Cli/Command.php;src/Cli/Config.php;src/Parsing/AstCache.php;tests/Unit/Cli/ConfigDefaultsExcludesTest.php;tests/Unit/Cli/ConfigLoaderTest.php;tests/Unit/Parsing/AstCacheTest.php	pending
-once-S11	180	once-S10	.github/dependabot.yml;.github/workflows/ci.yml;.github/workflows/release.yml;bench/run-all.sh;composer.json	pending
-once-S12	60	once-S05,once-S11,shell-S35	.github/workflows/release.yml;README.md;docs/RELEASE.md;src/Cli/UpdateCommand.php	pending
-once-S91	45	once-S05,once-S12,shell-S36	docs/RELEASE.md;src/Cli/UpdateCommand.php;tests/Unit/Cli/UpdateCommandTest.php	pending
-once-S14	90	once-S10,once-S12	.github/actions/phpdup/action.yml;.gitlab/phpdup-ci.yml;docs/CI.md	pending
-once-S31	90	once-S11,shell-S35	bin/phpdup;box.json;build-phar.php	pending
-once-S30	30	once-S31,output-S03,shell-S35	.github/workflows/ci.yml;bin/phpdup;build-phar.php;src/Cli/UpdateCommand.php;src/Reporting/GitLabSastReporter.php;src/Reporting/JsonReporter.php;src/Reporting/SarifReporter.php;src/Reporting/TimeseriesReporter.php	pending
-once-S56	45	once-S05,once-S30,once-S31	.github/workflows/ci.yml;tests/Golden/	pending
-once-S99	45	once-S05,once-S30,once-S91,shell-S36	docs/RELEASE.md;src/Cli/UpdateCommand.php;tests/Unit/Cli/UpdateCommandTest.php	pending
-once-S86	90	engine-S01,once-S11,once-S85	bench/corpora;bench/corpus-pins.txt;bench/run-all.sh;tests/Fuzz/DetectionRateTest.php	pending
-once-S94	180	once-S02,once-S03,once-S42,once-S46,once-S73	tests/Unit/Server/AnalysisWorkerTest.php;tests/Unit/Server/ApplicationTest.php;tests/Unit/Server/JobQueueTest.php;tests/Unit/Watch/WatchRunnerTest.php	pending
-output-S31	180		src/Refactor/PatternRecognizer.php;tests/Unit/Refactor/PatternRecognizerTest.php;tests/Unit/Reporting/SafetyScorerTest.php	pending
-output-S32	150	output-S31	src/Architecture/Analyzers/SolidAnalyzer.php;src/Refactor/PatternRecognizer.php;tests/Unit/Architecture/ArchitecturalAnalyzersTest.php	pending
-output-S33	120	output-S32	src/Architecture/Analyzers/AntiPatternAnalyzer.php;src/Architecture/Analyzers/DesignPatternAnalyzer.php;src/Architecture/Analyzers/SolidAnalyzer.php;src/Reporting/DeclaredTwinAnalyzer.php;tests/Unit/Architecture/ArchitecturalAnalyzersTest.php;tests/Unit/Reporting/DeclaredTwinAnalyzerTest.php	pending
-output-S34	180	output-S33	src/Pipeline/Stages/ReportStage.php;src/Reporting/DeclaredTwinAnalyzer.php;tests/Unit/Reporting/DeclaredTwinAnalyzerTest.php	pending
-engine-S29	210		src/Ir/IrLifter.php;tests/Unit/Ir/IrLifterTest.php	pending
-engine-S03	240	engine-S02b	src/Extraction/BlockExtractor.php;src/Index/BlockIndex.php;src/Normalization/Normalizer.php;src/Refactor/PatternRecognizer.php;tests/Unit/Extraction/BlockExtractorTest.php;tests/Unit/Normalization/NormalizerTest.php;tests/Unit/Refactor/PatternRecognizerTest.php	pending
-engine-S04	240	engine-S03	src/Normalization/Normalizer.php;src/Util/CanonicalNodePool.php;tests/Unit/Clustering/TedSizeGateTest.php;tests/Unit/Normalization/NormalizerTest.php;tests/Unit/Util/CanonicalNodePoolTest.php	pending
-engine-S05	15	engine-S04,engine-S06b,engine-S07	src/Normalization/DbOpCanonicalizer.php;src/Normalization/Normalizer.php;src/Normalization/TrinityCollapser.php	pending
-once-S24	75	engine-S05,shell-S16	docs/CLI.md;src/Cli/Command.php;src/Normalization/NormalizationPlugin.php;src/Normalization/Normalizer.php	pending
-engine-S16a	140	engine-S04	src/Extraction/BlockAstLoader.php;tests/Fixtures/;tests/Unit/Extraction/BlockAstLoaderTest.php	pending
-engine-S16b	140	engine-S04,engine-S16a	src/Extraction/BlockAstLoader.php;tests/Fixtures/;tests/Unit/Extraction/BlockAstLoaderTest.php	pending
-engine-S17a	140	engine-S16b	src/Extraction/BlockAstLoader.php;tests/Unit/Extraction/BlockAstLoaderTest.php	pending
-engine-S34a	140	engine-S02b,engine-S04,engine-S25	src/Util/AstSerializer.php;tests/Unit/Fingerprint/NgramFingerprintTest.php;tests/Unit/Util/AstSerializerTest.php	pending
-engine-S17b	160	engine-S16b,engine-S17a	src/Extraction/BlockAstLoader.php;tests/Integration/;tests/Unit/Extraction/BlockAstLoaderTest.php	pending
-engine-S34b	160	engine-S02b,engine-S04,engine-S25,engine-S34a	.phpdup-cache-key.version;src/Fingerprint/FingerprintIdMode.php;src/Util/AstSerializer.php;tests/Golden/;tests/Unit/Cli/FingerprintIdModeConfigTest.php;tests/Unit/Fingerprint/NgramFingerprintTest.php;tests/Unit/Util/AstSerializerTest.php	pending
-once-S87	75	engine-S17b,engine-S34b,engine-S38,shell-S38	src/Extraction/BlockAstLoader.php;src/Pipeline/Stages/ScanningStage.php;src/Util/PathCanonical.php;tests/Unit/Extraction/BlockAstLoaderTest.php;tests/Unit/Util/AstSerializerTest.php	pending
-engine-S11	240	engine-S13	src/Clustering/Clusterer.php;tests/Unit/Clustering/ClustererGeneratorTest.php;tests/Unit/Clustering/ClustererIdDeterminismTest.php;tests/Unit/Clustering/ClustererMedoidSplitTest.php;tests/Unit/Clustering/ClustererTest.php	pending
-engine-S14	60	engine-S11	src/Clustering/Clusterer.php;src/Similarity/ContainmentSimilarity.php;tests/Unit/Similarity/ContainmentSimilarityTest.php	pending
-engine-S15	150	engine-S01,engine-S14	src/Clustering/Clusterer.php;src/Clustering/MatchTier.php;tests/Golden/;tests/Golden/optional-near-dups.json;tests/Unit/Clustering/ClustererTest.php;tests/Unit/Clustering/IrTierClustererTest.php;tests/Unit/Clustering/MlPairTierClustererTest.php;tests/Unit/Clustering/TedSizeGateTest.php	pending
-engine-S10	240	engine-S09,engine-S15	src/Cli/Config.php;src/Clustering/Clusterer.php;tests/Golden/;tests/Unit/Clustering/GenerationBudgetTest.php;tests/Unit/Clustering/TedSizeGateTest.php	pending
-once-S102	45	engine-S10,engine-S31c,once-S31,once-S87,output-S02	build-phar.php;src/Pipeline/Stages/RefactorStage.php;src/Refactor/RefactorWorker.php;src/Semantic/PsalmTypeProvider.php;src/Validation;tests/Unit/Parallel/RefactorWorkerTest.php	pending
-once-S33	150	engine-S09,engine-S10,engine-S11,shell-S37	src/Clustering/Clusterer.php;src/Index/BlockIndex.php;src/Pipeline/Stages/ClusterStage.php;tests/Unit/Clustering/GenerationBudgetTest.php	pending
-once-S68	150	engine-S10,engine-S15,engine-S18b,engine-S31c,output-S01,shell-S37	docs/adr/0001-cooperative-pipeline.md;docs/adr/0002-anti-unification.md;docs/adr/0003-similarity-stack.md;docs/algorithms/anti-unification.md;docs/algorithms/clustering.md;docs/config-schema.json;docs/ml-corpus-format.md;src/Cli/Config.php;src/Extraction/BlockExtractor.php	pending
-once-S80	105	once-S10,once-S24,once-S34,once-S54,once-S64,once-S68,once-S79,shell-S24	REPORT-ONLY	pending
-engine-S33	240	engine-S18b,engine-S32,engine-S34b	src/Fingerprint/NgramFingerprint.php;src/Fingerprint/SubtreeHasher.php;tests/Unit/Fingerprint/NgramFingerprintTest.php;tests/Unit/Fingerprint/SubtreeHasherTest.php	pending
-once-S47	240	shell-S33,shell-S40	src/Watch/FileWatcher.php;src/Watch/WatchRunner.php;tests/Unit/Watch/FileWatcherTest.php;tests/Unit/Watch/WatchRunnerTest.php	pending
+engine-S01	120		src/Index/NgramInvertedIndex.php;tests/Fuzz/DetectionRateTest.php;tests/Golden/;tests/Golden/optional-near-dups.json;tests/Unit/Index/NgramInvertedIndexTest.php	done
+engine-S02a	150		src/Clustering/Clusterer.php;src/Normalization/Normalizer.php;tests/Unit/Normalization/NormalizerBareReturnTest.php;tests/Unit/Normalization/NormalizerTest.php	done
+engine-S02b	150	engine-S02a	src/Clustering/Clusterer.php;src/Normalization/Normalizer.php;tests/Golden/;tests/Unit/Normalization/NormalizerBareReturnTest.php;tests/Unit/Normalization/NormalizerTest.php	done
+engine-S23a	150		src/Parsing/;src/Util/;tests/Unit/Parsing/AstCacheTest.php;tests/Unit/Parsing/TokenCacheTest.php	done
+engine-S23b	120	engine-S23a	src/Parsing/;src/Parsing/AstCache.php;src/Parsing/TokenCache.php;src/Util/;tests/Unit/Parsing/AstCacheTest.php;tests/Unit/Parsing/TokenCacheTest.php;tests/Unit/Persistence/SerializedClassAllowListTest.php	done
+engine-S06a	160		docs/config-schema.json;profiles/;src/Normalization/DbOpCanonicalizer.php;src/Normalization/DbOpRegistry.php;tests/Unit/Normalization/CustomDbSymbolsTest.php;tests/Unit/Normalization/DbOpCanonicalizerTest.php;tests/Unit/Normalization/DbOpRegistryTest.php	done
+engine-S06b	140	engine-S06a	docs/config-schema.json;profiles/;src/Normalization/DbOpCanonicalizer.php;src/Normalization/DbOpRegistry.php;tests/Unit/Normalization/CustomDbSymbolsTest.php;tests/Unit/Normalization/DbOpCanonicalizerTest.php;tests/Unit/Normalization/DbOpRegistryTest.php	done
+shell-S01	160		bin/phpdup-worker;src/Cli/ServeCommand.php;src/Server/AnalysisWorker.php;src/Server/Application.php;tests/Unit/Cli/ServeCommandTest.php;tests/Unit/Server/ApplicationTest.php	done
+output-S10	5		src/Architecture/ArchitecturalAnalyzer.php	done
+output-S04	10		src/Reporting/GitLabSastReporter.php;tests/Unit/Reporting/GitLabSastReporterTest.php	done
+shell-S38	10		src/Phpdup.php;tests/Unit/PhpdupTest.php	done
+output-S08	15		src/Testing/BenchmarkResultsRenderer.php;tests/Unit/Bench/BenchmarkResultsRendererTest.php	done
+shell-S29	15		src/Pipeline/DebugLogger.php;tests/Unit/Pipeline/DebugLoggerTest.php	done
+once-S69	10	shell-S29	src/Pipeline/DebugLogger.php;tests/Unit/Pipeline/PipelineTest.php	done
+engine-S35	20		src/Util/MemoryDebug.php;tests/Unit/Cli/CliStatsTest	done
+output-S06	20		src/Refactor/PlacementAdvisor.php;tests/Unit/Refactor/PlacementAdvisorTest.php	done
+output-S11	25		src/Cli/Config.php;src/Refactor/AntiUnifier.php;src/Reporting/CoherenceAnalyzer.php;src/Reporting/Ranker.php;tests/Unit/Cli/ConfigTest.php;tests/Unit/Reporting/CoherenceAnalyzerTest.php	done
+engine-S27	30		src/Parsing/AstParser.php;tests/Unit/Parsing/AstParserTest.php	done
+engine-S36	30		src/Index/BlockIndex.php;tests/Unit/Index/BlockIndexTest.php	done
+once-S59	30	output-S04	src/Reporting/GitLabSastReporter.php;tests/Unit/Reporting/GitLabSastReporterTest.php	done
+once-S82	30		findings.md;plan.md;prompt.md	done
+output-S01	30		psalm-baseline.xml;psalm.xml;src/Refactor/PatternRecognizer.php	done
+output-S09	30		src/Testing/FuzzCorpusGenerator.php;tests/Unit/	done
+output-S12	30		src/Reporting/CoherenceAnalyzer.php;tests/Unit/Reporting/CoherenceAnalyzerTest.php	done
+output-S13	30		src/Reporting/BaselineStore.php;tests/Unit/Reporting/BaselineStoreTest.php	done
+output-S17	35		src/Refactor/ApplyExtractor.php;src/Reporting/DiffReporter.php;src/Reporting/RefactorPatchReporter.php;src/Reporting/RefactorTestReporter.php;src/Reporting/Slug.php;tests/Unit/Reporting/SlugTest.php	done
+shell-S06	35		src/Server/JobQueue.php;tests/Unit/Server/JobQueueTest.php	done
+output-S14	40		src/Reporting/ClusterSort.php;tests/Unit/Reporting/ClusterSortTest.php	done
+output-S16	40		src/Testing/BenchmarkScoreCalculator.php;tests/Unit/Bench/BenchmarkScoreCalculatorTest.php	done
+once-S09	240	output-S16	bench/corpora;bench/run.php;bench/score.php;src/Testing/BenchmarkScoreCalculator.php;tests/Unit/Bench/BenchmarkScoreCalculatorTest.php	done
+output-S21	40		src/Reporting/CheckstyleReporter.php;src/Reporting/SarifReporter.php;src/Reporting/Severity.php;tests/Unit/Reporting/	done
+shell-S20	40		src/Scanning/FileScanner.php;tests/Unit/Scanning/FileScannerTest.php	done
+shell-S21	40	shell-S20	src/Scanning/FileScanner.php;tests/Unit/Cli/ExcludeSemanticsTest.php;tests/Unit/Scanning/FileScannerTest.php	done
+once-S78	10	shell-S21	src/Scanning/FileScanner.php;tests/Unit/Scanning/FileScannerTest.php	done
+shell-S36	40		src/Cli/UpdateCommand.php;tests/Unit/Cli/UpdateCommandTest.php	done
+once-S05	150	shell-S36	.github/workflows/release.yml;docs/RELEASE.md;src/Cli/UpdateCommand.php;tests/Unit/Cli/UpdateCommandTest.php	done
+engine-S12	45		src/Clustering/Clusterer.php;src/Extraction/Block.php;tests/Unit/Clustering/ClustererTest.php	done
+engine-S13	45	engine-S12	src/Clustering/Clusterer.php;tests/Unit/Clustering/ClustererTest.php	done
+engine-S26	45	engine-S23b	src/Parallel/PreprocessWorker.php;src/Pipeline/Stages/PreprocessStage.php;tests/Unit/Parallel/PreprocessWorkerIsolationTest.php	done
+engine-S28	45		src/Normalization/PluginRegistry.php;tests/Fixtures/;tests/Unit/Normalization/PluginRegistryTest.php	done
+engine-S32	45		src/Fingerprint/CompactNgramBag.php;src/Fingerprint/NgramFingerprint.php;tests/Integration/FingerprintModeAcceptanceTest.php;tests/Unit/Fingerprint/CompactNgramBagTest.php	done
+engine-S37	45		src/Normalization/SqlTableExtractor.php;tests/Unit/Normalization/SqlTableExtractorTest.php	done
+engine-S38	45		src/Util/IdentifierIds.php;tests/Unit/Util/IdentifierIdsTest.php	done
+engine-S39	45	engine-S23b	src/Persistence/SerializedClassAllowList.php;tests/Unit/Persistence/SerializedClassAllowListTest.php	done
+output-S07	45		src/Reporting/CliReporter.php;tests/Unit/Reporting/CliReporterHonestyTest.php;tests/Unit/Reporting/CliReporterVerbosityTest.php	done
+output-S15	45		src/Validation/MutationTester.php;tests/Unit/Validation/MutationTesterTest.php	done
+shell-S14	45		src/Parallel/PairScoreWorker.php;src/Pipeline/Stages/ClusterStage.php;tests/Unit/Clustering/TedSizeGateTest.php;tests/Unit/Parallel/PairScoreWorkerTedParityTest.php	done
+once-S25	15	shell-S14	src/Clustering/Clusterer.php;src/Parallel/PairScoreWorker.php;tests/Unit/Clustering/ClustererTest.php	done
+shell-S23	45		src/Cli/Command.php;src/Pipeline/Stages/ScanningStage.php;tests/Unit/Pipeline/Stages/ScanningStageTest.php	done
+once-S34	45	shell-S23	src/Cli/Command.php;src/Scanning/FileScanner.php;tests/Unit/Scanning/FileScannerTest.php	done
+shell-S32	45		src/Cli/ProjectProfileDetector.php;tests/Unit/Cli/ProjectProfileDetectorTest.php	done
+output-S02	60		src/Reporting/GitLabSastReporter.php;src/Reporting/JsonReporter.php;src/Reporting/SarifReporter.php;src/Reporting/TimeseriesReporter.php;src/Util/Json.php;tests/Unit/Util/JsonTest.php	done
+once-S52	10	output-S02	src/Reporting/SarifReporter.php;tests/Unit/Reporting/SarifReporterTest.php	done
+output-S03	45	output-S02	docs/JETBRAINS_PLUGIN.md;src/Reporting/CheckstyleReporter.php;src/Reporting/GitLabSastReporter.php;src/Reporting/JsonReporter.php;src/Reporting/SarifReporter.php;src/Reporting/TimeseriesReporter.php;src/Util/Version.php;tests/Unit/Util/VersionTest.php	done
+output-S05	45	output-S02	src/Reporting/TimeseriesReporter.php;tests/Unit/Reporting/TimeseriesReporterTest.php	done
+once-S38	15	output-S02,output-S05	src/Reporting/TimeseriesReporter.php;tests/Integration/CliSmokeTest.php;tests/Unit/Reporting/TimeseriesReporterTest.php	done
+shell-S02	60	shell-S01	src/Cli/ServeCommand.php;src/Server/AnalysisWorker.php;tests/Unit/Server/ApplicationTest.php;tests/Unit/Server/ServeCommandTest.php	done
+shell-S07	15	shell-S02	src/Server/AnalysisWorker.php;tests/Unit/Server/ApplicationTest.php	done
+shell-S03	45	shell-S02	bin/phpdup-worker;src/Cli/ServeCommand.php;src/Server/AnalysisWorker.php;tests/Unit/Server/ServeCommandTest.php	done
+shell-S04	40	shell-S03	src/Cli/ServeCommand.php;tests/Unit/Server/ServeCommandTest.php	done
+once-S43	40	shell-S04	docs/SERVER.md;src/Cli/ServeCommand.php	done
+shell-S05	50	shell-S04	src/Cli/ServeCommand.php;tests/Unit/Server/ServeCommandTest.php	done
+shell-S15	60		src/Parallel/PreprocessWorker.php;src/Pipeline/Stages/PreprocessStage.php;tests/Unit/Parallel/PreprocessWorkerIsolationTest.php;tests/Unit/Pipeline/Stages/PreprocessStageTest.php	done
+shell-S16	45	shell-S15	src/Parallel/PreprocessWorker.php;src/Pipeline/Stages/PreprocessStage.php;tests/Unit/Parallel/PreprocessWorkerIsolationTest.php;tests/Unit/Persistence/IndexStoreTest.php	done
+shell-S17	45	shell-S16	src/Cli/Config.php;src/Parallel/PreprocessWorker.php;tests/Unit/Cli/PerDirectoryConfigTest.php;tests/Unit/Parallel/PreprocessWorkerIsolationTest.php	done
+engine-S30	75		src/Fingerprint/ShapeletSketch.php;src/Index/BloomFilter.php;src/Util;tests/Unit/Fingerprint/ShapeletSketchTest.php;tests/Unit/Index/BloomFilterTest.php	done
+engine-S24	90	engine-S23b	src/Parsing/AstCache.php;src/Parsing/TokenCache.php;tests/Unit/Extraction/BlockAstLoaderTest.php;tests/Unit/Parsing/AstCacheTest.php;tests/Unit/Parsing/TokenCacheTest.php	done
+once-S10	90	engine-S30,output-S01	.github/workflows/ci.yml;README.md;composer.json	done
+once-S40	90	output-S13,shell-S20,shell-S21	src/Reporting/BaselineStore.php;src/Reporting/FindingId.php;src/Scanning/FileScanner.php;src/Util/PathCanonical.php;tests/Unit/Scanning/FileScannerTest.php	done
+output-S25	90		src/Refactor/AntiUnifier.php;tests/Unit/Refactor/AntiUnifierTest.php	done
+shell-S26	90		src/Cli/ConfigLoader.php;tests/Unit/Cli/ConfigLoaderTest.php;tests/Unit/Cli/PerDirectoryConfigTest.php	done
+shell-S22	45	shell-S17,shell-S26	docs/config-schema.json;src/Cli/Config.php;src/Cli/ConfigLoader.php;tests/Unit/Cli/PerDirOverrideBeltTest.php;tests/Unit/Cli/PerDirectoryConfigTest.php	done
+shell-S24	60	shell-S22,shell-S23	docs/CLI.md;src/Cli/Command.php;src/Cli/ConfigLoader.php;tests/Integration/CliSmokeTest.php;tests/Unit/Cli/CliDefaultShadowingTest.php;tests/Unit/Cli/NumericFlagCoercionTest.php	done
+once-S49	10	shell-S24	docs/CLI.md;tests/Unit/Cli/NumericFlagCoercionTest.php	done
+once-S20	15	shell-S24	src/Cli/Command.php;src/Reporting/Ranker.php;tests/Unit/Cli/NumericFlagCoercionTest.php	done
+once-S19	40	shell-S24	README.md;bin/phpdup;docs/CLI.md;tests/Unit/Cli/CliDefaultShadowingTest.php	done
+shell-S27	40	shell-S22,shell-S24	docs/config-schema.json;src/Cli/Command.php;src/Cli/Config.php;src/Cli/ConfigLoader.php;tests/Unit/Cli/ConfigLoaderTest.php;tests/Unit/Cli/PerDirOverrideBeltTest.php	done
+shell-S28	30	shell-S24,shell-S27	docs/CLI.md;src/Cli/Command.php;tests/Unit/Cli/CliDefaultShadowingTest.php	done
+once-S06	45	shell-S27,shell-S28	src/Cli/Command.php;src/Pipeline/Stages/ReportStage.php	done
+once-S07	60	once-S06	src/Tui/PhpdupModel.php;src/Tui/TuiRunner.php;tests/Unit/Tui/PhpdupModelTest.php;tests/Unit/Tui/TuiRunnerTest.php	done
+once-S22	20	once-S06,shell-S24	src/Cli/Command.php;src/Tui/TuiRunner.php	done
+once-S15	45	shell-S24	.github/actions/phpdup/action.yml;docs/CI.md;docs/CLI.md;src/Cli/Command.php	done
+once-S50	45	output-S13,shell-S28	docs/CLI.md;src/Reporting/BaselineStore.php;tests/Unit/Reporting/BaselineStoreTest.php	done
+shell-S25	45	shell-S24	src/Cli/AutoTuner.php;src/Cli/Command.php;tests/Unit/Cli/AutoTunerTest.php;tests/Unit/Cli/ConfigLoaderTest.php	done
+once-S16	60	shell-S25,shell-S32	docs/CLI.md;profiles/;src/Cli/Command.php;src/Cli/ProjectProfileDetector.php;tests/Unit/Cli/ProjectProfileDetectorTest.php	done
+once-S100	40	engine-S06b,once-S16	profiles/db-aware-illuminate.json;profiles/db-aware-laravel.json;profiles/db-aware-thinkorm.json;src/Normalization/DbOpRegistry.php;tests/Unit/Normalization/DbOpRegistryTest.php	done
+once-S18	60	shell-S28	docs/CLI.md;tests/Unit/Cli/DocFlagParityTest.php	done
+once-S26	60	shell-S25	src/Cli/AutoTuner.php;src/Cli/Command.php;tests/Unit/Cli/AutoTunerTest.php	done
+engine-S07	120		src/Normalization/TrinityCollapser.php;tests/Unit/Normalization/TrinityCollapserTest.php	done
+engine-S22	120		src/Ml/PairFeatures.php;tests/Unit/Ml/PairFeaturesTest.php	done
+once-S28	120	shell-S20,shell-S21,shell-S22,shell-S26	docs/CLI.md;src/Cli/ConfigLoader.php;src/Pipeline/Stages/ScanningStage.php;src/Scanning/FileScanner.php;tests/Unit/Cli/PerDirectoryConfigTest.php	done
+once-S85	120	once-S09	README.md;bench/comparative.php;bench/feature-matrix.md;bench/results;bench/score-audit.php;docs/algorithms/clustering.md	done
+shell-S08	120	shell-S01,shell-S02,shell-S07	src/Cli/ServeCommand.php;src/Server/AnalysisWorker.php;src/Server/Application.php;tests/Unit/Cli/ServeCommandTest.php;tests/Unit/Server/ApplicationTest.php	done
+once-S02	90	shell-S06,shell-S08	src/Server/Application.php;src/Server/JobQueue.php;tests/Unit/Server/ApplicationTest.php;tests/Unit/Server/JobQueueTest.php	done
+shell-S09	30	shell-S01,shell-S02,shell-S03,shell-S04,shell-S05,shell-S08	docs/SERVER.md;src/Cli/ServeCommand.php;src/Server/Application.php	done
+once-S03	45	once-S02,shell-S09	src/Server/AnalysisWorker.php;src/Server/Application.php;tests/Unit/Server/ApplicationTest.php	done
+once-S57	15	shell-S09	README.md;docs/SERVER.md	done
+once-S17	20	shell-S09	docs/PLAYGROUND.md;docs/SERVER.md;src/Server/Application.php	done
+shell-S35	45	shell-S03,shell-S09	build-phar.php;docs/SERVER.md;src/Cli/ServeCommand.php;tests/Unit/Cli/ServeCommandTest.php	done
+once-S42	90	once-S02,shell-S05,shell-S08	docs/SERVER.md;src/Cli/ServeCommand.php;src/Server/Application.php	done
+shell-S10	120		src/Cli/ConfigLoader.php;src/Parallel/WorkerPool.php;tests/Unit/Cli/NumericFlagCoercionTest.php;tests/Unit/Parallel/WorkerPoolTest.php;tests/Unit/Parallel/WorkerPoolWireTest.php	done
+once-S46	10	once-S02,shell-S10	src/Server/AnalysisWorker.php;tests/Unit/Server/AnalysisWorkerTest.php	done
+shell-S11	45	shell-S10	src/Parallel/WorkerPool.php;src/Persistence/SerializedClassAllowList.php;tests/Unit/Parallel/WorkerPoolTest.php;tests/Unit/Persistence/SerializedClassAllowListTest.php	done
+shell-S12	40	shell-S10,shell-S11,shell-S14,shell-S15	src/Parallel/WorkerPool.php;src/Pipeline/Stages/ClusterStage.php;src/Pipeline/Stages/PreprocessStage.php;src/Pipeline/Stages/RefactorStage.php;tests/Unit/Parallel/WorkerPoolTest.php	done
+once-S77	60	shell-S10	docs/CLI.md;src/Cli/Command.php;src/Parallel/WorkerPool.php;tests/Unit/Parallel/WorkerPoolTest.php	done
+shell-S18	120		src/Persistence/ClusterCache.php;src/Persistence/IndexStore.php;tests/Unit/Persistence/ClusterCacheTest.php;tests/Unit/Persistence/ClusterCacheVersionTest.php;tests/Unit/Persistence/IndexStoreTest.php	done
+shell-S19	60	shell-S11,shell-S18	src/Persistence/ClusterCache.php;src/Persistence/IndexStore.php;tests/Unit/Persistence/ClusterCacheTest.php;tests/Unit/Persistence/IndexStoreTest.php	done
+shell-S30	60	shell-S14,shell-S18	src/Pipeline/Stages/ClusterStage.php;tests/Unit/Persistence/ClusterCacheTest.php;tests/Unit/Persistence/ClusterCacheVersionTest.php;tests/Unit/Pipeline/Stages/ClusterStageTest.php	done
+shell-S31	45	shell-S10,shell-S22,shell-S26,shell-S27,shell-S30	docs/config-schema.json;src/Cli/ConfigLoader.php;tests/Unit/Cli/ConfigSchemaParityTest.php	done
+once-S83	45	output-S06,shell-S28,shell-S29,shell-S31	docs/CLI.md;docs/config-schema.json;src/Cli/AutoTuner.php;src/Cli/Command.php;src/Clustering/Clusterer.php;src/Refactor/PlacementAdvisor.php	done
+shell-S39	60	engine-S39,shell-S01,shell-S02,shell-S08,shell-S11,shell-S18	src/Cli/Config.php;src/Cli/ServeCommand.php;src/Persistence/IndexStore.php;src/Persistence/SerializedClassAllowList.php;src/Server/AnalysisWorker.php;src/Server/Application.php	done
+shell-S13	25	shell-S12,shell-S39	src/Parallel/WorkerPool.php;tests/Unit/Parallel/WorkerPoolTest.php	done
+once-S45	30	shell-S13	src/Parallel/WorkerPool.php;tests/Unit/Parallel/WorkerPoolTest.php	done
+once-S44	20	once-S45,shell-S03,shell-S39	bin/phpdup-worker;src/Cli/ServeCommand.php;src/Server/AnalysisWorker.php	done
+once-S71	45	once-S02,shell-S02,shell-S39	docs/SERVER.md;src/Cli/ServeCommand.php;src/Server/Application.php	done
+once-S97	30	once-S42,once-S71,shell-S05,shell-S39	docs/SERVER.md;src/Cli/ServeCommand.php;src/Server/Application.php	done
+once-S64	90	engine-S23b,engine-S24,shell-S18,shell-S19,shell-S39	docs/CLI.md;src/Cli/Command.php;src/Persistence/ClusterCache.php;src/Persistence/IndexStore.php;tests/Unit/Persistence/ClusterCacheTest.php	done
+once-S73	90	once-S71,shell-S08,shell-S35	docs/PLAYGROUND.md;src/Cli/ServeCommand.php;src/Server/Application.php	done
+once-S74	90	shell-S03,shell-S07,shell-S10,shell-S13,shell-S39	src/Cli/Command.php;src/Parallel/WorkerPool.php;src/Server/AnalysisWorker.php;src/Util/Framing.php;tests/Unit/Parallel/WorkerPoolTest.php	done
+shell-S33	120		src/Watch/FileWatcher.php;src/Watch/WatchRunner.php;tests/Unit/Watch/FileWatcherTest.php;tests/Unit/Watch/WatchRunnerTest.php	done
+once-S08	15	shell-S33	src/Watch/WatchRunner.php;tests/Unit/Watch/WatchRunnerTest.php	done
+shell-S40	40	shell-S33	src/Pipeline/Stages/ReportStage.php;src/Tui/PhpdupModel.php;src/Watch/FileWatcher.php;tests/Unit/Pipeline/Stages/ReportStageTest.php;tests/Unit/Tui/PhpdupModelTest.php	done
+shell-S34	45	shell-S20,shell-S21,shell-S23,shell-S28,shell-S33	src/Cli/Command.php;src/Pipeline/Stages/ScanningStage.php;src/Scanning/FileScanner.php;src/Watch/WatchRunner.php;tests/Unit/Pipeline/Stages/ScanningStageTest.php;tests/Unit/Scanning/FileScannerTest.php	done
+shell-S37	30	shell-S12,shell-S15,shell-S16,shell-S23,shell-S30,shell-S34	src/Pipeline/Stages/ClusterStage.php;src/Pipeline/Stages/PreprocessStage.php;src/Pipeline/Stages/RefactorStage.php;src/Pipeline/Stages/ScanningStage.php	done
+once-S23	45	engine-S24,shell-S16,shell-S37	src/Pipeline/Stages/ClusterStage.php;src/Pipeline/Stages/PreprocessStage.php;tests/Unit/Cli/CacheKeyKnobReplayTest.php	done
+once-S75	75	once-S07,once-S45,shell-S33	src/Cli/Command.php;src/Cli/SignalHandler.php;src/Tui/TuiRunner.php;src/Watch/WatchRunner.php;tests/Unit/Cli/SignalHandlerTest.php	done
+engine-S18a	140	engine-S01,engine-S12,engine-S32	src/Extraction/Block.php;src/Fingerprint/NgramFingerprint.php;src/Index/NgramInvertedIndex.php;src/Parallel/PreprocessWorker.php;src/Pipeline/Stages/PreprocessStage.php;tests/Unit/Fingerprint/NgramFingerprintModeTest.php;tests/Unit/Fingerprint/NgramFingerprintTest.php;tests/Unit/Index/NgramInvertedIndexTest.php	done
+engine-S08a	150	engine-S01	src/Similarity/AptedDistance.php;tests/Unit/Clustering/ClustererRunningMinTest.php;tests/Unit/Similarity/AptedDistanceModeTest.php;tests/Unit/Similarity/AptedDistanceTest.php;tests/Unit/Similarity/EditCostModelTest.php	done
+engine-S08b	150	engine-S01,engine-S08a	src/Similarity/AptedDistance.php;tests/Golden/;tests/Golden/optional-near-dups.json;tests/Unit/Clustering/ClustererRunningMinTest.php;tests/Unit/Similarity/AptedDistanceModeTest.php;tests/Unit/Similarity/AptedDistanceTest.php;tests/Unit/Similarity/EditCostModelTest.php	done
+engine-S19a	150		src/Ml/MlClient.php;src/Ml/MlPairClient.php;tests/Unit/Ml/MlClientTest.php;tests/Unit/Ml/MlPairClientTest.php	done
+engine-S19b	150	engine-S19a	src/Ml/MlClient.php;src/Ml/MlPairClient.php;tests/Unit/Ml/MlClientTest.php;tests/Unit/Ml/MlPairClientTest.php	done
+engine-S20	120	engine-S19b	src/Ml/MlClient.php;src/Ml/MlPairClient.php;tests/Unit/Ml/MlClientTest.php;tests/Unit/Ml/MlPairClientTest.php	done
+once-S48	15	engine-S20	src/Ml/MlPairClient.php;src/Ml/PairFeatures.php;tests/Unit/Ml/MlPairClientTest.php	done
+once-S53	60	engine-S19b,once-S48,shell-S08	docs/ML.md;docs/SERVER.md;src/Ml/MlPairClient.php;tools/ml-sidecar-example.php	done
+once-S54	90	engine-S19b,engine-S20,once-S48,shell-S22	docs/CLI.md;docs/ML.md;docs/config-schema.json;src/Cli/Config.php;src/Cli/ConfigLoader.php;src/Ml/MlPairClient.php;tests/Unit/Cli/MlPairUrlValidationTest.php	done
+once-S51	10	once-S54,shell-S27,shell-S31	docs/config-schema.json	done
+engine-S21	150	engine-S20	src/Clustering/Clusterer.php;src/Ml/MlClient.php;src/Ml/MlPairClient.php;src/Parallel/PairScoreWorker.php;tests/Unit/Ml/	done
+engine-S31a	150	engine-S22,engine-S23b	src/Fingerprint/MinHashSignature.php;src/Index/LshIndex.php;src/Semantic/CallGraph.php;src/Semantic/ControlFlowGraph.php;src/Semantic/NullTypeProvider.php;src/Semantic/PsalmTypeProvider.php;src/Semantic/TypeProvider.php;src/Similarity/BehaviouralSimilarity.php;tests/Unit/Fingerprint/MinHashSignatureTest.php;tests/Unit/Index/LshIndexTest.php;tests/Unit/Semantic/;tests/Unit/Similarity/BehaviouralSimilarityTest.php	done
+engine-S31b	120	engine-S31a	src/Extraction/BlockHeader.php;src/Index/BloomCandidateIndex.php;src/Index/ExternalSort.php;src/Ir/IrSimilarity.php;tests/Unit/Index/;tests/Unit/Ir/IrSimilarityTest.php	done
+engine-S31c	130	engine-S23b,engine-S31b	README.md;docs/ML.md;docs/adr/0003-similarity-stack.md;src/Normalization/LiteralCanonicalizer.php;src/Normalization/NameCanonicalizer.php;src/Parsing/TokenCache.php;src/Semantic/DataflowSummarizer.php;tests/Unit/Normalization/;tests/Unit/Parsing/TokenCacheTest.php;tests/Unit/Semantic/DataflowSummarizerTest.php	done
+once-S32	30	engine-S31c	README.md;docs/adr/0003-similarity-stack.md;docs/algorithms/clustering.md;src/Semantic/;src/Validation/	done
+once-S89	45	engine-S19b,engine-S20,engine-S21,engine-S31c,once-S54	src/Ml/MlClient.php;src/Ml/MlPairClient.php;src/Util/Http.php	done
+once-S90	20	engine-S20,once-S89	src/Ml/MlPairClient.php;tests/Unit/Ml/MlPairClientTest.php	done
+once-S92	45	engine-S19b,once-S89	src/Ml/MlPairClient.php;src/Util/Http.php;tests/Unit/Ml/MlPairClientTest.php	done
+once-S79	60	engine-S31c,output-S10,shell-S28	.gitlab/phpdup-ci.yml;docs/CI.md;docs/CLI.md;docs/ML.md;docs/config-schema.json;docs/ml-corpus-format.md;src/Cli/Command.php;src/Cli/Config.php;src/Cli/ConfigLoader.php;src/Clustering/Clusterer.php;src/Extraction/Block.php;src/Ir/IrNode.php;src/Ir/IrSimilarity.php;src/Ml/MlPairClient.php;src/Ml/PairFeatures.php;src/Semantic/DbOperationTagger.php;src/Similarity/BehaviouralSimilarity.php	done
+output-S18	150		src/Reporting/DiffReporter.php;src/Reporting/GraphvizReporter.php;src/Reporting/JsonReporter.php;src/Reporting/PlantumlReporter.php;src/Reporting/PrometheusReporter.php;src/Reporting/RefactorPatchReporter.php;src/Util/ControlText.php;tests/Unit/Reporting/;tests/Unit/Util/ControlTextTest.php	done
+output-S20	60	output-S02,output-S18	docs/CLI.md;src/Reporting/PrometheusReporter.php;tests/Unit/Reporting/PrometheusReporterTest.php	done
+output-S19	90	output-S18	src/Refactor/PlacementAdvisor.php;src/Reporting/CliReporter.php;tests/Unit/Refactor/PlacementAdvisorTest.php;tests/Unit/Reporting/CliReporterHonestyTest.php	done
+once-S21	30	output-S18,output-S19	src/Tui/ViewState.php;tests/Unit/Tui/ViewStateTest.php	done
+output-S22	90	output-S18	src/Reporting/CsvReporter.php;src/Reporting/DiffReporter.php;src/Reporting/RefactorPatchReporter.php;src/Reporting/RefactorTestReporter.php;tests/Unit/Reporting/	done
+once-S58	45	output-S18,output-S22	src/Reporting/CheckstyleReporter.php;src/Reporting/CsvReporter.php;src/Reporting/GitLabSastReporter.php;tests/Unit/Reporting/CsvReporterTest.php	done
+once-S61	120	once-S06,once-S21	src/Tui/PhpdupModel.php;src/Tui/ViewState.php;tests/Unit/Tui/ViewStateTest.php	done
+once-S62	20	once-S61	src/Tui/PhpdupModel.php;src/Tui/ViewState.php	done
+once-S63	90	once-S21,once-S61	src/Tui/PhpdupModel.php;src/Tui/ViewState.php	done
+engine-S18b	160	engine-S01,engine-S12,engine-S18a,engine-S32	src/Extraction/Block.php;src/Fingerprint/NgramFingerprint.php;src/Index/NgramInvertedIndex.php;src/Parallel/PreprocessWorker.php;src/Pipeline/Stages/PreprocessStage.php;tests/Unit/Fingerprint/NgramFingerprintModeTest.php;tests/Unit/Fingerprint/NgramFingerprintTest.php;tests/Unit/Index/NgramInvertedIndexTest.php	done
+engine-S09	180	engine-S08b,engine-S30	src/Similarity/AptedDistance.php;src/Similarity/TreeEditDistance.php;tests/Unit/Similarity/AptedDistanceTest.php	done
+engine-S25	180	engine-S24	docs/CLI.md;docs/config-schema.json;src/Cli/Command.php;src/Cli/Config.php;src/Parsing/AstCache.php;tests/Unit/Cli/ConfigDefaultsExcludesTest.php;tests/Unit/Cli/ConfigLoaderTest.php;tests/Unit/Parsing/AstCacheTest.php	done
+once-S11	180	once-S10	.github/dependabot.yml;.github/workflows/ci.yml;.github/workflows/release.yml;bench/run-all.sh;composer.json	done
+once-S12	60	once-S05,once-S11,shell-S35	.github/workflows/release.yml;README.md;docs/RELEASE.md;src/Cli/UpdateCommand.php	done
+once-S91	45	once-S05,once-S12,shell-S36	docs/RELEASE.md;src/Cli/UpdateCommand.php;tests/Unit/Cli/UpdateCommandTest.php	done
+once-S14	90	once-S10,once-S12	.github/actions/phpdup/action.yml;.gitlab/phpdup-ci.yml;docs/CI.md	done
+once-S31	90	once-S11,shell-S35	bin/phpdup;box.json;build-phar.php	done
+once-S30	30	once-S31,output-S03,shell-S35	.github/workflows/ci.yml;bin/phpdup;build-phar.php;src/Cli/UpdateCommand.php;src/Reporting/GitLabSastReporter.php;src/Reporting/JsonReporter.php;src/Reporting/SarifReporter.php;src/Reporting/TimeseriesReporter.php	done
+once-S56	45	once-S05,once-S30,once-S31	.github/workflows/ci.yml;tests/Golden/	done
+once-S99	45	once-S05,once-S30,once-S91,shell-S36	docs/RELEASE.md;src/Cli/UpdateCommand.php;tests/Unit/Cli/UpdateCommandTest.php	done
+once-S86	90	engine-S01,once-S11,once-S85	bench/corpora;bench/corpus-pins.txt;bench/run-all.sh;tests/Fuzz/DetectionRateTest.php	done
+once-S94	180	once-S02,once-S03,once-S42,once-S46,once-S73	tests/Unit/Server/AnalysisWorkerTest.php;tests/Unit/Server/ApplicationTest.php;tests/Unit/Server/JobQueueTest.php;tests/Unit/Watch/WatchRunnerTest.php	done
+output-S31	180		src/Refactor/PatternRecognizer.php;tests/Unit/Refactor/PatternRecognizerTest.php;tests/Unit/Reporting/SafetyScorerTest.php	done
+output-S32	150	output-S31	src/Architecture/Analyzers/SolidAnalyzer.php;src/Refactor/PatternRecognizer.php;tests/Unit/Architecture/ArchitecturalAnalyzersTest.php	done
+output-S33	120	output-S32	src/Architecture/Analyzers/AntiPatternAnalyzer.php;src/Architecture/Analyzers/DesignPatternAnalyzer.php;src/Architecture/Analyzers/SolidAnalyzer.php;src/Reporting/DeclaredTwinAnalyzer.php;tests/Unit/Architecture/ArchitecturalAnalyzersTest.php;tests/Unit/Reporting/DeclaredTwinAnalyzerTest.php	done
+output-S34	180	output-S33	src/Pipeline/Stages/ReportStage.php;src/Reporting/DeclaredTwinAnalyzer.php;tests/Unit/Reporting/DeclaredTwinAnalyzerTest.php	done
+engine-S29	210		src/Ir/IrLifter.php;tests/Unit/Ir/IrLifterTest.php	done
+engine-S03	240	engine-S02b	src/Extraction/BlockExtractor.php;src/Index/BlockIndex.php;src/Normalization/Normalizer.php;src/Refactor/PatternRecognizer.php;tests/Unit/Extraction/BlockExtractorTest.php;tests/Unit/Normalization/NormalizerTest.php;tests/Unit/Refactor/PatternRecognizerTest.php	done
+engine-S04	240	engine-S03	src/Normalization/Normalizer.php;src/Util/CanonicalNodePool.php;tests/Unit/Clustering/TedSizeGateTest.php;tests/Unit/Normalization/NormalizerTest.php;tests/Unit/Util/CanonicalNodePoolTest.php	done
+engine-S05	15	engine-S04,engine-S06b,engine-S07	src/Normalization/DbOpCanonicalizer.php;src/Normalization/Normalizer.php;src/Normalization/TrinityCollapser.php	done
+once-S24	75	engine-S05,shell-S16	docs/CLI.md;src/Cli/Command.php;src/Normalization/NormalizationPlugin.php;src/Normalization/Normalizer.php	done
+engine-S16a	140	engine-S04	src/Extraction/BlockAstLoader.php;tests/Fixtures/;tests/Unit/Extraction/BlockAstLoaderTest.php	done
+engine-S16b	140	engine-S04,engine-S16a	src/Extraction/BlockAstLoader.php;tests/Fixtures/;tests/Unit/Extraction/BlockAstLoaderTest.php	done
+engine-S17a	140	engine-S16b	src/Extraction/BlockAstLoader.php;tests/Unit/Extraction/BlockAstLoaderTest.php	done
+engine-S34a	140	engine-S02b,engine-S04,engine-S25	src/Util/AstSerializer.php;tests/Unit/Fingerprint/NgramFingerprintTest.php;tests/Unit/Util/AstSerializerTest.php	done
+engine-S17b	160	engine-S16b,engine-S17a	src/Extraction/BlockAstLoader.php;tests/Integration/;tests/Unit/Extraction/BlockAstLoaderTest.php	done
+engine-S34b	160	engine-S02b,engine-S04,engine-S25,engine-S34a	.phpdup-cache-key.version;src/Fingerprint/FingerprintIdMode.php;src/Util/AstSerializer.php;tests/Golden/;tests/Unit/Cli/FingerprintIdModeConfigTest.php;tests/Unit/Fingerprint/NgramFingerprintTest.php;tests/Unit/Util/AstSerializerTest.php	done
+once-S87	75	engine-S17b,engine-S34b,engine-S38,shell-S38	src/Extraction/BlockAstLoader.php;src/Pipeline/Stages/ScanningStage.php;src/Util/PathCanonical.php;tests/Unit/Extraction/BlockAstLoaderTest.php;tests/Unit/Util/AstSerializerTest.php	done
+engine-S11	240	engine-S13	src/Clustering/Clusterer.php;tests/Unit/Clustering/ClustererGeneratorTest.php;tests/Unit/Clustering/ClustererIdDeterminismTest.php;tests/Unit/Clustering/ClustererMedoidSplitTest.php;tests/Unit/Clustering/ClustererTest.php	done
+engine-S14	60	engine-S11	src/Clustering/Clusterer.php;src/Similarity/ContainmentSimilarity.php;tests/Unit/Similarity/ContainmentSimilarityTest.php	done
+engine-S15	150	engine-S01,engine-S14	src/Clustering/Clusterer.php;src/Clustering/MatchTier.php;tests/Golden/;tests/Golden/optional-near-dups.json;tests/Unit/Clustering/ClustererTest.php;tests/Unit/Clustering/IrTierClustererTest.php;tests/Unit/Clustering/MlPairTierClustererTest.php;tests/Unit/Clustering/TedSizeGateTest.php	done
+engine-S10	240	engine-S09,engine-S15	src/Cli/Config.php;src/Clustering/Clusterer.php;tests/Golden/;tests/Unit/Clustering/GenerationBudgetTest.php;tests/Unit/Clustering/TedSizeGateTest.php	done
+once-S102	45	engine-S10,engine-S31c,once-S31,once-S87,output-S02	build-phar.php;src/Pipeline/Stages/RefactorStage.php;src/Refactor/RefactorWorker.php;src/Semantic/PsalmTypeProvider.php;src/Validation;tests/Unit/Parallel/RefactorWorkerTest.php	done
+once-S33	150	engine-S09,engine-S10,engine-S11,shell-S37	src/Clustering/Clusterer.php;src/Index/BlockIndex.php;src/Pipeline/Stages/ClusterStage.php;tests/Unit/Clustering/GenerationBudgetTest.php	done
+once-S68	150	engine-S10,engine-S15,engine-S18b,engine-S31c,output-S01,shell-S37	docs/adr/0001-cooperative-pipeline.md;docs/adr/0002-anti-unification.md;docs/adr/0003-similarity-stack.md;docs/algorithms/anti-unification.md;docs/algorithms/clustering.md;docs/config-schema.json;docs/ml-corpus-format.md;src/Cli/Config.php;src/Extraction/BlockExtractor.php	done
+once-S80	105	once-S10,once-S24,once-S34,once-S54,once-S64,once-S68,once-S79,shell-S24	REPORT-ONLY	done
+engine-S33	240	engine-S18b,engine-S32,engine-S34b	src/Fingerprint/NgramFingerprint.php;src/Fingerprint/SubtreeHasher.php;tests/Unit/Fingerprint/NgramFingerprintTest.php;tests/Unit/Fingerprint/SubtreeHasherTest.php	done
+once-S47	240	shell-S33,shell-S40	src/Watch/FileWatcher.php;src/Watch/WatchRunner.php;tests/Unit/Watch/FileWatcherTest.php;tests/Unit/Watch/WatchRunnerTest.php	done
 once-S72	240	engine-S10,once-S06,once-S07,once-S61,shell-S12	src/Pipeline/CooperativeStageInterface.php;src/Pipeline/Stages/ReportStage.php;src/Tui/Msg/StagePumpedMsg.php;src/Tui/PhpdupModel.php;tests/Unit/Pipeline/PipelineTest.php;tests/Unit/Tui/PhpdupModelTest.php	pending
 once-S76	45	once-S61,once-S72,output-S07	src/Cli/Pager.php;tests/Unit/Cli/PagerTest.php	pending
 once-S96	60	once-S06,once-S07,once-S61,once-S62,once-S63,once-S72,once-S75,once-S76	src/Tui/PhpdupModel.php;src/Tui/ViewState.php;tests/Unit/Tui/PhpdupModelTest.php	pending
-output-S26	240	output-S25	src/Refactor/AntiUnifier.php;src/Refactor/Hole.php;src/Refactor/HoleCoverage.php;tests/Unit/Refactor/	pending
-output-S27	240	output-S26	docs/JETBRAINS_PLUGIN.md;docs/adr/0002-anti-unification.md;docs/algorithms/anti-unification.md;src/Refactor/AntiUnifier.php;src/Refactor/Hole.php;src/Refactor/ParameterSynthesizer.php;src/Reporting/CliReporter.php;src/Reporting/HtmlReporter.php;src/Reporting/JsonReporter.php;src/Reporting/JsonSchemaSpec.php;src/Reporting/RefactorTestReporter.php;tests/Golden/;tests/Golden/notify-exact.json;tests/Golden/optional-near-dups.json;tests/Golden/sql-exact.json;tests/Unit/Reporting/	pending
-output-S35	60	output-S18,output-S27	src/Reporting/RefactorTestReporter.php;tests/Integration/RefactorTestSkeletonCensusTest.php;tests/Unit/Reporting/RefactorTestReporterTest.php	pending
-once-S35	60	output-S26,output-S27	src/Refactor/AntiUnifier.php;src/Reporting/RefactorTestReporter.php;tests/Unit/Refactor/HoleCoverageTest.php;tests/Unit/Refactor/RefactorTestReporterTest.php	pending
-output-S28	60	output-S27	src/Refactor/AntiUnifier.php;src/Refactor/ParameterSynthesizer.php;tests/Golden/;tests/Unit/Refactor/	pending
-output-S36	60	output-S17,output-S35	src/Reporting/RefactorTestReporter.php;tests/Integration/RefactorTestSkeletonCensusTest.php;tests/Unit/Reporting/RefactorTestReporterTest.php	pending
-once-S37	90	engine-S17b,engine-S27,engine-S34b,output-S27,shell-S26,shell-S34	docs/CLI.md;docs/config-schema.json;src/Cli/Command.php;src/Pipeline/PipelineState.php;src/Pipeline/Stages/PreprocessStage.php;src/Pipeline/Stages/ScanningStage.php;src/Reporting/CliReporter.php;src/Reporting/JsonReporter.php;src/Reporting/JsonSchemaSpec.php;src/Scanning/FileScanner.php;tests/Golden/;tests/Unit/Reporting/JsonReporterTest.php;tests/Unit/Scanning/FileScannerTest.php	pending
-once-S41	10	once-S37,shell-S01,shell-S20	docs/SERVER.md;src/Server/AnalysisWorker.php;src/Server/Application.php;tests/Unit/Server/ApplicationTest.php	pending
-once-S66	45	engine-S28,once-S37	src/Cli/Command.php;src/Normalization/PluginRegistry.php;src/Pipeline/Stages/PreprocessStage.php;tests/Unit/Normalization/PluginRegistryTest.php	pending
-once-S67	90	once-S28,once-S54,once-S66,shell-S22	docs/CLI.md;docs/config-schema.json;src/Cli/ConfigLoader.php;src/Cli/OverrideResolver;src/Normalization/PluginRegistry.php;src/Reporting/BaselineStore.php;tests/Unit/Cli/PerDirOverrideBeltTest.php	pending
-once-S70	90	engine-S21,once-S37,once-S89	src/Ml/MlClient.php;src/Ml/MlPairClient.php;src/Reporting/JsonReporter.php;tests/Unit/Ml/MlPairClientTest.php	pending
-output-S29	90	output-S27,output-S28	src/Refactor/ParameterSynthesizer.php	pending
-once-S55	120	once-S37,output-S27	docs/config-schema.json;src/Reporting/JsonReporter.php;src/Reporting/JsonSchemaSpec.php;tests/Golden/	pending
-output-S30	150	output-S25,output-S26,output-S28,output-S29	src/Refactor;src/Refactor/AntiUnifier.php;src/Refactor/HoleCoverage.php;src/Refactor/SignatureBuilder.php;src/Util/NodePath.php;tests/Unit/Refactor/	pending
-output-S57	180	output-S26,output-S30	src/Pipeline/Stages/RefactorStage.php;src/Refactor/AntiUnifier.php;tests/Unit/Pipeline/Stages/RefactorStageTest.php;tests/Unit/Refactor/AntiUnifierTest.php	pending
-output-S38	240	output-S18,output-S22	src/Pipeline/Stages/ReportStage.php;src/Reporting/DiffReporter.php;src/Reporting/HtmlReporter.php;src/Reporting/JsonReporter.php;src/Reporting/RefactorPatchReporter.php;src/Reporting/Report.php;src/Reporting/SourceTextStore.php;tests/Unit/Reporting/;tests/Unit/Reporting/SourceTextStoreTest.php	pending
-output-S44a	150	output-S26,output-S38	src/Refactor/ApplyExtractor.php;tests/Unit/Refactor/ApplyExtractorTest.php	pending
-output-S44b	150	output-S26,output-S38,output-S44a	src/Refactor/ApplyExtractor.php;src/Reporting/RefactorPatchReporter.php;tests/Unit/Refactor/ApplyExtractorTest.php;tests/Unit/Reporting/RefactorPatchReporterTest.php	pending
-output-S45	240	output-S26,output-S27,output-S28,output-S44b	src/Refactor/ApplyExtractor.php;tests/Unit/Refactor/ApplyExtractorTest.php	pending
-output-S46	150	output-S44b,output-S45	src/Refactor/ApplyExtractor.php;tests/Integration/ApplyExtractionTest.php;tests/Unit/Refactor/ApplyExtractorTest.php	pending
-output-S48	240	output-S44b	src/Refactor/ApplyExtractor.php;tests/Unit/Refactor/ApplyExtractorTest.php	pending
-output-S49a	150	output-S26,output-S45,output-S48	src/Refactor/;src/Refactor/AntiUnifier.php;src/Refactor/SignatureBuilder.php;tests/Unit/Refactor/	pending
-output-S49b	150	output-S26,output-S45,output-S48,output-S49a	src/Refactor/;src/Refactor/AntiUnifier.php;src/Refactor/ApplyExtractor.php;src/Refactor/SignatureBuilder.php;tests/Unit/Refactor/	pending
-output-S43	60	output-S17,output-S38	src/Pipeline/Stages/ReportStage.php;src/Reporting/RefactorPatchReporter.php;tests/Unit/Reporting/RefactorPatchReporterTest.php	pending
-output-S47	90	output-S43,output-S44b	_autoload.php;src/Refactor/ApplyExtractor.php;src/Reporting/RefactorPatchReporter.php	pending
-output-S37	90	output-S27,output-S30,output-S44b,output-S45,output-S46	src/Refactor/ApplyExtractor.php;src/Refactor/SignatureBuilder.php;tests/Golden/;tests/Golden/notify-exact.json;tests/Golden/optional-near-dups.json;tests/Golden/sql-exact.json;tests/Unit/Refactor/SignatureBuilderTest.php;tests/Unit/Reporting/	pending
-once-S39	45	once-S37,output-S27,output-S37	docs/JETBRAINS_PLUGIN.md	pending
-once-S13	45	once-S17,once-S18,once-S24,once-S39,once-S41,once-S53,once-S57,once-S73	.github/workflows/ci.yml;README.md	pending
-output-S41	90	output-S30,output-S38	src/Reporting/JsonReporter.php;tests/Unit/Reporting/	pending
-output-S42	75	output-S34,output-S38,output-S41	src/Pipeline/Stages/ReportStage.php;src/Reporting/ClusterScope.php;src/Reporting/JsonReporter.php;src/Reporting/Ranker.php;src/Reporting/SafetyScorer.php	pending
-output-S52	90	output-S44b	src/Cli/Command.php;src/Refactor/ApplyExtractor.php	pending
-once-S101	30	output-S02,output-S03,output-S05,output-S20,output-S52	src/Reporting/JsonReporter.php;src/Reporting/PrometheusReporter.php;src/Reporting/TimeseriesReporter.php;src/Util/PathCanonical.php;tests/Unit/Reporting/	pending
-output-S39	120	output-S27,output-S38	src/Reporting/HtmlReporter.php;tests/Unit/Reporting/HtmlReporterTest.php	pending
-output-S40	120	output-S39	src/Reporting/HtmlReporter.php;tests/Unit/Reporting/HtmlReporterTest.php	pending
-once-S60	45	output-S18,output-S40	src/Reporting/CheckstyleReporter.php;src/Reporting/HtmlReporter.php;src/Reporting/PlantumlReporter.php;tests/Unit/Reporting/CheckstyleReporterTest.php;tests/Unit/Reporting/GraphReportersTest.php;tests/Unit/Reporting/HtmlReporterTest.php	pending
-once-S84	60	once-S60,output-S35,output-S39,output-S40	src/Reporting/HtmlReporter.php;tests/Unit/Reporting/HtmlReporterTest.php	pending
-output-S50	120	output-S38,output-S44b	src/Reporting/RefactorPatchReporter.php;tests/Unit/Reporting/RefactorPatchReporterTest.php	pending
-output-S51	90	output-S26,output-S27,output-S50	src/Refactor/HoleCoverage.php;src/Reporting/RefactorPatchReporter.php	pending
-output-S53	120	output-S44b,output-S45,output-S46,output-S47,output-S48,output-S49b,output-S50,output-S51,output-S52	tests/Fixtures/apply/;tests/Integration/ApplyEndToEndTest.php	pending
-once-S04	60	output-S44b,output-S45,output-S46,output-S47,output-S48,output-S49b,output-S50,output-S51,output-S52,output-S53,shell-S28	src/Cli/Command.php;src/Refactor/ApplyExtractor.php;tests/Integration/ApplyEndToEndTest.php	pending
+output-S26	240	output-S25	src/Refactor/AntiUnifier.php;src/Refactor/Hole.php;src/Refactor/HoleCoverage.php;tests/Unit/Refactor/	done
+output-S27	240	output-S26	docs/JETBRAINS_PLUGIN.md;docs/adr/0002-anti-unification.md;docs/algorithms/anti-unification.md;src/Refactor/AntiUnifier.php;src/Refactor/Hole.php;src/Refactor/ParameterSynthesizer.php;src/Reporting/CliReporter.php;src/Reporting/HtmlReporter.php;src/Reporting/JsonReporter.php;src/Reporting/JsonSchemaSpec.php;src/Reporting/RefactorTestReporter.php;tests/Golden/;tests/Golden/notify-exact.json;tests/Golden/optional-near-dups.json;tests/Golden/sql-exact.json;tests/Unit/Reporting/	done
+output-S35	60	output-S18,output-S27	src/Reporting/RefactorTestReporter.php;tests/Integration/RefactorTestSkeletonCensusTest.php;tests/Unit/Reporting/RefactorTestReporterTest.php	done
+once-S35	60	output-S26,output-S27	src/Refactor/AntiUnifier.php;src/Reporting/RefactorTestReporter.php;tests/Unit/Refactor/HoleCoverageTest.php;tests/Unit/Refactor/RefactorTestReporterTest.php	done
+output-S28	60	output-S27	src/Refactor/AntiUnifier.php;src/Refactor/ParameterSynthesizer.php;tests/Golden/;tests/Unit/Refactor/	done
+output-S36	60	output-S17,output-S35	src/Reporting/RefactorTestReporter.php;tests/Integration/RefactorTestSkeletonCensusTest.php;tests/Unit/Reporting/RefactorTestReporterTest.php	done
+once-S37	90	engine-S17b,engine-S27,engine-S34b,output-S27,shell-S26,shell-S34	docs/CLI.md;docs/config-schema.json;src/Cli/Command.php;src/Pipeline/PipelineState.php;src/Pipeline/Stages/PreprocessStage.php;src/Pipeline/Stages/ScanningStage.php;src/Reporting/CliReporter.php;src/Reporting/JsonReporter.php;src/Reporting/JsonSchemaSpec.php;src/Scanning/FileScanner.php;tests/Golden/;tests/Unit/Reporting/JsonReporterTest.php;tests/Unit/Scanning/FileScannerTest.php	done
+once-S41	10	once-S37,shell-S01,shell-S20	docs/SERVER.md;src/Server/AnalysisWorker.php;src/Server/Application.php;tests/Unit/Server/ApplicationTest.php	done
+once-S66	45	engine-S28,once-S37	src/Cli/Command.php;src/Normalization/PluginRegistry.php;src/Pipeline/Stages/PreprocessStage.php;tests/Unit/Normalization/PluginRegistryTest.php	done
+once-S67	90	once-S28,once-S54,once-S66,shell-S22	docs/CLI.md;docs/config-schema.json;src/Cli/ConfigLoader.php;src/Cli/OverrideResolver;src/Normalization/PluginRegistry.php;src/Reporting/BaselineStore.php;tests/Unit/Cli/PerDirOverrideBeltTest.php	running
+once-S70	90	engine-S21,once-S37,once-S89	src/Ml/MlClient.php;src/Ml/MlPairClient.php;src/Reporting/JsonReporter.php;tests/Unit/Ml/MlPairClientTest.php	done
+output-S29	90	output-S27,output-S28	src/Refactor/ParameterSynthesizer.php	done
+once-S55	120	once-S37,output-S27	docs/config-schema.json;src/Reporting/JsonReporter.php;src/Reporting/JsonSchemaSpec.php;tests/Golden/	done
+output-S30	150	output-S25,output-S26,output-S28,output-S29	src/Refactor;src/Refactor/AntiUnifier.php;src/Refactor/HoleCoverage.php;src/Refactor/SignatureBuilder.php;src/Util/NodePath.php;tests/Unit/Refactor/	done
+output-S57	180	output-S26,output-S30	src/Pipeline/Stages/RefactorStage.php;src/Refactor/AntiUnifier.php;tests/Unit/Pipeline/Stages/RefactorStageTest.php;tests/Unit/Refactor/AntiUnifierTest.php	done
+output-S38	240	output-S18,output-S22	src/Pipeline/Stages/ReportStage.php;src/Reporting/DiffReporter.php;src/Reporting/HtmlReporter.php;src/Reporting/JsonReporter.php;src/Reporting/RefactorPatchReporter.php;src/Reporting/Report.php;src/Reporting/SourceTextStore.php;tests/Unit/Reporting/;tests/Unit/Reporting/SourceTextStoreTest.php	done
+output-S44a	150	output-S26,output-S38	src/Refactor/ApplyExtractor.php;tests/Unit/Refactor/ApplyExtractorTest.php	done
+output-S44b	150	output-S26,output-S38,output-S44a	src/Refactor/ApplyExtractor.php;src/Reporting/RefactorPatchReporter.php;tests/Unit/Refactor/ApplyExtractorTest.php;tests/Unit/Reporting/RefactorPatchReporterTest.php	done
+output-S45	240	output-S26,output-S27,output-S28,output-S44b	src/Refactor/ApplyExtractor.php;tests/Unit/Refactor/ApplyExtractorTest.php	done
+output-S46	150	output-S44b,output-S45	src/Refactor/ApplyExtractor.php;tests/Integration/ApplyExtractionTest.php;tests/Unit/Refactor/ApplyExtractorTest.php	done
+output-S48	240	output-S44b	src/Refactor/ApplyExtractor.php;tests/Unit/Refactor/ApplyExtractorTest.php	done
+output-S49a	150	output-S26,output-S45,output-S48	src/Refactor/;src/Refactor/AntiUnifier.php;src/Refactor/SignatureBuilder.php;tests/Unit/Refactor/	done
+output-S49b	150	output-S26,output-S45,output-S48,output-S49a	src/Refactor/;src/Refactor/AntiUnifier.php;src/Refactor/ApplyExtractor.php;src/Refactor/SignatureBuilder.php;tests/Unit/Refactor/	done
+output-S43	60	output-S17,output-S38	src/Pipeline/Stages/ReportStage.php;src/Reporting/RefactorPatchReporter.php;tests/Unit/Reporting/RefactorPatchReporterTest.php	done
+output-S47	90	output-S43,output-S44b	_autoload.php;src/Refactor/ApplyExtractor.php;src/Reporting/RefactorPatchReporter.php	done
+output-S37	90	output-S27,output-S30,output-S44b,output-S45,output-S46	src/Refactor/ApplyExtractor.php;src/Refactor/SignatureBuilder.php;tests/Golden/;tests/Golden/notify-exact.json;tests/Golden/optional-near-dups.json;tests/Golden/sql-exact.json;tests/Unit/Refactor/SignatureBuilderTest.php;tests/Unit/Reporting/	done
+once-S39	45	once-S37,output-S27,output-S37	docs/JETBRAINS_PLUGIN.md	done
+once-S13	45	once-S17,once-S18,once-S24,once-S39,once-S41,once-S53,once-S57,once-S73	.github/workflows/ci.yml;README.md	done
+output-S41	90	output-S30,output-S38	src/Reporting/JsonReporter.php;tests/Unit/Reporting/	done
+output-S42	75	output-S34,output-S38,output-S41	src/Pipeline/Stages/ReportStage.php;src/Reporting/ClusterScope.php;src/Reporting/JsonReporter.php;src/Reporting/Ranker.php;src/Reporting/SafetyScorer.php	done
+output-S52	90	output-S44b	src/Cli/Command.php;src/Refactor/ApplyExtractor.php	done
+once-S101	30	output-S02,output-S03,output-S05,output-S20,output-S52	src/Reporting/JsonReporter.php;src/Reporting/PrometheusReporter.php;src/Reporting/TimeseriesReporter.php;src/Util/PathCanonical.php;tests/Unit/Reporting/	running
+output-S39	120	output-S27,output-S38	src/Reporting/HtmlReporter.php;tests/Unit/Reporting/HtmlReporterTest.php	done
+output-S40	120	output-S39	src/Reporting/HtmlReporter.php;tests/Unit/Reporting/HtmlReporterTest.php	done
+once-S60	45	output-S18,output-S40	src/Reporting/CheckstyleReporter.php;src/Reporting/HtmlReporter.php;src/Reporting/PlantumlReporter.php;tests/Unit/Reporting/CheckstyleReporterTest.php;tests/Unit/Reporting/GraphReportersTest.php;tests/Unit/Reporting/HtmlReporterTest.php	done
+once-S84	60	once-S60,output-S35,output-S39,output-S40	src/Reporting/HtmlReporter.php;tests/Unit/Reporting/HtmlReporterTest.php	done
+output-S50	120	output-S38,output-S44b	src/Reporting/RefactorPatchReporter.php;tests/Unit/Reporting/RefactorPatchReporterTest.php	done
+output-S51	90	output-S26,output-S27,output-S50	src/Refactor/HoleCoverage.php;src/Reporting/RefactorPatchReporter.php	done
+output-S53	120	output-S44b,output-S45,output-S46,output-S47,output-S48,output-S49b,output-S50,output-S51,output-S52	tests/Fixtures/apply/;tests/Integration/ApplyEndToEndTest.php	done
+once-S04	60	output-S44b,output-S45,output-S46,output-S47,output-S48,output-S49b,output-S50,output-S51,output-S52,output-S53,shell-S28	src/Cli/Command.php;src/Refactor/ApplyExtractor.php;tests/Integration/ApplyEndToEndTest.php	running
 once-S29	45	once-S04,output-S52,shell-S27,shell-S28	docs/CLI.md;src/Cli/Command.php;src/Cli/ConfigLoader.php	pending
 once-S88	45	once-S04,once-S29,output-S52	src/Cli/Command.php;src/Refactor/FunctionNameRegistry.php;src/Reporting/RefactorPatchReporter.php;tests/Unit/Refactor/FunctionNameRegistryTest.php	pending
 once-S27	120	once-S26,once-S29,shell-S22,shell-S25	docs/CLI.md;src/Cli/Command.php;src/Cli/Config.php;src/Cli/ConfigLoader.php;tests/Unit/Cli/ProfilePrecedenceTest.php	pending
-output-S54	150	output-S09,output-S36,output-S39,output-S40,output-S43,output-S44b,output-S49b	src/Refactor/ApplyExtractor.php;src/Reporting/DiffReporter.php;src/Reporting/HtmlReporter.php;src/Reporting/RefactorPatchReporter.php;src/Reporting/RefactorTestReporter.php;src/Reporting/ReportWriteException.php;src/Reporting/TimeseriesReporter.php;src/Reporting/WritesReportFile.php;src/Testing/FuzzCorpusGenerator.php;tests/Unit/Reporting/WritesReportFileTest.php	pending
+output-S54	150	output-S09,output-S36,output-S39,output-S40,output-S43,output-S44b,output-S49b	src/Refactor/ApplyExtractor.php;src/Reporting/DiffReporter.php;src/Reporting/HtmlReporter.php;src/Reporting/RefactorPatchReporter.php;src/Reporting/RefactorTestReporter.php;src/Reporting/ReportWriteException.php;src/Reporting/TimeseriesReporter.php;src/Reporting/WritesReportFile.php;src/Testing/FuzzCorpusGenerator.php;tests/Unit/Reporting/WritesReportFileTest.php	done
 once-S65	40	output-S36,output-S54	src/Reporting/HtmlReporter.php;src/Reporting/RefactorPatchReporter.php;src/Reporting/RefactorTestReporter.php;tests/Unit/Reporting/HtmlReporterTest.php	pending
 once-S93	90	engine-S01,once-S56,once-S65,once-S75	.github/workflows/ci.yml;phpunit.xml;tests/Golden/;tests/Golden/GoldenTest.php;tests/Unit/Cli/SignalHandlerTest.php;tests/Unit/Persistence/IndexStoreTest.php;tests/Unit/Server/ApplicationTest.php;tests/Unit/Watch/FileWatcherTest.php	pending
 once-S95	180	once-S13,once-S18,once-S19,once-S29,once-S30,once-S34,once-S37,once-S50,once-S53,once-S57,once-S68,once-S75,once-S79,once-S83,once-S93	README.md;docs/CI.md;docs/CLI.md;docs/JETBRAINS_PLUGIN.md;docs/ML.md;docs/SERVER.md;docs/algorithms/clustering.md;docs/tutorials/	pending
 once-S98	180	engine-S10,once-S44,once-S65,once-S76,once-S93,once-S94,shell-S10	build-phar.php;phpunit.xml;src/Cli/Command.php;src/Cli/InitCommand.php;src/Cli/ServeCommand.php;src/Server/ServeCommand.php;tests/Integration/EndToEndTest.php;tests/Unit/Cli/CandidateBudgetFlagTest.php;tests/Unit/Cli/ServeCommandTest.php;tests/Unit/Parallel/PreprocessWorkerIsolationTest.php;tests/Unit/Parallel/WorkerPoolTest.php;tests/Unit/Refactor/ApplyExtractorTest.php;tests/Unit/Server/ServeCommandTest.php;tests/Unit/Tui/TuiRunnerTest.php	pending
-output-S55	180	output-S36,output-S38,output-S39,output-S40,output-S43,output-S51,output-S54	src/Reporting/DiffReporter.php;src/Reporting/HtmlReporter.php;src/Reporting/RefactorPatchReporter.php;src/Reporting/RefactorTestReporter.php	pending
+output-S55	180	output-S36,output-S38,output-S39,output-S40,output-S43,output-S51,output-S54	src/Reporting/DiffReporter.php;src/Reporting/HtmlReporter.php;src/Reporting/RefactorPatchReporter.php;src/Reporting/RefactorTestReporter.php	running
 output-S56a	110	output-S02,output-S03,output-S04,output-S05,output-S17,output-S18,output-S19,output-S20,output-S21,output-S22,output-S27,output-S28,output-S34,output-S35,output-S36,output-S37,output-S38,output-S39,output-S40,output-S41,output-S42,output-S43,output-S51,output-S54,output-S55	tests/Unit/Reporting/CheckstyleReporterTest.php;tests/Unit/Reporting/CsvReporterTest.php;tests/Unit/Reporting/PrometheusReporterTest.php;tests/Unit/Reporting/TimeseriesReporterTest.php	pending
 output-S56b	190	output-S02,output-S03,output-S04,output-S05,output-S17,output-S18,output-S19,output-S20,output-S21,output-S22,output-S27,output-S28,output-S34,output-S35,output-S36,output-S37,output-S38,output-S39,output-S40,output-S41,output-S42,output-S43,output-S51,output-S54,output-S55,output-S56a	tests/Unit/Reporting/	pending
