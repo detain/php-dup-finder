@@ -475,6 +475,30 @@ HELP;
             }
         }
 
+        // once-S37 (php-dup-finder-once-041, U-05/QA-M1): a nonexistent scan
+        // path used to produce a CLEAN-LOOKING NOTHING — 'scanning 1 path(s)
+        // → 0 files' and exit 0, the shape a CI leg trusts. Admission runs
+        // before the pipeline, in the shell-S23/once-S69 door posture (one
+        // error line, exit 2, no work started). The check mirrors
+        // FileScanner's own door: a directory root or a real file root is
+        // accepted; only a path that is neither is refused. A root that
+        // exists but is unreadable is NOT refused here — that stays on the
+        // skipNotes channel, because the run legitimately continues with
+        // the paths that do work.
+        $missingRoots = [];
+        foreach ($config->paths as $root) {
+            if (!is_dir($root) && !is_file($root)) {
+                $missingRoots[] = $root;
+            }
+        }
+        if ($missingRoots !== []) {
+            $output->writeln('<error>phpdup: path not found: ' . implode(', ', array_map(
+                static fn (string $root): string => self::escapeMarkup($root),
+                $missingRoots,
+            )) . '</error>');
+            return 2;
+        }
+
         // once-S34 (php-dup-finder-once-038): resolve the --diff-base cohort
         // HERE, before the pipeline exists — named roots, repo-relative git,
         // unicode paths, honest empty-cohort refusal. Old posture: the
@@ -1497,6 +1521,20 @@ HELP;
         if ($state->cancelled) {
             $output->writeln('<comment>phpdup: cancelled by user — partial report rendered</comment>');
             return 130; // canonical SIGINT exit code
+        }
+
+        // once-S37 (php-dup-finder-once-081): $state->clustersReplayed was
+        // set by ClusterStage and reached NO output at all — a warm run
+        // looked exactly like a cold one, while its member line ranges come
+        // from the SAVING run's bytes (the PipelineState field docblock's
+        // own staleness warning). One honest default-verbosity line in the
+        // established <comment> voice; the JSON summary field rides the
+        // schema-1.8 carrier threading (see reviews/exec/once-S37.impl.md).
+        // Placed after the cancel render so an aborted run never claims it,
+        // and before the gate blocks so a gate trip still explains its own
+        // provenance.
+        if ($state->clustersReplayed) {
+            $output->writeln('<comment>phpdup: clusters replayed from the cluster cache — member line ranges are from the saving run, not re-derived from current bytes</comment>');
         }
 
         // CI gate: exit code 3 when thresholds are exceeded.

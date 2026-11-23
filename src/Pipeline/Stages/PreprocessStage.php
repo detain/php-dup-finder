@@ -15,12 +15,21 @@ use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Pipeline\Stage;
 use Phpdup\Util\CountPhrase;
 use Phpdup\Util\MemoryDebug;
+use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Output\OutputInterface;
 
 final class PreprocessStage implements CooperativeStageInterface
 {
     /** Yield to the runtime every N records streamed from workers. */
     private const YIELD_EVERY = 32;
+
+    /**
+     * How many individual parse failures --verbose lists before it folds
+     * (once-S37 / php-dup-finder-once-080): enough to triage a broken
+     * tree by eye; past it the tail is noise and the count line carries
+     * the truth.
+     */
+    private const PARSE_FAILURE_DISPLAY = 50;
 
     private readonly ProgressListener $listener;
 
@@ -187,6 +196,17 @@ final class PreprocessStage implements CooperativeStageInterface
                 if ($row['type'] === 'error') {
                     $state->parseErrors++;
                     $errorFiles[$row['file']] = true;
+                    // once-S37 (php-dup-finder-once-080): the worker row
+                    // ALWAYS carries the real parser message (PreprocessWorker
+                    // : 'parse error' fallback included) — the old arm read
+                    // the count and threw the why away. Keep both: the file
+                    // and its message ride $state->parseFailures for the
+                    // --verbose list and the future JSON summary fields.
+                    $message = $row['message'] ?? null;
+                    $state->parseFailures[] = [
+                        'file' => (string) $row['file'],
+                        'message' => is_string($message) && $message !== '' ? $message : 'parse error',
+                    ];
                 } elseif ($row['type'] === 'block') {
                     $processedFilesSet[$row['file']] = true;
                     /** @var Block $b */
@@ -282,6 +302,31 @@ final class PreprocessStage implements CooperativeStageInterface
             "<info>phpdup</info> %s (%d reused · %d processed · %d no blocks · %d parse errors) → %d blocks",
             CountPhrase::files(count($files)), $state->reusedFiles, $state->processedFiles, $state->skippedFiles, $state->parseErrors, count($blocks),
         ));
+
+        // once-S37 (php-dup-finder-once-080): the count above is honest but
+        // anonymous. At --verbose the run names every failing file with the
+        // parser's real message — the difference between '26 parse errors'
+        // and being able to fix them. Both fields are raw bytes (a crafted
+        // filename, a parser message quoting source) so markup-escape at the
+        // sink, the shell-S34 law ScanningStage::escapeMarkup documents.
+        if ($output->getVerbosity() >= OutputInterface::VERBOSITY_VERBOSE && $state->parseFailures !== []) {
+            $shown = 0;
+            foreach ($state->parseFailures as $failure) {
+                if ($shown >= self::PARSE_FAILURE_DISPLAY) {
+                    $output->writeln(sprintf(
+                        '<comment>phpdup: … and %d more parse failure(s).</comment>',
+                        count($state->parseFailures) - $shown,
+                    ));
+                    break;
+                }
+                $output->writeln(sprintf(
+                    '<comment>phpdup: parse failure %s: %s</comment>',
+                    self::escapeMarkup($failure['file']),
+                    self::escapeMarkup($failure['message']),
+                ));
+                $shown++;
+            }
+        }
 
         if ($this->showStats) {
             $this->printStats($output, $blocks);
@@ -465,5 +510,17 @@ final class PreprocessStage implements CooperativeStageInterface
                 $sizes[0], $p(0.5), $p(0.9), $p(0.99), end($sizes)
             ));
         }
+    }
+
+    /**
+     * $bytes as literal console text (once-S37; the shell-S34 law,
+     * mirrored from ScanningStage where its rationale is documented in
+     * full): raw path/ref bytes inside a writeln() line are markup — and
+     * injection — material. OutputFormatter::escape() passes ordinary
+     * values through byte-for-byte, so no render pin can drift.
+     */
+    private static function escapeMarkup(string $bytes): string
+    {
+        return OutputFormatter::escape($bytes);
     }
 }

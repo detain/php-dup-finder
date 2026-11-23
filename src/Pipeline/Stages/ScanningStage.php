@@ -81,6 +81,14 @@ final class ScanningStage implements CooperativeStageInterface
         // layer and cannot change the walk.
         $scanner = new FileScanner($config->exclude, perDirExcludes: self::excludeLayers($config));
 
+        // once-S37 (php-dup-finder-once-041): arm the exclude-typo census
+        // with the globs the USER owns (see userExcludeGlobs) — a misspelled
+        // exclude used to hide its own failure forever: the paths it should
+        // have caught stayed in the scan and nothing said a word. The scan
+        // walk witnesses which watched patterns matched real paths; drained
+        // into $state->scanNotes after the walk below.
+        $scanner->watchExcludePatterns(self::userExcludeGlobs($config));
+
         // once-S87 (php-dup-finder-once-109 DET-04): `analyze src src`
         // walked the same disk path twice — every block extracted twice,
         // the per-file index layer accumulated duplicate rows, and the
@@ -239,6 +247,29 @@ final class ScanningStage implements CooperativeStageInterface
             ));
         }
 
+        // once-S37 (php-dup-finder-once-041): drain the honest-scan channel.
+        // skipNotes() had zero consumers program-wide; every note this class
+        // mints now rides $state->scanNotes for the report layer, and the
+        // census line names the totals at DEFAULT verbosity where the plan
+        // promises visibility (the per-path detail already went out one
+        // 'phpdup: warning:' stderr note each). Conditional-only, S87
+        // posture: a clean run emits nothing here, and the final summary
+        // line below stays the stage's last word (the output-order pins
+        // hold byte-exact for every pre-existing fixture).
+        $inertNotes = $scanner->inertWatchPatterns();
+        $state->scanNotes = $scanner->skipNotes();
+        if ($state->scanNotes !== []) {
+            $pathSkips = count($state->scanNotes) - count($inertNotes);
+            $parts = [];
+            if ($pathSkips > 0) {
+                $parts[] = sprintf('%d path(s) skipped (unreadable, missing, or symlink containment)', $pathSkips);
+            }
+            if ($inertNotes !== []) {
+                $parts[] = sprintf('%d exclude pattern(s) matched no path — see warnings above', count($inertNotes));
+            }
+            $output->writeln('<comment>phpdup</comment> ' . implode(' · ', $parts));
+        }
+
         // Cover any remaining files that didn't fill a full yield-interval
         // batch (the listener was only called at yield boundaries above).
         $this->listener->onFileScanned($state->scannedFiles, $state->totalFiles);
@@ -273,6 +304,27 @@ final class ScanningStage implements CooperativeStageInterface
             ];
         }
         return $layers;
+    }
+
+    /**
+     * The exclude globs the USER owns (once-S37): the merged root list minus
+     * the stock defaults every run ships. The remainder spans the
+     * config-file layer, the framework-profile layer and the CLI override
+     * dict alike — ConfigLoader::load merges all three on top of
+     * Config::defaults, so the subtraction leaves only user-intent globs,
+     * and an `exclude_reset` run is by definition all-user. Profile globs
+     * are counted as user globs; the note wording stays true either way
+     * ('matched no path in this scan' is exactly what a tuned profile rule
+     * does on a tree with nothing to tune, and the scan census is the honest
+     * place to say it). Per-directory `.phpdup.json` layers are NOT
+     * censused: subtree configs answer to their own owners (once-S28
+     * layering keeps that story separate).
+     *
+     * @return list<string>
+     */
+    private static function userExcludeGlobs(Config $config): array
+    {
+        return array_values(array_diff($config->exclude, Config::defaults($config->paths)->exclude));
     }
 
     /**

@@ -54,6 +54,18 @@ use Phpdup\Util\PathCanonical;
  * only: isExcluded() and the ConfigLoader discovery gate stay root-list
  * matchers, so a tree excluded at the ROOT is still never read, never
  * noted, and can never be resurrected by a config hidden inside it.
+ *
+ * Honest scan signals (once-S37 / php-dup-finder-once-041, once-080): every
+ * path the scan cannot use now answers on the skipNotes() channel — unreadable
+ * FILES joined the unreadable directories (the old walk yielded them and let a
+ * raw read-time warning leak past every channel this class owns), and a
+ * missing scan root is noted where it once returned empty-handed. Above the
+ * channel sits an exclude-typo census: a caller arms
+ * {@see watchExcludePatterns()} with the user-supplied globs it owns, every
+ * walked path marks the patterns that matched, and
+ * {@see inertWatchPatterns()} reports each never-matched pattern — once, on
+ * the same 'phpdup: warning:' stderr voice as every skip. A typo'd exclude
+ * can no longer quietly expose the tree it was meant to hide.
  */
 final class FileScanner
 {
@@ -98,6 +110,25 @@ final class FileScanner
 
     /** @var list<array{dir: string, patterns: list<array{source: string, regex: string, tokens: list<array{0: int, 1: string}>, pcre: bool}>, reset: bool}> */
     private array $layers = [];
+
+    /**
+     * Exclude-typo census state (once-S37): the sources armed by
+     * {@see watchExcludePatterns()}, the compiled records they select, the
+     * subset already proven live by some walked path, and how many subjects
+     * the walk has passed since arming — zero witnesses means no directory
+     * was ever walked, so no pattern can honestly be called inert.
+     *
+     * @var array<string, true>
+     */
+    private array $watchSources = [];
+
+    /** @var list<array{source: string, regex: string, tokens: list<array{0: int, 1: string}>, pcre: bool}> */
+    private array $watchedRecords = [];
+
+    /** @var array<string, true> watched sources proven live (report-once bookkeeping) */
+    private array $watchMatched = [];
+
+    private int $walkedSubjects = 0;
 
     /**
      * The overlay layers bound to the root currently being walked, anchored
@@ -196,6 +227,88 @@ final class FileScanner
     }
 
     /**
+     * Arm the exclude-typo census (once-S37 / php-dup-finder-once-041).
+     * The caller names the user-supplied globs whose typos it wants
+     * reported (config file, profile, CLI dict — the stage that merged
+     * them owns the attribution; stock defaults and per-directory overlay
+     * layers are deliberately left unwatched). Every later walk marks the
+     * watched patterns that match a real path; {@see inertWatchPatterns()}
+     * answers for the rest. Arming resets the witness state: one census
+     * per logical scan run.
+     *
+     * @param list<string> $sources raw glob strings, as the user wrote them
+     */
+    public function watchExcludePatterns(array $sources): void
+    {
+        $wanted = [];
+        foreach ($sources as $source) {
+            $key = PathCanonical::separators($source);
+            if ($key !== '') {
+                $wanted[$key] = true;
+            }
+        }
+        $this->watchSources = $wanted;
+        $this->watchedRecords = array_values(array_filter(
+            $this->patterns,
+            static fn (array $pattern): bool => isset($wanted[$pattern['source']]),
+        ));
+        $this->watchMatched = [];
+        $this->walkedSubjects = 0;
+    }
+
+    /**
+     * Watched patterns that matched no path since the census was armed
+     * (once-S37). Each newly reported pattern also lands in skipNotes()
+     * — one 'phpdup: warning:' line per typo, never a repeat on later
+     * calls (report-once, the same bookkeeping shape as
+     * {@see noteUndecidable()}). A run that walked no directory answers
+     * empty: an un-walked tree cannot prove a pattern inert, and the
+     * file-root path never enters the walk.
+     *
+     * @return list<string> the notes added by this call
+     */
+    public function inertWatchPatterns(): array
+    {
+        if ($this->watchedRecords === [] || $this->walkedSubjects === 0) {
+            return [];
+        }
+        $notes = [];
+        foreach ($this->watchedRecords as $pattern) {
+            $source = $pattern['source'];
+            if (isset($this->watchMatched[$source])) {
+                continue;
+            }
+            $this->watchMatched[$source] = true;
+            $note = 'exclude pattern ' . self::printablePattern($source)
+                . ' matched no path in this scan (typo?)';
+            $this->addSkipNote($note);
+            $notes[] = $note;
+        }
+        return $notes;
+    }
+
+    /**
+     * One walked subject against the watched set (once-S37): directories
+     * take the same '/'-suffixed frame the walk's own verdicts use, so a
+     * pattern that would have pruned the entry — had the walk reached the
+     * exclude verdict — counts as a live pattern. A proven-live source
+     * drops out; the census is a liveness witness, not a counter.
+     */
+    private function censusWalk(string $rel, bool $isDir): void
+    {
+        $subject = $isDir ? $rel . '/' : $rel;
+        foreach ($this->watchedRecords as $pattern) {
+            $source = $pattern['source'];
+            if (isset($this->watchMatched[$source])) {
+                continue;
+            }
+            if ($this->matchesPattern($pattern, $subject)) {
+                $this->watchMatched[$source] = true;
+            }
+        }
+    }
+
+    /**
      * @return iterable<string> absolute file paths
      */
     public function scan(string $root): iterable
@@ -204,6 +317,16 @@ final class FileScanner
         if (!is_dir($root)) {
             if (is_file($root) && $this->looksLikePhp($root)) {
                 yield $root;
+            } elseif (!is_file($root)) {
+                // once-S37 (once-041): a path the user named that does not
+                // exist used to return here empty-handed — silent on the
+                // whole channel. Note it in the resolveDiffCohort dialect
+                // ('scan root X does not exist'); the CLI admission gate
+                // refuses the run outright, but every other consumer of
+                // this class (serve, watch, tests) still gets the truth in
+                // skipNotes(). A real non-PHP file stays a silent no-op —
+                // it exists, the dialect simply declines it.
+                $this->addSkipNote('scan root ' . $root . ' does not exist');
             }
             return;
         }
@@ -249,6 +372,13 @@ final class FileScanner
                     if ($rel === '') {
                         return true;
                     }
+                    if ($this->watchSources !== []) {
+                        // once-S37: every walked subject is a witness for
+                        // the typo census — in the same frame the walk's
+                        // own verdicts use (directories tested '/'-suffixed).
+                        $this->walkedSubjects++;
+                        $this->censusWalk($rel, $current->isDir());
+                    }
                     $escape = $this->escapeReason($current, $rootReal);
                     if ($escape !== null) {
                         $this->noteSkipSymlink($current->getPathname(), $escape);
@@ -274,7 +404,21 @@ final class FileScanner
                         }
                         return true;
                     }
-                    return !$this->excludesWalkPath($rel, false);
+                    if ($this->excludesWalkPath($rel, false)) {
+                        return false;
+                    }
+                    // once-S37 (once-080 / QA-M8): the per-file mate of the
+                    // directory guard above. An unreadable FILE used to
+                    // survive the walk — and every consumer that then
+                    // read or parsed it leaked a raw warning straight to
+                    // stderr, past skipNotes() and past every scrub this
+                    // class owns. Exclude verdict first: an excluded file
+                    // was never a candidate and stays a silent no-prune.
+                    if ($current->isFile() && !$current->isReadable()) {
+                        $this->noteSkip($current->getPathname(), 'file is not readable');
+                        return false;
+                    }
+                    return true;
                 }
             ),
             \RecursiveIteratorIterator::LEAVES_ONLY

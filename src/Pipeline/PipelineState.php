@@ -45,6 +45,31 @@ final class PipelineState
     /** Fresh (non-reused) files that parsed but yielded zero blocks (0.6). */
     public int $skippedFiles   = 0;
 
+    /**
+     * Honest scan signals (once-S37 / php-dup-finder-once-041): every note
+     * FileScanner recorded for a path the scan could not use — unreadable or
+     * missing roots and files, symlink-containment refusals, undecidable
+     * patterns — plus one exclude-typo warning per inert user pattern. This
+     * is the shared channel plan §37 books for later consumers (S41/S66/S71
+     * ride it; the JSON summary fields land with the schema-1.8 carrier
+     * threading). Snapshot by ScanningStage after each logical scan.
+     *
+     * @var list<string>
+     */
+    public array $scanNotes = [];
+
+    /**
+     * Files the preprocess workers could not parse, each with the REAL
+     * parser message (once-S37 / php-dup-finder-once-080): the count rides
+     * $parseErrors, but a count alone laundered WHICH file and WHY.
+     * PreprocessStage appends one record per worker error row; --verbose
+     * lists them, and the JSON summary fields ride the same carrier leg as
+     * $scanNotes above.
+     *
+     * @var list<array{file: string, message: string}>
+     */
+    public array $parseFailures = [];
+
     /** @var list<Cluster> Final clusters after RefactorStage. */
     public array $clusters = [];
 
