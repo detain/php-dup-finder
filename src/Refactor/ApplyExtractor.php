@@ -136,6 +136,27 @@ use Phpdup\Util\AstSerializer;
  * cross-file refusal ORDER shifted — every locate-class diagnostic of
  * every file now precedes every replacement-build diagnostic (within one
  * file the old order is byte-identical).
+ *
+ * output-010 (S52): the WRITE side is confined at the entry. The apply
+ * directory is absolutized before anything derives from it — the
+ * finding's redirect hazard is exactly the relative `refactored`
+ * resolved against a mutable CWD — and neither it nor its Refactored
+ * child may be a symbolic link. Every member file must be plain (or
+ * absent): an is_link member refuses the cluster loudly with zero bytes
+ * written, killing the planted-link member (link.php ->
+ * ../../outside/target.php) arbitrary-write. When the caller passes an
+ * EXPLICITLY CONFIGURED write root (constructor), every member and both
+ * generated paths must also resolve inside it — a root that does not
+ * resolve refuses construction fail-closed. Roots-less library mode
+ * stays the S38-pinned unconstrained-by-design posture, but it still
+ * gets the absolute link refusals: no mode writes through a link. The
+ * two files this window GENERATES land chmod'ed to GENERATED_FILE_MODE
+ * (0644, the cache-family measured mode; member files are rewritten in
+ * place and keep their own modes — the finding names only generated
+ * files). Defended at entry only: a mid-window ancestor symlink swap is
+ * not detectable through the portable write API — the byte-verify
+ * proves content, not location — and the durable scan-side follow-up
+ * lives at the scanner (see the S52 report's honest IS/IS-NOT matrix).
  */
 final class ApplyExtractor
 {
@@ -152,11 +173,55 @@ final class ApplyExtractor
      */
     public const BOOTSTRAP_FILE = '_autoload.php';
 
+    /**
+     * output-010 (S52): the measured mode every file THIS window generates
+     * lands on — the cache family's committed posture (the relocated
+     * dir-trust trio asserts the 0700/0600 siblings through
+     * substr(sprintf('%o', ...))). Public so the confinement pins can
+     * assert against the same constant, not a re-spelled literal.
+     */
+    public const GENERATED_FILE_MODE = 0o644;
+
     private readonly Standard $printer;
 
-    public function __construct()
+    /**
+     * output-010 (S52): the canonical configured write root, or null for
+     * library mode (rooted-SourceTextStore doctrine: roots-less mode
+     * proceeds unconstrained BY DESIGN — only the root makes containment
+     * decidable). Stored with exactly one trailing separator so prefix
+     * comparison is boundary-safe, including the filesystem-root edge
+     * case realpath('/') feeds rtrim (rtrim('/','/') . '/' === '/').
+     */
+    private readonly ?string $canonicalRoot;
+
+    /**
+     * @param string|null $writeRoot output-010 (S52): an explicitly
+     *                               configured directory every write must
+     *                               land inside ('never CWD-default'). A
+     *                               root that does not resolve to a real
+     *                               directory refuses construction —
+     *                               fail-closed, the loud alternative is
+     *                               silently refusing every write later.
+     *                               Null keeps the committed library
+     *                               posture: link refusals only, no root
+     *                               containment (the shell's root-key
+     *                               plumbing rides the next holder).
+     */
+    public function __construct(?string $writeRoot = null)
     {
         $this->printer = new Standard();
+        if ($writeRoot === null) {
+            $this->canonicalRoot = null;
+            return;
+        }
+        $real = realpath($writeRoot);
+        if ($real === false || !is_dir($real)) {
+            throw new \RuntimeException(sprintf(
+                'ApplyExtractor: refusing to operate — the configured write root %s does not resolve to a directory; every write would be refused (fail-closed).',
+                $writeRoot,
+            ));
+        }
+        $this->canonicalRoot = rtrim($real, '/') . '/';
     }
 
     /**
@@ -174,6 +239,13 @@ final class ApplyExtractor
      */
     public function apply(Cluster $cluster, string $outDir): array
     {
+        // output-010 (S52): write-side confinement FIRST — the plan's
+        // 'entry' word. Nothing is trusted to reach the window until the
+        // apply directory is absolutized and both it and every member
+        // target are proven plain (or absent) and, under a configured
+        // root, proven inside it. Every refusal here is zero-write.
+        $outDir = $this->confineWriteTargets($cluster, $outDir);
+
         foreach ($cluster->members as $member) {
             if ($member->kind === 'script') {
                 throw ScriptKindApplyRefusal::forCluster($cluster, 'ApplyExtractor::apply()');
@@ -307,6 +379,13 @@ final class ApplyExtractor
                 $this->writeFileLoud($path, $bytes);
             }
             $this->verifyLandings($landings);
+            // output-010 (S52) chmod leg: inside the window, while a
+            // refused chmod can still be rolled back — the two files this
+            // window GENERATES go to the measured mode before the window
+            // commits. A pre-existing generated file keeps its old bytes
+            // on rollback but a mode already raised to 0644 is not part
+            // of the byte snapshot (disclosed in the S52 report).
+            $this->chmodGenerated([$functionPath, $bootstrapPath]);
         } catch (\Throwable $failure) {
             throw $this->rollbackWriteWindow(
                 $cluster,
@@ -323,6 +402,146 @@ final class ApplyExtractor
         //    member files the window rewrote — the RefactorPatchReporter's
         //    Applied tally rides this list, so counted == verified.
         return array_keys($planned);
+    }
+
+    /**
+     * output-010 (S52): the entry confinement gate — absolutize the apply
+     * directory, refuse to route ANY write through a symbolic link, and
+     * (rooted mode only) demand that every target resolve inside the
+     * explicitly configured write root.
+     *
+     * The link refusals are mode-independent: an absent path is not a
+     * link (is_link false, file_exists false) so a legitimate new tree
+     * still lands, while a planted link — the finding's
+     * link.php -> ../../outside/target.php member AND its
+     * pre-planted-refactored/ directory sibling — refuses the cluster in
+     * the S44a loud zero-write spine ('no files were written'). Rooted
+     * mode additionally resolves each path (or, for not-yet-existing
+     * generated dirs, their deepest existing ancestor) and refuses
+     * anything landing outside the root: escaping through the root by
+     * plain-path adjacency is as unwelcome as escaping through a link.
+     *
+     * @return string the absolutized apply directory every later path derives from
+     */
+    private function confineWriteTargets(Cluster $cluster, string $outDir): string
+    {
+        $outDir = self::absolutizeApplyDir($outDir);
+
+        $this->confinePath($cluster, 'the apply directory', $outDir);
+        $this->confinePath($cluster, 'the generated-artifact directory', $outDir . '/' . self::ARTIFACT_NAMESPACE);
+
+        foreach ($cluster->members as $member) {
+            $this->confinePath($cluster, 'member file', $member->file);
+        }
+
+        return $outDir;
+    }
+
+    /**
+     * Absolutize a relative apply directory against the process CWD, so
+     * every derived write path, diagnostic and returned artifact names the
+     * SAME location regardless of what the CWD becomes before the window
+     * opens (the §52 'applyDir absolutization' leg). A failed getcwd()
+     * leaves the literal — the window's loud IO diagnostic still names it.
+     */
+    private static function absolutizeApplyDir(string $outDir): string
+    {
+        // Unix root and Windows drive forms; anything else is relative.
+        if (preg_match('#^([A-Za-z]:[\\\\/]|/)#', $outDir) === 1) {
+            return $outDir;
+        }
+        $cwd = getcwd();
+
+        return $cwd === false ? $outDir : $cwd . '/' . $outDir;
+    }
+
+    /**
+     * Confinement of ONE write-path component: never a symbolic link (any
+     * mode); under a configured root, must resolve inside it (rooted
+     * mode). $role names the component for the diagnostic ('member file',
+     * 'the apply directory', ...). Refusals carry the spine voice and
+     * precede every byte.
+     */
+    private function confinePath(Cluster $cluster, string $role, string $path): void
+    {
+        if ($path === '') {
+            throw new \RuntimeException(sprintf(
+                'ApplyExtractor: refusing cluster %s — %s is an empty path; no files were written.',
+                $cluster->id,
+                $role,
+            ));
+        }
+
+        if (is_link($path)) {
+            throw new \RuntimeException(sprintf(
+                'ApplyExtractor: refusing cluster %s — %s %s is a symbolic link (target %s); writing through it would land '
+                . 'outside the path the scan recorded. The durable follow-up lives at the scan layer; no files were written.',
+                $cluster->id,
+                $role,
+                $path,
+                self::describeLinkTarget($path),
+            ));
+        }
+
+        if ($this->canonicalRoot === null) {
+            return; // library mode: link refusals only (S38-pinned doctrine).
+        }
+
+        // Resolve what EXISTS: a fresh generated tree legitimately does not
+        // yet, so the walk may only be trusted as deep as the ancestor that
+        // does — that ancestor must live under the root.
+        $candidate = $path;
+        $resolved = realpath($candidate);
+        while ($resolved === false) {
+            $parent = dirname($candidate);
+            if ($parent === $candidate) {
+                break; // filesystem root reached unresolved — refuse below.
+            }
+            $candidate = $parent;
+            $resolved = realpath($candidate);
+        }
+        if ($resolved === false) {
+            throw new \RuntimeException(sprintf(
+                'ApplyExtractor: refusing cluster %s — %s %s does not resolve, and neither does any ancestor; its position '
+                . 'relative to the configured write root is undecidable (fail-closed); no files were written.',
+                $cluster->id,
+                $role,
+                $path,
+            ));
+        }
+        if (!$this->underRoot($resolved)) {
+            throw new \RuntimeException(sprintf(
+                'ApplyExtractor: refusing cluster %s — %s %s resolves to %s, which escapes the configured write root %s; '
+                . 'no files were written.',
+                $cluster->id,
+                $role,
+                $path,
+                $resolved,
+                $this->canonicalRoot,
+            ));
+        }
+    }
+
+    /**
+     * Boundary-safe containment: canonicalRoot always carries exactly one
+     * trailing separator, so the comparison can never treat /root-evil as
+     * inside /root. $resolvedPath is a realpath() output (no trailing
+     * separator except the filesystem root itself).
+     */
+    private function underRoot(string $resolvedPath): bool
+    {
+        return str_starts_with($resolvedPath . '/', (string) $this->canonicalRoot);
+    }
+
+    /**
+     * Best-effort link target for the refusal diagnostic — readlink can
+     * itself fail (racing unlink); the diagnostic never fabricates one.
+     */
+    private static function describeLinkTarget(string $path): string
+    {
+        $target = @readlink($path);
+
+        return $target === false ? 'unreadable' : $target;
     }
 
     /**
@@ -880,6 +1099,32 @@ final class ApplyExtractor
     }
 
     /**
+     * output-010 (S52): put every file this window GENERATES on
+     * GENERATED_FILE_MODE. Members are untouched — rewritten in place,
+     * they keep the mode the repository gave them (the finding names only
+     * generated files). A refused chmod aborts the window from the inside:
+     * the throw rides the existing catch, the snapshots go back, and the
+     * loud refusal names the mode that could not be set — never a silent
+     * world-state downgrade of the tree.
+     *
+     * @param list<string> $generatedPaths
+     */
+    private function chmodGenerated(array $generatedPaths): void
+    {
+        foreach ($generatedPaths as $path) {
+            error_clear_last();
+            if (!@chmod($path, self::GENERATED_FILE_MODE)) {
+                throw new \RuntimeException(sprintf(
+                    'the generated file %s could not be set to mode %s (%s)',
+                    $path,
+                    substr(sprintf('%o', self::GENERATED_FILE_MODE), -4),
+                    self::describeLastFailure($path),
+                ));
+            }
+        }
+    }
+
+    /**
      * Pull the diagnostic behind the most recent @-guarded call on $path.
      * error_clear_last() runs right before each guarded call, so
      * error_get_last() is fresh; the "<op>(<path>): " preamble PHP prepends
@@ -889,7 +1134,7 @@ final class ApplyExtractor
     {
         $failure = error_get_last();
         $message = is_array($failure) ? $failure['message'] : '';
-        foreach (['file_get_contents', 'file_put_contents', 'mkdir', 'unlink', 'rmdir', 'scandir'] as $op) {
+        foreach (['file_get_contents', 'file_put_contents', 'mkdir', 'unlink', 'rmdir', 'scandir', 'chmod'] as $op) {
             $preamble = sprintf('%s(%s): ', $op, $path);
             if (str_starts_with($message, $preamble)) {
                 $message = substr($message, strlen($preamble));

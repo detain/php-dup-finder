@@ -677,6 +677,35 @@ HELP;
         }
         $pipelineOpts['pluginExclusionNotes'] = $pluginNotes;
 
+        // output-010 (S52 xg leg, 'shell src/Cli/Command.php ... explicitly
+        // configured root, never CWD-default'): the apply directory reaches
+        // every downstream artifact path and summary row, so it is
+        // ABSOLUTIZED here — at the pipeline-venue boundary — instead of
+        // being resolved against whatever CWD the process happens to hold
+        // when RefactorPatchReporter opens it (the finding's redirect
+        // hazard is exactly the relative `refactored` moved by a CWD
+        // change). parseRuntimeOptions keeps emitting the literal
+        // `refactored` (frozen by shell-S28's shadowing pins and shell-
+        // S25's straddle/admission pins on the option surface); this is a
+        // pure statement on the factory's copy, riding the once-S06
+        // pagerMode seam and landing behind the once-S66 screen exactly —
+        // no admission or flag-surface ordering moves. The link refusals
+        // and realpath-under-root containment belong to
+        // ApplyExtractor::confineWriteTargets() (it re-runs the same
+        // absolutization so library callers that bypass the shell are
+        // confined too); threading the root itself from Config is the
+        // next holder's leg (Config/ConfigLoader ride once-S67 live —
+        // report-row; ServeCommand's own venue likewise). A failed
+        // getcwd() leaves the literal untouched — the window's loud IO
+        // diagnostic still names it.
+        $applyDir = $pipelineOpts['reportArgs']['applyDir'];
+        if (is_string($applyDir) && $applyDir !== '' && preg_match('#^([A-Za-z]:[\\\\/]|/)#', $applyDir) !== 1) {
+            $applyCwd = getcwd();
+            if ($applyCwd !== false) {
+                $pipelineOpts['reportArgs']['applyDir'] = $applyCwd . '/' . $applyDir;
+            }
+        }
+
         $buildPipeline = $this->buildPipelineFactory($pipelineOpts);
 
         // engine-006 read-path trust gate. The default cache_dir is the
