@@ -13,12 +13,15 @@ use Phpdup\Tui\Msg\StagePumpedMsg;
 use Phpdup\Tui\PhpdupModel;
 use Phpdup\Tui\TuiRunner;
 use Phpdup\Tui\ViewState;
+use SugarCraft\Core\BatchMsg;
 use SugarCraft\Core\KeyType;
 use SugarCraft\Core\Msg\KeyMsg;
 use SugarCraft\Core\Msg\QuitMsg;
 use SugarCraft\Core\Msg\WindowSizeMsg;
 use SugarCraft\Core\ProgressBarState;
+use SugarCraft\Core\TickRequest;
 use SugarCraft\Core\View;
+use SugarCraft\Forms\Spinner\TickMsg as SpinnerTickMsg;
 
 final class PhpdupModelTest extends TestCase
 {
@@ -580,5 +583,185 @@ final class PhpdupModelTest extends TestCase
     {
         $state = new PipelineState(Config::defaults([__DIR__]));
         return new PhpdupModel($state, new ViewState(), TuiRunner::resolveTheme('plain'));
+    }
+
+    // ── once-S72: pump smoothness (php-dup-finder-once-087 A-20 / A-21) ─────
+
+    /** @return \Generator<int, Stage> */
+    private static function twoStepGenerator(): \Generator
+    {
+        yield Stage::Scanning;
+        yield Stage::Preprocessing;
+    }
+
+    /** Pull the first spinner-tick message out of a batched Cmd, if any. */
+    private static function spinnerTickOf(BatchMsg $batch): ?SpinnerTickMsg
+    {
+        foreach ($batch->cmds as $cmd) {
+            $req = $cmd();
+            if (!$req instanceof TickRequest) {
+                continue;
+            }
+            $msg = ($req->produce)();
+            if ($msg instanceof SpinnerTickMsg) {
+                return $msg;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * once-S72 A-21: the live model must spend EXACTLY ONE factory call per
+     * boot — the old init path (a second construction after the host's
+     * seeding call) is the double-build the finding names.
+     */
+    public function testInitCallsIteratorFactoryExactlyOncePerBoot(): void
+    {
+        $calls = 0;
+        $factory = function () use (&$calls): array {
+            $calls++;
+            return [self::twoStepGenerator(), new PipelineState(Config::defaults([__DIR__]))];
+        };
+        $model = new PhpdupModel(
+            new PipelineState(Config::defaults([__DIR__])),
+            new ViewState(),
+            TuiRunner::resolveTheme('plain'),
+            $factory,
+        );
+
+        $model->init();
+        $this->assertSame(1, $calls, 'boot costs one factory call');
+
+        $model->update(new StagePumpedMsg());
+        $model->update(new StagePumpedMsg());
+        $model->update(new StagePumpedMsg()); // exhausts
+        $this->assertTrue($model->viewState->analysisComplete);
+        $this->assertSame(1, $calls, '…and still one for the whole drained run');
+    }
+
+    /**
+     * once-S72 A-21 acceptance shape: a host that front-loads the iterator
+     * pair (the proposed TuiRunner::buildLiveModel leg) boots with ZERO
+     * further factory calls and pumps the provided generator to completion.
+     */
+    public function testInitialRunIsAdoptedWithoutAFactoryCall(): void
+    {
+        $calls = 0;
+        $factory = function () use (&$calls): array {
+            $calls++;
+            return [self::twoStepGenerator(), new PipelineState(Config::defaults([__DIR__]))];
+        };
+        $liveState = new PipelineState(Config::defaults([__DIR__]));
+        $model = new PhpdupModel(
+            new PipelineState(Config::defaults([__DIR__])),
+            new ViewState(),
+            TuiRunner::resolveTheme('plain'),
+            $factory,
+            null,
+            [self::twoStepGenerator(), $liveState],
+        );
+
+        $cmd = $model->init();
+        $this->assertSame(0, $calls, 'a front-loaded pair must not re-invoke the factory at init');
+        $this->assertSame($liveState, $model->state, 'the adopted run installs the host-built state');
+        $this->assertInstanceOf(\Closure::class, $cmd);
+
+        $model->update(new StagePumpedMsg());
+        $model->update(new StagePumpedMsg());
+        [$_, $tail] = $model->update(new StagePumpedMsg());
+        $this->assertNull($tail, 'the adopted generator drains through the same pump chain');
+        $this->assertTrue($model->viewState->analysisComplete);
+        $this->assertSame(0, $calls, 'the factory never fired for this run');
+    }
+
+    /**
+     * once-S72 A-20: completion kills the spinner tick chain — the last
+     * already-scheduled tick lands once, paints, and reschedules nothing.
+     * (The old chain fired ~12 idle wakeups per second forever after the
+     * analysis finished, hidden behind the completion banner.)
+     */
+    public function testCompletionKillsTheSpinnerTickChain(): void
+    {
+        $factory = static fn(): array => [
+            self::twoStepGenerator(),
+            new PipelineState(Config::defaults([__DIR__])),
+        ];
+        $model = new PhpdupModel(
+            new PipelineState(Config::defaults([__DIR__])),
+            new ViewState(),
+            TuiRunner::resolveTheme('plain'),
+            $factory,
+        );
+
+        $batch = ($model->init())();
+        $this->assertInstanceOf(BatchMsg::class, $batch);
+        $tick = self::spinnerTickOf($batch);
+        $this->assertInstanceOf(SpinnerTickMsg::class, $tick, 'init arms the spinner chain once');
+
+        $model->update(new StagePumpedMsg());
+        $model->update(new StagePumpedMsg());
+        $model->update(new StagePumpedMsg()); // exhausts → analysisComplete
+        $this->assertTrue($model->viewState->analysisComplete);
+
+        [$_, $after] = $model->update($tick); // the old chain's final scheduled tick lands
+        $this->assertNull(
+            $after,
+            'once-S72 A-20: a spinner tick landing after completion reschedules NOTHING — '
+            . 'this goes red while the chain self-reschedules past completion',
+        );
+    }
+
+    /**
+     * once-S72 A-20: a restart re-arms one spinner chain under a FRESH
+     * spinner identity, so straggler ticks from the dead chain die at the id
+     * guard instead of stacking into double-speed chains.
+     */
+    public function testRestartReArmsSpinnerUnderFreshIdentityAndKillsStragglers(): void
+    {
+        $model = new PhpdupModel(
+            new PipelineState(Config::defaults([__DIR__])),
+            new ViewState(),
+            TuiRunner::resolveTheme('plain'),
+            static fn(): array => [
+                self::twoStepGenerator(),
+                new PipelineState(Config::defaults([__DIR__])),
+            ],
+        );
+
+        $tick1 = self::spinnerTickOf(($model->init())());
+        $this->assertInstanceOf(SpinnerTickMsg::class, $tick1);
+
+        [$_, $cmd] = $model->update(new RestartPipelineMsg(reload: 1));
+        $this->assertInstanceOf(\Closure::class, $cmd);
+        $restartBatch = $cmd();
+        $this->assertInstanceOf(
+            BatchMsg::class,
+            $restartBatch,
+            'once-S72: restart re-arms BOTH the spinner chain and the pump chain',
+        );
+        $tick2 = self::spinnerTickOf($restartBatch);
+        $this->assertInstanceOf(SpinnerTickMsg::class, $tick2);
+        $this->assertNotSame($tick1->id, $tick2->id, 'a fresh run mints a fresh spinner identity');
+
+        [$_, $straggler] = $model->update($tick1); // old-chain tick arrives late
+        $this->assertNull($straggler, 'the dead chain’s straggler cannot start a second living chain');
+    }
+
+    /**
+     * once-S72 A-20: Phase-2 mode (pipeline already ran; nothing to pump)
+     * arms no spinner chain at all — there is nothing for it to animate.
+     */
+    public function testInitWithoutFactoryArmsNoSpinnerChain(): void
+    {
+        $model = $this->buildModel(); // no factory
+        $batch = $model->init()();
+
+        $this->assertInstanceOf(BatchMsg::class, $batch);
+        $this->assertSame(
+            [],
+            $batch->cmds,
+            'once-S72 A-20: a born-complete dashboard burns zero spinner wakeups',
+        );
+        $this->assertTrue($model->viewState->analysisComplete);
     }
 }

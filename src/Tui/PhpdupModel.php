@@ -85,6 +85,21 @@ final class PhpdupModel implements Model, ProgressListener
      */
     private $iteratorFactory;
 
+    /**
+     * once-S72 (php-dup-finder-once-087 A-21): a run the host already built.
+     * {@see TuiRunner::buildLiveModel()} used to call the factory once to
+     * seed the constructor state, DISCARDING that generator, after which
+     * {@see init()} called it a second time for the live pump — two
+     * constructions per boot, and any side effect the factory carries (fresh
+     * PipelineState, stage objects with caches, a future non-idempotent
+     * opener) paid double. A host that front-loads the pair gets EXACTLY ONE
+     * factory call: the pair is adopted whole, the factory survives only for
+     * watch-mode restarts.
+     *
+     * @var array{0: \Generator<int, Stage>, 1: PipelineState}|null
+     */
+    private ?array $initialRun;
+
     /** Reload counter shown in the dashboard when watch-mode triggers RestartPipelineMsg. */
     public int $reloadCount = 0;
 
@@ -107,11 +122,13 @@ final class PhpdupModel implements Model, ProgressListener
         private readonly Theme $theme,
         ?\Closure $iteratorFactory = null,
         ?\Closure $nowSeconds = null,
+        ?array $initialRun = null,
     ) {
         $this->spinner         = Spinner::new(SpinnerStyle::miniDot());
         $this->startedAt       = microtime(true);
         $this->iteratorFactory = $iteratorFactory;
         $this->nowSeconds      = $nowSeconds ?? static fn(): float => microtime(true);
+        $this->initialRun      = $initialRun;
     }
 
     #[\Override]
@@ -183,16 +200,25 @@ final class PhpdupModel implements Model, ProgressListener
     #[\Override]
     public function init(): \Closure
     {
-        $cmds = [$this->spinner->tick()];
-        if ($this->iteratorFactory !== null) {
-            // Live-drive mode: build a fresh iterator + state and start pumping.
-            $this->buildIterator();
-            $cmds[] = $this->scheduleNextPump();
-        } else {
-            // No factory means the pipeline ran before the TUI booted (Phase 2 mode).
-            $this->viewState->analysisComplete = true;
+        if ($this->initialRun !== null) {
+            // once-S72 (php-dup-finder-once-087 A-21): the host front-loaded
+            // the run — adopt it whole and spend ZERO factory calls on boot.
+            [$gen, $state] = $this->initialRun;
+            $this->beginRun($gen, $state);
+            return Cmd::batch($this->spinner->tick(), $this->scheduleNextPump());
         }
-        return Cmd::batch(...$cmds);
+        if ($this->iteratorFactory !== null) {
+            // Live-drive mode: build a fresh iterator + state and start
+            // pumping — exactly ONE factory call for this run (A-21).
+            $this->buildIterator();
+            return Cmd::batch($this->spinner->tick(), $this->scheduleNextPump());
+        }
+        // No factory means the pipeline ran before the TUI booted (Phase 2
+        // mode). once-S72 (php-dup-finder-once-087 A-20): with nothing to
+        // pump there is nothing to animate — the idle-burn spinner chain is
+        // no longer armed for a completed run at all.
+        $this->viewState->analysisComplete = true;
+        return Cmd::batch();
     }
 
     /** @return array{0: Model, 1: \Closure|null} */
@@ -208,6 +234,16 @@ final class PhpdupModel implements Model, ProgressListener
             return $this->handleKey($msg);
         }
         if ($msg instanceof SpinnerTickMsg && $msg->id === $this->spinner->id()) {
+            if ($this->viewState->analysisComplete) {
+                // once-S72 (php-dup-finder-once-087 A-20): completion — clean
+                // or halted — KILLS the tick chain. The last already-scheduled
+                // tick lands once and reschedules nothing, so a finished
+                // dashboard stops burning ~12 wakeups/second behind the
+                // banner that hides the glyph anyway. The chain re-arms only
+                // with a fresh run (init/restart), under a fresh spinner id
+                // that straggler ticks from the dead chain cannot match.
+                return [$this, null];
+            }
             [$nextSpinner, $cmd] = $this->spinner->update($msg);
             assert($nextSpinner instanceof Spinner);
             $this->spinner = $nextSpinner;
@@ -277,7 +313,12 @@ final class PhpdupModel implements Model, ProgressListener
         $this->reloadCount = $reload;
         $this->viewState->analysisComplete = false;
         $this->buildIterator();
-        return [$this, $this->scheduleNextPump()];
+        // once-S72 (php-dup-finder-once-087 A-20): the completion guard had
+        // killed the previous run's tick chain, so the restart re-arms one —
+        // under the fresh spinner identity beginRun just minted, which turns
+        // any straggler tick from the old chain into a dead message instead
+        // of a second living chain.
+        return [$this, Cmd::batch($this->spinner->tick(), $this->scheduleNextPump())];
     }
 
     private function buildIterator(): void
@@ -286,6 +327,19 @@ final class PhpdupModel implements Model, ProgressListener
             return;
         }
         [$gen, $state] = ($this->iteratorFactory)();
+        $this->beginRun($gen, $state);
+    }
+
+    /**
+     * Install a generator + state pair as the live run and zero every per-run
+     * seam (halt facts, sparkline history, clock, RSS window). Shared by the
+     * factory path and the once-S72 initialRun adoption (A-21) so a
+     * front-loaded boot behaves EXACTLY like a built-at-init boot.
+     *
+     * @param \Generator<int, Stage> $gen
+     */
+    private function beginRun(\Generator $gen, PipelineState $state): void
+    {
         // A fresh run must not inherit the previous run's halt — the error
         // panel and the exit-1 posture clear together (init + watch restart).
         $this->pipelineError      = null;
@@ -298,6 +352,9 @@ final class PhpdupModel implements Model, ProgressListener
         // A fresh run must not inherit the previous run's throttle window —
         // the new dashboard's first progress callback samples immediately.
         $this->lastRssSampleAt = null;
+        // Fresh run, fresh spinner identity (once-S72 A-20): straggler tick
+        // messages from a dead chain can no longer pass the id guard.
+        $this->spinner = Spinner::new(SpinnerStyle::miniDot());
     }
 
     private function scheduleNextPump(): \Closure

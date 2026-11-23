@@ -5,11 +5,16 @@ namespace Phpdup\Tests\Unit\Pipeline;
 
 use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\Config;
+use Phpdup\Pipeline\CooperativeStageInterface;
 use Phpdup\Pipeline\DebugLogger;
 use Phpdup\Pipeline\Pipeline;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\Stage;
 use Phpdup\Pipeline\StageInterface;
+use Phpdup\Pipeline\Stages\ClusterStage;
+use Phpdup\Pipeline\Stages\PreprocessStage;
+use Phpdup\Pipeline\Stages\ReportStage;
+use Phpdup\Pipeline\Stages\ScanningStage;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\NullOutput;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -329,5 +334,264 @@ final class PipelineTest extends TestCase
                 $this->observed[] = $state->stage;
             }
         };
+    }
+
+    // ── once-S72: cooperative ReportStage (php-dup-finder-once-087) ─────────
+
+    /**
+     * Pump clock that never advances: the cost window cannot expire, so a
+     * budget-gated stage owes ZERO mid-stage yields no matter how many items
+     * it walks — the counterfactual that separates COST accounting from the
+     * old count-driven pump rhythms.
+     */
+    private static function frozenPumpClock(): \Closure
+    {
+        return static fn(): float => 0.0;
+    }
+
+    /**
+     * Pump clock advancing 10 ms per read: every third budget checkpoint
+     * crosses the 25 ms window, so the reporting tail MUST start yielding —
+     * the counterfactual that separates a real cooperative conversion from
+     * a non-yielding synchronous body wearing a generator costume.
+     */
+    private static function hotPumpClock(): \Closure
+    {
+        $t = 0.0;
+        return static function () use (&$t): float {
+            return $t += 0.01;
+        };
+    }
+
+    /**
+     * Fresh deterministic reporting fixture: two exact-duplicate function
+     * pairs in their own tmp tree → at least two clusters for the per-unit
+     * loops to walk. Returns [state, tmpDir]; runs the real stages up to
+     * (and including) clustering.
+     *
+     * @return array{0: PipelineState, 1: string}
+     */
+    private function reportingFixtureState(string $tag, ?string $jsonFile = null): array
+    {
+        $parent = sys_get_temp_dir() . '/phpdup-s72-' . $tag . '-' . getmypid() . '-' . bin2hex(random_bytes(4));
+        // The corpus dir gets a FIXED basename so the repo label (derived
+        // from the path's tail) is equal across sibling fixtures — only the
+        // absolute paths differ, and the byte-equality pins normalize those.
+        $dir = $parent . '/corpus';
+        mkdir($dir . '/cache', 0o775, true);
+        $alpha = "<?php\nfunction s72_alpha(int \$n): int\n{\n    \$x = \$n + 1;\n    \$y = \$x * 2;\n    return \$y - \$x;\n}\n";
+        $beta  = "<?php\nfunction s72_beta(string \$s): string\n{\n    \$t = trim(\$s);\n    return strtoupper(\$t) . '!';\n}\n";
+        file_put_contents($dir . '/alpha.php', $alpha);
+        file_put_contents($dir . '/alpha2.php', $alpha);
+        file_put_contents($dir . '/beta.php', $beta);
+        file_put_contents($dir . '/beta2.php', $beta);
+
+        $config = new Config(
+            paths: [$dir],
+            exclude: [],
+            minBlockSize: 1,
+            cacheDir: $dir . '/cache',
+            jsonReportFile: $jsonFile,
+            lazyAst: false,
+        );
+        $state = new PipelineState($config);
+        $out   = new NullOutput();
+        (new ScanningStage())->run($state, $out);
+        (new PreprocessStage(useCache: false))->run($state, $out);
+        (new ClusterStage(exactOnly: false, useClusterCache: false))->run($state, $out);
+        return [$state, $parent];
+    }
+
+    private function rrmdir(string $parent): void
+    {
+        foreach (glob($parent . '/corpus/{,cache/}*', GLOB_BRACE) ?: [] as $f) {
+            if (is_file($f)) {
+                @unlink($f);
+            }
+        }
+        @rmdir($parent . '/corpus/cache');
+        @rmdir($parent . '/corpus');
+        @rmdir($parent);
+    }
+
+    public function testReportStageIsCooperativeAndTransparentWhenTheBudgetNeverExpires(): void
+    {
+        $stage = new ReportStage(limit: 50, showStats: false, pumpClock: self::frozenPumpClock());
+        $this->assertInstanceOf(CooperativeStageInterface::class, $stage, 'once-S72: the reporting stage joins the cooperative set');
+
+        [$state, $dir] = $this->reportingFixtureState('frozen');
+        try {
+            $yields = iterator_to_array($stage->iter($state, new NullOutput()), false);
+            $this->assertSame(
+                [],
+                $yields,
+                'yields follow the COST budget, not a per-item count — a frozen clock can never expire it '
+                . '(this goes red on any count-based pump rhythm)',
+            );
+            $this->assertNotNull($state->report, 'a zero-yield drive must still build the full report');
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
+    public function testReportStageEmitsCostBoundedReportingFramesAcrossUnits(): void
+    {
+        $csv = sys_get_temp_dir() . '/phpdup-s72-hot-' . getmypid() . '.csv';
+        $stage = new ReportStage(limit: 50, showStats: false, csvFile: $csv, pumpClock: self::hotPumpClock());
+
+        [$state, $dir] = $this->reportingFixtureState('hot');
+        try {
+            $yields = iterator_to_array($stage->iter($state, new NullOutput()), false);
+            $this->assertGreaterThanOrEqual(
+                2,
+                count($yields),
+                'a running hot pump clock must get the report tail streaming across its units '
+                . '(this goes red on a non-yielding synchronous body)',
+            );
+            $this->assertSame(
+                array_fill(0, count($yields), Stage::Reporting),
+                $yields,
+                'every reporting frame names its own stage',
+            );
+            $this->assertNotNull($state->report);
+            $this->assertFileExists($csv);
+        } finally {
+            @unlink($csv);
+            $this->rrmdir($dir);
+        }
+    }
+
+    /**
+     * The #1 regression class for this conversion: carriers and payload must
+     * cross the yield boundaries EXACTLY as the synchronous path built them —
+     * same bytes in every sink, same CLI stream, same once-S37 carrier fields
+     * on the Report. A reordered, dropped or duplicated unit inside the new
+     * generator body lands here as a byte difference.
+     */
+    public function testRunAndCooperativeIterProduceByteIdenticalSinksCarriersAndCli(): void
+    {
+        $jsonA = sys_get_temp_dir() . '/phpdup-s72-eq-a-' . getmypid() . '.json';
+        $jsonB = sys_get_temp_dir() . '/phpdup-s72-eq-b-' . getmypid() . '.json';
+        $sarifA = sys_get_temp_dir() . '/phpdup-s72-eq-a-' . getmypid() . '.sarif';
+        $sarifB = sys_get_temp_dir() . '/phpdup-s72-eq-b-' . getmypid() . '.sarif';
+        [$stateRun, $dirRun] = $this->reportingFixtureState('eq-a', $jsonA);
+        [$stateIter, $dirIter] = $this->reportingFixtureState('eq-b', $jsonB);
+        try {
+            // Same fixture bytes through both drives; the S37 carriers ride
+            // identical signal so their threading is compared too.
+            foreach ([$stateRun, $stateIter] as $s) {
+                $s->scanNotes = ['s72 carrier note'];
+                $s->parseFailures = ['ghost.php' => 'deliberately unreadable'];
+                $s->clustersReplayed = true;
+            }
+
+            $stageRun  = new ReportStage(limit: 50, showStats: false, sarifFile: $sarifA, pumpClock: self::frozenPumpClock());
+            $stageIter = new ReportStage(limit: 50, showStats: false, sarifFile: $sarifB, pumpClock: self::frozenPumpClock());
+
+            $bufRun = new BufferedOutput();
+            $stageRun->run($stateRun, $bufRun);
+            $bufIter = new BufferedOutput();
+            foreach ($stageIter->iter($stateIter, $bufIter) as $_) {
+            }
+
+            // The two tmp trees give equal-shaped-but-different path strings;
+            // normalizing the sink bytes onto one path is the honest equality
+            // statement for "one unit sequence, two drives" (paths themselves
+            // are pinned by the golden suite).
+            $normalize = static function (string $text) use ($dirRun, $dirIter, $jsonA, $jsonB, $sarifA, $sarifB): string {
+                return str_replace(
+                    [$dirIter, $jsonB, $sarifB],
+                    [$dirRun, $jsonA, $sarifA],
+                    $text,
+                );
+            };
+
+            $rawJsonA = (string) file_get_contents($jsonA);
+            $rawJsonB = $normalize((string) file_get_contents($jsonB));
+            $this->assertSame($rawJsonA, $rawJsonB, 'the JSON sink must be byte-identical through run() vs drained iter()');
+            $this->assertSame(
+                (string) file_get_contents($sarifA),
+                $normalize((string) file_get_contents($sarifB)),
+                'the SARIF sink must be byte-identical through run() vs drained iter()',
+            );
+            $this->assertSame($bufRun->fetch(), $normalize($bufIter->fetch()), 'the CLI body must be byte-identical through run() vs drained iter() (after path normalization)');
+
+            $this->assertSame(['s72 carrier note'], $stateIter->report->scanNotes, 'scanNotes cross the yield seam intact');
+            $this->assertSame(['ghost.php' => 'deliberately unreadable'], $stateIter->report->parseFailures, 'parseFailures cross the yield seam intact');
+            $this->assertTrue($stateIter->report->clustersReplayed, 'clustersReplayed crosses the yield seam intact');
+            $this->assertSame($stateRun->report->scanNotes, $stateIter->report->scanNotes, 'carriers arrive identically on both drives');
+
+            // Schema-1.7 posture (once-S37 fix1): carriers exist on the
+            // Report object but are NOT emitted — no reporter reads them yet.
+            $decoded = json_decode($rawJsonA, true);
+            $this->assertIsArray($decoded);
+            foreach (['scan_notes', 'parse_failures', 'clusters_replayed'] as $carrierKey) {
+                $this->assertArrayNotHasKey(
+                    $carrierKey,
+                    $decoded,
+                    'the no-signal emit posture must hold: carrier keys stay out of the 1.7 payload',
+                );
+            }
+        } finally {
+            foreach ([$jsonA, $jsonB, $sarifA, $sarifB] as $f) {
+                @unlink($f);
+            }
+            $this->rrmdir($dirRun);
+            $this->rrmdir($dirIter);
+        }
+    }
+
+    /**
+     * Deliberate soft-cancel exception (documented on CooperativeStageInterface):
+     * ReportStage IS the partial report a cancel is meant to deliver, so it
+     * runs to completion — and keeps yielding — even with $cancelled set.
+     */
+    public function testReportStageDeliberatelyIgnoresSoftCancelForThePartialReport(): void
+    {
+        [$state, $dir] = $this->reportingFixtureState('cancel');
+        try {
+            $state->cancelled = true;
+            $stage = new ReportStage(limit: 50, showStats: false, pumpClock: self::hotPumpClock());
+            $yields = iterator_to_array($stage->iter($state, new NullOutput()), false);
+
+            $this->assertNotNull($state->report, 'a soft-cancelled run still gets its partial report');
+            $this->assertTrue($state->cancelled, 'the stage must not consume the cancel flag');
+            $this->assertGreaterThanOrEqual(2, count($yields), 'a cancelled tail keeps pumping frames, never aborts');
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
+    /**
+     * End-to-end: the Pipeline driver already passes cooperative mid-stage
+     * frames from the reporting stage straight through — the live TUI pump
+     * sees them without any driver-side change.
+     */
+    public function testPipelineDriverCarriesReportStageMidStageFrames(): void
+    {
+        [$state, $dir] = $this->reportingFixtureState('driver');
+        try {
+            $stage = new ReportStage(limit: 50, showStats: false, pumpClock: self::hotPumpClock());
+            $yields = iterator_to_array((new Pipeline([$stage]))->iter($state, new NullOutput()), false);
+
+            // pre + post frames alone would be 2; the >=4 claim proves the
+            // cost-bounded mid-stage frames flowed through the driver.
+            $this->assertGreaterThanOrEqual(4, count($yields), 'the driver must relay ReportStage mid-stage frames');
+            $this->assertSame(Stage::Reporting, $state->stage);
+            $this->assertSame(1.0, $state->stageProgress, 'the driver closes the stage at 1.0 after the cooperative body');
+        } finally {
+            $this->rrmdir($dir);
+        }
+    }
+
+    /** The 0.6 no-files guard survives the generator conversion unchanged. */
+    public function testCooperativeReportSkipsCleanlyWhenNoFilesWereScanned(): void
+    {
+        $state  = new PipelineState(Config::defaults([__DIR__]));
+        $stage  = new ReportStage(limit: 50, showStats: false, pumpClock: self::hotPumpClock());
+        $yields = iterator_to_array($stage->iter($state, new NullOutput()), false);
+
+        $this->assertSame([], $yields, 'no files means no work — and no frames to pump');
+        $this->assertNull($state->report);
     }
 }
