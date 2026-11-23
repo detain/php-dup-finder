@@ -55,6 +55,10 @@ use Symfony\Component\Console\Output\OutputInterface;
  * postures deterministically; production reads wall time. External pump
  * time is never charged to the stage: the window is re-anchored AFTER each
  * yield resumes, so a repaint between pumps cannot cascade extra yields.
+ * Checkpoints sit BETWEEN units, so a single unit that itself outlasts the
+ * budget (one giant cluster through the architecture pass is the known case)
+ * can still stretch one pump: unit granularity is the floor this design
+ * cannot cross without owning the analyzers' internals.
  *
  * Deliberate deviation from the soft-cancel law: cooperative stages break
  * out cleanly when {@see PipelineState::$cancelled} is set, but ReportStage

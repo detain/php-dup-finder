@@ -116,6 +116,11 @@ final class PhpdupModel implements Model, ProgressListener
     /** Class of the throwable behind {@see self::$pipelineError} (diagnostics identity). */
     public ?string $pipelineErrorClass = null;
 
+    /**
+     * @param \Closure(): array{0: \Generator<int, Stage>, 1: PipelineState}|null $iteratorFactory
+     * @param \Closure(): float|null                                              $nowSeconds
+     * @param array{0: \Generator<int, Stage>, 1: PipelineState}|null            $initialRun
+     */
     public function __construct(
         public PipelineState $state,
         public ViewState $viewState,
