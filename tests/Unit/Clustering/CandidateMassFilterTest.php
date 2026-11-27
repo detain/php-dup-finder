@@ -495,7 +495,8 @@ final class CandidateMassFilterTest extends TestCase
         $onMs = (microtime(true) - $t1) * 1000;
         $drops = $this->dropList($off, $on);
         $this->assertCount($n - 1, $off, 'one proposed link per adjacent pair');
-        $this->assertNotEmpty($drops, 'dead-but-proposed links must die (tails are pure exclusive mass)');
+        $this->assertSame([], $on, 'every chain link is a sound kill — the filtered stream must be EMPTY (a subset-kill regression must fail here)');
+        $this->assertCount($n - 1, $drops, 'all ' . ($n - 1) . ' proposed links die (tails are pure exclusive mass)');
         $this->assertStrictSubsequence($off, $on, count($drops));
         $this->assertLessThanOrEqual(max(1000.0, 2 * $offMs), $onMs,
             'the filter may cut work, never multiply it beyond a generous bound');
@@ -779,6 +780,10 @@ final class CandidateMassFilterTest extends TestCase
         };
         $off = $collect(false);
         $on = $collect(true);
+        $this->assertGreaterThan(0, $off->candidatePairs,
+            'the unfiltered stance must propose candidates on the shipped corpora — without this the byte-identity below is vacuous (the corpus minted zero near-dup edges and all 6 OFF candidates were dead)');
+        $this->assertLessThan($off->candidatePairs, $on->candidatePairs,
+            'the filter must kill real enumerated candidates on the shipped corpora (the 6->0 witness in the lane log)');
         $this->assertSame(
             $this->edgeCanonical($off->edges),
             $this->edgeCanonical($on->edges),

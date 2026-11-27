@@ -383,6 +383,11 @@ final class Clusterer
             && !$this->irScoring
             && $this->mlPairClient === null;
         $filterKills = 0;
+        // Census basis: a kill is one PRE-DEDUP candidate touch, so the kept
+        // side of the denominator counts on the same basis — a kept pair that
+        // gets a reverse-side re-touch would otherwise drift the total away
+        // from what the enumeration actually proposed.
+        $filterKeptTouches = 0;
 
         // Bounded $seen map for dedup — O(SEEN_CAP) memory instead of O(corpus).
         // When the cap is exceeded the map is cleared; this means some very
@@ -420,6 +425,7 @@ final class Clusterer
                         $filterKills++;
                     }
                 }
+                $filterKeptTouches += count($kept);
                 $guardDedup = $candidates;
                 $candidates = $kept;
             } else {
@@ -471,12 +477,12 @@ final class Clusterer
         if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
             $output->writeln(sprintf('ngram-index: enumeration complete, %d candidate pairs found [%s]', $yieldCount, MemoryDebug::getMemoryUsage()));
             if ($massFilterArmed) {
-                $enumerated = $yieldCount + $filterKills;
+                $touches = $filterKeptTouches + $filterKills;
                 $output->writeln(sprintf(
-                    'ngram-index: F3 mass-bound filter skipped %d of %d enumerated pairs (%.1f%%, bound test replaces the intersection walk)',
+                    'ngram-index: F3 mass-bound filter skipped %d of %d candidate touches (%.1f%%, bound test replaces the intersection walk)',
                     $filterKills,
-                    $enumerated,
-                    $enumerated > 0 ? 100 * $filterKills / $enumerated : 0.0,
+                    $touches,
+                    $touches > 0 ? 100 * $filterKills / $touches : 0.0,
                 ));
             }
         }
