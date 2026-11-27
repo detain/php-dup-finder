@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Phpdup\Cli;
 
 use Phpdup\Clustering\CandidateBudgetException;
+use Phpdup\Refactor\FunctionNameRegistry;
 use Phpdup\Refactor\ScriptKindApplyRefusal;
 use Phpdup\Pipeline\DebugLogger;
 use Phpdup\Pipeline\Pipeline;
@@ -730,6 +731,49 @@ HELP;
                 . self::escapeMarkup($applyRoot) . ' is a plain directory) and re-run. '
                 . 'No analysis was run and no file was written.</comment>');
             return 3;
+        }
+
+        // once-S88 (php-dup-finder-once-111): CROSS-RUN APPLY COLLISION
+        // GATE — the armed root's second pre-flight. FunctionNameRegistry
+        // deduplicates generated function names in memory, PER RUN: it is
+        // constructed fresh for every report payload and never persisted
+        // (its Lifecycle law), so a second real apply onto a root an
+        // earlier apply already populated cannot see that generation's
+        // names — and the artifacts it would collide with are never swept
+        // by design (once-S65: an apply output dir holds the extractor's
+        // rewritten project tree). The orphaned Refactored/ declarations
+        // load beside the new ones, and re-applying after a backup restore
+        // would flatten the durable .orig originals the first apply's undo
+        // story depends on. Refuse it before analysis, loud: every marker
+        // named, the registry provenance named, the remedy named — exit `3`
+        // riding the once-S04 safety-gate family, zero analysis and zero
+        // bytes. The PREVIEW posture is exempt ON PURPOSE: its apply.diff
+        // is an always-overwritten named artifact, re-running a preview on
+        // the same root is the documented work loop (the committed pins do
+        // it), and the overwrite is atomic (tmp+rename —
+        // RefactorPatchReporter::writeFileAtomic), so a fresh preview can
+        // never read a torn or stale-merged diff.
+        if (is_string($applyRoot) && $pipelineOpts['reportArgs']['applyDryRun'] === false) {
+            $occupied = FunctionNameRegistry::applyRootOccupancy($applyRoot);
+            if ($occupied !== []) {
+                $output->writeln('<error>phpdup: real apply refused — the apply directory '
+                    . self::escapeMarkup($applyRoot)
+                    . ' already holds the output of an earlier real apply</error>');
+                foreach ($occupied as $marker => $reason) {
+                    $output->writeln('  <error>' . self::escapeMarkup($marker)
+                        . ' — ' . self::escapeMarkup($reason) . '</error>');
+                }
+                $output->writeln('<comment>phpdup: generated function names are deduplicated in memory per run '
+                    . '(FunctionNameRegistry is constructed fresh for every report and never persisted), so this '
+                    . 'run cannot see the names the earlier apply minted under '
+                    . self::escapeMarkup($applyRoot . '/Refactored') . '; those orphans are never swept and load '
+                    . 'beside this generation — the redeclare class the registry exists to prevent, reopened across '
+                    . 'runs.</comment>');
+                $output->writeln('<comment>phpdup: move the earlier generation aside — its backup/ holds the '
+                    . 'originals it replaced — or re-run from a tree whose ./refactored is free. '
+                    . 'No analysis was run and no file was written.</comment>');
+                return 3;
+            }
         }
 
         // once-S04 (php-dup-finder-once-004): ARMED-APPLY DIRTY GATE.

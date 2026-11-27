@@ -112,6 +112,16 @@ use Phpdup\Util\ControlText;
  * holds the extractor's rewritten project tree — wiping anything there is
  * outside what this reporter owns. build() remains pure: it lists nothing
  * and removes nothing.
+ *
+ * once-111 (step once-S88): atomicity on the apply artifacts. Both the F1a
+ * apply.diff and the F1b apply-summary.md now land through
+ * {@see writeFileAtomic()} (private sibling temp + rename), so a refused,
+ * short, or interrupted write can never leave the one artifact a human
+ * trusts without opening it in a half-old/half-new state; the atomic
+ * replace is also what makes the dry posture's repeat-over-one-root safe,
+ * beside the cross-run collision gate Command.php runs for the ARMED
+ * posture before any analysis (probe:
+ * {@see FunctionNameRegistry::applyRootOccupancy()}).
  */
 final class RefactorPatchReporter
 {
@@ -244,7 +254,7 @@ final class RefactorPatchReporter
                     $safeId = Slug::safe($cluster->id);
                     $parts[] = $this->buildPatch($cluster, $safeId, $store);
                 }
-                $this->writeFile($dir . DIRECTORY_SEPARATOR . self::APPLY_DIFF_FILE, implode("\n", $parts));
+                $this->writeFileAtomic($dir . DIRECTORY_SEPARATOR . self::APPLY_DIFF_FILE, implode("\n", $parts));
             } else {
                 // F1b / actual apply mode: extract and write real files
                 $extractor = new ApplyExtractor();
@@ -327,7 +337,7 @@ final class RefactorPatchReporter
                 if ($skipped !== []) {
                     $summary .= "# Skipped:\n" . implode("\n", $skipped) . "\n";
                 }
-                $this->writeFile($dir . DIRECTORY_SEPARATOR . self::APPLY_SUMMARY_FILE, $summary);
+                $this->writeFileAtomic($dir . DIRECTORY_SEPARATOR . self::APPLY_SUMMARY_FILE, $summary);
             }
             return;
         }

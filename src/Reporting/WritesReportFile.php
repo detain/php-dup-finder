@@ -20,6 +20,11 @@ namespace Phpdup\Reporting;
  * The one intentional variety is {@see appendFile()}, the documented
  * stream-append exception (output-S54 §54): it appends under LOCK_EX for
  * the growing timeseries ledger, with the identical byte accounting.
+ * The venue offers two whole-file postures: {@see writeFile()} places a
+ * fresh file byte-for-byte-or-throw, and {@see writeFileAtomic()}
+ * (once-S88, php-dup-finder-once-111) replaces an existing artifact through
+ * a private sibling temp plus rename, so an interrupted overwrite can never
+ * leave a torn half-old/half-new file at the trusted name.
  *
  * Consumers call {@see writeFile()} (or {@see appendFile()}) from their own
  * public `writeTo()` method, which is the contract expected by ReportStage:
@@ -88,6 +93,75 @@ trait WritesReportFile
                 is_int($written) ? $written : 0,
                 'appending',
             );
+        }
+    }
+
+    /**
+     * once-S88 (php-dup-finder-once-111): the ATOMIC sibling of
+     * {@see writeFile()} — whole-file replace via a private sibling temp
+     * plus rename, for artifacts a human trusts without opening.
+     *
+     * {@see writeFile()} already guarantees byte-for-byte-or-throw; what it
+     * cannot promise is the FAILURE shape: a direct file_put_contents over
+     * an existing file truncates first, so a short write leaves a torn
+     * artifact — half old bytes, half new. rename(2) over an existing
+     * target is atomic on POSIX: a reader sees the previous complete
+     * version or the new complete version, never a mixture. The temp name
+     * carries the artifact name plus random bytes, so concurrent writers
+     * over one directory cannot clash on the temp; the race settles
+     * last-writer-whole-file-wins. Consumers keep the single-venue law
+     * (their source stays free of raw write primitives — pinned by
+     * RefactorPatchReporterTest) and opt into atomicity per call site:
+     * today the F1a apply.diff and F1b apply-summary.md legs of
+     * RefactorPatchReporter, where an interrupted overwrite used to be
+     * able to half-rewrite the whole artifact (php-dup-finder-once-111).
+     *
+     * On any failure the created temp is removed with the same race
+     * posture as {@see removeOwnedName()} — litter the disk refuses to
+     * give up is named in the raised exception, chained to the primary
+     * failure — and the target keeps its previous bytes untouched.
+     *
+     * @param string $path    Target file to replace atomically.
+     * @param string $content The complete new bytes.
+     */
+    protected function writeFileAtomic(string $path, string $content): void
+    {
+        $dir      = dirname($path);
+        $this->ensureDirectory($dir);
+        $temp     = $dir . DIRECTORY_SEPARATOR . '.' . basename($path) . '.' . bin2hex(random_bytes(8));
+        $expected = strlen($content);
+
+        try {
+            [$written, $diagnostic] = self::attempt(static fn () => file_put_contents($temp, $content));
+            if ($written === false || $written !== $expected) {
+                throw ReportWriteException::writeFailed(
+                    $temp,
+                    $diagnostic,
+                    $expected,
+                    is_int($written) ? $written : 0,
+                );
+            }
+            [$moved, $renameDiagnostic] = self::attempt(static fn () => rename($temp, $path));
+            if ($moved !== true) {
+                throw new ReportWriteException(sprintf(
+                    'renaming %s over %s failed: %s — the target keeps its previous bytes',
+                    $temp,
+                    $path,
+                    $renameDiagnostic !== '' ? $renameDiagnostic : 'no diagnostic recorded',
+                ));
+            }
+        } catch (\Throwable $failure) {
+            [$removed, $unlinkDiagnostic] = self::attempt(static fn () => unlink($temp));
+            if ($removed === false && (is_link($temp) || is_file($temp))) {
+                $failure = new ReportWriteException(
+                    $failure->getMessage()
+                        . '; the temporary file ' . $temp . ' could not be removed either ('
+                        . ($unlinkDiagnostic !== '' ? $unlinkDiagnostic : 'no diagnostic recorded') . ')',
+                    0,
+                    $failure,
+                );
+            }
+            throw $failure;
         }
     }
 
