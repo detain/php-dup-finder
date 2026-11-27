@@ -6,12 +6,16 @@ namespace Phpdup\Tests\Unit\Cli;
 use PHPUnit\Framework\TestCase;
 use Phpdup\Clustering\CandidateBudgetException;
 use Phpdup\Clustering\Clusterer;
+use Phpdup\Cli\Command;
 use Phpdup\Cli\Config;
 use Phpdup\Cli\ConfigLoader;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\Stages\ClusterStage;
 use Phpdup\Pipeline\Stages\PreprocessStage;
 use Phpdup\Pipeline\Stages\ScanningStage;
+use Symfony\Component\Console\Application;
+use Symfony\Component\Console\Input\ArgvInput;
+use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\NullOutput;
 
 /**
@@ -28,6 +32,23 @@ use Symfony\Component\Console\Output\NullOutput;
  */
 final class CandidateBudgetFlagTest extends TestCase
 {
+    /** @var list<string> chain-corpus dirs minted so far (once-S98/QA-L3) */
+    private static array $chainCorpusDirs = [];
+
+    protected function tearDown(): void
+    {
+        // once-S98 (php-dup-finder-once-123, QA-L3): makeChainCorpus() used
+        // to mint a fresh /tmp/phpdup-candbudget-* dir per call (2,841 leaked
+        // on this box) with no cleanup anywhere. Registration happens inside
+        // the minter, so every call site is swept here without per-site
+        // bookkeeping. The FIXED shared scratchDir() root stays by design.
+        foreach (self::$chainCorpusDirs as $dir) {
+            self::removeTree($dir);
+        }
+        self::$chainCorpusDirs = [];
+        parent::tearDown();
+    }
+
     public function testDefaultEqualsClustererGuardCap(): void
     {
         $config = new Config(paths: ['/tmp'], exclude: []);
@@ -301,10 +322,74 @@ final class CandidateBudgetFlagTest extends TestCase
     {
         $dir = sys_get_temp_dir() . '/phpdup-candbudget-' . bin2hex(random_bytes(4));
         mkdir($dir, 0o777, true);
+        self::$chainCorpusDirs[] = $dir; // once-S98/QA-L3: pruned in tearDown
         $body = "<?php\nfunction probe_%d(\$x) {\n    \$y = \$x + 1;\n    return \$y;\n}\n";
         for ($i = 0; $i < 3; $i++) {
             file_put_contents($dir . "/f$i.php", sprintf($body, 0));
         }
         return $dir;
+    }
+
+    private static function removeTree(string $dir): void
+    {
+        if (!is_dir($dir)) {
+            return;
+        }
+        foreach ((array) scandir($dir) as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            $path = $dir . '/' . $entry;
+            if (is_dir($path)) {
+                self::removeTree($path);
+            } else {
+                @chmod($path, 0o644);
+                @unlink($path);
+            }
+        }
+        @rmdir($dir);
+    }
+
+    /** One argv-shaped drive through the real Command (bin/phpdup shape). */
+    private function runArgv(array $tail): array
+    {
+        $app = new Application('phpdup', '0.1.0');
+        $app->setAutoExit(false);
+        $app->add(new Command());
+
+        $output = new BufferedOutput();
+        // ArgvInput's constructor strips argv[0] as the script name, so the
+        // token list has to carry one — this is the shape bin/phpdup hands it.
+        $exit = $app->run(new ArgvInput(array_merge(
+            ['phpdup', 'analyze', self::scratchDir()],
+            $tail,
+        )), $output);
+
+        return [$exit, $output->fetch()];
+    }
+
+    // ---- once-S98 (php-dup-finder-once-123, QA-L5a): both negative-value
+    // forms of the budget knob take their pinned polite doors. The
+    // NumericFlagCoercionTest family pins this door class for the sibling
+    // knobs; these two belts name candidate-budget explicitly.
+    public function testSpaceSeparatedNegativeBudgetTakesAttachedValueHintDoor(): void
+    {
+        [$exit, $output] = $this->runArgv(['--candidate-budget', '-1', '--plain']);
+
+        self::assertSame(2, $exit);
+        self::assertStringContainsString('phpdup: The "--candidate-budget" option requires a value', $output);
+        self::assertStringContainsString('--candidate-budget=<value>', $output);
+        self::assertStringNotContainsString('Usage:', $output);
+        self::assertSame(1, substr_count(trim($output), "\n") + 1, 'one clean error line: ' . var_export($output, true));
+    }
+
+    public function testAttachedNegativeBudgetTakesCoercionBoundaryDoor(): void
+    {
+        [$exit, $output] = $this->runArgv(['--candidate-budget=-1', '--plain']);
+
+        self::assertSame(2, $exit);
+        self::assertStringContainsString('phpdup: candidate_budget must be >= 0', $output);
+        self::assertStringNotContainsString('requires a value', $output);
+        self::assertStringNotContainsString('Usage:', $output);
     }
 }
