@@ -45,12 +45,16 @@ use Symfony\Component\Console\Output\OutputInterface;
  *  1. parseCliOverrides()   — validate and collect every CLI flag into a
  *                             flat override dict; returns null on error (an
  *                             empty dict is a legal bare run, not a failure).
- *  2. resolveProfile()       — load a --profile preset and merge its values
- *                             into $overrides (only for unset keys). An
- *                             unknown name or an unloadable profile file
- *                             throws — admission failure is fatal, exit 2
- *                             (shell-S25; the returned null now means
- *                             "flag absent" only).
+ *  2. resolveProfile()       — load a --profile preset into its OWN
+ *                             intermediate tier ($profileOverrides:
+ *                             defaults < profile < config file < CLI
+ *                             flags, once-S27 / php-dup-finder-once-031
+ *                             — the values no longer ride $overrides, so
+ *                             they cannot beat an explicit --config key).
+ *                             An unknown name or an unloadable profile
+ *                             file throws — admission failure is fatal,
+ *                             exit 2 (shell-S25; the returned null now
+ *                             means "flag absent" only).
  *  3. resolveAutoTune()      — probe the corpus and append auto-suggested
  *                             overrides; also returns whether --exact-only
  *                             was forced by the tuner. The probe's exclude
@@ -61,9 +65,9 @@ use Symfony\Component\Console\Output\OutputInterface;
  *                             once-S26), and the merge never overwrites a
  *                             knob the user explicitly set on the CLI, via
  *                             --profile, or in the config file.
- *  4. ConfigLoader::load()   — applies the three-tier precedence chain
- *                             (overrides → config file → defaults) and
- *                             returns a frozen Config object.
+ *  4. ConfigLoader::load()   — applies the four-tier precedence chain
+ *                             (CLI overrides → config file → profile →
+ *                             defaults) and returns a frozen Config object.
  *  5. parseRuntimeOptions()  — extract options that control pipeline runtime
  *                             behaviour (cache, TUI, watch, output formats);
  *                             returns null on error (an invalid choice or a
@@ -435,15 +439,22 @@ HELP;
         // profile's exclude list (php-dup-finder-shell-043), and every
         // admission failure short-circuits before the pipeline.
         try {
-            $profileExclude = $this->resolveProfile($input, $output, $paths, $overrides);
+            // once-S27 (php-dup-finder-once-031): resolveProfile now fills
+            // its OWN $profileOverrides tier (it no longer gap-fills
+            // $overrides), so --profile can no longer outrank an explicit
+            // --config key. The tier flows into the probe (locked-knob
+            // honesty) and the loader (documented intermediate precedence).
+            $profileOverrides = [];
+            $profileExclude = $this->resolveProfile($input, $output, $paths, $profileOverrides);
 
-            $autoTuneExactOnly = $this->resolveAutoTune($input, $output, $paths, $overrides, $profileExclude);
+            $autoTuneExactOnly = $this->resolveAutoTune($input, $output, $paths, $overrides, $profileExclude, $profileOverrides);
 
             $config = $this->doorConfigLoader()->load(
                 paths: $paths,
                 configFile: $input->getOption('config'),
                 overrides: $overrides,
                 profileExclude: $profileExclude,
+                profileOverrides: $profileOverrides,
             );
         } catch (\RuntimeException | \InvalidArgumentException | \TypeError $e) {
             // Invalid config, un-coercible numeric flag values, and rejected
@@ -579,6 +590,7 @@ HELP;
                     configFile: $input->getOption('config'),
                     overrides: $tryConfig,
                     profileExclude: $profileExclude,
+                    profileOverrides: $profileOverrides,
                 );
             } catch (\RuntimeException | \InvalidArgumentException | \TypeError $e) {
                 // Same friendly exit-2 posture as the first load, the same
@@ -1330,10 +1342,21 @@ HELP;
     }
 
     /**
-     * Load and apply a profile if --profile is set.
+     * Load a --profile preset into its own documented intermediate tier.
      *
-     * Modifies $overrides in place: profile values fill in only keys
-     * the user did not already set via CLI flags.
+     * Modifies $profileOverrides in place: every value the profile carries
+     * is deposited AS IS (no CLI-dict gap-fill gate). ConfigLoader::load()
+     * resolves the tier — defaults < profile < config file < CLI flags —
+     * so higher sources simply outrank these keys now, and the file tier's
+     * wins are reported on the load-note channel rather than taken
+     * silently.
+     *
+     * once-S27 (php-dup-finder-once-031): before this step the method
+     * filled unset keys of the CLI $overrides dict, which placed profile
+     * values in the TOP tier — so `--profile` beat an explicit `--config`
+     * key, the exact inversion the finding's PD-CFG-01 live proof caught
+     * (config min_block_size=2 vs profile 8 → 8 won). The tier lives on
+     * its own parameter now.
      *
      * shell-S25 (php-dup-finder-shell-012): failures are FATAL. The old
      * posture printed an error line and returned null — indistinguishable
@@ -1345,11 +1368,12 @@ HELP;
      * execute() maps both onto the conventional exit 2.
      *
      * @param list<string> $paths
-     * @param array<string, mixed> $overrides
+     * @param array<string, mixed> $profileOverrides out: the profile tier
+     *        (override-dict shaped — Command::profileToOverrides()'s roster)
      * @return list<string>|null $profileExclude null only when the flag is absent
      * @throws \RuntimeException when the profile name is unknown or its file cannot be loaded
      */
-    private function resolveProfile(InputInterface $input, OutputInterface $output, array $paths, array &$overrides): ?array
+    private function resolveProfile(InputInterface $input, OutputInterface $output, array $paths, array &$profileOverrides): ?array
     {
         $profileOpt = $input->getOption('profile');
         if ($profileOpt === null) {
@@ -1373,12 +1397,13 @@ HELP;
         // straight through — the exit-2 door in execute() renders it.
         $profileData = $registry->load($profileName);
 
+        // Fill the intermediate tier directly with every profile value, as
+        // is. No gate against the CLI dict: precedence (CLI > config file >
+        // profile > defaults) is resolved once, centrally, in
+        // ConfigLoader::load() — the old `if (!array_key_exists($k,
+        // $overrides))` gap-fill that dumped these into the CLI tier is the
+        // once-031 defect itself and is gone.
         $profileOverrides = $this->profileToOverrides($profileData);
-        foreach ($profileOverrides as $k => $v) {
-            if (!array_key_exists($k, $overrides)) {
-                $overrides[$k] = $v;
-            }
-        }
 
         $profileExclude = isset($profileData['exclude']) && is_array($profileData['exclude'])
             ? array_values(array_filter($profileData['exclude'], 'is_string'))
@@ -1417,9 +1442,14 @@ HELP;
      * @param list<string> $paths
      * @param array<string, mixed> $overrides
      * @param list<string>|null $profileExclude excludes resolved from --profile (null = absent)
+     * @param array<string, mixed> $profileOverrides once-S27 (php-dup-finder-once-031):
+     *        the profile's own tier — a knob it names is the user's (the
+     *        tuner may never move it), but its precedence position is the
+     *        documented one: BELOW the root config file, above defaults.
+     *        The 5-arg shape stays valid for the reflection-pinned legs.
      * @return bool $autoTuneExactOnly
      */
-    private function resolveAutoTune(InputInterface $input, OutputInterface $output, array $paths, array &$overrides, ?array $profileExclude): bool
+    private function resolveAutoTune(InputInterface $input, OutputInterface $output, array $paths, array &$overrides, ?array $profileExclude, array $profileOverrides = []): bool
     {
         if (!$input->getOption('auto-tune')) {
             return false;
@@ -1457,11 +1487,16 @@ HELP;
             ? array_merge($configLayer, $dictLayer)
             : array_merge($base->exclude, $profileExclude ?? [], $configLayer, $dictLayer)));
 
-        // once-S26: a knob is the user's when ANY explicit source names it —
-        // CLI flag or profile (both already sit in $overrides) or the root
-        // config file. Otherwise the run's effective value is the stock
-        // default and the tuner may move it (and must say so only when it
-        // really moves something).
+        // once-S26: a knob is the user's when ANY explicit source names it.
+        // once-S27 (php-dup-finder-once-031) separates the tiers: the CLI
+        // flag and the root config file still sit where they were, but the
+        // profile is now its OWN array (it no longer rides $overrides), so
+        // it must be consulted explicitly here. Precedence for the EFFECTIVE
+        // value a locked knob reports is CLI > config file > profile — so a
+        // knob named by both the profile and the config file is the config
+        // file's, and the tuner says so truthfully. A knob no explicit
+        // source names is the stock default and the tuner may move it (and
+        // must say so only when it really moves something).
         $locked    = [];
         $effective = [];
         foreach (['min_block_size', 'min_cluster_impact', 'max_df'] as $key) {
@@ -1471,6 +1506,9 @@ HELP;
             } elseif (array_key_exists($key, $configData)) {
                 $locked[]        = $key;
                 $effective[$key] = $configData[$key];
+            } elseif (array_key_exists($key, $profileOverrides)) {
+                $locked[]        = $key;
+                $effective[$key] = $profileOverrides[$key];
             } else {
                 $effective[$key] = match ($key) {
                     'min_block_size'     => $base->minBlockSize,
@@ -1498,8 +1536,14 @@ HELP;
             }
             // Belt over braces: the tuner already filtered $locked out of
             // $suggestion; this keeps the never-overwrite contract true for
-            // any caller that hands tune() no context.
-            if (!array_key_exists($k, $overrides)) {
+            // any caller that hands tune() no context. once-S27: a tuned
+            // value enters $overrides — the CLI tier, which outranks the
+            // config file AND the profile — so the guard must see all of
+            // them, not just the CLI dict the profile used to hide inside.
+            if (!array_key_exists($k, $overrides)
+                && !array_key_exists($k, $configData)
+                && !array_key_exists($k, $profileOverrides)
+            ) {
                 $overrides[$k] = $v;
             }
         }

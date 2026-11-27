@@ -102,8 +102,25 @@ final class ConfigLoader
      *        Under the item-5.2 append semantics these ADD to the stock
      *        defaults (alongside any config-file / overrides excludes);
      *        only "exclude_reset": true discards the inherited lists.
+     * @param array<string,mixed> $profileOverrides  once-S27 (php-dup-finder-once-031):
+     *        the values carried by --profile, admitted as their OWN
+     *        documented INTERMEDIATE tier — defaults < profile < config
+     *        file < CLI flags. Before this step the CLI layer injected
+     *        them into $overrides, so an explicit --config key silently
+     *        lost to profile auto-injection. Keys are override-dict
+     *        shaped (Command::profileToOverrides()'s roster is the table
+     *        of record); 'exclude' never appears here — it rides
+     *        $profileExclude — and every key this param may carry has a
+     *        consuming leg below (the once-S68 never-admitted-inert
+     *        doctrine; ProfilePrecedenceTest's liveness census pins it).
      */
-    public function load(array $paths, ?string $configFile, array $overrides = [], ?array $profileExclude = null): Config
+    public function load(
+        array $paths,
+        ?string $configFile,
+        array $overrides = [],
+        ?array $profileExclude = null,
+        array $profileOverrides = [],
+    ): Config
     {
         $this->skipNotes = [];
         $this->loadNotes = [];
@@ -158,7 +175,22 @@ final class ConfigLoader
         if (array_key_exists('containment', $optBlock)) {
             $flatData['optional_blocks_containment'] = $optBlock['containment'];
         }
-        $flat = $this->coerceNumerics($resolver->resolve($overrides, $flatData, [
+        // once-S27 (php-dup-finder-once-031): the profile is a documented
+        // INTERMEDIATE tier — defaults < profile < config file < CLI
+        // flags. The file's own keys are folded OVER the profile's to form
+        // the data tier (array_merge: later wins on key collision), so an
+        // explicit --config entry now outranks the same key carried by
+        // --profile; CLI $overrides still outrank the whole merged tier,
+        // and profile keys the file does not name keep flowing through
+        // exactly as before. Keys here that are NOT in the $flatKeys
+        // roster (allowed_kinds, the db_symbols_* packs) are inert to the
+        // resolver by design — they are consumed by their dedicated legs
+        // below, at the same tier position. The shadowed keys are surfaced
+        // on the load-note channel right after resolution: never silently
+        // replaced (the once-S67 paths-note doctrine, applied to the tier
+        // transition this step moves).
+        $dataTier = $profileOverrides === [] ? $flatData : array_merge($profileOverrides, $flatData);
+        $flat = $this->coerceNumerics($resolver->resolve($overrides, $dataTier, [
             'min_block_size' => $base->minBlockSize,
             'max_block_size' => $base->maxBlockSize,
             'normalization_mode' => $base->normalizationMode,
@@ -198,6 +230,48 @@ final class ConfigLoader
         $htmlOverride = $overrides['html'] ?? ($report['html'] ?? null);
         $jsonOverride = $overrides['json'] ?? ($report['json'] ?? null);
 
+        // once-S27 (php-dup-finder-once-031): the profile -> config-file
+        // tier transition must not be silent. Every key the profile tier
+        // carried that the root config file also names (same-key on the
+        // flat roster; 'kinds' beating the mapped 'allowed_kinds'; a
+        // per-bucket db_symbols pack beating the profile's pack) is
+        // reported once on the load-note channel — the same voice as the
+        // once-S67 paths-replacement and shell-S10 workers-clamp notes.
+        // Append-legs are absent by construction: the exclude lists STACK
+        // (item 5.2), nothing shadows there, and 'exclude' never enters
+        // $profileOverrides at all (it rides $profileExclude).
+        if ($profileOverrides !== [] && $configFile !== null) {
+            $shadowed = [];
+            foreach (array_keys($profileOverrides) as $profileKey) {
+                $key = (string)$profileKey;
+                if ($key === 'allowed_kinds') {
+                    if (array_key_exists('kinds', $data)) {
+                        $shadowed[] = $key;
+                    }
+                    continue;
+                }
+                if ($key === 'db_symbols_methods' || $key === 'db_symbols_functions') {
+                    $bucket = substr($key, strlen('db_symbols_'));
+                    $section = $data['db_symbols'] ?? null;
+                    if (is_array($section) && array_key_exists($bucket, $section)) {
+                        $shadowed[] = $key;
+                    }
+                    continue;
+                }
+                if (array_key_exists($key, $flatData)) {
+                    $shadowed[] = $key;
+                }
+            }
+            if ($shadowed !== []) {
+                sort($shadowed);
+                $this->addLoadNote(sprintf(
+                    'config file %s shadows profile value(s) %s — the profile is an intermediate tier below the config file',
+                    $configFile,
+                    implode(', ', $shadowed),
+                ));
+            }
+        }
+
         // shell-038 / shell-S10 lane ruling (pinned in NumericFlagCoercionTest):
         // an above-ceiling `workers` value is NOT invalid input — it stays
         // admitted (exit 0 posture, ConfigLoaderTest's exit-2 pins cover only
@@ -225,6 +299,10 @@ final class ConfigLoader
             $allowedKinds = $overrides['allowed_kinds'];
         } elseif (array_key_exists('kinds', $data)) {
             $allowedKinds = $data['kinds'];
+        } elseif (array_key_exists('allowed_kinds', $profileOverrides)) {
+            // once-S27: the profile kinds leg moved out of $overrides into
+            // its own tier — below the config file, above the defaults.
+            $allowedKinds = $profileOverrides['allowed_kinds'];
         }
 
         $resolvedPaths = !empty($data['paths']) ? $data['paths'] : $base->paths;
@@ -306,8 +384,8 @@ final class ConfigLoader
             perDirectoryOverrides: $this->discoverPerDirectoryOverrides($resolvedPaths, $resolvedExclude),
             dbAware: (bool)($overrides['db_aware'] ?? $data['db_aware'] ?? $base->dbAware),
             trinityCollapse: (bool)($overrides['trinity_collapse'] ?? $data['trinity_collapse'] ?? $base->trinityCollapse),
-            dbSymbolsMethods: $this->extractDbSymbols($data, $overrides, 'methods'),
-            dbSymbolsFunctions: $this->extractDbSymbols($data, $overrides, 'functions'),
+            dbSymbolsMethods: $this->extractDbSymbols($data, $overrides, $profileOverrides, 'methods'),
+            dbSymbolsFunctions: $this->extractDbSymbols($data, $overrides, $profileOverrides, 'functions'),
             scorer:                         $flat['scorer'],
             irThreshold:                    $flat['ir_threshold'],
             mlPairUrl: (string)($overrides['ml_pair_url'] ?? $data['ml_pair_url'] ?? $base->mlPairUrl),
@@ -519,14 +597,23 @@ final class ConfigLoader
      *
      * @param array<string,mixed> $data
      * @param array<string,mixed> $overrides
+     * @param array<string,mixed> $profileOverrides
      * @return array<string,string>
      */
-    private function extractDbSymbols(array $data, array $overrides, string $bucket): array
+    private function extractDbSymbols(array $data, array $overrides, array $profileOverrides, string $bucket): array
     {
+        // once-S27 tier order for the packs: CLI dict -> config file ->
+        // profile -> nothing. A file that names THIS bucket replaces the
+        // profile's pack wholesale (the shadow note covers it); a file
+        // that names only the other bucket leaves this one's profile pack
+        // live.
         $direct = $overrides['db_symbols_' . $bucket] ?? null;
         if (!is_array($direct)) {
             $section = $data['db_symbols'] ?? null;
-            $direct  = is_array($section) && is_array($section[$bucket] ?? null) ? $section[$bucket] : [];
+            $fromFile = is_array($section) && is_array($section[$bucket] ?? null) ? $section[$bucket] : null;
+            $direct   = $fromFile ?? (is_array($profileOverrides['db_symbols_' . $bucket] ?? null)
+                ? $profileOverrides['db_symbols_' . $bucket]
+                : []);
         }
         $allowed = [
             \Phpdup\Normalization\DbOpRegistry::OP_READ,

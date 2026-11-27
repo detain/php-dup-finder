@@ -162,8 +162,9 @@ final class Config
         // stock {@see \Phpdup\Normalization\DbOpRegistry} entries.
         // Lower-cased keys, values are one of the `db.*` op constants
         // (`db.read`, `db.write`, `db.delete`, `db.execute`, `db.query`).
-        // Loaded from `phpdup.json -> db_symbols.methods` plus any
-        // symbol packs merged via `--profile`.
+        // Loaded from `phpdup.json -> db_symbols.methods`, or from the
+        // `--profile` tier's symbol packs when the file names no such
+        // bucket (once-S27 intermediate-tier precedence).
         /** @var array<string,string> */
         public readonly array $dbSymbolsMethods = [],
         // User-extensible DB symbol equivalence registry — function

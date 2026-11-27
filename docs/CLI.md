@@ -38,9 +38,10 @@ Usage:
 
 ## `analyze` — options
 
-Defaults shown below come from `Phpdup\Cli\Config`. They are overridable
-via a `phpdup.json` config file (lower precedence) and CLI flags
-(higher precedence). See [Configuration file](#configuration-file)
+Defaults shown below come from `Phpdup\Cli\Config`. A `--profile` preset
+seeds them as the documented intermediate tier, a `phpdup.json` config
+file layers above the profile, and CLI flags sit highest
+([Configuration precedence](#configuration-precedence)). See [Configuration file](#configuration-file)
 below for the file format and [`docs/config-schema.json`](config-schema.json)
 for the full JSON-Schema-compatible spec.
 
@@ -73,7 +74,7 @@ for the full JSON-Schema-compatible spec.
 | `--ml-pair-threshold N`                    | `0.80`         | Similarity threshold (`0..1`) for the ML pair tier. |
 | `--score-mode MODE`                        | `global`       | Scoring stance for cross-repo clones: `global` \| `per-repo` \| `typed`. `global` runs the legacy confidence/safety math byte-identically (every golden, baseline and gate history is stable under it). `per-repo` evaluates the ">3 namespaces" penalty on the namespace spread within the densest member repo, so a subsystem mirrored across packages is no longer double-penalized for its mirroring. `typed` (audit posture) replaces that penalty for cross-repo clusters with an inverse bonus (+0.05 confidence / +0.10 safety): one shared helper erases N repo-local copies. Single-repo clusters score identically under every mode. Repo labels come from the scan roots — analyze multiple repositories by passing one path per repo. Root config only — per-directory `.phpdup.json` files carrying this key fail the load. |
 | `--max-hole-coverage N`                    | `1.0`          | Extraction-quality stance: when a cluster's generalized template is MORE than this fraction (`0..1`) hole, the report marks it `re_expressed` and surfaces its longest hole-free statement run (`hole_fragment`) instead of letting a hole-riddled signature pass as a clean abstraction. Default `1.0` disables the rule — coverage can never exceed it, so every historical report is byte-identical. Evidence is annotated, never dropped. Root config only, like `max_ted_size`. |
-| `--profile NAME`                           | —              | Apply a project profile (`laravel`, `symfony`, `drupal`, `wordpress`, `myadmin`, `generic`, `db-aware-aura`, `db-aware-atlas`, `db-aware-cake`, `db-aware-codeigniter`, `db-aware-couchbase`, `db-aware-couchdb`, `db-aware-cycle`, `db-aware-dibi`, `db-aware-doctrine`, `db-aware-easydb`, `db-aware-elasticsearch`, `db-aware-idiorm`, `db-aware-influxdb`, `db-aware-illuminate`, `db-aware-laminas`, `db-aware-laravel`, `db-aware-medoo`, `db-aware-mongodb`, `db-aware-myadmin`, `db-aware-myadmin-orm`, `db-aware-neo4j`, `db-aware-phalcon`, `db-aware-phpactiverecord`, `db-aware-pixie`, `db-aware-propel`, `db-aware-redis`, `db-aware-redbean`, `db-aware-thinkorm`, `db-aware-yii`, or `auto`). Project profiles seed framework-aware excludes + tuning; `db-aware-*` profiles ship symbol-equivalence packs that extend the stock DB registry with framework-specific call shapes. Explicit CLI flags + `--config` win over profile values. |
+| `--profile NAME`                           | —              | Apply a project profile (`laravel`, `symfony`, `drupal`, `wordpress`, `myadmin`, `generic`, `db-aware-aura`, `db-aware-atlas`, `db-aware-cake`, `db-aware-codeigniter`, `db-aware-couchbase`, `db-aware-couchdb`, `db-aware-cycle`, `db-aware-dibi`, `db-aware-doctrine`, `db-aware-easydb`, `db-aware-elasticsearch`, `db-aware-idiorm`, `db-aware-influxdb`, `db-aware-illuminate`, `db-aware-laminas`, `db-aware-laravel`, `db-aware-medoo`, `db-aware-mongodb`, `db-aware-myadmin`, `db-aware-myadmin-orm`, `db-aware-neo4j`, `db-aware-phalcon`, `db-aware-phpactiverecord`, `db-aware-pixie`, `db-aware-propel`, `db-aware-redis`, `db-aware-redbean`, `db-aware-thinkorm`, `db-aware-yii`, or `auto`). Project profiles seed framework-aware excludes + tuning; `db-aware-*` profiles ship symbol-equivalence packs that extend the stock DB registry with framework-specific call shapes. Explicit CLI flags + `--config` win over profile values: the profile is the documented intermediate tier — `Config` defaults < profile < config file < CLI flags (see [Configuration precedence](#configuration-precedence)); a shadowed key is announced by a load note. |
 
 ### Output
 
@@ -549,18 +550,45 @@ exec bash    # or open a new shell
 
 ## Configuration precedence
 
-Every flat scalar config key follows the same three-tier precedence:
+Every flat scalar config key follows the same four-tier precedence (once-S27,
+php-dup-finder-once-031): the highest tier that **names** the key wins.
 
 ```
 CLI flag  (highest)
     ↓
-phpdup.json  (medium)
+config file (--config FILE / phpdup.json)
+    ↓
+--profile tier (preset or --profile=auto detection)
     ↓
 Config::defaults()  (lowest)
 ```
 
-`src/Cli/OverrideResolver` applies this rule for the numeric/flat keys
-that share the same precedence (the table of record is the `$flatKeys`
+The profile is its own documented intermediate tier: `--profile laravel`
+(or `--profile=auto`, which sniffs the scan paths) seeds framework-aware
+tuning **below** the config file, so a root file's explicit value is never
+silently outranked by an auto-injected preset. Before once-S27 the profile
+values were merged into the CLI override dict and rode the TOP tier —
+`--profile` beat `--config` for every key the profile carried, the exact
+defect php-dup-finder-once-031 names. The tier carries exactly the keys
+`Command::profileToOverrides()` maps — `min_block_size`, `max_block_size`,
+`normalization_mode`, `similarity_threshold`, `tree_threshold`,
+`min_cluster_impact`, `max_df`, `ngram_size`, `sort`, plus `kinds` (the
+`allowed_kinds` leg) and `db_symbols` (the symbol-pack legs) — and every
+one of them is consumed at that tier (never admitted-inert). `exclude`
+is not a replacement key at any tier: profile globs APPEND between the
+stock defaults and the config-file list (see the `exclude` row below).
+When a root config file shadows one or more profile-carried keys, the run
+prints a single `phpdup: warning:` load note naming each shadowed key —
+the demotion is loud, never a silent drop. Per-directory `.phpdup.json`
+files layer once more on top of the root-resolved view for the files
+inside their own subtree (the shell-S22 admission set — see the truth
+table below); the profile tier lives strictly in the root view and never
+reaches a subtree file.
+
+`src/Cli/OverrideResolver` applies the overrides → data → base rule for the numeric/flat keys
+that share the same precedence (the profile tier reaches the resolver inside
+the data tier, with config-file keys folded over profile values before it
+runs; the table of record is the `$flatKeys`
 list in `src/Cli/ConfigLoader::load()` plus `ConfigLoader::NUMERIC_KEYS` —
 never hard-count it here, the list grows with each flag): `min_block_size`,
 `max_block_size`,
@@ -580,9 +608,10 @@ A few keys use different fallback paths:
 
 | Key | Precedence chain |
 |-----|-----------------|
-| `allowed_kinds` | CLI → config `kinds` → the twelve traversable kinds (everything in `BlockExtractor::ALL_KINDS` except `script` — that fold kind is opt-in only and never implicit) |
+| `allowed_kinds` | CLI `--kinds` → config `kinds` → profile `kinds` → the twelve traversable kinds (everything in `BlockExtractor::ALL_KINDS` except `script` — that fold kind is opt-in only and never implicit) |
 | `optional_blocks.*` | CLI → config `optional_blocks` → `Config` defaults |
 | `db_aware`, `trinity_collapse` | CLI → config → `Config` defaults |
+| `db_symbols` packs | config bucket → profile bucket (per-bucket: a root file naming the `methods` bucket replaces that bucket's profile pack; a bucket the file omits keeps the profile pack live). No CLI flag carries packs; per-directory `db_symbols` merge ON TOP of the root map for their subtree. |
 | `exclude` | APPEND: `Config` defaults + profile globs + config-file list + programmatic CLI-dict list (deduped, in that order) — never a replacement; `"exclude_reset": true` drops the inherited layers. A `"exclude": []` in any layer is a pure no-op: an empty list adds nothing, and its mere presence wipes nothing. Per-directory `.phpdup.json` lists accumulate down the tree the same way — but inside the subtree of the file that carries them their patterns are anchored **relative to that file's own directory**, and they prune the scan walk for real (see "exclude stacks" below). |
 | `paths` | config `paths` → `Config` defaults (CLI argument is separate) |
 
