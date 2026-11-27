@@ -7,10 +7,14 @@
 >
 > Regenerated from shipped truth (once-S39, 2026-11-23): the schema
 > version, every field list, the example payloads and the exit-code
-> table below were diffed against `Phpdup\Reporting\JsonSchemaSpec`,
+> guidance were diffed against `Phpdup\Reporting\JsonSchemaSpec`,
 > `Phpdup\Reporting\JsonReporter` and live `bin/phpdup --json` probe
 > runs at this tip. Examples are actual tool bytes; the only edits are
-> elisions inside long text values, each marked.
+> elisions inside long text values, each marked. (once-S95, 2026-11-27:
+> the local exit-code table collapsed into a link-anchor of the single
+> source-of-truth [docs/CLI.md § Exit codes](CLI.md#exit-codes); the
+> plugin-relevant reading below was re-verified against shipped code at
+> that tip.)
 
 ## How the plugin invokes phpdup
 
@@ -25,31 +29,23 @@ phpdup analyze <project-roots> \
   exits `0`.
 - `--plain` keeps `OutputInterface` non-decorated so the plugin's
   console window doesn't accumulate ANSI escapes.
-- Exit codes (a superset of the `docs/CLI.md` table: the same five
-  rows plus the SIGINT `130` convention, with expanded detail on
-  `0`/`1`/`2` here; every row below was probe-verified or
-  code-verified):
-  - `0` — analysis completed. Finding clusters is NOT an error: an
-    empty `clusters` array is the only "clean" signal.
-  - `1` — runtime error: uncaught exception, reporter failure, an
-    unknown CLI option, or a typed runtime refusal (candidate-budget
-    halt, script-kind apply refusal — each renders one `phpdup:`
-    error line first).
-  - `2` — invalid invocation: a non-numeric or out-of-domain numeric
-    option value, an invalid `--stage`/`--pager`/`--theme` choice, a
-    non-boolean `--dry-run` value, a nonexistent scan path (one
-    `phpdup: path not found:` line, refused before the pipeline),
-    a `--validate-config` failure, an empty/corrupt `--baseline` file.
-  - `3` — CI gate tripped (`--fail-on-impact` / `--max-clusters`);
-    the tripped gate is named in the output.
-  - `4` — CI gate tripped: a `--baseline FILE` was provided, exists,
-    and new duplicate clusters were found beyond it.
-  - `130` — SIGINT (Ctrl+C, first press). The pump stops
-    cooperatively but the reporting stage still runs: the `--json`
-    file IS written with a **partial** payload and the CLI prints
-    `phpdup: cancelled by user — partial report rendered`. Treat the
-    result as incomplete evidence, never as a clean scan, and never
-    as a crash.
+- Exit codes: the full contract — every code, every class of failure —
+  lives in the single source-of-truth table,
+  [docs/CLI.md § Exit codes](CLI.md#exit-codes) (once-S95 unification;
+  the rows were probe-verified and code-verified there). This document
+  does not restate it. The plugin-relevant reading:
+  - `0` is the only "analysis completed" trigger for the JSON read —
+    and finding clusters is NOT an error: an empty `clusters` array is
+    the clean signal.
+  - Any non-zero, non-`130` exit means there is no usable payload to
+    parse (the run was refused, halted, or gated before or at
+    reporting).
+  - `130` (SIGINT, first press) is the honest-partial case: the pump
+    stops cooperatively but the reporting stage still runs, so the
+    `--json` file IS written with a **partial** payload, and the CLI
+    prints `phpdup: cancelled by user — partial report rendered`.
+    Treat the result as incomplete evidence, never as a clean scan,
+    and never as a crash.
 
 ## JSON shape (schema 1.7)
 
@@ -128,9 +124,9 @@ the other.
 | `id` | string | Content-derived cluster id (canonical FindingId stream since 1.3); usable as a stable UI key. |
 | `kind` | string | Block kind of member[0] (method/function/closure/foreach/if/…). |
 | `exact` | bool | True for type-1 (exact-canonical) clusters. |
-| `similarity` | float | Min pairwise similarity [0,1]. |
-| `confidence` | float | Anti-unification confidence [0,1]. |
-| `safety` | float | Refactor-safety score [0,1]. |
+| `similarity` | float | Min pairwise similarity (`0..1`). |
+| `confidence` | float | Anti-unification confidence (`0..1`). |
+| `safety` | float | Refactor-safety score (`0..1`). |
 | `impact` | int | Removal the cluster represents: `(members − 1) × mean member AST-node size − per-hole parameterization penalty`. A node-count score, NOT a line count. |
 | `pattern_tags` | list&lt;string&gt; | e.g. `sql-builder`, `controller-action`, `loop-map`, `config-driven`. |
 | `outlier_members` | list&lt;int&gt; | Indices of members flagged by coherence analysis. |
@@ -368,21 +364,22 @@ unknown trailing keys, always.
 | Severity in inspection panel | take MAX of `architectural_findings[*].severity` |
 | "Where should the extraction live?" panel | `placement.shape` + `placement.rationale` |
 | Evidence pane ("why is this a cluster?") | `template`, `source`, `evidence_diff`, `hole_coverage`; refuse/gray-out apply affordances when `holes[*].placeholder == "__cap"` or `degraded` |
-| Baseline diff / gate UX | exit codes `3`/`4` above; the gate that tripped is named in stderr |
+| Baseline diff / gate UX | exit codes `3`/`4` in the single source-of-truth table ([docs/CLI.md § Exit codes](CLI.md#exit-codes)); the gate that tripped is named in stderr |
 
 ## Golden fixtures (digest reference)
 
 The three committed end-to-end payloads under `tests/Golden/` are the
 canonical machine-readable examples of a real schema-1.7 report —
 regenerated only by the sanctioned golden-serial lanes. Their git blob
-ids at the tip this doc was regenerated against (`git rev-parse
-b1aa72c:tests/Golden/<file>`):
+ids on current master (re-anchored by once-S95 against
+`git ls-tree master tests/Golden/`; the once-S39-era snapshot ids at
+`b1aa72c` live on in git history):
 
 | Fixture | Blob id |
 |---------|---------|
-| `notify-exact.json` | `e70db860ce04fc3959c77e447b183a4b8e0a58fc` |
-| `optional-near-dups.json` | `006c85a2bb990a034c6977a921306ec8e798aac2` |
-| `sql-exact.json` | `39b152d7a654945a313fa0dd77f15f91629a6480` |
+| `notify-exact.json` | `e7490074ecfb4c6f116cec78a28d10af0072b51d` |
+| `optional-near-dups.json` | `6f42ebcc79a23a0ae04fb8c8476f07974474cbf1` |
+| `sql-exact.json` | `16889d068f4cf0b637d3626f51c4102483e69488` |
 
 A plugin-side parser regression suite should pin against these bytes,
 not against hand-typed examples.
