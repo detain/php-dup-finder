@@ -34,14 +34,14 @@ sorted element digests — so the same clone content always carries the
 same id. (The response numbers are illustrative: no model is
 published yet.)
 
-`safety` is in [0, 1] — same semantics as `Phpdup\Reporting\SafetyScorer`'s
+`safety` is in `0..1` — same semantics as `Phpdup\Reporting\SafetyScorer`'s
 heuristic score. `MlClient::score()` returns `null` whenever it cannot
 produce a trusted verdict — transport errors, non-2xx responses, and
-(engine-S20) any response number that fails the shared closed-[0,1]
+(engine-S20) any response number that fails the shared closed `0..1`
 fence `MlClient::coerceUnitFloat()` — so callers fall back to the
 heuristic without code-path branching.
 
-`anomaly` is in [0, 1] — interpreted as "this cluster looks
+`anomaly` is in `0..1` — interpreted as "this cluster looks
 suspiciously different from typical training-set duplicates." A
 high anomaly score on a cluster with high `safety` is a strong
 "this isn't really a duplicate" signal.
@@ -132,7 +132,7 @@ predated the pair tier and contradicted itself; it is retired here.
 - **Verdict fence** (engine-S20): every verdict number —
   `similarity`, `confidence`, `safety`, `anomaly`, named or positional
   — must clear `MlClient::coerceUnitFloat()`: numeric, finite, in
-  `[0, 1]`. INF, NaN, booleans, arrays and out-of-domain values void
+  `0..1`. INF, NaN, booleans, arrays and out-of-domain values void
   the verdict instead of laundering through a cast.
 
 ## Pair similarity: `POST /score-pair` and `POST /score-batch`

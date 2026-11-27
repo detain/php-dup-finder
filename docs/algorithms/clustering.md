@@ -145,7 +145,7 @@ Steps:
     size ratio: containment >= 0.85 AND size ratio >= 0.60 → mark as
     a near-duplicate pair, tier `containment`, edge similarity = the
     containment score; AntiUnifier handles the optional-block alignment
-    per §3 of `docs/algorithms/anti-unification.md`. This tier catches
+    per step 3 of `docs/algorithms/anti-unification.md`. This tier catches
     subset clones like `{ a(); b(); }` vs `{ a(); b(); c(); }` that
     Jaccard penalises for size mismatch.
 
@@ -237,7 +237,7 @@ other" question directly, and is the tier-3 scoring mechanism (see
 ADR-0003).
 
 - **Containment** = `|A ∩ B| / min(|A|, |B|)` — multiset intersection over
-  the smaller bag's total mass. In [0, 1]; 1.0 means the smaller bag's
+  the smaller bag's total mass. In `0..1`; 1.0 means the smaller bag's
   n-grams are all present in the larger one.
 - **Size ratio** = `min(|A|, |B|) / max(|A|, |B|)` — how comparable the
   bags are in mass (prevents pairing a 1-line block with a 100-line one).
@@ -247,7 +247,7 @@ The Clusterer accepts a pair when containment ≥ `optional_blocks.containment`
 measured over n-gram multisets (bag *mass*, not raw token counts):
 `{ a(); b(); }` vs `{ a(); b(); c(); }` lands high containment with a reduced
 size ratio, while a same-size reorder lands high on both; AntiUnifier's LCS
-pass (§3 of anti-unification.md) does the statement-level alignment.
+pass (step 3 of anti-unification.md) does the statement-level alignment.
 
 ## IR tier (`--scorer=ir`, default off)
 
