@@ -206,7 +206,7 @@ What follows is the shipped honesty for that choice, three parts:
 2. **The disk posture is private by construction.** Results live in a
    0700 directory that no other uid can read, and the whole `/tmp`
    footprint is swept at shutdown and again at startup — see
-   [Results on disk: /tmp hygiene](#results-on-disk--tmp-hygiene)
+   [Results on disk: /tmp hygiene](#results-on-disk-tmp-hygiene)
    below.
 
 3. **On a shared machine, use the token anyway.** `--token` is only
@@ -437,7 +437,7 @@ memory growth during sustained use:
   RAM. Finished results also land as files under
   `/tmp/phpdup-results-<pid>` and are not reclaimed mid-run; the
   startup and shutdown sweeps of
-  [Results on disk: /tmp hygiene](#results-on-disk--tmp-hygiene) are
+  [Results on disk: /tmp hygiene](#results-on-disk-tmp-hygiene) are
   the on-disk counterpart to these guarantees.
 
 These guarantees apply to the built-in single-process server. If you
