@@ -101,7 +101,8 @@ if ($foundDev !== []) {
         fwrite(STDERR, "  - {$d}\n");
     }
     fwrite(STDERR, "  Re-run `composer install --no-dev --optimize-autoloader` for a slim phar.\n");
-    fwrite(STDERR, "  Building anyway with dev deps will produce a phar several-fold over the lean baseline.\n\n");
+    fwrite(STDERR, "  Building anyway with dev deps will produce a phar several-fold over the lean baseline.\n");
+    fwrite(STDERR, "  Expect a multi-minute vendor walk; one progress line prints per package.\n\n");
 }
 
 // ----------------------------------------------------------------------
@@ -285,7 +286,17 @@ $counters = [
 ];
 
 // 6a. Add vendor/ — filtering out test/docs/CI cruft.
+// once-S98 (php-dup-finder-once-123, QA-L4): a dev-vendor walk is the
+// long pole of a cold build — previously minutes of total silence. The
+// loop now prints one progress line per package boundary on STDERR and
+// the summary carries the measured walk time. DFS traversal keeps each
+// package directory's subtree contiguous; an exotic split layout may
+// print the same package twice, but the running totals stay honest.
 $baseVendor = __DIR__ . '/vendor';
+$walkStart  = \microtime(true);
+$pkgNow     = null;
+$pkgAdded   = 0;
+$pkgSkipped = 0;
 $iterator = new \RecursiveIteratorIterator(
     new \RecursiveDirectoryIterator($baseVendor, \FilesystemIterator::SKIP_DOTS),
     \RecursiveIteratorIterator::LEAVES_ONLY,
@@ -305,14 +316,33 @@ foreach ($iterator as $file) {
     // the belt for users who follow the README and build on Windows. On
     // POSIX DIRECTORY_SEPARATOR === '/' and the fold is a byte no-op.
     $localPath = 'vendor/' . str_replace(\DIRECTORY_SEPARATOR, '/', $iterator->getSubPathName());
+
+    $seg = \explode('/', $localPath);
+    $pkg = isset($seg[2]) ? $seg[1] . '/' . $seg[2] : '(vendor root files)';
+    if ($pkg !== $pkgNow) {
+        if ($pkgNow !== null) {
+            \fwrite(STDERR, \sprintf("build-phar:   vendor %-28s added=%-4d skipped=%-4d  (totals %d/%d)\n", $pkgNow, $pkgAdded, $pkgSkipped, $counters['vendor_added'], $counters['vendor_skipped']));
+        }
+        $pkgNow     = $pkg;
+        $pkgAdded   = 0;
+        $pkgSkipped = 0;
+    }
+
     if (shouldSkipVendorPath($localPath)) {
         $counters['vendor_skipped']++;
         $counters['bytes_skipped'] += $file->getSize();
+        $pkgSkipped++;
         continue;
     }
     $phar->addFile($file->getPathname(), $localPath);
     $counters['vendor_added']++;
+    $pkgAdded++;
 }
+
+if ($pkgNow !== null) {
+    \fwrite(STDERR, \sprintf("build-phar:   vendor %-28s added=%-4d skipped=%-4d  (totals %d/%d)\n", $pkgNow, $pkgAdded, $pkgSkipped, $counters['vendor_added'], $counters['vendor_skipped']));
+}
+$vendorWalkSeconds = \microtime(true) - $walkStart;
 
 // 6b. Add src/ (everything PHP).
 $srcDir = __DIR__ . '/src';
@@ -409,6 +439,7 @@ fwrite(STDOUT, sprintf(
     $counters['src_added'],
     $counters['profiles_added'],
 ));
+fwrite(STDOUT, \sprintf("  walk-time: %.1fs (vendor)\n", $vendorWalkSeconds));
 
 if ($size > 30 * 1024 * 1024) {
     fwrite(STDERR, "\nbuild-phar: WARNING — phar exceeds 30 MB.\n");
