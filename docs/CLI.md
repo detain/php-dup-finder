@@ -61,7 +61,7 @@ for the full JSON-Schema-compatible spec.
 | `--kinds K1,K2,...`                        | all            | Comma-separated block kinds to extract. Allowed: `function`, `method`, `closure`, `arrow`, `if`, `for`, `foreach`, `while`, `do`, `try`, `switch`, `match`, plus `script` (top-level statement folds — OPT-IN ONLY, never part of the implicit "all"; script clusters cannot be `--apply`-ed yet). |
 | `--auto-tune`                            | off            | Probe the corpus before analysis and pick `min-block-size`/`max-df`/`min-impact` based on its size; `--exact-only` is forced on for very large trees. The probe counts the tree the run will actually scan (profile and `--config` excludes applied, `exclude_reset` honored). Suggestions fill gaps only: a knob explicitly set on the command line, by `--profile`, or in the `--config` file is never overwritten, and the printed rationale claims only what was applied. |
 | `--max-memory MB`                          | `0` (off)      | Soft RSS ceiling. When peak RSS exceeds this mid-pipeline, phpdup logs a warning and suggests `--exact-only`. Non-integer values are fatal (exit 2) — garbage no longer silences the ceiling. |
-| `--optional-blocks on\|off`                | `on`           | Type-3 / "optional segment" detection master switch. See [Type-3 detection](../README.md#type-3--optional-segment-detection). |
+| `--optional-blocks on\|off`                | `on`           | Type-3 / "optional segment" detection master switch. See [Optional-segment LCS](tutorials/anti-unification-deep-dive.md#3-optional-segment-lcs) in the deep-dive. |
 | `--optional-blocks-containment N`          | `0.85`         | Containment-fallback threshold for the type-3 path (`0..1`). A non-numeric or out-of-domain value is fatal (exit 2) — the old blind cast turned `hot` into a silent `0.0`. |
 | `--db-aware`                               | off            | ORM-/DB-aware semantic deduplication: rewrite recognised database calls (Eloquent, Doctrine, query builders, PDO, mysqli, pg_*, raw SQL strings) to canonical `__DB_<OP>__("table")` tokens during normalisation so equivalent ORM/raw-SQL variants of the same operation cluster together. Off by default — opt-in for ORM-heavy codebases. |
 | `--trinity-collapse`                       | off            | Detect the canonical CRUD trinity (read → mutate → save) and rewrite the three-statement sequence as a single `__DB_UPSERT__("entity")` synthetic call so ORM upserts cluster with raw `UPDATE` queries. Composes with `--db-aware`. Off by default. |
@@ -111,7 +111,7 @@ Naming posture for the generated-code surfaces (`--apply`, `--refactor-patch`, `
 
 `analyze` buckets **every scanned file into exactly one** category. The
 preprocess summary line, the CLI `files …` accounting line and the JSON
-`summary` object (schema 1.2; `JsonSchemaSpec::summaryShape()`) all label
+`summary` object (schema 1.7; `JsonSchemaSpec::summaryShape()`) all label
 these buckets identically:
 
 | Bucket    | Summary / accounting label | JSON key                          | Meaning                                                                                   |
@@ -141,8 +141,8 @@ the scan stage now refuses to launder degraded *inputs* (once-S37):
 - **Skipped paths.** Every path the scanner could not use — an unreadable
   file or directory, a symlink whose target escapes the tree — earns one
   `phpdup: warning:` line on STDERR and lands on the scan-notes channel
-  (`PipelineState::$scanNotes`; plan §37 books the same channel for later
-  report consumers). After the walk, one census line at DEFAULT verbosity
+  (`PipelineState::$scanNotes`, the shared channel for report consumers).
+  After the walk, one census line at DEFAULT verbosity
   names the totals — `phpdup N path(s) skipped (unreadable, missing, or
   symlink containment)` — so a partial scan is visible without `--verbose`.
   A clean run emits neither the notes nor the census line.
@@ -182,8 +182,8 @@ such a report's member line ranges came from the saving run's bytes.
 | `--no-lazy-ast`                            | off         | Keep all original ASTs in memory throughout the run. Higher RSS, slightly faster anti-unification.     |
 | `--low-memory`                             | off         | Use CompactNgramBag (int-keyed n-gram fingerprints — the xxh64 digest held as a positive 63-bit key) + CanonicalNodePool interning for lower RSS on large corpora, at the cost of some speed. **May reduce detection sensitivity**: gram-key merging fakes overlap between distinct digests and inflates document frequencies past the `--max-df` cutoff, so candidate pairs drop out. Disclosed measurement (php-dup-finder-once-027): a 169-file corpus reported 159 clusters with the flag off vs 92 with it on under the earlier 32-bit `hi ^ lo` fold scheme; the current 63-bit masked key narrows the merge class to digests differing only in bit 63 — birthday-wise negligible for real corpora, but the mode still changes the comparison input and is not a pure speed switch. The node-pool interning leg is output-invisible (engine-S04 rider). The mode rides both on-disk cache keys, so a warmed low-memory cache never replays into a default run and vice versa (`tests/Unit/Cli/CacheKeyKnobReplayTest.php` is the fence). |
 | `--stage NAME`                             | —           | Halt the pipeline after STAGE: `scanning` \| `preprocessing` \| `clustering` \| `refactoring` \| `reporting`. An unknown name is fatal: the run is refused with exit 2 before the pipeline starts. |
-| `--debug-log FILE`                        | —           | Append every debug (vvv) pipeline message to FILE. Messages are also emitted to stderr when `-vvv` is set; this flag ensures they are preserved to disk for post-run inspection. |
-| `--diff-base REF`                          | —           | Git ref for diff-scoped analysis. When set, scans only files changed in `git diff --name-only <REF>..HEAD` plus their "clone cohort" — all files sharing n-gram fingerprints with the changed files. Useful for per-PR analysis in CI to limit scope to only affected files and their clones. |
+| `--debug-log FILE`                        | —           | Append every `-vvv`-level debug pipeline message to FILE. Messages are also emitted to stderr when `-vvv` is set; this flag ensures they are preserved to disk for post-run inspection. |
+| `--diff-base REF`                          | —           | Git ref for diff-scoped analysis. When set, scans only files changed in `git diff --name-only <REF>..HEAD` plus their "clone cohort" — all files sharing n-gram fingerprints with the changed files. Useful for per-PR analysis in CI to limit scope to only affected files and their clones. A ref git cannot resolve, or a cohort that matches none of the named scan roots, refuses the run at the exit-`2` door (the unscoped full scan is never silently substituted — see *Exit codes*). |
 | `--trust-in-root-cache`                    | off         | Read the on-disk AST cache even when `cache_dir` resolves **inside** a scan root. Because the default `cache_dir` is the relative `.phpdup-cache`, a normal run stores blobs inside the tree it scans — so cloning an untrusted repository and running `phpdup analyze .` would otherwise serve the repo author's committed cache entries as freshly parsed code (a cache-poisoning / fabricated-duplicate vector, engine-006). Off by default: an untrusted run **refuses those reads**, reports real code (one cold parse pass) and prints a notice. Pass this flag only for trees you control and whose cache you deliberately committed for reuse. CLI-only (no config-file key); cache writes are unaffected, and the gate holds on the `--workers` fork path too. The default cache posture is otherwise unchanged — `cache_dir` still defaults to `.phpdup-cache`. |
 
 #### Cache retention and pruning
@@ -259,13 +259,11 @@ CI build only when **new** duplicate clusters appear in subsequent runs.
    # LOCK_EX: readers never see a half-written file), exits 0
    ```
 
-**Exit codes:**
-
-| Code | Condition                                                            |
-|------|----------------------------------------------------------------------|
-| `0`  | Normal run, OR baseline written (first run / --baseline-out), OR `--baseline FILE` exists and no new clusters detected |
-| `2`  | `--baseline FILE` exists but is empty or corrupt (zero bytes, whitespace, a bare `[]`/`{}`, or invalid/truncated JSON): the run names the repair (delete the file, or re-accept with `--baseline-out`) instead of analyzing against a broken gate input |
-| `4`  | `--baseline FILE` exists and new duplicate clusters were found       |
+**Exit codes:** every `--baseline` / `--baseline-out` outcome — first-run
+write, `--baseline-out` refresh, clean compare, an empty or corrupt gate
+input refused with its repair named, and a compare that found new
+clusters — is classified in the single [Exit codes](#exit-codes) table of
+this document. No local table restates them here (once-S95 unification).
 
 **Example CI pipeline:**
 
@@ -274,7 +272,8 @@ CI build only when **new** duplicate clusters appear in subsequent runs.
 git fetch origin main
 # Stage main's baseline in a scratch file. Never `cp` onto or over the
 # tracked baseline.json: a copy interrupted mid-write hands the next job
-# a truncated gate input (empty/corrupt baselines exit 2 above), and a
+# a truncated gate input (empty/corrupt baselines are refused at the exit-2
+# door — see the Exit codes section at the end of this document), and a
 # careless restore overwrites the accepted state with scratch bytes.
 git show origin/main:baseline.json > .phpdup-baseline-ci.json 2>/dev/null \
     || rm -f .phpdup-baseline-ci.json
@@ -381,19 +380,31 @@ first line of the zsh dump.
 
 ## Exit codes
 
+**This is the single source of truth for phpdup exit codes.** Every other
+page — README, [docs/CI.md](CI.md), [docs/SERVER.md](SERVER.md),
+[docs/JETBRAINS_PLUGIN.md](JETBRAINS_PLUGIN.md) — link-anchors this table
+instead of restating it. Codes are the shipped set: `0`, `1`, `2`, `3`,
+`4`, `130` (once-S95 unification, php-dup-finder-once-119; the `130`
+convention per once-S75, the eager `2` door per once-S24, the safety
+gates per once-S04/S29, the signal contract re-anchored against
+`Command::execute()`, `ServeCommand` and `SignalHandler` at this tip).
+
 | Code | Meaning                                                                            |
 |------|------------------------------------------------------------------------------------|
-| `0`  | Successful run. **Note:** `analyze` does NOT exit non-zero when clusters are found (unless CI-gate thresholds are set). Gate CI on the JSON report — an empty `clusters` array means clean. |
-| `1`  | Internal error (uncaught exception, reporter failure, etc.).                       |
-| `2`  | Invalid input: missing required argument, unknown shell for `completion`, schema-validation failure for `--validate-config`, a non-numeric or out-of-domain value for a numeric option (e.g. `--min-block-size abc`, `--similarity 1.5`, `--limit abc`, `--min-safety 2.0`, `--max-memory banana`, `--optional-blocks-containment hot`), an invalid choice for `--stage`, `--pager` or `--theme`, a non-boolean value for `--dry-run`, a scan path that does not exist (`phpdup analyze /nope` is refused with one `phpdup: path not found:` line BEFORE the pipeline — never the old clean-looking exit 0 over `0 files`), etc. |
+| `0`  | Successful run. **Note:** `analyze` does NOT exit non-zero when clusters are found (unless CI-gate thresholds are set). Gate CI on the JSON report — an empty `clusters` array means clean. The same `0` also carries a baseline write (first-run auto-baseline, `--baseline-out` replace, or a compare that found nothing new), `phpdup init` writing its config or honestly skipping an existing one (nothing to do is NOT a failure), a `completion` script dump, and a `self:update` that completed or had nothing newer to install. |
+| `1`  | Typed **runtime halt**: the run stopped on a named runtime condition, each rendering one `phpdup:` error line that names its remedy — never a crash, never a usage dump. The family: a candidate-generation budget halt (`--candidate-budget` overflow), a `script`-kind apply refusal, and a failed report write (the once-S04 fail-loud report-write spine). |
+| `1`  | Invocation or internal fault — everything the console layer, not the pipeline, dies on: an **unknown option** (`--nope` → "does not exist" stays at Symfony's `1`; the eager `2` door below deliberately does not cover it), a value the tokenizer swallows into the next option (`--limit -1` binds value-less and dies in Symfony's boxed usage text — while `--limit=-1` takes the `2` door), an uncaught internal error (throwable rendering: reporter or stage crashes), `serve` startup refusals (an invalid `--serve-workers` value, a foreign-owned results directory, a failed socket bind — runtime posture, never a `2`), `init` with an unknown profile or an unwritable target, and `self:update` download/verification failures. |
+| `2`  | Invalid input: missing required argument, unknown shell for `completion`, schema-validation failure for `--validate-config`, a non-numeric or out-of-domain value for a numeric option (e.g. `--min-block-size abc`, `--similarity 1.5`, `--limit abc`, `--min-safety 2.0`, `--max-memory banana`, `--optional-blocks-containment hot`), an invalid choice for `--stage`, `--pager` or `--theme`, a non-boolean value for `--dry-run`, a scan path that does not exist (`phpdup analyze /nope` is refused with one `phpdup: path not found:` line BEFORE the pipeline — never the old clean-looking exit 0 over `0 files`), an empty/whitespace/corrupt `--baseline` gate input (zero bytes, invalid or truncated JSON, or a bare `[]`/`{}` — the refusal names the repair: delete to take a fresh first-run baseline, or re-accept with `--baseline-out`), and a `--diff-base` run the tool cannot honour (a ref git cannot resolve, or a cohort that matches none of the named scan roots — refusing the unscoped full scan instead of silently widening it). |
 | `3`  | CI gate triggered: `--fail-on-impact N` tripped (maximum single-cluster impact ≥ N — same canonical formula as the GitHub action's `fail-on-impact` input) or `--max-clusters N` tripped (cluster count > N). The tripped gate is named in the output. Pre-pipeline SAFETY gates ride this code too: real apply (`--dry-run=false`) against a git work tree with uncommitted tracked changes (once-S04), and an apply directory that already exists as a symbolic link (once-S29) — both refuse before any analysis with zero files written. |
 | `4`  | CI gate triggered: `--baseline FILE` was provided, FILE exists, and new duplicate clusters were found that were not present in the baseline. |
+| `130` | Cancelled by user (the canonical SIGINT code). A first SIGINT in `analyze` stops the pump cooperatively and still renders the partial report (`phpdup: cancelled by user — partial report rendered`) — a `130` run produced evidence, so treat it as incomplete output, never as a clean scan and never as a crash. A second SIGINT exits `130` immediately after reaping children (once-S75). `serve` exits `130` from its SIGINT **and** SIGTERM handlers, after unlinking job-result files and reaping workers. |
 
 A bare `phpdup` with no arguments is the one no-path form that exits `0`:
 it prints the command listing (identical to `phpdup list`). Every other
 path-less `analyze` form — a flags-only run such as `phpdup --exact-only`
-— still hits the `2` door above, whose suggested `phpdup <path>/ ...`
-shape runs analyze directly.
+— still hits the `2` door above, whose printed example
+(`phpdup src/ --html=build/dup-report`) shows the path-as-positional
+shape that runs analyze directly.
 
 Numeric option values are trimmed before coercion: surrounding whitespace
 is accepted (`--workers ' 4 '` is the same as `--workers 4`). A value that
