@@ -204,7 +204,7 @@ output-S36	60	output-S17,output-S35	src/Reporting/RefactorTestReporter.php;tests
 once-S37	90	engine-S17b,engine-S27,engine-S34b,output-S27,shell-S26,shell-S34	docs/CLI.md;docs/config-schema.json;src/Cli/Command.php;src/Pipeline/PipelineState.php;src/Pipeline/Stages/PreprocessStage.php;src/Pipeline/Stages/ScanningStage.php;src/Reporting/CliReporter.php;src/Reporting/JsonReporter.php;src/Reporting/JsonSchemaSpec.php;src/Scanning/FileScanner.php;tests/Golden/;tests/Unit/Reporting/JsonReporterTest.php;tests/Unit/Scanning/FileScannerTest.php	done
 once-S41	10	once-S37,shell-S01,shell-S20	docs/SERVER.md;src/Server/AnalysisWorker.php;src/Server/Application.php;tests/Unit/Server/ApplicationTest.php	done
 once-S66	45	engine-S28,once-S37	src/Cli/Command.php;src/Normalization/PluginRegistry.php;src/Pipeline/Stages/PreprocessStage.php;tests/Unit/Normalization/PluginRegistryTest.php	done
-once-S67	90	once-S28,once-S54,once-S66,shell-S22	docs/CLI.md;docs/config-schema.json;src/Cli/ConfigLoader.php;src/Cli/OverrideResolver;src/Normalization/PluginRegistry.php;src/Reporting/BaselineStore.php;tests/Unit/Cli/PerDirOverrideBeltTest.php	running
+once-S67	90	once-S28,once-S54,once-S66,shell-S22	docs/CLI.md;docs/config-schema.json;src/Cli/ConfigLoader.php;src/Cli/OverrideResolver;src/Normalization/PluginRegistry.php;src/Reporting/BaselineStore.php;tests/Unit/Cli/PerDirOverrideBeltTest.php	done
 once-S70	90	engine-S21,once-S37,once-S89	src/Ml/MlClient.php;src/Ml/MlPairClient.php;src/Reporting/JsonReporter.php;tests/Unit/Ml/MlPairClientTest.php	done
 output-S29	90	output-S27,output-S28	src/Refactor/ParameterSynthesizer.php	done
 once-S55	120	once-S37,output-S27	docs/config-schema.json;src/Reporting/JsonReporter.php;src/Reporting/JsonSchemaSpec.php;tests/Golden/	done
