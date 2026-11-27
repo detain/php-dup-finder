@@ -99,6 +99,12 @@ does not cancel its siblings but still fails the workflow), and the only
 and the SARIF upload inside the consumer composite action
 (`.github/actions/phpdup/action.yml`).
 
+The workflow also carries a `docs-links` leg (once-S13): a fail-loud
+anchor census that resolves every local link in `README.md` against the
+docs tree — the target file must exist and any `#fragment` must match a
+GitHub-style slug of a real heading outside fenced code. A docs edit
+that breaks an href turns this leg red before merge.
+
 ### Consumer composite action
 
 A maintained composite action lives at `.github/actions/phpdup/action.yml` in
@@ -161,17 +167,21 @@ The action:
 
 ## Exit-code mapping (all platforms)
 
-Per the contract in [docs/CLI.md](CLI.md) — verified live against the
-materialized tool at once-S14 (unknown option → 1, malformed config → 2,
-`--fail-on-impact` over budget → 3, clean run with findings → 0):
+The meanings of every code are defined exactly once, in the
+single source-of-truth table at
+[docs/CLI.md § Exit codes](CLI.md#exit-codes) — that block is not
+restated here. What this section maps is only how each CI-reachable
+code surfaces in a job (the contract was verified live against the
+materialized tool at once-S14: unknown option → 1, malformed config →
+2, `--fail-on-impact` over budget → 3, clean run with findings → 0):
 
-| Code | Meaning                              | GitHub action             | GitLab job              |
-|------|--------------------------------------|---------------------------|-------------------------|
-| `0`  | Success **including findings**       | continues to artifacts    | job passes              |
-| `1`  | Runtime error / unknown option       | step fails with `::error` | job fails               |
-| `2`  | Invalid configuration                | step fails with `::error` | job fails               |
-| `3`  | CI gate tripped (`--fail-on-impact`, `--max-clusters`) | step fails with `::error` | job fails   |
-| `4`  | Baseline found new clusters (`--baseline`) | step fails with `::error` | job fails    |
+| Code | GitHub action             | GitLab job              |
+|------|---------------------------|-------------------------|
+| `0`  | continues to artifacts    | job passes              |
+| `1`  | step fails with `::error` | job fails               |
+| `2`  | step fails with `::error` | job fails               |
+| `3`  | step fails with `::error` | job fails               |
+| `4`  | step fails with `::error` | job fails               |
 
 A scan that merely *finds* clones exits 0 — gate on the report, or set a
 gate flag, exactly as documented for the CLI.
@@ -296,10 +306,10 @@ install:
 script:
   - php "$SRC/bin/phpdup" analyze src
       --min-impact 20
-      --json phpdup.json
+      --json dupes.json
       --html phpdup-report
 after_success:
-  - tar czf phpdup-artifacts.tgz phpdup.json phpdup-report/
+  - tar czf phpdup-artifacts.tgz dupes.json phpdup-report/
 deploy:
   provider: releases
   file: phpdup-artifacts.tgz
