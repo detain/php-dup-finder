@@ -27,8 +27,8 @@ final class ApplyExtractorTest extends TestCase
         $cluster->signature = 'function test(): mixed';
 
         $extractor = new ApplyExtractor();
-        $tmpDir = sys_get_temp_dir() . '/phpdup_apply_test_' . uniqid();
-        @mkdir($tmpDir, 0o775, true);
+        // once-S98 (QA-L3): was @mkdir + never cleaned; now tracked.
+        $tmpDir = $this->makeScratchDir('phpdup_apply_test_');
 
         $extractor->apply($cluster, $tmpDir);
 
@@ -47,8 +47,8 @@ final class ApplyExtractorTest extends TestCase
         $cluster->holePaths = ['__P0' => ['stmts', 0, 'expr', 'name']];
 
         $extractor = new ApplyExtractor();
-        $tmpDir = sys_get_temp_dir() . '/phpdup_apply_test_' . uniqid();
-        @mkdir($tmpDir, 0o775, true);
+        // once-S98 (QA-L3): was @mkdir + never cleaned; now tracked.
+        $tmpDir = $this->makeScratchDir('phpdup_apply_test_');
 
         $extractor->apply($cluster, $tmpDir);
 
@@ -70,8 +70,8 @@ final class ApplyExtractorTest extends TestCase
         $cluster->holePaths = [];
 
         $extractor = new ApplyExtractor();
-        $tmpDir = sys_get_temp_dir() . '/phpdup_apply_test_' . uniqid();
-        @mkdir($tmpDir, 0o775, true);
+        // once-S98 (QA-L3): was @mkdir + never cleaned; now tracked.
+        $tmpDir = $this->makeScratchDir('phpdup_apply_test_');
 
         $extractor->apply($cluster, $tmpDir);
 
@@ -231,9 +231,15 @@ final class ApplyExtractorTest extends TestCase
         $this->s44aScratch = [];
     }
 
-    private function makeScratchDir(): string
+    /**
+     * Tracked scratch dir. once-S98 (php-dup-finder-once-123, QA-L3): the
+     * three legacy `phpdup_apply_test_*` arms used raw @mkdir and leaked
+     * every run; they now come through here so tearDown's rrmdir sweep
+     * prunes every dir the suite mints.
+     */
+    private function makeScratchDir(string $prefix = 'phpdup_s44a_'): string
     {
-        $dir = sys_get_temp_dir() . '/phpdup_s44a_' . uniqid();
+        $dir = sys_get_temp_dir() . '/' . $prefix . uniqid();
         @mkdir($dir, 0o775, true);
         $this->s44aScratch[] = $dir;
         return $dir;
