@@ -1129,6 +1129,19 @@ final class ServeCommand extends SymfonyCommand
     }
 
     /**
+     * once-S98 (php-dup-finder-once-123, QA-L2): where a spawned
+     * worker's stdout/stderr land. The log lives INSIDE the private
+     * 0700 results dir — so it is born, grows, and dies with the dir
+     * the S71 startup sweep and cleanupWorker already reclaim, adding
+     * no litter surface while making a boot-crash readable after the
+     * daemon is gone. Pure path math: no IO, no state.
+     */
+    private function workerLogPath(string $resultDir): string
+    {
+        return $resultDir . '/worker.log';
+    }
+
+    /**
      * Spawn the background worker process.
      *
      * Returns the worker PID on success, null on failure (worker
@@ -1230,10 +1243,20 @@ final class ServeCommand extends SymfonyCommand
 
         $command = $this->workerCommand($workerBin, $this->workerSocket, $resultDir, $serveRoot);
 
+        // once-S98 (php-dup-finder-once-123, QA-L2): the old all-pipe
+        // trio was closed outright right after the proc_open below,
+        // discarding exactly the stdout/stderr of a worker that died
+        // during boot — the one crash the operator needs to read.
+        // Routing 1/2 into worker.log INSIDE the results dir buys the
+        // diagnostic at zero litter cost: the file is born and dies
+        // with the 0700 dir the S71 startup sweep already reclaims.
+        // If the log cannot be opened proc_open fails as a whole and
+        // the existing sync-mode fallback below takes over — the same
+        // fail-closed door every other spawn failure rides.
         $descriptors = [
             0 => ['pipe', 'r'],  // stdin
-            1 => ['pipe', 'w'],  // stdout
-            2 => ['pipe', 'w'],  // stderr
+            1 => ['file', $this->workerLogPath($resultDir), 'a'],  // stdout
+            2 => ['file', $this->workerLogPath($resultDir), 'a'],  // stderr
         ];
 
         // Explicit env (shell-016): PHP's proc_open replaces — never
