@@ -926,7 +926,7 @@ final class ConfigLoader
      * key Config::effectiveFor() truly applies per subtree, because each one
      * reaches a reader that consumes the per-file copy (PreprocessWorker's
      * tooling, BlockAstLoader, or FileScanner's exclude overlay). The emit
-     * set used to carry twelve further keys — the cluster stances (
+     * set used to carry thirteen further keys — the cluster stances (
      * similarity_threshold, tree_threshold, min_cluster_impact, max_df,
      * candidate_budget), the report/gate stances (sort, fail_on_impact,
      * max_clusters) and all five optional_blocks_* sub-keys — whose ONLY
