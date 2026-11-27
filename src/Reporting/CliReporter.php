@@ -145,8 +145,9 @@ final class CliReporter
     /**
      * File-accounting surface (0.6). Emits nothing when the producer never
      * tracked the buckets (legacy `new Report(...)` callers pass nulls);
-     * when files skipped extraction or failed to parse, a warn line names
-     * them, and the per-bucket breakdown `files  N scanned · ...` gives
+     * when files skipped extraction, blocks were dropped for exceeding
+     * the size ceiling, or files failed to parse, a warn line names the
+     * counts, and the per-bucket breakdown `files  N scanned · ...` gives
      * every counter a label with ONE definition each (balance law:
      * scanned = reused + processed + no blocks + parse errors).
      */
@@ -159,6 +160,20 @@ final class CliReporter
         $skipped = $report->skippedFiles ?? 0;
         if ($skipped > 0) {
             $notes[] = CountPhrase::files($skipped) . ' produced no comparable blocks';
+        }
+        // E2 item 0.6: the blocks the size ceiling took silently —
+        // printed loud now. Fresh-extraction semantics (cache-reused
+        // files do not re-run extraction, so a warm run's count covers
+        // what it actually processed); null = untracked producer, an
+        // honest nothing-to-say, same posture as the buckets above.
+        $oversized = $report->oversizedBlocks ?? 0;
+        if ($oversized > 0) {
+            $notes[] = sprintf(
+                '%d %s exceeded the max block size and %s dropped',
+                $oversized,
+                $oversized === 1 ? 'block' : 'blocks',
+                $oversized === 1 ? 'was' : 'were',
+            );
         }
         if ($report->parseErrors > 0) {
             $notes[] = CountPhrase::files($report->parseErrors) . ' failed to parse';

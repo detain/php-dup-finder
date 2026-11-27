@@ -15,6 +15,7 @@ use Phpdup\Normalization\PluginRegistry;
 use Phpdup\Parsing\AstCache;
 use Phpdup\Parsing\AstParser;
 use Phpdup\Refactor\ScriptKindApplyRefusal;
+use Phpdup\Refactor\WindowApplyRefusal;
 use Phpdup\Util\CanonicalNodePool;
 use Phpdup\Util\LineRange;
 
@@ -265,6 +266,11 @@ final class BlockAstLoader
         // silent mis-anchor.
         if ($block->kind === 'script') {
             throw ScriptKindApplyRefusal::forBlock($block, 'BlockAstLoader::resolve()');
+        }
+        // Item 1.2: windows are synthetic cuts too — same by-construction
+        // refusal, same backstop posture (the pipeline never unloads them).
+        if ($block->kind === BlockExtractor::WINDOW_KIND) {
+            throw WindowApplyRefusal::forBlock($block, 'BlockAstLoader::resolve()');
         }
 
         $group   = self::groupKey($block);
@@ -792,6 +798,11 @@ final class BlockAstLoader
                 if ($member->kind === 'script') {
                     throw ScriptKindApplyRefusal::forBlock($member, 'BlockAstLoader::rebaseClusters()');
                 }
+                // Item 1.2: an unloaded window on a warm replay can never
+                // be re-anchored either — typed refusal, no positional guess.
+                if ($member->kind === BlockExtractor::WINDOW_KIND) {
+                    throw WindowApplyRefusal::forBlock($member, 'BlockAstLoader::rebaseClusters()');
+                }
                 if ($this->config === null || $member->structuralHash === '') {
                     continue; // nothing content-bound to rebase against
                 }
@@ -1230,6 +1241,8 @@ final class BlockAstLoader
             // refusal in resolve()/rebaseClusters() fires long before
             // this table is consulted for a script block. Positional
             // matching of script kinds is the silent-mis-anchor class.
+            // Item 1.2: same posture for 'window' (also absent here by
+            // design — the WindowApplyRefusal arms are the loud backstop).
             default     => false,
         };
     }

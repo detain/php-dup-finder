@@ -98,11 +98,24 @@ final class RelocationWarmReplayTest extends TestCase
         $truthOut = $this->cacheDir('truth');
         $truth = $this->analyze($this->tmp . '/reports/truth.json', $truthOut, 'truth');
         self::assertSame(0, $truth['rc'], 'the fresh-truth run must exit 0' . $this->tailOf($truth['out']));
+        // Schema 1.8 (E2): summary.clusters_replayed is RUN-STATE meta — the
+        // once-S72 carrier finally emitted per the 1.8 window (it states
+        // whether THIS run served the cluster cache, so a warm replay and a
+        // cold scan of the same corpus legitimately differ on exactly that
+        // line). The fence's law governs members and anchoring: every other
+        // byte of the two payloads must still match byte-for-byte.
+        $runStateKey = '/"clusters_replayed": (?:true|false),\n/';
+        $truthBytes = (string) file_get_contents($this->tmp . '/reports/truth.json');
+        $warmBytes = (string) file_get_contents($this->tmp . '/reports/warm1.json');
+        self::assertSame(1, preg_match($runStateKey, $truthBytes), 'non-vacuity: the cold-scan payload carries the run-state key exactly once');
+        self::assertSame(1, preg_match($runStateKey, $warmBytes), 'non-vacuity: the warm-replay payload carries the run-state key exactly once');
         self::assertSame(
-            (string) file_get_contents($this->tmp . '/reports/truth.json'),
-            (string) file_get_contents($this->tmp . '/reports/warm1.json'),
-            'the warm-replayed report must equal the fresh cold scan byte-for-byte',
+            (string) preg_replace($runStateKey, '', $truthBytes, 1),
+            (string) preg_replace($runStateKey, '', $warmBytes, 1),
+            'the warm-replayed report must equal the fresh cold scan byte-for-byte (bar the summary.clusters_replayed run-state line)',
         );
+        self::assertStringContainsString('"clusters_replayed": false,', $truthBytes, 'the cold scan must announce no replay');
+        self::assertStringContainsString('"clusters_replayed": true,', $warmBytes, 'the warm replay must announce itself in the payload, not only on stdout');
     }
 
     /**

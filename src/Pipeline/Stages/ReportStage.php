@@ -356,16 +356,22 @@ final class ReportStage implements CooperativeStageInterface
             scanWindow: $scanWindow,
             // once-S37 fix-1 (r1-granted carrier threading, plan §37):
             // the run's real scan-signal channels cross the state→Report
-            // seam here so the owner-gated schema-1.8 emit commit has
-            // data to report and nothing to invent. The CLI has already
-            // surfaced all three honestly (r0 rounds); this is the
-            // machine-readable carrier only — no reporter reads it yet,
-            // so the JSON payload stays byte-exactly 1.7. once-S72: this
-            // single construction site is the whole carrier path — yields
+            // seam here so the schema-1.8 emit commit has data to report
+            // and nothing to invent. The CLI has already surfaced all
+            // three honestly (r0 rounds); E2's schema-1.8 commit opened
+            // the JSON emit (summary.scan_notes / parse_failures /
+            // clusters_replayed / blocks_oversized / ml_status) exactly
+            // as this seam was staged for. once-S72: this single
+            // construction site is the whole carrier path — yields
             // interleave the phases, they never re-build or re-order it.
             scanNotes: $state->scanNotes,
             parseFailures: $state->parseFailures,
             clustersReplayed: $state->clustersReplayed,
+            // E2 schema-1.8: the oversized counter and the ML status join
+            // the same state→Report seam; JsonReporter now READS all five
+            // carriers (the 1.7 freeze prose below is history).
+            oversizedBlocks: $state->oversizedBlocks,
+            mlStatus: $state->mlConnectionStatus,
         );
         $state->report   = $report;
         $state->clusters = $clusters;

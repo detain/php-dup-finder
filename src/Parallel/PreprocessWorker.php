@@ -39,6 +39,7 @@ use Symfony\Component\Console\Output\OutputInterface;
  * @phpstan-type PreprocessedRow array{type: 'block', file: string, block: Block}
  *   |array{type: 'error', file: string, message: string}
  *   |array{type: 'skipped', file: string, blocks: 0}
+ *   |array{type: 'oversized', file: string, dropped: int}
  */
 final class PreprocessWorker
 {
@@ -99,7 +100,7 @@ final class PreprocessWorker
      * the eager wrapper; the streaming behaviour lives in the twin.
      *
      * @param list<string> $files
-     * @return list<array{type: 'block'|'error'|'skipped', file: string, block?: Block, message?: string, blocks?: 0}>
+     * @return list<array{type: 'block'|'error'|'skipped'|'oversized', file: string, block?: Block, message?: string, blocks?: 0, dropped?: int}>
      */
     public function process(array $files, ?OutputInterface $output = null): array
     {
@@ -130,7 +131,7 @@ final class PreprocessWorker
      * mid-file throw still never leaks partial rows for that file.
      *
      * @param list<string> $files
-     * @return \Generator<int, array{type: 'block'|'error'|'skipped', file: string, block?: Block, message?: string, blocks?: 0}>
+     * @return \Generator<int, array{type: 'block'|'error'|'skipped'|'oversized', file: string, block?: Block, message?: string, blocks?: 0, dropped?: int}>
      */
     public function processStream(array $files, ?OutputInterface $output = null): \Generator
     {
@@ -157,7 +158,7 @@ final class PreprocessWorker
         // shell-035: identity last-hit ahead of the fingerprint key. Config's
         // per-group memo hands every file of one matched group the SAME
         // derived instance, so consecutive same-group files no longer need
-        // the sprintf key rebuilt at all (the 13-token key costs two
+        // the sprintf key rebuilt at all (the 14-token key costs two
         // serializeStringMap ksort passes per call when db symbols are
         // configured). A different instance falls through to the keyed
         // cache unchanged — tooling is a pure function of the config's
@@ -181,7 +182,7 @@ final class PreprocessWorker
                 return $lastTools;
             }
             $key = sprintf(
-                '%d|%d|%s|%d|%s|%s|%d|%d|%s|%s|%s|%s|%d',
+                '%d|%d|%s|%d|%s|%s|%d|%d|%s|%s|%s|%s|%d|%d',
                 $cfg->minBlockSize, $cfg->maxBlockSize,
                 $cfg->normalizationMode, $cfg->ngramSize,
                 implode(',', $cfg->allowedKinds),
@@ -206,6 +207,16 @@ final class PreprocessWorker
                 // route only: no PARSER_VERSION bump (fingerprintIdMode
                 // precedent).
                 $cfg->lowMemory ? 1 : 0,
+                // Item 1.2 (three-key law, worker leg): the window posture
+                // decides whether an oversized body yields 'window' blocks
+                // or vanishes counted — different block SPECIES from the
+                // same bytes, so two postures must never share one tooling
+                // entry inside a worker. The same value rides the
+                // IndexStore and ClusterCache config keys; one forgotten
+                // key = silently mixed postures in a warm cache.
+                // Key-namespace change only: no PARSER_VERSION bump
+                // (fingerprintIdMode precedent).
+                $cfg->windowOversized ? 1 : 0,
             );
             if (!isset($tooling[$key])) {
                 // Build the DbOpRegistry with the user's symbol overlay
@@ -228,7 +239,7 @@ final class PreprocessWorker
                     $nodePool = new CanonicalNodePool();
                 }
                 $tooling[$key] = [
-                    'extractor'  => new BlockExtractor($cfg->minBlockSize, $cfg->maxBlockSize, $cfg->allowedKinds),
+                    'extractor'  => new BlockExtractor($cfg->minBlockSize, $cfg->maxBlockSize, $cfg->allowedKinds, $cfg->windowOversized),
                     'normalizer' => new Normalizer(
                         mode: $cfg->normalizationMode,
                         plugins: $pluginRegistry,
@@ -325,12 +336,15 @@ final class PreprocessWorker
                     // non-relocatable, and their AST is the only copy. This
                     // site is the DEFAULT-run unload (workers always process);
                     // ClusterStage::unloadAsts carries the matching guard for
-                    // replayed/serial-sourced blocks.
-                    if ($cfg->lazyAst && $block->kind !== 'script') {
+                    // replayed/serial-sourced blocks. Item 1.2: 'window' cuts
+                    // join the exemption on the identical argument — never
+                    // unload what can never be reloaded.
+                    if ($cfg->lazyAst && $block->kind !== 'script' && $block->kind !== BlockExtractor::WINDOW_KIND) {
                         $block->unloadAst();
                     }
                     $fileRows[] = ['type' => 'block', 'file' => $path, 'block' => $block];
                 }
+                $oversizedDrops = $tools['extractor']->oversizedDrops();
                 if ($debug) {
                     if ($blockCount === 0) {
                         $output->writeln(sprintf('worker:   no blocks extracted from %s (kind=%s, minBlockSize=%d)', $path, $cfg->allowedKinds === [] ? 'all' : implode(',', $cfg->allowedKinds), $cfg->minBlockSize));
@@ -349,6 +363,17 @@ final class PreprocessWorker
                     // so the buffer-and-discard rule above still applies: a
                     // file that throws never leaks a row of any type.
                     $fileRows[] = ['type' => 'skipped', 'file' => $path, 'blocks' => 0];
+                }
+                if ($oversizedDrops > 0) {
+                    // Item 0.6 (oversized leg): blocks the size ceiling gave
+                    // up on for THIS file — unwindowable kinds, or windowing
+                    // off, or windows that all fell under the minSize floor
+                    // (PreprocessWorker's extractor runs with the run's
+                    // `window_oversized` posture; salvaged parents emit
+                    // 'window' block rows instead and are NOT counted).
+                    // Scalar-only payload, same SOCKETPAIR law and the same
+                    // buffer-and-discard staging as the 'skipped' row above.
+                    $fileRows[] = ['type' => 'oversized', 'file' => $path, 'dropped' => $oversizedDrops];
                 }
             } catch (\Throwable $e) {
                 // Same error-row contract as the parse-error path above:

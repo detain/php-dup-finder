@@ -46,6 +46,19 @@ final class PipelineState
     public int $skippedFiles   = 0;
 
     /**
+     * Item 0.6 (oversized leg): blocks the extractor's max_block_size
+     * ceiling gave up on during THIS run's FRESH extractions — nodes
+     * above the cap from which no scan window was salvaged (with
+     * window_oversized off, every oversized node). Block-level count,
+     * orthogonal to the file buckets: it never enters the
+     * scanned = reused + processed + no-blocks + parse-errors identity.
+     * Fresh-only semantics: cache-reused files never re-extract, so their
+     * historical drops are not recounted (same run-scope honesty as
+     * $skippedFiles, which only counts fresh files too by construction).
+     */
+    public int $oversizedBlocks = 0;
+
+    /**
      * Honest scan signals (once-S37 / php-dup-finder-once-041): every note
      * FileScanner recorded for a path the scan could not use — unreadable or
      * missing roots and files, symlink-containment refusals, undecidable
@@ -83,6 +96,18 @@ final class PipelineState
      * trust strict hits without re-proving content.
      */
     public bool $clustersReplayed = false;
+
+    /**
+     * once-S70 design, surfaced at schema 1.8: the MASTER-side ML pair
+     * client's connection status after ClusterStage ('off', 'idle',
+     * 'reachable', 'unreachable' — see MlPairClient::connectionStatus()),
+     * or null when no client was wired at all (no ml_pair_url configured,
+     * or a cluster-cache replay that never scored a pair). Worker-side
+     * dials inside the fork zone build their own clients and never cross
+     * the scalar row wire back, so 'idle' on a parallel run honestly
+     * means "the master's client never dialled", nothing more.
+     */
+    public ?string $mlConnectionStatus = null;
 
     /** Total candidate pairs queued for scoring (Clustering stage). */
     public int $candidatePairs = 0;

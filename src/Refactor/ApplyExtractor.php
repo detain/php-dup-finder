@@ -304,6 +304,12 @@ final class ApplyExtractor
             if ($member->kind === 'script') {
                 throw ScriptKindApplyRefusal::forCluster($cluster, 'ApplyExtractor::apply()');
             }
+            // Item 1.2 law (window twin of the script guard): a synthetic
+            // statement cut is not an extractable unit either — refuse
+            // BEFORE any file is written, zero partial application.
+            if ($member->kind === \Phpdup\Extraction\BlockExtractor::WINDOW_KIND) {
+                throw WindowApplyRefusal::forCluster($cluster, 'ApplyExtractor::apply()');
+            }
             // output-002 (S46): a Closure/arrow member has no declaration
             // to keep. The only node-local rewrite would replace the
             // callable ITSELF with an immediate call — running the

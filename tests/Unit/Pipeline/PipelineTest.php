@@ -521,17 +521,20 @@ final class PipelineTest extends TestCase
             $this->assertTrue($stateIter->report->clustersReplayed, 'clustersReplayed crosses the yield seam intact');
             $this->assertSame($stateRun->report->scanNotes, $stateIter->report->scanNotes, 'carriers arrive identically on both drives');
 
-            // Schema-1.7 posture (once-S37 fix1): carriers exist on the
-            // Report object but are NOT emitted — no reporter reads them yet.
+            // Schema-1.8 posture (E2 owns the bump): the once-S37 carriers
+            // cross the state→Report→JSON seam intact — the emit the
+            // staging docblock promised for exactly this version move.
             $decoded = json_decode($rawJsonA, true);
             $this->assertIsArray($decoded);
-            foreach (['scan_notes', 'parse_failures', 'clusters_replayed'] as $carrierKey) {
-                $this->assertArrayNotHasKey(
-                    $carrierKey,
-                    $decoded,
-                    'the no-signal emit posture must hold: carrier keys stay out of the 1.7 payload',
-                );
-            }
+            $this->assertSame(['s72 carrier note'], $decoded['summary']['scan_notes']);
+            $this->assertSame(
+                ['ghost.php' => 'deliberately unreadable'],
+                $decoded['summary']['parse_failures'],
+                'the parseFailures map written by this drive\'s stub rides the summary verbatim',
+            );
+            $this->assertTrue($decoded['summary']['clusters_replayed']);
+            $this->assertSame(0, $decoded['summary']['blocks_oversized'], 'tracked zero — the fixture plants no oversized declaration');
+            $this->assertNull($decoded['summary']['ml_status'], 'no ML client wired — honest absence, never a fabricated idle');
         } finally {
             foreach ([$jsonA, $jsonB, $sarifA, $sarifB] as $f) {
                 @unlink($f);

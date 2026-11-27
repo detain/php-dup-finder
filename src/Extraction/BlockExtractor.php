@@ -24,8 +24,21 @@ use SplObjectStorage;
  * Two filters are applied:
  *
  *   - minSize: nodes smaller than this are dropped (kills boilerplate).
- *   - maxSize: nodes larger than this are dropped (kills the long-tail
- *     functions where bounded TED would be costly).
+ *   - maxSize: nodes larger than this no longer vanish silently (items
+ *     0.6 + 1.2). With window_oversized on (the default) their statement
+ *     bodies are cut into SCAN WINDOWS — contiguous runs of statements
+ *     wrapped in a synthetic Stmt\Block, each sized ≤ maxSize and ≥
+ *     minSize — so an oversized function stays fingerprintable and the
+ *     n-gram/containment tiers can still pair it. A window is SYNTHETIC
+ *     like the 1.3 'script' fold: it gets the dedicated 'window' kind
+ *     (never in ALL_KINDS, never --kinds-selectable), keeps its AST for
+ *     the whole run, and every AST-addressing surface (apply, patch,
+ *     loader relocation) refuses it — see WindowApplyRefusal.
+ *     Unwindowable oversized nodes (arrow/switch/match: no plain
+ *     statement list) and everything dropped while windowing is off are
+ *     counted by oversizedDrops(): the 0.6 counter that feeds the
+ *     "N blocks exceeded the max block size and were dropped" line and
+ *     summary.blocks_oversized.
  *
  * Declaration-shape kinds — function, method, closure and arrow — always
  * pass the minSize filter: those are top-level abstractions worth
@@ -53,6 +66,18 @@ final class BlockExtractor
     ];
 
     /**
+     * Item 1.2: the synthetic kind of a scan window cut out of an
+     * oversized block. Deliberately NOT in ALL_KINDS: a window is a
+     * byproduct of the size ceiling, never something the user selects
+     * with --kinds, and classifyKind never mints it (drift-pinned by
+     * BlockExtractorWindowTest and BlockExtractorTest's ALL_KINDS pin).
+     */
+    public const WINDOW_KIND = 'window';
+
+    /** Drop count of the most recent extract() call (item 0.6). */
+    private int $lastOversizedDrops = 0;
+
+    /**
      * @param list<string> $allowedKinds Empty list = accept all twelve
      *        traversable kinds — the 1.3 'script' fold kind is never
      *        implicit, it must be named (drift-pinned by BlockExtractorTest
@@ -62,7 +87,27 @@ final class BlockExtractor
         private readonly int $minSize = 8,
         private readonly int $maxSize = 800,
         private readonly array $allowedKinds = [],
+        // Item 1.2: window oversized blocks instead of dropping them.
+        // Root config-only knob `window_oversized`; the per-file cache
+        // key binds it in every store (three-key law), so flipping the
+        // posture invalidates warm snapshots instead of mixing species.
+        private readonly bool $windowOversized = true,
     ) {
+    }
+
+    /**
+     * Oversized blocks the MOST RECENT extract() gave up on (item 0.6):
+     * nodes above maxSize from which no window survived the minSize
+     * floor — with windowing off, every oversized node. Salvaged
+     * parents are NOT counted (their content reached the stream as
+     * windows); a fully dropped parent counts once. Fresh-extraction
+     * semantics only: cache-reused files never re-extract, so their
+     * historical drops are not recounted (same run-scope honesty as the
+     * skipped-files counter).
+     */
+    public function oversizedDrops(): int
+    {
+        return $this->lastOversizedDrops;
     }
 
     /**
@@ -93,6 +138,7 @@ final class BlockExtractor
         }
 
         $blocks = [];
+        $oversized = 0;
         $traverser = new NodeTraverser();
         $visitor = new BlockVisitor(
             file: $file,
@@ -100,9 +146,11 @@ final class BlockExtractor
             maxSize: $this->maxSize,
             allowedKinds: $this->allowedKinds,
             sink: function (Block $b) use (&$blocks): void { $blocks[] = $b; },
+            windowOversized: $this->windowOversized,
         );
         $traverser->addVisitor($visitor);
         $traverser->traverse($traversable);
+        $oversized += $visitor->oversizedDrops;
 
         // Item 1.3: 'script' is opt-IN ONLY — the empty allow-list means
         // "all traversable kinds", never "also fold top-level statements".
@@ -132,8 +180,30 @@ final class BlockExtractor
                 // Uniform size posture: scripts are gated by BOTH floors —
                 // the minSize filter (they are not declarations) and the
                 // maxSize ceiling (a whole-file fold must not smuggle past
-                // the cost ceiling the traversable kinds obey).
-                if ($size < $this->minSize || $size > $this->maxSize) {
+                // the cost ceiling the traversable kinds obey). Item 1.2:
+                // an oversized fold windows like any statement-list owner
+                // (the twin of the visitor's oversized leg); only a fold
+                // from which nothing is salvaged reaches the 0.6 counter.
+                if ($size < $this->minSize) {
+                    continue;
+                }
+                if ($size > $this->maxSize) {
+                    $salvaged = $this->windowOversized
+                        ? WindowPacker::emitWindowRuns(
+                            file: $file,
+                            namespace: $group['namespace'],
+                            class: null,
+                            name: null,
+                            stmts: $group['stmts'],
+                            minSize: $this->minSize,
+                            maxSize: $this->maxSize,
+                            count: static fn (Node $n): int => AstSerializer::nodeCount($n),
+                            sink: function (Block $b) use (&$blocks): void { $blocks[] = $b; },
+                        )
+                        : 0;
+                    if ($salvaged === 0) {
+                        $oversized++;
+                    }
                     continue;
                 }
                 $block = new Block(
@@ -150,6 +220,7 @@ final class BlockExtractor
             }
         }
 
+        $this->lastOversizedDrops = $oversized;
         return $blocks;
     }
 
@@ -219,6 +290,13 @@ final class BlockVisitor extends NodeVisitorAbstract
     private \Closure $sink;
     /** @var SplObjectStorage<Node, int> */
     private SplObjectStorage $nodeCounts;
+    /**
+     * Oversized parents this visitor fully dropped (item 0.6): unwindowable
+     * kinds, windowing off, or windowing with nothing above the minSize
+     * floor salvaged. Read once by BlockExtractor::extract() after the
+     * traversal; a fresh visitor per file makes this a per-file count.
+     */
+    public int $oversizedDrops = 0;
 
     /**
      * @param list<string> $allowedKinds
@@ -229,6 +307,7 @@ final class BlockVisitor extends NodeVisitorAbstract
         private readonly int $maxSize,
         private readonly array $allowedKinds,
         \Closure $sink,
+        private readonly bool $windowOversized = true,
     ) {
         $this->sink = $sink;
         $this->nodeCounts = new SplObjectStorage();
@@ -263,6 +342,36 @@ final class BlockVisitor extends NodeVisitorAbstract
             return null;
         }
         if ($size > $this->maxSize) {
+            // Items 0.6 + 1.2: oversized no longer means silently gone.
+            // With windowing on, the node's statement body is cut into
+            // ≤ maxSize windows (the emitWindowRuns docblock states the
+            // packer law); a parent from which nothing is salvaged —
+            // unwindowable kinds included — joins the drop counter that
+            // feeds summary.blocks_oversized.
+            if ($this->windowOversized) {
+                $body = WindowPacker::windowableBody($node);
+                if ($body !== null) {
+                    $name = null;
+                    if ($node instanceof Stmt\Function_ || $node instanceof Stmt\ClassMethod) {
+                        $name = $node->name->toString();
+                    }
+                    $salvaged = WindowPacker::emitWindowRuns(
+                        file: $this->file,
+                        namespace: $this->namespace,
+                        class: end($this->classStack) ?: null,
+                        name: $name,
+                        stmts: $body,
+                        minSize: $this->minSize,
+                        maxSize: $this->maxSize,
+                        count: fn (Node $n): int => $this->nodeCount($n),
+                        sink: $this->sink,
+                    );
+                    if ($salvaged > 0) {
+                        return null;
+                    }
+                }
+            }
+            $this->oversizedDrops++;
             return null;
         }
 

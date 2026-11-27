@@ -148,9 +148,9 @@ final class JsonReporterWindowTest extends TestCase
         $this->assertSame(
             ['member', 'file', 'start', 'end', 'diff', 'truncated'],
             array_keys($ev),
-            '1.7 key set/order untouched — no shape event',
+            'cluster-level evidence key set/order untouched — no shape event (1.8 bump is summary/config-side)',
         );
-        $this->assertSame('1.7', $payload['schema_version']);
+        $this->assertSame('1.8', $payload['schema_version']);
     }
 
     // ── leg 2: coverage tallies only when needed ────────────────────────────
@@ -196,7 +196,7 @@ final class JsonReporterWindowTest extends TestCase
             (float)$payload['clusters'][0]['hole_coverage'],
             'emitted fraction is the tally answer shaped by Num::json, unchanged',
         );
-        $this->assertSame('1.7', $payload['schema_version'], 'lazy leg is shape-neutral');
+        $this->assertSame('1.8', $payload['schema_version'], 'lazy leg is shape-neutral');
     }
 
     public function testNoGeneralizedAstStillAnswersNullThroughTheDelegate(): void

@@ -115,6 +115,16 @@ final class ClusterStage implements CooperativeStageInterface
             // carry non-relocatable members. Key-namespace change only: no
             // PARSER_VERSION bump (fingerprintIdMode precedent).
             $config->allowedKinds,
+            // Item 1.2 (three-key law, cluster leg): the window posture
+            // decides whether oversized bodies contribute 'window' blocks
+            // to the pool at all, so cached cluster sets genuinely differ
+            // between postures — the same argument as allowedKinds above
+            // (which it pairs with: both shape the block population, not
+            // just the scoring). Key-namespace change only: no
+            // PARSER_VERSION bump (fingerprintIdMode precedent); the
+            // consequence is a one-time invalidation of every existing
+            // .cluster snapshot, disclosed in the lane report.
+            $config->windowOversized,
         ]));
     }
 
@@ -142,6 +152,9 @@ final class ClusterStage implements CooperativeStageInterface
     public const CANDIDATE_WINDOW = 262_144;
 
     private readonly ProgressListener $listener;
+
+    /** BuildClusterer's hoisted master-side ML client (item 1.2-era carrier for summary.ml_status). */
+    private ?\Phpdup\Ml\MlPairClient $mlPairClientForRun = null;
 
     public function __construct(
         private readonly bool $exactOnly,
@@ -302,8 +315,11 @@ final class ClusterStage implements CooperativeStageInterface
             // it and makes plain `--kinds script` abort at RefactorStage.
             // Folds are small (max_block_size bound) — keeping them loaded
             // is cheap and philosophically right: never unload what can
-            // never be reloaded.
-            if ($b->kind === 'script') {
+            // never be reloaded. Item 1.2: 'window' cuts join the exemption
+            // on the identical argument (this site is the replay/serial-
+            // sourced twin; PreprocessWorker carries the matching fresh-run
+            // guard).
+            if ($b->kind === 'script' || $b->kind === \Phpdup\Extraction\BlockExtractor::WINDOW_KIND) {
                 continue;
             }
             $b->unloadAst();
@@ -312,6 +328,15 @@ final class ClusterStage implements CooperativeStageInterface
 
     private function buildClusterer(\Phpdup\Cli\Config $config): Clusterer
     {
+        // once-S70 design (surface at 1.8): the client is hoisted to a
+        // property so run() can read connectionStatus() after clustering —
+        // summary.ml_status reports the MASTER-side client (worker-side
+        // dials in the fork zone never cross back over the scalar row
+        // wire; the field's semantics are honestly that narrow).
+        $mlPairClient = $config->mlPairUrl !== ''
+            ? new \Phpdup\Ml\MlPairClient(baseUrl: $config->mlPairUrl)
+            : null;
+        $this->mlPairClientForRun = $mlPairClient;
         return new Clusterer(
             similarity: new JaccardSimilarity(),
             tree: new TreeEditDistance(new EditCostModel($config->tedWeights), $config->fingerprintIdsUnnumbered()),
@@ -324,9 +349,7 @@ final class ClusterStage implements CooperativeStageInterface
             optionalBlocksMinOverlap: $config->optionalBlocksMinOverlap,
             irScoring:                $config->scorer === 'ir',
             irThreshold:              $config->irThreshold,
-            mlPairClient:             $config->mlPairUrl !== ''
-                ? new \Phpdup\Ml\MlPairClient(baseUrl: $config->mlPairUrl)
-                : null,
+            mlPairClient:             $mlPairClient,
             mlPairThreshold:          $config->mlPairThreshold,
             // Item 1.4 (§5b): split knobs — same constants the cache
             // config-key binds on, one source of truth.
@@ -672,6 +695,10 @@ final class ClusterStage implements CooperativeStageInterface
         $state->debug($output, sprintf('clustering: forming clusters from %d edges [%s]', count($edges), MemoryDebug::getMemoryUsage()));
         /** @var list<array{0: string, 1: string, 2: float, 3: string}> $edges */
         $state->clusters = $clusterer->cluster($index, $edges);
+        // 1.8 carrier: what the master's ML machinery ended the run as
+        // (off/idle/reachable/unreachable), null when no client was wired
+        // (no ml_pair_url, or a cluster-cache replay that never scored).
+        $state->mlConnectionStatus = $this->mlPairClientForRun?->connectionStatus();
         $state->timings['cluster'] = microtime(true) - $tCluster;
         $state->currentTask = sprintf('Built %d clusters', count($state->clusters));
 

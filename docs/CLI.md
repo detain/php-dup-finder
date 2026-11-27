@@ -59,7 +59,7 @@ for the full JSON-Schema-compatible spec.
 | `--fail-on-impact N`                       | `0` (off)      | CI gate: exit code 3 when any single cluster's impact is ≥ N — the per-cluster maximum, compared `>=` (canonical formula unified at once-S15: the shipped GitHub action's `fail-on-impact` input enforces the identical rule on the same JSON report). 0 = disabled. |
 | `--max-clusters N`                         | `0` (off)      | CI gate: exit code 3 when cluster count exceeds N. 0 = disabled. |
 | `--exact-only`                             | off            | Skip the near-duplicate phase. Emits only canonical-hash-equal clusters (~6× faster on large corpora). |
-| `--kinds K1,K2,...`                        | all            | Comma-separated block kinds to extract. Allowed: `function`, `method`, `closure`, `arrow`, `if`, `for`, `foreach`, `while`, `do`, `try`, `switch`, `match`, plus `script` (top-level statement folds — OPT-IN ONLY, never part of the implicit "all"; script clusters cannot be `--apply`-ed yet). |
+| `--kinds K1,K2,...`                        | all            | Comma-separated block kinds to extract. Allowed: `function`, `method`, `closure`, `arrow`, `if`, `for`, `foreach`, `while`, `do`, `try`, `switch`, `match`, plus `script` (top-level statement folds — OPT-IN ONLY, never part of the implicit "all"; script clusters cannot be `--apply`-ed yet). Not selectable: `window` — the synthetic marker item 1.2's extraction puts on statement windows cut from oversized bodies; AST-addressing surfaces (`--apply`, refactor patches, loader relocation) refuse those clusters with a typed error. |
 | `--auto-tune`                            | off            | Probe the corpus before analysis and pick `min-block-size`/`max-df`/`min-impact` based on its size; `--exact-only` is forced on for very large trees. The probe counts the tree the run will actually scan (profile and `--config` excludes applied, `exclude_reset` honored). Suggestions fill gaps only: a knob explicitly set on the command line, by `--profile`, or in the `--config` file is never overwritten, and the printed rationale claims only what was applied. |
 | `--max-memory MB`                          | `0` (off)      | Soft RSS ceiling. When peak RSS exceeds this mid-pipeline, phpdup logs a warning and suggests `--exact-only`. Non-integer values are fatal (exit 2) — garbage no longer silences the ceiling. |
 | `--optional-blocks on\|off`                | `on`           | Type-3 / "optional segment" detection master switch. See [Optional-segment LCS](tutorials/anti-unification-deep-dive.md#3-optional-segment-lcs) in the deep-dive. |
@@ -112,7 +112,7 @@ Naming posture for the generated-code surfaces (`--apply`, `--refactor-patch`, `
 
 `analyze` buckets **every scanned file into exactly one** category. The
 preprocess summary line, the CLI `files …` accounting line and the JSON
-`summary` object (schema 1.7; `JsonSchemaSpec::summaryShape()`) all label
+`summary` object (schema 1.8; `JsonSchemaSpec::summaryShape()`) all label
 these buckets identically:
 
 | Bucket    | Summary / accounting label | JSON key                          | Meaning                                                                                   |
@@ -127,6 +127,18 @@ these buckets identically:
 The historical `summary.files` key keeps its meaning (scanned); `null` in
 the three new counter keys means the producer does not track the bucket
 (built-in library path) — distinct from a tracked `0`.
+
+**Block-level honesty (item 0.6, schema 1.8):** one counter beside the
+buckets is block-level and deliberately NOT part of the file balance law:
+`summary.blocks_oversized` — fresh-extracted blocks above `max_block_size`
+the ceiling left fully invisible (with `window_oversized` on: oversized
+bodies from which no statement window survived; with it off: every
+oversized drop, the historical posture). When it is nonzero the warn note
+`N blocks exceeded the max block size and were dropped` rides the final
+accounting line; a tracked `0` prints nothing, and `null` again means the
+producer never ran extraction accounting. Fresh-extraction semantics: a
+cache-reused file was never re-extracted in this run, so warm runs count
+only what they actually processed.
 
 When files skipped extraction or failed to parse, the final verdict is no
 longer a bare `clean.`: it reads
@@ -166,8 +178,9 @@ the scan stage now refuses to launder degraded *inputs* (once-S37):
 
 The JSON summary fields for these channels
 (`summary.scan_notes[]`, `summary.parse_failures[]`,
-`summary.clusters_replayed`) ride the schema-1.8 carrier threading and are
-not in the payload yet; the CLI surface above is what ships. A warm run that
+`summary.clusters_replayed`) shipped into the payload with the 1.8 bump
+(the emit the once-S37 carrier threading promised); the CLI surface above
+is unchanged. A warm run that
 replayed whole clusters from the cluster cache now says so at default
 verbosity (`phpdup: clusters replayed from the cluster cache — …`), because
 such a report's member line ranges came from the saving run's bytes.
@@ -393,7 +406,7 @@ gates per once-S04/S29, the signal contract re-anchored against
 | Code | Meaning                                                                            |
 |------|------------------------------------------------------------------------------------|
 | `0`  | Successful run. **Note:** `analyze` does NOT exit non-zero when clusters are found (unless CI-gate thresholds are set). Gate CI on the JSON report — an empty `clusters` array means clean. The same `0` also carries a baseline write (first-run auto-baseline, `--baseline-out` replace, or a compare that found nothing new), `phpdup init` writing its config or honestly skipping an existing one (nothing to do is NOT a failure), a `completion` script dump, and a `self:update` that completed or had nothing newer to install. |
-| `1`  | Typed **runtime halt**: the run stopped on a named runtime condition, each rendering one `phpdup:` error line that names its remedy — never a crash, never a usage dump. The family: a candidate-generation budget halt (`--candidate-budget` overflow), a `script`-kind apply refusal, and a failed report write (the once-S04 fail-loud report-write spine). |
+| `1`  | Typed **runtime halt**: the run stopped on a named runtime condition, each rendering one `phpdup:` error line that names its remedy — never a crash, never a usage dump. The family: a candidate-generation budget halt (`--candidate-budget` overflow), a `script`- or `window`-kind apply refusal, and a failed report write (the once-S04 fail-loud report-write spine). |
 | `1`  | Invocation or internal fault — everything the console layer, not the pipeline, dies on: an **unknown option** (`--nope` → "does not exist" stays at Symfony's `1`; the eager `2` door below deliberately does not cover it), binding faults that are *not* the missing-value class (only that one class is translated below — anything else re-raises into Symfony's boxed usage text at `1`), an uncaught internal error (throwable rendering: reporter or stage crashes), `serve` startup refusals (an invalid `--serve-workers` value, a foreign-owned results directory, a failed socket bind — runtime posture, never a `2`), `init` with an unknown profile or an unwritable target, and `self:update` download/verification failures. |
 | `2`  | Invalid input: missing required argument, unknown shell for `completion`, schema-validation failure for `--validate-config`, a non-numeric or out-of-domain value for a numeric option (e.g. `--min-block-size abc`, `--similarity 1.5`, `--limit abc`, `--min-safety 2.0`, `--max-memory banana`, `--optional-blocks-containment hot`), an option written with no value at all (`--limit -1` and a trailing `--limit` — a value beginning with `-` is only admitted attached, as `--limit=<value>`; the missing-value door answers one `phpdup: The "--limit" option requires a value…` line, never the boxed usage dump), an invalid choice for `--stage`, `--pager` or `--theme`, a non-boolean value for `--dry-run`, a scan path that does not exist (`phpdup analyze /nope` is refused with one `phpdup: path not found:` line BEFORE the pipeline — never the old clean-looking exit 0 over `0 files`), an empty/whitespace/corrupt `--baseline` gate input (zero bytes, invalid or truncated JSON, or a bare `[]`/`{}` — the refusal names the repair: delete to take a fresh first-run baseline, or re-accept with `--baseline-out`), and a `--diff-base` run the tool cannot honour (a ref git cannot resolve, or a cohort that matches none of the named scan roots — refusing the unscoped full scan instead of silently widening it). |
 | `3`  | CI gate triggered: `--fail-on-impact N` tripped (maximum single-cluster impact ≥ N — same canonical formula as the GitHub action's `fail-on-impact` input) or `--max-clusters N` tripped (cluster count > N). The tripped gate is named in the output. Pre-pipeline SAFETY gates ride this code too: real apply (`--dry-run=false`) against a git work tree with uncommitted tracked changes (once-S04), and an apply directory that already exists as a symbolic link (once-S29) — both refuse before any analysis with zero files written. |
@@ -599,6 +612,8 @@ never hard-count it here, the list grows with each flag): `min_block_size`,
 `ir_threshold`, `ml_pair_threshold`, `debug_log`, and `low_memory`.
 `max_ted_size` joins this list but has no CLI flag (config
 file only — it sits alongside `fingerprint_id_mode` as a root-only key).
+`window_oversized` joins it the same way: a config-file-only boolean root
+stance with no CLI flag (item 1.2; see the config-keys table).
 `max_hole_coverage` joins this list with a CLI flag
 (`--max-hole-coverage`) and the same root-only posture: a cluster spans
 members from many directories, so its re-expression threshold is a stance
@@ -759,6 +774,7 @@ with the offending field path on the first violation.
 | `ngram_size`                           | integer          | `5`              | `2 ≤ n ≤ 10`.                                                            |
 | `fingerprint_id_mode`                  | string           | `"numbered"`     | One of `numbered`, `un-numbered`. Root config only — per-directory `.phpdup.json` files carrying this key fail the load; no CLI flag in v1. `un-numbered` strips the `__V`/`__CALL`/`__PROP`/`__CLASS` occurrence counters from the n-gram bag AND the tree-edit labels together; Jaccard/containment/TED are monotone under the coarsening (no today-accepted edge is lost). |
 | `max_ted_size`                         | integer          | `800`            | `>= 1`. Node-count cap for APTED judgment: a pair whose LARGER member exceeds it skips the TED call — accepted on Jaccard alone with edge tier `jaccard-unverified` (weight = Jaccard score), else falls through to containment/IR/ML unchanged. Default equals the `max_block_size` extraction ceiling, so the gate is inert out of the box and every golden stays byte-identical. Root config only — per-directory `.phpdup.json` files carrying this key fail the load (a pair spans two directories); no CLI flag in v1. |
+| `window_oversized`                     | boolean          | `true`           | Item 1.2 extraction posture. `true`: an oversized body (over `max_block_size` nodes) is never silently invisible — the extractor cuts maximal contiguous statement windows (each capped at `max_block_size`) that fingerprint and cluster like any block; the synthetic `window` kind is refused by AST-addressing surfaces (`--apply`, refactor patches), and blocks left FULLY invisible are counted in `summary.blocks_oversized`. `false` = the historical posture: oversized blocks are dropped, only the counter prints. Corpora without oversized blocks report byte-identically either way; flipping the posture invalidates existing caches once (bound into the extraction and cluster cache keys). Root config only — per-directory `.phpdup.json` files carrying this key fail the load; no CLI flag (config-file-only stance, `max_ted_size` precedent). |
 | `max_hole_coverage`                    | number           | `1.0`            | `0..1`. Hole-coverage ceiling for extraction honesty: a cluster whose generalized template is MORE than this fraction hole is marked `re_expressed` in reports and gets its longest hole-free statement run surfaced as `hole_fragment`. Default `1.0` = rule never fires (byte-identical reports). CLI `--max-hole-coverage`. Root config only — per-directory `.phpdup.json` files carrying this key fail the load (a cluster spans directories). |
 | `cache_dir`                            | string           | `".phpdup-cache"`| Any path; created on first use.                                          |
 | `parallelism`                          | string           | `"auto"`         | One of `auto`, `off`, `manual`.                                          |
@@ -819,7 +835,7 @@ with `"<key> is not a per-directory key (root phpdup.json only): <file>"`
 
 | Family | Keys | Why root-only |
 |--------|------|---------------|
-| Fingerprint / pair / report stance | `fingerprint_id_mode`, `scope`, `score_mode`, `max_ted_size`, `max_hole_coverage`, `ted_weights`, `scorer`, `ir_threshold` | Pairs and clusters span directories; the stance is chosen once per run (a per-directory value would be ambiguous even if it were read). |
+| Fingerprint / pair / report stance | `fingerprint_id_mode`, `scope`, `score_mode`, `max_ted_size`, `window_oversized`, `max_hole_coverage`, `ted_weights`, `scorer`, `ir_threshold` | Pairs and clusters span directories; the stance is chosen once per run (a per-directory value would be ambiguous even if it were read). |
 | Write / ref / code / sidecar | `report`, `apply`, `normalization`, `baseline`, `baseline_out`, `diff_base`, `debug_log`, `ml_pair_allow_private`, `ml_pair_url`, `ml_pair_threshold` | They name files the run reads or WRITES, argv for git, plugin class loaders, or a network sidecar — the shell-S22 family posture: no scanned subtree may choose them (a planted `ml_pair_url` must fail loudly, once-S54; the old silent inertness was the once-076 exploit's vehicle). |
 | Run plumbing | `paths`, `cache_dir`, `parallelism`, `workers`, `incremental`, `lazy_ast` | One cache root and one worker pool per run; `paths` is fixed before discovery walks the trees; `lazy_ast` mints the reload machinery from the ROOT flag only, so a subtree `true` would unload ASTs the run could never reload. |
 | Whole-run clustering / gate stances (shed by once-S67) | `similarity_threshold`, `tree_threshold`, `min_cluster_impact`, `max_df`, `candidate_budget`, `sort`, `fail_on_impact`, `max_clusters`, `optional_blocks` | Every reader receives the root config — admission without observability was the dishonesty; refusal replaces it. |

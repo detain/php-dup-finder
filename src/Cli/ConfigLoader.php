@@ -155,6 +155,7 @@ final class ConfigLoader
             'scope', 'score_mode',
             'max_ted_size',
             'max_hole_coverage',
+            'window_oversized',
             'ir_threshold', 'ml_pair_threshold', 'debug_log',
             'low_memory', 'fail_on_impact', 'max_clusters',
             'optional_blocks_containment',
@@ -213,6 +214,7 @@ final class ConfigLoader
             'score_mode' => $base->scoreMode,
             'max_ted_size' => $base->maxTedSize,
             'max_hole_coverage' => $base->maxHoleCoverage,
+            'window_oversized' => $base->windowOversized,
             'ir_threshold' => $base->irThreshold,
             'ml_pair_threshold' => $base->mlPairThreshold,
             'debug_log' => $base->debugLog,
@@ -404,6 +406,10 @@ final class ConfigLoader
             scoreMode:                     $flat['score_mode'],
             maxTedSize:                    $flat['max_ted_size'],
             maxHoleCoverage:               $flat['max_hole_coverage'],
+            // Items 1.2 + 0.6: window posture (bool validated by the door
+            // below; root-only, refused at per-directory discovery like the
+            // max_ted_size family it pairs with).
+            windowOversized:               $flat['window_oversized'],
         );
     }
 
@@ -872,7 +878,7 @@ final class ConfigLoader
                     // shapeOverrides() loop, counted as "consumed" by the
                     // belt's property-move proxy, and then never observed by
                     // any per-file reader (the root-only readers receive the
-                    // ROOT config). The 23 keys below are every remaining
+                    // ROOT config). The 24 keys below are every remaining
                     // KNOWN_KEYS member: the 14 whose sole readers consume
                     // the root Config (paths, cache_dir, parallelism,
                     // workers, incremental, lazy_ast, ted_weights, report,
@@ -882,11 +888,12 @@ final class ConfigLoader
                     // never be planted by a scanned tree, the once-S54
                     // make-it-loud sidecar law, sibling of the S22 write/
                     // ref/code family the report/normalization/apply keys
-                    // join here), the 8 whole-run stances that are inert
+                    // join here), the 9 whole-run stances that are inert
                     // per-subtree because clusters, reports and gates span
                     // the entire run (similarity_threshold, tree_threshold,
                     // min_cluster_impact, max_df, fail_on_impact,
-                    // max_clusters, candidate_budget, sort — every score
+                    // max_clusters, candidate_budget, window_oversized, sort
+                    // — every score
                     // and tier in the report would carry only one
                     // directory's stance, chosen ambiguously), and the
                     // optional_blocks parent (all five sub-knobs have
@@ -1117,6 +1124,7 @@ final class ConfigLoader
         'candidate_budget',
         'max_ted_size',
         'max_hole_coverage',
+        'window_oversized',
         'baseline',
         'baseline_out',
         'diff_base', 'apply',
@@ -1124,12 +1132,12 @@ final class ConfigLoader
 
     /**
      * once-S67 (php-dup-finder-once-077): the admission-totality roster —
-     * the 23 KNOWN_KEYS members that per-directory `.phpdup.json` files may
+     * the 24 KNOWN_KEYS members that per-directory `.phpdup.json` files may
      * NOT carry, refused loudly by {@see discoverPerDirectoryOverrides()}.
-     * The equation the belt pins: KNOWN_KEYS (44) = the 11 parents
+     * The equation the belt pins: KNOWN_KEYS (45) = the 11 parents
      * shapeOverrides() admits (exclude, exclude_reset, min_block_size,
      * max_block_size, normalization_mode, ngram_size, kinds, db_symbols,
-     * db_aware, trinity_collapse, low_memory) + these 23 + the 10 with
+     * db_aware, trinity_collapse, low_memory) + these 24 + the 10 with
      * dedicated era arms above the roster check (fingerprint_id_mode, scope,
      * score_mode, max_ted_size, max_hole_coverage, ml_pair_allow_private,
      * baseline, baseline_out, diff_base, debug_log). A new KNOWN_KEYS member
@@ -1142,7 +1150,7 @@ final class ConfigLoader
         'lazy_ast', 'sort', 'ted_weights', 'optional_blocks', 'report',
         'normalization', 'scorer', 'ir_threshold', 'ml_pair_url',
         'ml_pair_threshold', 'apply', 'fail_on_impact', 'max_clusters',
-        'candidate_budget',
+        'candidate_budget', 'window_oversized',
     ];
 
     /**
@@ -1346,6 +1354,12 @@ final class ConfigLoader
             // friendly exit 2; Command's load door additionally catches
             // \TypeError as a class (shell-S27).
             throw new \RuntimeException("apply must be a boolean$where");
+        }
+        if (array_key_exists('window_oversized', $data) && !is_bool($data['window_oversized'])) {
+            // Items 1.2 + 0.6: same voice — a non-boolean must not silently
+            // flip the oversized-block posture (windows vs counted drops are
+            // different block species, not a shade of the same one).
+            throw new \RuntimeException("window_oversized must be a boolean$where");
         }
         if (array_key_exists('scorer', $data)) {
             $assertEnum($data['scorer'], 'scorer', ['default', 'ir']);

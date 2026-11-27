@@ -58,11 +58,11 @@ final class ScriptKindTest extends TestCase
     }
 
     /** @param list<string> $allowedKinds @return list<Block> */
-    private function extract(string $code, array $allowedKinds, int $minSize = 8, int $maxSize = 800): array
+    private function extract(string $code, array $allowedKinds, int $minSize = 8, int $maxSize = 800, bool $windowing = true): array
     {
         $parser = (new ParserFactory())->createForNewestSupportedVersion();
         $ast = $parser->parse($code) ?? [];
-        return (new BlockExtractor(minSize: $minSize, maxSize: $maxSize, allowedKinds: $allowedKinds))
+        return (new BlockExtractor(minSize: $minSize, maxSize: $maxSize, allowedKinds: $allowedKinds, windowOversized: $windowing))
             ->extract('virtual.php', $ast);
     }
 
@@ -131,8 +131,20 @@ final class ScriptKindTest extends TestCase
         for ($i = 0; $i < 700; $i++) {
             $bigCode .= "\$v{$i} = compute({$i});\n";
         }
-        $this->assertCount(0, $this->extract($bigCode, ['script'], minSize: 8, maxSize: 600),
-            'a whole-file fold may not smuggle past the maxSize cost ceiling');
+        // Item 1.2 changed the maxSize leg's DIET, not the ceiling law:
+        // the legacy posture (windowing off) still refuses to smuggle
+        // the fold past the cap — zero blocks; the shipped posture cuts
+        // it into windows, each honestly under the ceiling. The fold
+        // twin of the visitor leg is pinned likewise in
+        // BlockExtractorWindowTest.
+        $this->assertCount(0, $this->extract($bigCode, ['script'], minSize: 8, maxSize: 600, windowing: false),
+            'a whole-file fold may not smuggle past the maxSize cost ceiling (legacy posture)');
+        $windows = $this->extract($bigCode, ['script'], minSize: 8, maxSize: 600);
+        $this->assertNotEmpty($windows, 'on posture: the oversized fold survives as windows');
+        foreach ($windows as $w) {
+            $this->assertLessThanOrEqual(600, $w->size, 'every window respects the cost ceiling');
+            $this->assertSame(BlockExtractor::WINDOW_KIND, $w->kind);
+        }
         $this->assertCount(1, $this->extract($bigCode, ['script'], minSize: 8, maxSize: 8000));
     }
 

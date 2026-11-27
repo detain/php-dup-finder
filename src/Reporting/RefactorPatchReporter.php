@@ -237,6 +237,11 @@ final class RefactorPatchReporter
                 if ($member->kind === 'script') {
                     throw ScriptKindApplyRefusal::forCluster($cluster, 'RefactorPatchReporter');
                 }
+                // Item 1.2: window clusters ride the same whole-surface
+                // refusal (synthetic cut, not a contiguous extractable unit).
+                if ($member->kind === \Phpdup\Extraction\BlockExtractor::WINDOW_KIND) {
+                    throw \Phpdup\Refactor\WindowApplyRefusal::forCluster($cluster, 'RefactorPatchReporter');
+                }
             }
         }
 

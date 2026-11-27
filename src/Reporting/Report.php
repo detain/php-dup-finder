@@ -60,6 +60,17 @@ final class Report
         public readonly array $scanNotes = [],
         public readonly array $parseFailures = [],
         public readonly ?bool $clustersReplayed = null,
+        // Item 0.6 (oversized leg): blocks the max_block_size ceiling was
+        // fully given up on during this run's FRESH extractions. null =
+        // "this producer does not track the bucket" (legacy library/
+        // worker/hand-built reports), a tracked zero is 0 — the same
+        // honesty law as reusedFiles/skippedFiles above.
+        public readonly ?int $oversizedBlocks = null,
+        // once-S70 design, EMITTED at schema 1.8: the master-side ML pair
+        // client's end-of-run connection status (see
+        // PipelineState::$mlConnectionStatus for the four values and the
+        // fork-zone semantics boundary). null = producer never wired one.
+        public readonly ?string $mlStatus = null,
     ) {
     }
 

@@ -326,6 +326,102 @@ function qux() { return 4; }
         rmdir($dir);
     }
 
+    // ── items 0.6 + 1.2 (E2): the oversized-drop counter ────────────────
+
+    private function giantFixture(): string
+    {
+        $tmpDir = sys_get_temp_dir() . '/phpdup_giant_' . uniqid();
+        @mkdir($tmpDir . '/cache', 0o775, true);
+        $body = '';
+        for ($i = 0; $i < 400; ++$i) {
+            $body .= "    \$x = {$i};\n";
+        }
+        // ONE oversized function plus one small sibling: the file itself
+        // produces blocks either way, so its cached snapshot (and the
+        // bucket accounting below) exercises both postures identically.
+        file_put_contents($tmpDir . '/a.php', "<?php\nfunction giant() {\n{$body}}\nfunction tiny() { return 5; }\n");
+        return $tmpDir;
+    }
+
+    public function testOversizedDropsAggregateIntoTheStateCounter(): void
+    {
+        // Windowing OFF: the historical posture. The giant contributes
+        // zero blocks and lands in the counter; the file still counts
+        // 'processed' (its tiny block), so scanned = processed holds.
+        $tmpDir = $this->giantFixture();
+        try {
+            $config = new Config(
+                paths: [$tmpDir], exclude: [], minBlockSize: 1,
+                windowOversized: false,
+            );
+            $state = new PipelineState($config);
+            (new ScanningStage())->run($state, new NullOutput());
+            (new PreprocessStage(useCache: false))->run($state, new NullOutput());
+
+            $this->assertSame(1, $state->oversizedBlocks, 'the dropped giant is counted, once');
+            $kinds = array_map(fn($b) => $b->kind, $state->blocks);
+            $this->assertNotContains('window', $kinds, 'off posture mints no windows');
+            $this->assertSame(1, $state->processedFiles);
+            $this->assertSame(
+                count($state->files),
+                $state->reusedFiles + $state->processedFiles + $state->skippedFiles + $state->parseErrors,
+                'the 0.6 file-balance identity is untouched by the block-level counter',
+            );
+        } finally {
+            $this->removeDirectory($tmpDir);
+        }
+    }
+
+    public function testWindowsFlowThroughTheStageAsOrdinaryBlocks(): void
+    {
+        $tmpDir = $this->giantFixture();
+        try {
+            $config = new Config(paths: [$tmpDir], exclude: [], minBlockSize: 1);
+            $state = new PipelineState($config);
+            (new ScanningStage())->run($state, new NullOutput());
+            (new PreprocessStage(useCache: false))->run($state, new NullOutput());
+
+            $this->assertSame(0, $state->oversizedBlocks, 'salvaged parents are not drops');
+            $kinds = array_map(fn($b) => $b->kind, $state->blocks);
+            $this->assertContains('window', $kinds, 'windows ride the normal block stream');
+            $this->assertSame(1, $state->processedFiles);
+            foreach ($state->blocks as $b) {
+                $this->assertNotSame('', $b->id, 'windows get ids like every other block');
+            }
+        } finally {
+            $this->removeDirectory($tmpDir);
+        }
+    }
+
+    public function testWarmReuseDoesNotRecountOversizedDrops(): void
+    {
+        // Fresh-only semantics (disclosed in PipelineState + docs): a
+        // file answered from the IndexStore snapshot never re-extracts,
+        // so its drops are not recounted — the counter tracks what THIS
+        // run's extractors actually dropped.
+        $tmpDir = $this->giantFixture();
+        try {
+            $config = new Config(
+                paths: [$tmpDir], exclude: [], minBlockSize: 1,
+                windowOversized: false, incremental: true,
+                cacheDir: $tmpDir . '/cache',
+            );
+            $cold = new PipelineState($config);
+            (new ScanningStage())->run($cold, new NullOutput());
+            (new PreprocessStage(useCache: true))->run($cold, new NullOutput());
+            $this->assertSame(1, $cold->oversizedBlocks, 'cold run counts the drop');
+
+            $warm = new PipelineState($config);
+            (new ScanningStage())->run($warm, new NullOutput());
+            (new PreprocessStage(useCache: true))->run($warm, new NullOutput());
+            $this->assertGreaterThan(0, $warm->reusedFiles, 'control: the file IS reused');
+            $this->assertSame(0, $warm->oversizedBlocks,
+                'a reused file never re-extracts — the counter stays fresh-run-only, it never double-counts');
+        } finally {
+            $this->removeDirectory($tmpDir);
+        }
+    }
+
     public function testReportsName(): void
     {
         $this->assertSame(

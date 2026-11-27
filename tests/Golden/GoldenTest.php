@@ -138,7 +138,13 @@ final class GoldenTest extends TestCase
         $out   = new NullOutput();
         (new ScanningStage())->run($state, $out);
         (new PreprocessStage(useCache: false))->run($state, $out);
-        (new ClusterStage(exactOnly: $exactOnly))->run($state, $out);
+        // E2 hermeticity fix: the goldens pin computation, not replay.
+        // With the 1.8 emit the live clustersReplayed counter rides the
+        // payload — an unwired cluster cache made the snapshot
+        // cold-run/warm-run dependent (regenerated false, replayed
+        // true). useCache:false on every caching stage, like the
+        // RefactorStage leg already did.
+        (new ClusterStage(exactOnly: $exactOnly, useClusterCache: false))->run($state, $out);
         (new RefactorStage(useCache: false))->run($state, $out);
 
         $report = new Report(
@@ -153,6 +159,18 @@ final class GoldenTest extends TestCase
             reusedFiles: $state->reusedFiles,
             processedFiles: $state->processedFiles,
             skippedFiles: $state->skippedFiles,
+            // E2 / schema 1.8: the same tracked-not-null posture for the
+            // trailing carriers — blocks_oversized (the fixtures hold no
+            // oversized declarations, so this pins a tracked ZERO; a
+            // future fixture that plants one moves the golden LOUD),
+            // the once-S37 scan-signal trio (empty/false for these
+            // cache-less drives) and ml_status (null: no ML url wired,
+            // no client constructed — the honest absence).
+            oversizedBlocks: $state->oversizedBlocks,
+            scanNotes: $state->scanNotes,
+            parseFailures: $state->parseFailures,
+            clustersReplayed: $state->clustersReplayed,
+            mlStatus: $state->mlConnectionStatus,
         );
         return (new JsonReporter())->build($report);
     }

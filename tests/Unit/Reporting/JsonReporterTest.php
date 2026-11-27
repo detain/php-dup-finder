@@ -38,7 +38,7 @@ final class JsonReporterTest extends TestCase
         );
         $payload = (new JsonReporter())->build($report);
 
-        $this->assertSame('1.7', $payload['schema_version']);
+        $this->assertSame('1.8', $payload['schema_version']);
         $summary = $payload['summary'];
         $this->assertSame(array_keys(JsonSchemaSpec::summaryShape()), array_keys($summary));
         // Item 4.3: trailing key, present even for producers that never
@@ -317,16 +317,17 @@ final class JsonReporterTest extends TestCase
     }
 
     /**
-     * once-S37 fix-1 schema-event tripwire: emitting summary.scan_notes[],
-     * summary.parse_failures[] or summary.clusters_replayed is a JSON schema
-     * 1.7→1.8 event that lands ONLY together with SCHEMA_VERSION and a golden
-     * regen in one no-broken-tip commit (plan §37 shared-resources: "the ONLY
-     * sanctioned bumps … once-S37 (1.7→1.8, owner-approved row)"). The owner
-     * window is closed, so while carriers are populated the payload must stay
-     * exactly the frozen 1.7 keyset. This pin turns RED the day a summary key
-     * is added without moving the version — the breach r1 warned about.
+     * once-S37 fix-1 schema-event tripwire — SATISFIED, not deleted: the
+     * day it was written the owner window was closed, so populated
+     * carriers had to find the payload frozen at the 1.7 keyset (a summary
+     * key added WITHOUT the version move was the breach r1 warned about).
+     * The window opened (rulings row 3) and this commit IS the sanctioned
+     * 1.7→1.8 bump + golden regen, so the same harness now pins the
+     * emission side: carriers reach the payload, key order matches the
+     * spec, and the legacy posture (untracked producers) keeps its
+     * nulls/empty-lists — never fabricated values.
      */
-    public function testS37Fix1JsonShapeFrozenWhileCarriersPopulated(): void
+    public function testS37Fix1CarriersEmittedAt18(): void
     {
         $payload = (new JsonReporter())->build(new Report(
             0, 0, 0, [], Config::defaults([]),
@@ -334,10 +335,38 @@ final class JsonReporterTest extends TestCase
             parseFailures: [['file' => '/tmp/x/broken.php', 'message' => 'Syntax error, unexpected ";" on line 2']],
             clustersReplayed: true,
         ));
-        $this->assertSame('1.7', $payload['schema_version']);
+        $this->assertSame('1.8', $payload['schema_version']);
         $this->assertSame(array_keys(JsonSchemaSpec::summaryShape()), array_keys($payload['summary']));
-        $this->assertArrayNotHasKey('scan_notes', $payload['summary']);
-        $this->assertArrayNotHasKey('parse_failures', $payload['summary']);
-        $this->assertArrayNotHasKey('clusters_replayed', $payload['summary']);
+        $this->assertSame(
+            ['skipped unreadable path /tmp/x (directory is not readable)'],
+            $payload['summary']['scan_notes'],
+        );
+        $this->assertSame(
+            [['file' => '/tmp/x/broken.php', 'message' => 'Syntax error, unexpected ";" on line 2']],
+            $payload['summary']['parse_failures'],
+        );
+        $this->assertTrue($payload['summary']['clusters_replayed']);
+        // Hand-built legacy-shaped Report without the E2 params: the two
+        // new honesty channels keep the null posture, no fabrication.
+        $this->assertNull($payload['summary']['blocks_oversized']);
+        $this->assertNull($payload['summary']['ml_status']);
+    }
+
+    /** E2 item 0.6: a tracked oversized count is emitted as a number, and
+     *  the 1.8 config echo carries the four knobs the bump opened. */
+    public function testOversizedCounterAnd18ConfigEcho(): void
+    {
+        $payload = (new JsonReporter())->build(new Report(
+            1, 9, 0, [], Config::defaults([]),
+            oversizedBlocks: 3, mlStatus: 'idle',
+        ));
+        $this->assertSame(3, $payload['summary']['blocks_oversized']);
+        $this->assertSame('idle', $payload['summary']['ml_status']);
+        $config = $payload['config'];
+        $this->assertSame(array_keys(JsonSchemaSpec::configShape()), array_keys($config));
+        $this->assertSame(1, $config['max_hole_coverage'], 'Num::json normalises the 1.0 default into int 1 — the echo rides the shared numeric shaping');
+        $this->assertSame('global', $config['score_mode']);
+        $this->assertSame('all', $config['scope']);
+        $this->assertTrue($config['window_oversized']);
     }
 }

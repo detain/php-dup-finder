@@ -173,10 +173,28 @@ final class JsonReporter
                 'files_reused'         => $report->reusedFiles,
                 'files_processed'      => $report->processedFiles,
                 'files_without_blocks' => $report->skippedFiles,
+                // 1.8 trailing (E2: items 0.6/1.2 + the once-S37 carrier
+                // emit + once-S70 ml_status). blocks_oversized is the
+                // item-0.6 honesty counter — blocks the size ceiling left
+                // FULLY invisible (windowing on: parents from which no
+                // statement window survived; off: every oversized drop),
+                // fresh-extraction only (cache-reused files never
+                // recount — IndexStore carries blocks, not drops). The
+                // next three are the once-S37 scan-signal carriers, the
+                // emit their staging docblock promised for exactly this
+                // bump. ml_status is the MASTER-side pair client's dial
+                // state (once-S70); worker dials inside the fork zone are
+                // invisible here, null = no client was wired at all.
+                'blocks_oversized'     => $report->oversizedBlocks,
+                'scan_notes'           => $report->scanNotes,
+                'parse_failures'       => $report->parseFailures,
+                'clusters_replayed'    => $report->clustersReplayed,
+                'ml_status'            => $report->mlStatus,
             ],
             // Echo of the run config — key set governed by
-            // JsonSchemaSpec::configShape() (once-S55); the three
-            // deliberately un-echoed knobs are adjudicated there.
+            // JsonSchemaSpec::configShape() (once-S55); the three knobs
+            // S55 parked for the owner window joined the echo with the
+            // 1.8 bump, alongside the item-1.2 posture this ships.
             'config' => [
                 'paths'                => $report->config->paths,
                 'min_block_size'       => $report->config->minBlockSize,
@@ -184,6 +202,10 @@ final class JsonReporter
                 'similarity_threshold' => Num::json($report->config->similarityThreshold),
                 'tree_threshold'       => Num::json($report->config->treeThreshold),
                 'min_cluster_impact'   => $report->config->minClusterImpact,
+                'max_hole_coverage'    => Num::json($report->config->maxHoleCoverage),
+                'score_mode'           => $report->config->scoreMode,
+                'scope'                => $report->config->scope,
+                'window_oversized'     => $report->config->windowOversized,
             ],
             // Item 5.3: one advisor per build() so composer manifests are
             // read once per run; it evaluates post-RefactorStage state

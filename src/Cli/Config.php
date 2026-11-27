@@ -284,6 +284,25 @@ final class Config
         // Clusterer::DEFAULT_MAX_TED_COST on the serial engine (internal knob,
         // no config key by the plan's [OWNER] direction).
         public readonly int $maxTedSize = 800,
+        // Items 1.2 + 0.6: oversized-block posture (config-file key
+        // `window_oversized`, JSON bool; deliberately NO CLI flag — same
+        // stance family as max_ted_size, root phpdup.json only). True (the
+        // default) cuts SCAN WINDOWS out of blocks above max_block_size —
+        // contiguous statement runs re-wrapped under the cap, minted with
+        // the synthetic 'window' kind that every AST-addressing surface
+        // refuses (WindowApplyRefusal) — so a 1500-statement function is no
+        // longer invisible: its fragments fingerprint, pair, and cluster
+        // like anything else (the doc letter: above max_block_size "still
+        // fingerprintable and comparable"). False restores the historic
+        // drop-everything posture. Corpora with nothing oversized are
+        // byte-identical under either setting — the window path only fires
+        // on nodes the ceiling was about to reject. The bound is
+        // unconditional on the extraction path: the three-key law
+        // (PreprocessWorker $toolFor, PreprocessStage::indexStoreConfigKey,
+        // ClusterStage::cacheConfigKey) invalidates warm caches when the
+        // posture flips. Fully-dropped blocks (unwindowable kinds, or
+        // windowing off) feed the 0.6 counter: summary.blocks_oversized.
+        public readonly bool $windowOversized = true,
         // Item 5.4: coverage ceiling above which a cluster's signature is
         // marked `re_expressed` and a hole-free `hole_fragment` is surfaced
         // (config-file key `max_hole_coverage`, CLI --max-hole-coverage,
@@ -630,6 +649,12 @@ final class Config
             // a per-dir cap is ambiguous — same silent-misfeed class as
             // fingerprint_id_mode). Copied, never replaced.
             maxTedSize:                      $this->maxTedSize,
+            // Items 1.2 + 0.6: root-only, copied — never replaced — per-
+            // directory (a per-dir window posture would mint two block
+            // species from one cluster pool — same silent-misfeed class as
+            // max_ted_size; refused at discovery in
+            // ConfigLoader::discoverPerDirectoryOverrides()).
+            windowOversized:                 $this->windowOversized,
             // Item 5.4: root-only, copied — never replaced — per-directory
             // (same silent-misfeed class as max_ted_size; refused at
             // discovery in ConfigLoader::discoverPerDirectoryOverrides()).

@@ -67,6 +67,35 @@ namespace Phpdup\Reporting;
 final class JsonSchemaSpec
 {
     /**
+     * 1.8 (minor, additive — the owner-opened 1.7→1.8 emit window,
+     * improve_logic items 0.6/1.2 + rulings row 3): five TRAILING keys
+     * in `summary` and four in the `config` echo. Every 1.7 field keeps
+     * its name, type and position, so 1.7 consumers parse 1.8 payloads
+     * untouched.
+     *
+     *   summary: `blocks_oversized` (int|null — blocks the extraction
+     *   size ceiling left FULLY invisible; item 0.6's honesty counter,
+     *   null = producer does not track, mirroring the 1.2 accounting
+     *   posture), `scan_notes` (list<string> — the FileScanner skip
+     *   notes cross the Report carrier once signal-free producers keep
+     *   emitting []), `parse_failures` (list<object{file:string,
+     *   message:string}>), `clusters_replayed` (bool|null — whether the
+     *   cluster cache answered this run) and `ml_status` (string|null —
+     *   'off' | 'idle' | 'reachable' | 'unreachable' for the run's
+     *   MASTER-SIDE pair-scoring client; null = no ML client wired.
+     *   Fork-zone workers dial their own endpoints and those dials are
+     *   invisible here — the field states the master's knowledge, never
+     *   a fabrication).
+     *   config: `max_hole_coverage`, `score_mode`, `scope` (the three
+     *   knobs once-S55 parked for exactly this window — rulings row 3
+     *   opens it) and `window_oversized` (bool — the item-1.2
+     *   statement-window extraction posture this commit ships).
+     *
+     * The three scan-signal carriers (scan_notes/parse_failures/
+     * clusters_replayed) were staged on Report by once-S37 with the
+     * promise that their JSON emit lands together with this bump; the
+     * promise is kept here, in this commit.
+     *
      * 1.7 (minor, semantic correction inside existing keys): canonical
      * absence (php-dup-finder-output-019). A hole's `observed` list nulls
      * EVERY absence row: the canonical in-memory marker (Hole::MISSING)
@@ -137,7 +166,7 @@ final class JsonSchemaSpec
      * files_without_blocks). Every 1.1 field keeps its name and type, so
      * 1.1 consumers parse 1.2 payloads untouched.
      */
-    public const SCHEMA_VERSION = '1.7';
+    public const SCHEMA_VERSION = '1.8';
 
     /**
      * Top-level shape of {@see JsonReporter::build()} output. This is
@@ -197,7 +226,12 @@ final class JsonSchemaSpec
      * emitted by producers that predate per-bucket tracking (library API,
      * server workers) and means "not tracked", distinct from 0 = tracked
      * and empty. When non-null, scanned = reused + processed +
-     * without_blocks + parse_errors (see JsonReporter).
+     * without_blocks + parse_errors (see JsonReporter). Since 1.8 five
+     * further trailing keys ride here — blocks_oversized (the item-0.6
+     * extraction-honesty counter, block-level: it is deliberately NOT
+     * part of the file-balance identity above), the three once-S37
+     * scan-signal carriers, and summary.ml_status (see the 1.8 changelog
+     * on SCHEMA_VERSION).
      *
      * @return array<string, string>
      */
@@ -214,6 +248,12 @@ final class JsonSchemaSpec
             'files_reused'         => 'int|null',
             'files_processed'      => 'int|null',
             'files_without_blocks' => 'int|null',
+            // 1.8 trailing (items 0.6 / S37 carriers / S70 ml):
+            'blocks_oversized'     => "int|null  // item 0.6: blocks the size ceiling left fully invisible; fresh-extraction count, null = untracked producer",
+            'scan_notes'           => 'list<string>  // FileScanner skip notes (once-S37 carrier, emitted since 1.8); [] when the producer tracked none',
+            'parse_failures'       => 'list<object{file:string,message:string}>  // per-file parse errors (once-S37 carrier, emitted since 1.8)',
+            'clusters_replayed'    => 'bool|null  // cluster-cache replay happened (once-S37 carrier); null = untracked',
+            'ml_status'            => "string|null  // master-side ML pair client: 'off'|'idle'|'reachable'|'unreachable'; null = no client wired (fork-zone dials invisible — E2 disclose)",
         ];
     }
 
@@ -224,15 +264,17 @@ final class JsonSchemaSpec
      * exactly what JsonReporter::build() emits — governed here for the
      * first time by once-S55; declaring it changes no bytes.
      *
-     * Three further operator knobs — max_hole_coverage, score_mode and
-     * scope — are deliberately NOT echoed: the config block is a
+     * Three operator knobs — max_hole_coverage, score_mode and scope —
+     * were parked here un-echoed by once-S55: the config block is a
      * key-set contract, not a full dump, and adding emitted keys is a
-     * MINOR version event. The plan's once-060 acceptance asks for the
-     * three; shipping them requires the owner's 1.7→1.8 emit window
-     * (plan "Shared resources": the bump is owner-held, S55/S70 wait
-     * for it; once-S37 left the emit an open owner decision). This
-     * omission is disclosed, not silently dropped (once-S55 STOP row;
-     * see reviews/exec/once-S55.impl.md).
+     * MINOR version event requiring the owner's 1.7→1.8 emit window
+     * (plan "Shared resources"; the omission was DISCLOSED, never
+     * silently dropped — once-S55 STOP row, reviews/exec/once-S55.impl.md).
+     * The window opened (rulings row 3: three config-echo knobs +
+     * ml_status + scan-signal keys), and this commit ships the bump: all
+     * three now echo, together with `window_oversized` — the item-1.2
+     * extraction posture added in the same release, bound into the
+     * cache keys so the echo states what the run actually did.
      *
      * @return array<string, string>
      */
@@ -245,6 +287,11 @@ final class JsonSchemaSpec
             'similarity_threshold' => 'float  // Num::json-normalised',
             'tree_threshold'       => 'float  // Num::json-normalised',
             'min_cluster_impact'   => 'int',
+            // 1.8 trailing (the window once-S55 parked for):
+            'max_hole_coverage'    => 'float  // Num::json-normalised',
+            'score_mode'           => "string  // 'global' | 'per-repo' | 'typed'",
+            'scope'                => 'string',
+            'window_oversized'     => 'bool  // item 1.2 extraction posture',
         ];
     }
 

@@ -230,6 +230,15 @@ final class PreprocessStage implements CooperativeStageInterface
                     $blocks[] = $b;
                 } elseif ($row['type'] === 'skipped') {
                     $skippedFilesSet[$row['file']] = true;
+                } elseif ($row['type'] === 'oversized') {
+                    // Item 0.6 (oversized leg): one row per file that had
+                    // at least one fully-dropped oversized block (the
+                    // worker stages it inside the same buffer-and-discard
+                    // envelope as the block rows, so a poison file never
+                    // leaks a count). Scalar payload only — the count is
+                    // run-total; files stay identifiable through the row,
+                    // the CLI/JSON surface the honest aggregate.
+                    $state->oversizedBlocks += (int) ($row['dropped'] ?? 0);
                 }
                 $state->processedFiles = count($processedFilesSet);
                 $state->skippedFiles = count($skippedFilesSet);
@@ -395,6 +404,17 @@ final class PreprocessStage implements CooperativeStageInterface
             // same way the mode knobs above are bound. No PARSER_VERSION
             // bump: distinct key values namespace the stores byte-exactly.
             $config->allowedKinds,
+            // Item 1.2 (three-key law, index leg): window_oversized decides
+            // whether an oversized body contributes 'window' blocks to the
+            // store at all — two postures mint different block species
+            // from byte-identical files, exactly the misfeed the
+            // allowedKinds binding above refuses for the 1.3 folds. The
+            // worker's tooling key carries the same value (PreprocessWorker
+            // $toolFor). Key-namespace change only: no PARSER_VERSION bump
+            // (fingerprintIdMode precedent); consequence is a one-time
+            // invalidation of every existing .idx tree, disclosed in the
+            // lane report.
+            $config->windowOversized,
             // shell-027: --low-memory rewrites every stored n-gram bag
             // into CompactNgramBag's int-keyed 63-bit form (and folds the
             // canonical AST through the shared node pool). A low-memory
