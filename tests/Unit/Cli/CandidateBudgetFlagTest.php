@@ -289,22 +289,31 @@ final class CandidateBudgetFlagTest extends TestCase
         self::assertSame(123, $root->withOverrides([])->candidateBudget);
     }
 
-    public function testPerDirectoryCandidateBudgetReachesDerivedConfig(): void
+    public function testPerDirectoryCandidateBudgetIsRefusedLoudly(): void
     {
-        // End-to-end of the discover -> shapeOverrides -> withOverrides chain:
-        // a per-directory .phpdup.json candidate_budget must not be silently
-        // dropped from the derived per-file Config.
+        // once-S67 (php-dup-finder-once-077) FLIP (disclosed): this arm
+        // used to pin the discover -> shapeOverrides -> withOverrides
+        // TRIP for candidate_budget ("must not be silently dropped").
+        // That trip was the dishonesty: the derived per-file value was
+        // never READ — ClusterStage's budget comes from the ROOT config,
+        // so the per-dir key moved into fields no per-file reader
+        // consults. candidate_budget joined the refused roster: the loud
+        // refusal now replaces the silent-then-inert consumption, which
+        // serves the anti-silent-drop intent of the original m1 pin
+        // better than the proxy ever did.
         $dir = self::makeChainCorpus();
         mkdir($dir . '/sub', 0o777, true);
         file_put_contents($dir . '/sub/.phpdup.json', '{"candidate_budget": 5}');
 
-        $root = (new ConfigLoader())->load([$dir], null, []);
-        self::assertSame(5, $root->effectiveFor($dir . '/sub/f0.php')->candidateBudget, 'per-dir value consumed');
-        self::assertSame(
-            Clusterer::MAX_CANDIDATE_PAIRS,
-            $root->effectiveFor($dir . '/f0.php')->candidateBudget,
-            'files outside the sub-directory keep the root budget',
-        );
+        try {
+            (new ConfigLoader())->load([$dir], null, []);
+            self::fail('per-directory candidate_budget must be refused (once-S67)');
+        } catch (\RuntimeException $e) {
+            self::assertStringStartsWith(
+                'candidate_budget is not a per-directory key (root phpdup.json only): ',
+                $e->getMessage(),
+            );
+        }
     }
 
     private static function drainToClustering(Config $config): PipelineState

@@ -737,3 +737,59 @@ with the offending field path on the first violation.
 
 Unknown top-level keys and unknown nested keys under `optional_blocks`
 or `report` are rejected with a clear error.
+
+### What a per-directory `.phpdup.json` may carry — the admission truth table
+
+Discovery walks every scan root (pruned by the exclude layers above) and
+reads each `.phpdup.json` it meets. Admission is **total** (once-S67,
+php-dup-finder-once-077): of the 44 top-level keys above, **11 are
+honored per subtree and 33 are refused at load** — there is no third
+state of "admitted but inert". The third state used to be the file's own
+lie: the seven clustering/gate stances (`similarity_threshold`,
+`tree_threshold`, `min_cluster_impact`, `max_df`, `candidate_budget`,
+`sort`, `fail_on_impact`, `max_clusters`) and the five
+`optional_blocks.*` sub-knobs were read from subtree files, stored onto
+the derived per-file config, and never consulted — their readers
+(ClusterStage, ReportStage, the CI gates, AntiUnifier) receive the ROOT
+config, so the subtree tuning was decoration. The root-only plumbing and
+output keys vanished from subtree files in total silence. Both halves now
+have loud, honest names.
+
+**Honored per subtree** (a deeper file wins over a shallower one;
+`exclude` APPENDS down the chain and `exclude_reset: true` truncates the
+inherited layers for its subtree; every value rides the per-file worker
+tooling key and the subtree's `IndexStore` cache key, so editing a
+subtree file invalidates exactly that subtree's warm cache):
+
+| Key                                    | Effect inside the subtree's files                                                                                                          |
+|----------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------|
+| `exclude`, `exclude_reset`             | Scan-time pruning; patterns anchored **relative to the file's own directory** (once-S28).                                                   |
+| `min_block_size`, `max_block_size`     | Extraction size gates. Top-level `function`/`method`/`closure`/`arrow` blocks are min-exempt (engine-057), so the observable gate is on statement-kind blocks (`if`, `for`, `try`, …). |
+| `normalization_mode`                   | `strict` / `default` / `aggressive` fold depth for that subtree's ASTs.                                                                     |
+| `ngram_size`                           | Fingerprint bag width (2–10).                                                                                                               |
+| `kinds`                                | Which block kinds are extracted.                                                                                                            |
+| `db_aware`                             | Run the `DbOpCanonicalizer` semantic pre-pass for that subtree.                                                                              |
+| `trinity_collapse`                     | Fold canonical CRUD trinity sequences into `__DB_UPSERT__` synthetics for that subtree.                                                      |
+| `db_symbols`                           | Custom symbol buckets merge ON TOP of the root map for that subtree.                                                                         |
+| `low_memory`                           | Compact int-keyed bags + node-pool interning for that subtree.                                                                               |
+
+**Refused at load** — a subtree file carrying any of these fails the run
+with `"<key> is not a per-directory key (root phpdup.json only): <file>"`
+(exit 2, naming key and file). The 33-key roster in four families:
+
+| Family | Keys | Why root-only |
+|--------|------|---------------|
+| Fingerprint / pair / report stance | `fingerprint_id_mode`, `scope`, `score_mode`, `max_ted_size`, `max_hole_coverage`, `ted_weights`, `scorer`, `ir_threshold` | Pairs and clusters span directories; the stance is chosen once per run (a per-directory value would be ambiguous even if it were read). |
+| Write / ref / code / sidecar | `report`, `apply`, `normalization`, `baseline`, `baseline_out`, `diff_base`, `debug_log`, `ml_pair_allow_private`, `ml_pair_url`, `ml_pair_threshold` | They name files the run reads or WRITES, argv for git, plugin class loaders, or a network sidecar — the shell-S22 family posture: no scanned subtree may choose them (a planted `ml_pair_url` must fail loudly, once-S54; the old silent inertness was the once-076 exploit's vehicle). |
+| Run plumbing | `paths`, `cache_dir`, `parallelism`, `workers`, `incremental`, `lazy_ast` | One cache root and one worker pool per run; `paths` is fixed before discovery walks the trees; `lazy_ast` mints the reload machinery from the ROOT flag only, so a subtree `true` would unload ASTs the run could never reload. |
+| Whole-run clustering / gate stances (shed by once-S67) | `similarity_threshold`, `tree_threshold`, `min_cluster_impact`, `max_df`, `candidate_budget`, `sort`, `fail_on_impact`, `max_clusters`, `optional_blocks` | Every reader receives the root config — admission without observability was the dishonesty; refusal replaces it. |
+
+Two related truths ride the root layer only: at the root level a `paths`
+key STILL outranks the CLI scan roots (config-file-over-argv precedence),
+but the replacement is no longer silent — a run whose config file
+overrode the caller's roots prints a `phpdup: warning:` load note naming
+both sides. And `parallelism` / `optional_blocks.min_segment_length`
+remain documented-inert at the ROOT layer (once-078 wire-or-retire
+families) — inert-at-root is a wiring question for the owner ruling;
+inert-BUT-ADMITTED per-directory is the lie this table forbids.
+

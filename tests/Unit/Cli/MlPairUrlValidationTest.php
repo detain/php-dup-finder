@@ -340,10 +340,15 @@ final class MlPairUrlValidationTest extends TestCase
     }
 
     /**
-     * The once-076 exploit itself: a planted per-directory URL whose
-     * validation used to fire a blocking resolver walk now passes
-     * admission with zero DNS — and is still dropped from the shaped
-     * overrides (ml_pair_url is not a per-directory consumer key).
+     * The once-076 exploit itself: a planted per-directory URL must never
+     * fire a blocking resolver walk. once-S67 (php-dup-finder-once-077,
+     * disclosed flip): the exploit's vehicle was silent inertness (the key
+     * passed validation shape-only, then vanished from the shaped
+     * overrides); the roadmap ruling for the ML sidecar pair is the S54
+     * "make it loud" posture, so a per-directory ml_pair_url is now
+     * REFUSED at discovery — before the shaped config ever exists, and
+     * still with zero DNS (validate's admission check is shape-only; the
+     * refusal arm runs right after it).
      */
     public function testPerDirectoryUrlNoLongerTriggersAdmissionDns(): void
     {
@@ -354,10 +359,17 @@ final class MlPairUrlValidationTest extends TestCase
                 'ml_pair_url' => 'http://exfil-s54.invalid.evil/',
             ]));
             $start = microtime(true);
-            $config = (new ConfigLoader())->load(paths: [$tmp], configFile: null);
-            self::assertSame('', $config->mlPairUrl, 'per-directory ml_pair_url stays inert');
+            try {
+                (new ConfigLoader())->load(paths: [$tmp], configFile: null);
+                self::fail('per-directory ml_pair_url must be refused loudly (once-S67)');
+            } catch (\RuntimeException $e) {
+                self::assertStringStartsWith(
+                    'ml_pair_url is not a per-directory key (root phpdup.json only): ',
+                    $e->getMessage(),
+                );
+            }
             // A resolver walk of a live top-level .evil TLD could never
-            // be this fast; admission resolved nothing. Generous bound,
+            // be this fast; the refusal resolved nothing. Generous bound,
             // still orders of magnitude below a hanging resolver.
             self::assertLessThan(2.0, microtime(true) - $start);
         } finally {

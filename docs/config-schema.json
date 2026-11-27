@@ -10,7 +10,7 @@
             "type": "array",
             "minItems": 1,
             "items": { "type": "string", "minLength": 1 },
-            "description": "Source roots to scan. When this key is absent, the scan roots must come from the CLI args. An explicit empty list is refused at load (exit 2, \"paths must not be empty\") — the loader never falls through to argv for a present-but-empty paths key, hence minItems:1."
+            "description": "Source roots to scan. When this key is absent, the scan roots must come from the CLI args. An explicit empty list is refused at load (exit 2, \"paths must not be empty\") — the loader never falls through to argv for a present-but-empty paths key, hence minItems:1. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (the scan roots are fixed before discovery walks the tree; at the root layer the key still replaces the CLI arguments when both are present, and that replacement is now surfaced as a phpdup: warning: load note — the silent clobber it used to be was the once-077 complaint) (once-S67, php-dup-finder-once-077: admitted-but-inert keys are a lie the loader no longer tells)."
         },
         "exclude": {
             "type": "array",
@@ -26,31 +26,31 @@
             "type": "integer",
             "minimum": 1,
             "default": 8,
-            "description": "Minimum AST node count for a block to be considered. Must be <= max_block_size; the cross-field check is enforced at load time."
+            "description": "Minimum AST node count for a block to be considered. Must be <= max_block_size; the cross-field check is enforced at load time. Also honored per-subtree (a .phpdup.json gates extraction for its subtree — top-level blocks stay exempt, engine-057)."
         },
         "max_block_size": {
             "type": "integer",
             "minimum": 1,
             "default": 800,
-            "description": "Maximum AST node count for a block. Must be >= min_block_size. Blocks above this are dropped before fingerprinting."
+            "description": "Maximum AST node count for a block. Must be >= min_block_size. Blocks above this are dropped before fingerprinting. Also honored per-subtree via a per-directory .phpdup.json."
         },
         "normalization_mode": {
             "type": "string",
             "enum": ["strict", "default", "aggressive"],
             "default": "aggressive",
-            "description": "strict = variable-rename tolerant only. default = also collapse literal values. aggressive = also collapse method, property, and class names."
+            "description": "strict = variable-rename tolerant only. default = also collapse literal values. aggressive = also collapse method, property, and class names. Also honored per-subtree via a per-directory .phpdup.json (the mode rides the worker tooling and IndexStore cache keys, so a subtree may normalize differently without poisoning the rest)."
         },
         "normalization": {
             "type": "object",
             "additionalProperties": false,
             "default": {},
-            "description": "Normalization post-pass plugins (root-config object; the only admitted sub-key is plugins — any other sub-key fails the load as an unknown config key).",
+            "description": "Normalization post-pass plugins (root-config object; the only admitted sub-key is plugins — any other sub-key fails the load as an unknown config key). ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (plugin lists ride the worker tooling and cache keys from the ROOT roster only) (once-S67, php-dup-finder-once-077: admitted-but-inert keys are a lie the loader no longer tells).",
             "properties": {
                 "plugins": {
                     "type": "array",
                     "default": [],
                     "items": { "type": "string", "minLength": 1 },
-                    "description": "Class names implementing Phpdup\\Normalization\\NormalizationPlugin, loaded by name and run by PluginRegistry as a post-pass inside the Normalizer (PreprocessWorker::toolFor() AND the per-file IndexStore cache key both fold this list in, so adding, removing or reordering a plugin invalidates the warm caches rather than replaying stale streams). An empty or absent list is the stock behavior. A per-directory .phpdup.json carrying this key is ignored — the key is not in the per-dir admit set; it is also absent from the CLI roster."
+                    "description": "Class names implementing Phpdup\\Normalization\\NormalizationPlugin, loaded by name and run by PluginRegistry as a post-pass inside the Normalizer (PreprocessWorker::toolFor() AND the per-file IndexStore cache key both fold this list in, so adding, removing or reordering a plugin invalidates the warm caches rather than replaying stale streams). An empty or absent list is the stock behavior. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying the normalization key fails the load (once-S67 flipped the old silent-ignore into a loud refusal — the roster above is root-only by construction); the key is also absent from the CLI roster."
                 }
             }
         },
@@ -59,40 +59,40 @@
             "minimum": 0.0,
             "maximum": 1.0,
             "default": 0.80,
-            "description": "Jaccard threshold for the near-duplicate clustering phase. Below this, the type-3 containment fallback may still apply when optional_blocks.enabled is true."
+            "description": "Jaccard threshold for the near-duplicate clustering phase. Below this, the type-3 containment fallback may still apply when optional_blocks.enabled is true. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (Jaccard scores whole clusters, which span directories; every reader receives the ROOT config, so the per-directory value was moved and never observed) (once-S67, php-dup-finder-once-077: admitted-but-inert keys are a lie the loader no longer tells)."
         },
         "tree_threshold": {
             "type": "number",
             "minimum": 0.0,
             "maximum": 1.0,
             "default": 0.85,
-            "description": "APTED tree-edit-distance similarity threshold applied to candidates that passed the Jaccard filter."
+            "description": "APTED tree-edit-distance similarity threshold applied to candidates that passed the Jaccard filter. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (a pair spans two directories — the same ambiguity law as max_ted_size) (once-S67, php-dup-finder-once-077: admitted-but-inert keys are a lie the loader no longer tells)."
         },
         "min_cluster_impact": {
             "type": "integer",
             "minimum": 0,
             "default": 20,
-            "description": "Minimum cluster impact (approximately the count of duplicated lines) required for a cluster to appear in the report. Quiets output without changing clustering."
+            "description": "Minimum cluster impact (approximately the count of duplicated lines) required for a cluster to appear in the report. Quiets output without changing clustering. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (the impact floor measures whole clusters, which span directories) (once-S67, php-dup-finder-once-077: admitted-but-inert keys are a lie the loader no longer tells)."
         },
         "max_df": {
             "type": "number",
             "minimum": 0.0,
             "maximum": 1.0,
             "default": 0.01,
-            "description": "Maximum document-frequency for an n-gram before it is treated as boilerplate and dropped from candidate-pair generation. 0.01 suits real codebases; bump to ~0.5 for tiny fixtures where every n-gram is 'common' by ratio."
+            "description": "Maximum document-frequency for an n-gram before it is treated as boilerplate and dropped from candidate-pair generation. 0.01 suits real codebases; bump to ~0.5 for tiny fixtures where every n-gram is 'common' by ratio. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (the boilerplate floor prunes the shared candidate index once per run) (once-S67, php-dup-finder-once-077: admitted-but-inert keys are a lie the loader no longer tells)."
         },
         "candidate_budget": {
             "type": "integer",
             "minimum": 0,
             "default": 60000000,
-            "description": "Safety cap on candidate pairs emitted during clustering. A pathological clone family halts loudly instead of exhausting memory. 0 = unlimited (opts out of the guard). Default 60,000,000; CLI: --candidate-budget."
+            "description": "Safety cap on candidate pairs emitted during clustering. A pathological clone family halts loudly instead of exhausting memory. 0 = unlimited (opts out of the guard). Default 60,000,000; CLI: --candidate-budget. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (the memory guard protects the one clustering pass; it reads the root config) (once-S67, php-dup-finder-once-077: admitted-but-inert keys are a lie the loader no longer tells)."
         },
         "ngram_size": {
             "type": "integer",
             "minimum": 2,
             "maximum": 10,
             "default": 5,
-            "description": "Token-level n-gram length used for fingerprinting and Jaccard similarity."
+            "description": "Token-level n-gram length used for fingerprinting and Jaccard similarity. Also honored per-subtree: a .phpdup.json carrying it changes the bag for that subtree (the value rides the worker tooling and IndexStore cache keys)."
         },
         "fingerprint_id_mode": {
             "type": "string",
@@ -110,7 +110,7 @@
             "type": "string",
             "enum": ["default", "semantic"],
             "default": "default",
-            "description": "Edit-cost model for the APTED tree-edit-distance tier (Phpdup\\Similarity\\EditCostModel). 'default' = uniform cost 1.0 per node insert/delete/substitute — the model every historical similarity, cache and golden byte was produced with. 'semantic' = a node-kind weight table (method calls and control flow cost more than literals), honored identically by the serial Clusterer and the parallel PairScoreWorker — one admission feeds both scorers. Admitted as a plain enum at validate() time: an unknown value exits 2 (\"ted_weights must be one of default|semantic\"). Not in the per-directory admit set: a subtree .phpdup.json carrying it is ignored (pair-scoring stance is chosen once per run). The value rides the cluster-cache config key, so switching models replays as a cache MISS rather than mixing cost models inside one cache. CLI: --ted-weights."
+            "description": "Edit-cost model for the APTED tree-edit-distance tier (Phpdup\\Similarity\\EditCostModel). 'default' = uniform cost 1.0 per node insert/delete/substitute — the model every historical similarity, cache and golden byte was produced with. 'semantic' = a node-kind weight table (method calls and control flow cost more than literals), honored identically by the serial Clusterer and the parallel PairScoreWorker — one admission feeds both scorers. Admitted as a plain enum at validate() time: an unknown value exits 2 (\"ted_weights must be one of default|semantic\"). ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (once-S67: the loud refusal replaces the old silent ignore — pair-scoring stance is chosen once per run). The value rides the cluster-cache config key, so switching models replays as a cache MISS rather than mixing cost models inside one cache. CLI: --ted-weights."
         },
         "max_hole_coverage": {
             "type": "number",
@@ -122,29 +122,29 @@
         "cache_dir": {
             "type": "string",
             "default": ".phpdup-cache",
-            "description": "Directory used for the AST cache and per-file index snapshots. The default is RELATIVE, so a normal run stores blobs inside the scanned tree; when that is the case phpdup refuses to read the cache unless you pass the CLI-only --trust-in-root-cache flag (engine-006: a committed cache in a cloned repo could be a planted decoy). Point cache_dir outside the tree (e.g. a shared temp dir) to keep reads trusted without the flag. CLI: --trust-in-root-cache (no config-file key; there is no 'trust_in_root_cache' setting here by design — the opt-in must be explicit per invocation)."
+            "description": "Directory used for the AST cache and per-file index snapshots. The default is RELATIVE, so a normal run stores blobs inside the scanned tree; when that is the case phpdup refuses to read the cache unless you pass the CLI-only --trust-in-root-cache flag (engine-006: a committed cache in a cloned repo could be a planted decoy). Point cache_dir outside the tree (e.g. a shared temp dir) to keep reads trusted without the flag. CLI: --trust-in-root-cache (no config-file key; there is no 'trust_in_root_cache' setting here by design — the opt-in must be explicit per invocation). ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (one cache root per run; a subtree choosing it is inert (its reader receives the root config)) (once-S67, php-dup-finder-once-077: admitted-but-inert keys are a lie the loader no longer tells)."
         },
         "parallelism": {
             "type": "string",
             "enum": ["auto", "off", "manual"],
             "default": "auto",
-            "description": "Declared posture for parallel stages: one of auto, off, manual. ADMITTED, ENUM-VALIDATED AND CARRIED THROUGH THE CONFIG LAYERS — BUT NOT READ BY ANY RUNTIME DECISION TODAY: the effective controls are `workers` (0 = auto-detect, 1 = serial) and pcntl availability in WorkerPool. Setting this key changes nothing observable; it rides the withOverrides layer only (php-dup-finder-once-078 doc-truth wave, 2026-11: documented inert until a wire-or-retire ruling lands, the sibling story of optional_blocks.min_segment_length)."
+            "description": "Declared posture for parallel stages: one of auto, off, manual. ADMITTED, ENUM-VALIDATED AND CARRIED THROUGH THE CONFIG LAYERS — BUT NOT READ BY ANY RUNTIME DECISION TODAY: the effective controls are `workers` (0 = auto-detect, 1 = serial) and pcntl availability in WorkerPool. Setting this key changes nothing observable; it rides the withOverrides layer only (php-dup-finder-once-078 doc-truth wave, 2026-11: documented inert until a wire-or-retire ruling lands, the sibling story of optional_blocks.min_segment_length). ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (pool posture is chosen once per run) (once-S67, php-dup-finder-once-077: admitted-but-inert keys are a lie the loader no longer tells)."
         },
         "workers": {
             "type": "integer",
             "minimum": 0,
             "default": 0,
-            "description": "Worker count for parallel preprocess + pair scoring. 0 = auto-detect from nproc / /proc/cpuinfo. 1 = serial. Higher is explicit. Values above the pool ceiling (4 x detected CPUs, WorkerPool::workersCeiling()) are admitted, NOT rejected: the run exits 0 with a `phpdup: warning:` load note and WorkerPool::clampWorkers bounds every actual fork set at the ceiling (shell-S10, shell-038 — the fork-storm fix chose clamp-and-warn over validation because an oversized count is a stance, not a shape error). CLI: -j/--workers."
+            "description": "Worker count for parallel preprocess + pair scoring. 0 = auto-detect from nproc / /proc/cpuinfo. 1 = serial. Higher is explicit. Values above the pool ceiling (4 x detected CPUs, WorkerPool::workersCeiling()) are admitted, NOT rejected: the run exits 0 with a `phpdup: warning:` load note and WorkerPool::clampWorkers bounds every actual fork set at the ceiling (shell-S10, shell-038 — the fork-storm fix chose clamp-and-warn over validation because an oversized count is a stance, not a shape error). CLI: -j/--workers. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (the pool is minted from the root config once per run) (once-S67, php-dup-finder-once-077: admitted-but-inert keys are a lie the loader no longer tells)."
         },
         "incremental": {
             "type": "boolean",
             "default": true,
-            "description": "Reuse per-file block snapshots from the IndexStore when the source hash, parser version, and config key all match. Disable for benchmarks or paranoid runs."
+            "description": "Reuse per-file block snapshots from the IndexStore when the source hash, parser version, and config key all match. Disable for benchmarks or paranoid runs. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (the reuse policy is the run's cache posture, read from the root config) (once-S67, php-dup-finder-once-077: admitted-but-inert keys are a lie the loader no longer tells)."
         },
         "lazy_ast": {
             "type": "boolean",
             "default": true,
-            "description": "Drop each block's original AST after fingerprinting; reload on demand inside the anti-unifier via BlockAstLoader. Disable for max speed when RAM is plentiful."
+            "description": "Drop each block's original AST after fingerprinting; reload on demand inside the anti-unifier via BlockAstLoader. Disable for max speed when RAM is plentiful. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (the AST loader is minted from the ROOT flag alone (RefactorStage), so a per-directory true would unload ASTs the run could never reload) (once-S67, php-dup-finder-once-077: admitted-but-inert keys are a lie the loader no longer tells)."
         },
         "kinds": {
             "type": "array",
@@ -156,13 +156,13 @@
                     "try", "switch", "match", "script"
                 ]
             },
-            "description": "Block kinds to extract. Empty list (or omitted) means accept all twelve traversable kinds — the item-1.3 'script' kind (folds of top-level statements: requires, guards, bootstrap runs outside any function) is NEVER part of the implicit set and must be named explicitly. Script clusters are detection-only in v1: --apply and --refactor-patch refuse them (typed exit 1); text rendering (--patch/--diff) stays allowed. Equivalent to --kinds on the CLI."
+            "description": "Block kinds to extract. Empty list (or omitted) means accept all twelve traversable kinds — the item-1.3 'script' kind (folds of top-level statements: requires, guards, bootstrap runs outside any function) is NEVER part of the implicit set and must be named explicitly. Script clusters are detection-only in v1: --apply and --refactor-patch refuse them (typed exit 1); text rendering (--patch/--diff) stays allowed. Equivalent to --kinds on the CLI. Also honored per-subtree: a .phpdup.json restricting kinds gates that subtree's extraction."
         },
         "sort": {
             "type": "string",
             "default": "impact:desc",
             "pattern": "^[+-]?(impact|members|size|count|block-size|block_size|lines|similarity|confidence|name|file|id)(:(asc|desc|ascending|descending|\\+|\\-))?$",
-            "description": "Cluster sort spec — KEY[:DIRECTION]. Keys: impact, members, block-size, lines, similarity, confidence, name, file, id. Aliases: size/count → members; block_size → block-size. Direction defaults to desc; a leading '-' forces desc, '+' forces asc. Equivalent to --sort on the CLI."
+            "description": "Cluster sort spec — KEY[:DIRECTION]. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (ordering is a stance about the one final report; the old per-directory admission was inert (reader: ReportStage, root config only)) (once-S67, php-dup-finder-once-077: admitted-but-inert keys are a lie the loader no longer tells). Keys: impact, members, block-size, lines, similarity, confidence, name, file, id. Aliases: size/count → members; block_size → block-size. Direction defaults to desc; a leading '-' forces desc, '+' forces asc. Equivalent to --sort on the CLI."
         },
         "scope": {
             "type": "string",
@@ -178,7 +178,7 @@
         "optional_blocks": {
             "type": "object",
             "additionalProperties": false,
-            "description": "Tunables for type-3 / 'optional segment' clone detection — clusters where some members include extra statements not present in others, rendered as default-false bool $include* parameters in the suggested abstraction.",
+            "description": "Tunables for type-3 / 'optional segment' clone detection — clusters where some members include extra statements not present in others, rendered as default-false bool $include* parameters in the suggested abstraction. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (every sub-knob steers pair/cluster machinery that reads the root config — the old admission carried all five flat values into per-file configs no reader consulted) (once-S67, php-dup-finder-once-077: admitted-but-inert keys are a lie the loader no longer tells).",
             "properties": {
                 "enabled": {
                     "type": "boolean",
@@ -216,7 +216,7 @@
         "report": {
             "type": "object",
             "additionalProperties": false,
-            "description": "File-output destinations. Equivalent to --html / --json on the CLI; the SARIF, GitLab SAST, diff, patch, and Checkstyle outputs are CLI-only.",
+            "description": "File-output destinations. Equivalent to --html / --json on the CLI; the SARIF, GitLab SAST, diff, patch, and Checkstyle outputs are CLI-only. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (it names files the run WRITES, so no scanned subtree may choose them (shell-S22 write/ref family posture)) (once-S67, php-dup-finder-once-077: admitted-but-inert keys are a lie the loader no longer tells).",
             "properties": {
                 "html": {
                     "type": "string",
@@ -231,37 +231,37 @@
         "db_aware": {
             "type": "boolean",
             "default": false,
-            "description": "ORM-/DB-aware semantic deduplication. When true, the Normalizer runs DbOpCanonicalizer as a pre-pass: recognised database calls across Eloquent, Doctrine, query builders, PDO, mysqli, pg_*, and raw SQL strings rewrite to canonical __DB_<OP>__(\"table\") tokens so equivalent ORM and raw-SQL variants of the same operation cluster together. Two honesty guards ride on it: the generic verbs get/all/save fold only when the receiver chain carries DB evidence (builder table-literal seed, a recognised DB receiver/class name, or an informative user mapping), and SQL-promoted synthetics retain a coarse payload signature — the sorted column set as a structural __DB_COLS_<set> name argument — so same table+verb payloads touching different columns cluster as near-duplicates instead of exact clones. Off by default — enabling it broadens clustering but raises the false-positive ceiling, so it's an explicit opt-in. CLI: --db-aware."
+            "description": "ORM-/DB-aware semantic deduplication. When true, the Normalizer runs DbOpCanonicalizer as a pre-pass: recognised database calls across Eloquent, Doctrine, query builders, PDO, mysqli, pg_*, and raw SQL strings rewrite to canonical __DB_<OP>__(\"table\") tokens so equivalent ORM and raw-SQL variants of the same operation cluster together. Two honesty guards ride on it: the generic verbs get/all/save fold only when the receiver chain carries DB evidence (builder table-literal seed, a recognised DB receiver/class name, or an informative user mapping), and SQL-promoted synthetics retain a coarse payload signature — the sorted column set as a structural __DB_COLS_<set> name argument — so same table+verb payloads touching different columns cluster as near-duplicates instead of exact clones. Off by default — enabling it broadens clustering but raises the false-positive ceiling, so it's an explicit opt-in. CLI: --db-aware. Also honored per-subtree: a .phpdup.json carrying true runs the canonical pre-pass for that subtree (once-S67 admit; the value was already a worker-tooling and IndexStore cache-key input, so per-subtree use is cache-safe by construction)."
         },
         "trinity_collapse": {
             "type": "boolean",
             "default": false,
-            "description": "Trinity-collapse: when true, the Normalizer runs TrinityCollapser as a pre-pass that detects the canonical CRUD trinity (read → mutate → save) and rewrites the three-statement sequence as a single __DB_UPSERT__(\"entity\") synthetic call. Composes with db_aware. Off by default. CLI: --trinity-collapse."
+            "description": "Trinity-collapse: when true, the Normalizer runs TrinityCollapser as a pre-pass that detects the canonical CRUD trinity (read → mutate → save) and rewrites the three-statement sequence as a single __DB_UPSERT__(\"entity\") synthetic call. Composes with db_aware. Off by default. CLI: --trinity-collapse. Also honored per-subtree (once-S67 admit — same cache-key safety as db_aware)."
         },
         "scorer": {
             "type": "string",
             "enum": ["default", "ir"],
             "default": "default",
-            "description": "Scoring tier set. 'default' = stock AST-tier scoring (Jaccard + TED + containment). 'ir' = also enable the IR-tier fallback after AST tiers reject: lift both blocks to canonical IR (Phpdup\\Ir\\IrLifter) and Jaccard their token bags. Pairs at or above ir_threshold form edges. CLI: --scorer."
+            "description": "Scoring tier set. 'default' = stock AST-tier scoring (Jaccard + TED + containment). 'ir' = also enable the IR-tier fallback after AST tiers reject: lift both blocks to canonical IR (Phpdup\\Ir\\IrLifter) and Jaccard their token bags. Pairs at or above ir_threshold form edges. CLI: --scorer. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (the tier ladder is a pair-level stance chosen once per run; the per-directory admission was inert) (once-S67, php-dup-finder-once-077: admitted-but-inert keys are a lie the loader no longer tells)."
         },
         "ir_threshold": {
             "type": "number",
             "minimum": 0.0,
             "maximum": 1.0,
             "default": 0.85,
-            "description": "Multiset-Jaccard threshold for the IR tier. Only consulted when scorer=ir. CLI: --ir-threshold."
+            "description": "Multiset-Jaccard threshold for the IR tier. Only consulted when scorer=ir. CLI: --ir-threshold. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (pair-level stance, root reader) (once-S67, php-dup-finder-once-077: admitted-but-inert keys are a lie the loader no longer tells)."
         },
         "ml_pair_url": {
             "type": "string",
             "default": "",
-            "description": "External pair-similarity ML sidecar URL. Empty (the default) disables the tier. When set, the very last clustering tier — POSTs a PairFeatures vector to <URL>/score-pair; pairs at or above ml_pair_threshold form edges. http(s) only; SSRF-hardened at admission by SHAPE ONLY — no resolver call happens while the config is validated: canonical IP literals are bit-checked against the refused space (0.0.0.0/8, loopback, RFC 1918, CGNAT, link-local, 192.0.0.0/24, 198.18.0.0/15, multicast/reserved, IPv6 loopback/ULA/link-local/multicast, IPv4-mapped and IPv4-compatible forms, and the NAT64 64:ff9b::/96 well-known prefix's embedded IPv4), file:// / gopher:// and inet_aton numeric shorthands refuse, localhost refuses by name; bare hostnames are grammar-checked and resolved ONCE at dial time, fail-closed there. Returns null on transport failure so unavailability never breaks the run. CLI: --ml-pair-url."
+            "description": "External pair-similarity ML sidecar URL. Empty (the default) disables the tier. When set, the very last clustering tier — POSTs a PairFeatures vector to <URL>/score-pair; pairs at or above ml_pair_threshold form edges. http(s) only; SSRF-hardened at admission by SHAPE ONLY — no resolver call happens while the config is validated: canonical IP literals are bit-checked against the refused space (0.0.0.0/8, loopback, RFC 1918, CGNAT, link-local, 192.0.0.0/24, 198.18.0.0/15, multicast/reserved, IPv6 loopback/ULA/link-local/multicast, IPv4-mapped and IPv4-compatible forms, and the NAT64 64:ff9b::/96 well-known prefix's embedded IPv4), file:// / gopher:// and inet_aton numeric shorthands refuse, localhost refuses by name; bare hostnames are grammar-checked and resolved ONCE at dial time, fail-closed there. Returns null on transport failure so unavailability never breaks the run. CLI: --ml-pair-url. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (a sidecar endpoint is a run posture and must never be plantable by a scanned tree (once-S54 make-it-loud, closing the once-076 silent-inert path)) (once-S67, php-dup-finder-once-077: admitted-but-inert keys are a lie the loader no longer tells)."
         },
         "ml_pair_threshold": {
             "type": "number",
             "minimum": 0.0,
             "maximum": 1.0,
             "default": 0.80,
-            "description": "Similarity threshold for the ML pair tier. Only consulted when ml_pair_url is set. CLI: --ml-pair-threshold."
+            "description": "Similarity threshold for the ML pair tier. Only consulted when ml_pair_url is set. CLI: --ml-pair-threshold. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (sibling of the URL leg: pair-tier stance, never plantable per-subtree) (once-S67, php-dup-finder-once-077: admitted-but-inert keys are a lie the loader no longer tells)."
         },
         "debug_log": {
             "type": "string",
@@ -277,7 +277,7 @@
         "db_symbols": {
             "type": "object",
             "additionalProperties": false,
-            "description": "User-extensible DB symbol equivalence registry. Custom method/function name → canonical-op mappings merged on top of the stock DbOpRegistry entries. Keys are matched case-insensitively (both stored keys and looked-up call names are lower-cased), so the lower-case convention and camelCase pack keys both work; values are one of db.read | db.write | db.delete | db.execute | db.query. Profiles ship symbol packs (db-aware-laravel, db-aware-doctrine, db-aware-cake) that can be loaded via --profile.",
+            "description": "User-extensible DB symbol equivalence registry. Custom method/function name → canonical-op mappings merged on top of the stock DbOpRegistry entries. Also honored per-subtree: a .phpdup.json's buckets APPEND to the root map for that subtree (once-S67). Keys are matched case-insensitively (both stored keys and looked-up call names are lower-cased), so the lower-case convention and camelCase pack keys both work; values are one of db.read | db.write | db.delete | db.execute | db.query. Profiles ship symbol packs (db-aware-laravel, db-aware-doctrine, db-aware-cake) that can be loaded via --profile.",
             "properties": {
                 "methods": {
                     "type": "object",
@@ -300,19 +300,19 @@
         "low_memory": {
             "type": "boolean",
             "default": false,
-            "description": "Reduce memory footprint: use CompactNgramBag — bags keyed by a masked-positive 63-bit int derived from the xxh64 hex digest as (hi&0x7FFFFFFF)<<32|lo, not a 32-bit fingerprint (the old phrasing; engine-S18b era truth) — plus CanonicalNodePool interning. Off by default; hex bags remain the default species (the flip is gated by FingerprintModeAcceptanceTest). CLI: --low-memory."
+            "description": "Reduce memory footprint: use CompactNgramBag — bags keyed by a masked-positive 63-bit int derived from the xxh64 hex digest as (hi&0x7FFFFFFF)<<32|lo, not a 32-bit fingerprint (the old phrasing; engine-S18b era truth) — plus CanonicalNodePool interning. Off by default; hex bags remain the default species (the flip is gated by FingerprintModeAcceptanceTest). CLI: --low-memory. Also honored per-subtree: a .phpdup.json carrying true swaps that subtree's bags to the compact form (the flag rides the worker tooling key)."
         },
         "fail_on_impact": {
             "type": "integer",
             "minimum": 0,
             "default": 0,
-            "description": "CI gate: exit code 3 when total cluster impact exceeds this value. 0 = disabled. CLI: --fail-on-impact."
+            "description": "CI gate: exit code 3 when total cluster impact exceeds this value. 0 = disabled. CLI: --fail-on-impact. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (it gates the one final report; the old per-directory admission was inert) (once-S67, php-dup-finder-once-077: admitted-but-inert keys are a lie the loader no longer tells)."
         },
         "max_clusters": {
             "type": "integer",
             "minimum": 0,
             "default": 0,
-            "description": "CI gate: exit code 3 when cluster count exceeds this value. 0 = disabled. CLI: --max-clusters."
+            "description": "CI gate: exit code 3 when cluster count exceeds this value. 0 = disabled. CLI: --max-clusters. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (it gates the one final report) (once-S67, php-dup-finder-once-077: admitted-but-inert keys are a lie the loader no longer tells)."
         },
         "baseline": {
             "type": "string",
@@ -332,7 +332,7 @@
         "apply": {
             "type": "boolean",
             "default": false,
-            "description": "Enable the report pipeline's apply mode: a cumulative apply.diff of every cluster refactor patch is written under refactored/ (dry-run posture — the preview apply.diff carries the same text --patch emits; real file rewrites happen with --dry-run=false). Effective value is flag OR config file: --apply turns it on from argv, \"apply\": true in the root config activates the same mode with no flag, and the flag wins a disagreement (it arrives as a CLI override, which outranks the file layer). Shape-checked like every other key — a non-boolean value exits 2 from --validate-config and from a run. A per-directory .phpdup.json carrying this key is ignored — the key is not in the per-dir admit set. CLI: --apply."
+            "description": "Enable the report pipeline's apply mode: a cumulative apply.diff of every cluster refactor patch is written under refactored/ (dry-run posture — the preview apply.diff carries the same text --patch emits; real file rewrites happen with --dry-run=false). Effective value is flag OR config file: --apply turns it on from argv, \"apply\": true in the root config activates the same mode with no flag, and the flag wins a disagreement (it arrives as a CLI override, which outranks the file layer). Shape-checked like every other key — a non-boolean value exits 2 from --validate-config and from a run. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (once-S67: the loud refusal replaces the old silent ignore — apply arms real source rewrites, so no scanned subtree may choose it; sibling of the shell-S22 write/ref family). CLI: --apply."
         }
     }
 }

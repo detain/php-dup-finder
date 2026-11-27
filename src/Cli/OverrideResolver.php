@@ -20,10 +20,20 @@ final class OverrideResolver
      * @param list<string> $keys The canonical snake_case config keys that
      *                           this resolver will resolve through the
      *                           overrides → data → base chain.  Keys not in
-     *                           this list are silently ignored (they are
-     *                           handled via separate fallback logic in
-     *                           ConfigLoader, e.g. allowed_kinds, optional_blocks,
-     *                           db_aware, etc.).
+     *                           this list are NOT ignored: ConfigLoader
+     *                           consumes them through dedicated legs —
+     *                           resolved by hand next to load() (allowed_kinds,
+     *                           fingerprint_id_mode, the exclude/exclude_reset
+     *                           merge), hoisted from nested objects (the
+     *                           optional_blocks_* flat keys ride this roster
+     *                           via that hoist), or admitted exclusively to
+     *                           the per-directory layer (db_aware,
+     *                           trinity_collapse, db_symbols_*, low_memory,
+     *                           once-S67). Everything a subtree file may
+     *                           carry flows through shapeOverrides(); the
+     *                           rest of the KNOWN_KEYS set is refused at
+     *                           discovery. Truth-touch per the admission-
+     *                           totality item (php-dup-finder-once-077).
      */
     public function __construct(
         private readonly array $keys,

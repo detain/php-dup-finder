@@ -228,6 +228,27 @@ final class ConfigLoader
         }
 
         $resolvedPaths = !empty($data['paths']) ? $data['paths'] : $base->paths;
+        // once-S67 (php-dup-finder-once-077): the replacement above is
+        // legitimate precedence — a config file standing in for argv (the
+        // no-arguments `phpdup analyze` posture) — but when BOTH name scan
+        // roots it used to happen in total silence: operators watched phpdup
+        // somewhere other than the directory they passed, and the CLI help
+        // called the CLI paths authoritative. A present root paths key is
+        // always a non-empty list (validate() refuses paths:[] and non-lists
+        // before this line), so any difference means the file overrode the
+        // caller: surface it on the load-note channel (the same voice as the
+        // shell-S10 workers clamp and the scan-skip notes). No note when the
+        // values agree, and no note when argv[1] was itself read from the
+        // file (Config::defaults would then carry the file's own paths).
+        if ($base->paths !== [] && $resolvedPaths !== $base->paths) {
+            $this->addLoadNote(sprintf(
+                'config file %s replaces the scan roots (%s) with its own paths (%s)',
+                $configFile ?? 'phpdup.json',
+                implode(', ', $base->paths),
+                implode(', ', $resolvedPaths)
+            ));
+        }
+
         // Item 5.2 — exclude resolution is APPEND, never wipe: profile,
         // config-file and programmatic (CLI-dict) lists stack on top of the
         // stock defaults, in precedence order, deduped. `"exclude_reset":
@@ -757,6 +778,47 @@ final class ConfigLoader
                         }
                     }
 
+                    // once-S67 (php-dup-finder-once-077): the ADMISSION
+                    // TOTALITY roster. A subtree config may only carry keys
+                    // the per-file Config copy truly honors — the middle
+                    // state this item closes was keys admitted by the old
+                    // shapeOverrides() loop, counted as "consumed" by the
+                    // belt's property-move proxy, and then never observed by
+                    // any per-file reader (the root-only readers receive the
+                    // ROOT config). The 23 keys below are every remaining
+                    // KNOWN_KEYS member: the 14 whose sole readers consume
+                    // the root Config (paths, cache_dir, parallelism,
+                    // workers, incremental, lazy_ast, ted_weights, report,
+                    // normalization, scorer, ir_threshold, ml_pair_url,
+                    // ml_pair_threshold, apply — a subtree value used to
+                    // vanish in silence; ml_pair_url additionally must
+                    // never be planted by a scanned tree, the once-S54
+                    // make-it-loud sidecar law, sibling of the S22 write/
+                    // ref/code family the report/normalization/apply keys
+                    // join here), the 8 whole-run stances that are inert
+                    // per-subtree because clusters, reports and gates span
+                    // the entire run (similarity_threshold, tree_threshold,
+                    // min_cluster_impact, max_df, fail_on_impact,
+                    // max_clusters, candidate_budget, sort — every score
+                    // and tier in the report would carry only one
+                    // directory's stance, chosen ambiguously), and the
+                    // optional_blocks parent (all five sub-knobs have
+                    // root-only readers). lazy_ast specifically: Refactor-
+                    // Stage mints the AST loader from the ROOT flag alone,
+                    // so a per-directory true would unload ASTs the run
+                    // then could never reload. Same loud posture, same
+                    // message voice as the stance and path/ref families
+                    // above; the belt test pins the roster AND the set
+                    // equation KNOWN_KEYS = admitted ∪ refused.
+                    foreach (self::REFUSED_PER_DIRECTORY as $refuseKey) {
+                        if (array_key_exists($refuseKey, $payload)) {
+                            throw new \RuntimeException(
+                                $refuseKey . ' is not a per-directory key (root phpdup.json only): '
+                                . $file->getPathname()
+                            );
+                        }
+                    }
+
                     $dir = realpath($file->getPath());
                     if ($dir === false) {
                         continue;
@@ -859,12 +921,23 @@ final class ConfigLoader
      * to the flat override-dict shape that {@see Config::withOverrides()} accepts
      * (e.g. `optional_blocks_containment => 0.9`).
      *
-     * The loop below IS the per-directory admit list. Keys that steer writes
-     * or external references (baseline, baseline_out, diff_base, debug_log)
-     * were removed from it by shell-S22 (shell-026): they are root-config
-     * knobs, discovery refuses them in any `.phpdup.json`, and a per-file
-     * derived Config therefore never copies them. The belt guard
-     * (tests/Unit/Cli/PerDirOverrideBeltTest.php) pins the emitted set here.
+     * The loop below IS the per-directory admit list — and after once-S67
+     * (php-dup-finder-once-077) it is an HONEST one: every key it emits is a
+     * key Config::effectiveFor() truly applies per subtree, because each one
+     * reaches a reader that consumes the per-file copy (PreprocessWorker's
+     * tooling, BlockAstLoader, or FileScanner's exclude overlay). The emit
+     * set used to carry twelve further keys — the cluster stances (
+     * similarity_threshold, tree_threshold, min_cluster_impact, max_df,
+     * candidate_budget), the report/gate stances (sort, fail_on_impact,
+     * max_clusters) and all five optional_blocks_* sub-keys — whose ONLY
+     * readers receive the ROOT config, so a subtree value was moved into the
+     * map, counted as "consumed" by the belt's property-move proxy, and then
+     * vanished. Those keys are refused in discovery now, alongside the keys
+     * that steer writes or external references (baseline, baseline_out,
+     * diff_base, debug_log — removed by shell-S22, shell-026) and the stance
+     * family. The belt guard (tests/Unit/Cli/PerDirOverrideBeltTest.php)
+     * pins the emitted set here AND the admission totality: every KNOWN_KEYS
+     * member is either emitted-and-live or refused, never silently dropped.
      *
      * @param array<string,mixed> $data
      * @return array<string,mixed>
@@ -873,10 +946,7 @@ final class ConfigLoader
     {
         $out = [];
         foreach (['min_block_size', 'max_block_size', 'normalization_mode',
-                  'similarity_threshold', 'tree_threshold', 'min_cluster_impact',
-                  'max_df', 'ngram_size', 'sort',
-                  'fail_on_impact', 'max_clusters', 'candidate_budget',
-                  'exclude', 'exclude_reset'] as $k) {
+                  'ngram_size', 'exclude', 'exclude_reset'] as $k) {
             if (array_key_exists($k, $data)) {
                 $out[$k] = $data[$k];
             }
@@ -884,13 +954,18 @@ final class ConfigLoader
         if (array_key_exists('kinds', $data)) {
             $out['allowed_kinds'] = $data['kinds'];
         }
-        if (isset($data['optional_blocks']) && is_array($data['optional_blocks'])) {
-            $ob = $data['optional_blocks'];
-            if (array_key_exists('enabled', $ob))            $out['optional_blocks_enabled']            = $ob['enabled'];
-            if (array_key_exists('containment', $ob))        $out['optional_blocks_containment']        = $ob['containment'];
-            if (array_key_exists('min_overlap', $ob))        $out['optional_blocks_min_overlap']        = $ob['min_overlap'];
-            if (array_key_exists('max_per_cluster', $ob))    $out['optional_blocks_max_per_cluster']    = $ob['max_per_cluster'];
-            if (array_key_exists('min_segment_length', $ob)) $out['optional_blocks_min_segment_length'] = $ob['min_segment_length'];
+        // once-S67: db_aware and trinity_collapse were already admitted in
+        // substance — Config::withOverrides() has honored isset legs for
+        // them since the gate-era wiring — but the per-dir loop never named
+        // them, so subtree files could not carry them. They fold into the
+        // worker tooling key and the per-file IndexStore cache key
+        // (PreprocessWorker::toolFor()), so per-subtree values are cache-
+        // safe by the same construction as normalization_mode.
+        if (isset($data['db_aware']) && is_bool($data['db_aware'])) {
+            $out['db_aware'] = $data['db_aware'];
+        }
+        if (isset($data['trinity_collapse']) && is_bool($data['trinity_collapse'])) {
+            $out['trinity_collapse'] = $data['trinity_collapse'];
         }
         if (isset($data['db_symbols']) && is_array($data['db_symbols'])) {
             $ds = $data['db_symbols'];
@@ -958,6 +1033,29 @@ final class ConfigLoader
         'baseline',
         'baseline_out',
         'diff_base', 'apply',
+    ];
+
+    /**
+     * once-S67 (php-dup-finder-once-077): the admission-totality roster —
+     * the 23 KNOWN_KEYS members that per-directory `.phpdup.json` files may
+     * NOT carry, refused loudly by {@see discoverPerDirectoryOverrides()}.
+     * The equation the belt pins: KNOWN_KEYS (44) = the 11 parents
+     * shapeOverrides() admits (exclude, exclude_reset, min_block_size,
+     * max_block_size, normalization_mode, ngram_size, kinds, db_symbols,
+     * db_aware, trinity_collapse, low_memory) + these 23 + the 10 with
+     * dedicated era arms above the roster check (fingerprint_id_mode, scope,
+     * score_mode, max_ted_size, max_hole_coverage, ml_pair_allow_private,
+     * baseline, baseline_out, diff_base, debug_log). A new KNOWN_KEYS member
+     * that is neither admitted nor refused fails the belt in BOTH
+     * directions.
+     */
+    private const REFUSED_PER_DIRECTORY = [
+        'paths', 'similarity_threshold', 'tree_threshold', 'min_cluster_impact',
+        'max_df', 'cache_dir', 'parallelism', 'workers', 'incremental',
+        'lazy_ast', 'sort', 'ted_weights', 'optional_blocks', 'report',
+        'normalization', 'scorer', 'ir_threshold', 'ml_pair_url',
+        'ml_pair_threshold', 'apply', 'fail_on_impact', 'max_clusters',
+        'candidate_budget',
     ];
 
     /**
