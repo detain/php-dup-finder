@@ -81,8 +81,10 @@ To upgrade a source install: `git pull && composer install`.
 # Scan and see top clusters in CLI
 bin/phpdup analyze src
 
-# Multi-format output: JSON + HTML report
-bin/phpdup analyze src --json phpdup.json --html phpdup-report --min-impact 30
+# Multi-format output: JSON + HTML report (report names below are
+# examples — do not write the JSON report to `phpdup.json`; that is the
+# config file `phpdup init` owns)
+bin/phpdup analyze src --json dupes.json --html phpdup-report --min-impact 30
 
 # CI gate (exact clones only, ~6s on 3,300-block corpus)
 bin/phpdup analyze src --exact-only --min-impact 50
@@ -158,7 +160,7 @@ each topic to where it actually lives. Every link is checked in CI.
 - [CI baseline gate](docs/CLI.md#ci--baseline) — `--baseline` / `--baseline-out`, incremental exit-code 4 workflow
 - [Config validation](docs/CLI.md#validation) — `--validate-config`
 - [Self-update](docs/CLI.md#selfupdate--options) — `phpdup self:update` and the signed-manifest contract
-- [Exit codes](docs/CLI.md#exit-codes) — 0 / 1 / 2 / 3 / 4
+- [Exit codes](docs/CLI.md#exit-codes) — the one source-of-truth table: `0` / `1` / `2` / `3` / `4` / `130`
 - [Configuration file](docs/CLI.md#configuration-file) — `phpdup.json` fields (+ machine-readable schema above)
 - [Configuration precedence](docs/CLI.md#configuration-precedence) — per-directory overrides, project profiles
 - [`exclude` glob dialect](docs/CLI.md#exclude-stacks--the-glob-dialect) — how exclude lists stack
@@ -169,7 +171,7 @@ each topic to where it actually lives. Every link is checked in CI.
 - [Anti-unification](docs/algorithms/anti-unification.md#anti-unification-algorithm) — hole typing
 - [Architecture](docs/adr/0001-cooperative-pipeline.md) — cooperative-pipeline ADR (with 0002/0003 siblings)
 - [CI integration](docs/CI.md) — composite action, GitLab/Jenkins/Circle/Travis recipes
-- [Tutorials](docs/tutorials/refactoring-10k-lines.md) — 10k-line walkthrough (also `laravel.md`, `anti-unification-deep-dive.md`)
+- [Tutorials](docs/tutorials/refactoring-10k-lines.md) — 10k-line walkthrough; also [Laravel in practice](docs/tutorials/laravel.md) and the [anti-unification deep dive](docs/tutorials/anti-unification-deep-dive.md)
 - [Benchmarks](bench/README.md) — comparative harness, feature matrix, committed raw results (`bench/results/`)
 - [License](#license) — MIT
 
