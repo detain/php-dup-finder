@@ -19,7 +19,8 @@ Blocks (structuralHash, ngramBag)
    +-- identical hashes --? --yes--> Phase 1 exact buckets --> emit exact clusters (see coverage rule)
    |
    +-- no --> generate candidate pairs (inverted n-gram index,
-              boilerplate n-grams above max_df skipped, budget applied)
+              boilerplate n-grams above max_df skipped,
+              F3 mass-bound pre-filter [default on], budget applied)
               |
               PairScoreWorker (forked or in-process) / serial engine:
               |
@@ -118,7 +119,10 @@ Steps:
     (max document frequency, 0.01 default) of blocks. The candidate
     stream is capped at `candidateBudget` pairs; overflow throws
     `CandidateBudgetException` (rendered as a `phpdup:` error line, exit
-    1).
+    1). Each proposed pair first pays the F3 mass-bound pre-filter
+    (default on) below — pairs the bound proves cannot reach any tier's
+    threshold never enter scoring; when the filter is armed the budget
+    counts the SURVIVING stream.
 
 (3) **Jaccard similarity.** For candidate pairs, compute
     `|A ∩ B| / |A ∪ B|` over multiset n-gram fingerprints (bag sizes
@@ -198,6 +202,69 @@ splitting tightens that:
 The split consumes only the materialized edge list (`Cluster::$pairs`),
 so membership runs on the composite tier truth that actually accepted
 each pair — never CoherenceAnalyzer's raw-Jaccard basis.
+
+## F3 mass-bound pre-filter (candidate generation, default on)
+
+For two n-gram multisets A and B, `S = Σ_v min(A(v), B(v))` is an
+upper bound on their multiset intersection — and the Jaccard and
+containment gates that later score the pair are both **monotone
+increasing** in that intersection (`J = S / (|A|+|B|−S)` rises with
+S; `C = S / min(|A|,|B|)` rises with S). A bound on S is therefore a
+bound on every downstream verdict: if no reachable S can clear the
+thresholds, the pair cannot become an edge and is skipped before any
+scorer sees it. This is the lossless memory lever of the "80 GB story"
+in `improve_logic_info.md` §3 (lines 672–726): the candidate stream,
+not the scorer, is what storms exhaust.
+
+Implementation (`Clusterer::generateCandidatePairs()`, armed by
+default): the postings walk already skips grams above `max_df`, so the
+exact shared sum is only computable over the PASSING grams. The bound
+credits the discarded part anyway: `skip[p]` is p's total mass in
+df-FAILING grams, and for a proposed pair
+
+    ub = min(massMin, sharedPass + min(skip[a], skip[b]))  >=  S
+
+because the df-failed contribution to S is at most the smaller block's
+skipped mass. The pair is killed unless ub (plus a 1e-9 relative
+hairline) reaches `needJ = t·(massA+massB)/(1+t)` or — when optional
+blocks are enabled — `needC = containmentThreshold·massMin` while the
+exact size-ratio gate holds. Pairs whose `structuralHash` matches bypass
+the kill path entirely: the scorer's exact-hash short-circuit mints
+those edges at 1.0 without ever reading the bags. The per-candidate
+tables (`sharedPass`, `mass`, `skip`) come from
+`NgramInvertedIndex::candidatesWithSharedMass()`, which walks the same
+postings in the same order as `candidatesFor()` and keeps a build-time
+bag snapshot per block (copy-on-write: nothing mutates indexed bags
+during enumeration; the R-4 guard rewrites only CLONE views).
+
+Losslessness contract: with the filter ON, the emitted candidate stream
+is an exact ORDERED SUBSEQUENCE of the OFF stream, and only pairs full
+scoring would REJECT are removed — the edge set, cluster membership
+and every downstream artifact stay byte-identical ON vs OFF. Pinned by
+`tests/Unit/Clustering/CandidateMassFilterTest.php` (edge byte-identity
+across keep/kill/mixer corpora; every killed pair re-scored against the
+real gates; IR/ML inertness arms; guard-bypass and non-resurrection
+arms; budget survivor semantics) and
+`tests/Unit/Index/NgramInvertedIndexMassTest.php` (brute-force oracle
+over all bound inputs). Interaction matrix: inert when `ir_scoring` or
+`ml_pair_url` is armed (those tiers consume different bag species / an
+external sidecar that can accept bound-killed pairs); guard-injected
+pairs bypass the bound by design (the R-4 "never lose a pair today's
+run even considered" law). Operator escape hatch: `candidate_mass_filter`
+(boolean, default true) in the root config file only — deliberately no
+CLI flag, the `max_ted_size` precedent: a correctness-audit switch is a
+config responsibility, not an argument people paste into scripts. A
+root-only refusal: per-directory values would make one run emit
+differently-filtered subtrees (cache-key incoherence), so the key is
+refused at `.phpdup.json` discovery.
+
+Selectivity: §3 measured 42.5x/46.0x pair reductions (2.17–2.35% of
+enumerated pairs kept) with 0 of 640k true edges lost on phlix-style
+corpora. E1's scaled synthetic (8,680 blocks: 80 hub storms of 50, 60
+planted clone families, 2,000 steamroller pairs, 200 singletons) keeps
+1,680 of 101,680 enumerated pairs — 60.5x — with 0 of 5,001 sampled
+kills accepted by full scoring and a 27.1s → 3.7s (7.3x) engine
+wall-clock while cluster fingerprints stay byte-identical.
 
 ## APTED pre-filters
 

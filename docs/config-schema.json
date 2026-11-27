@@ -111,6 +111,11 @@
             "default": true,
             "description": "Item 1.2 (E2): extraction posture for blocks ABOVE max_block_size. Default true: an oversized body is never silently invisible — the extractor cuts maximal contiguous statement windows (each capped at max_block_size nodes) out of it, and those windows fingerprint and cluster like any other block. Windows carry the synthetic 'window' kind: AST-addressing surfaces (--apply, refactor patches, loader relocation) refuse them loudly, mirroring the 'script' fold precedent, and blocks that stay fully invisible (zero surviving windows, or a kind with no statement list) are counted in summary.blocks_oversized. Corpora without oversized blocks keep every report byte-identical. Set false for the historical posture: oversized blocks are dropped and only the counter is printed. Deliberately NO CLI flag (config-only extraction stance, max_ted_size precedent). ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load — the posture is bound into the extraction and cluster cache keys, so a per-directory split would forge two identities for one run."
         },
+        "candidate_mass_filter": {
+            "type": "boolean",
+            "default": true,
+            "description": "Item 0.5 (F3): the multiset upper-bound pre-test inside candidate generation. Sum_v min(A(v),B(v)) over the ngram bags upper-bounds the true intersection, so a pair whose bound (plus df-cap skipped-mass slack) cannot reach the Jaccard or containment threshold is skipped WITHOUT the intersection scoring walk — measured 42-46x fewer pairs enumerated on the storm corpora with zero true-edge loss (improve_logic_info.md section 3). Default true; set false to restore the pre-F3 enumeration byte-for-byte. Deliberately NO CLI flag (engine-consistency stance, max_ted_size precedent). ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (a candidate pair spans two directories; the one shared enumeration stream takes one stance)."
+        },
         "ted_weights": {
             "type": "string",
             "enum": ["default", "semantic"],

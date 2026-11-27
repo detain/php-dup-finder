@@ -5,15 +5,22 @@ namespace Phpdup\Tests\Unit\Clustering;
 
 use PhpParser\Node;
 use PHPUnit\Framework\TestCase;
+use Phpdup\Cli\Config;
+use Phpdup\Cli\ConfigLoader;
 use Phpdup\Clustering\CandidateBudgetException;
 use Phpdup\Clustering\Clusterer;
 use Phpdup\Extraction\Block;
+use Phpdup\Pipeline\PipelineState;
+use Phpdup\Pipeline\Stages\ClusterStage;
+use Phpdup\Pipeline\Stages\PreprocessStage;
+use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Index\BlockIndex;
 use Phpdup\Ml\MlPairClient;
 use Phpdup\Similarity\ContainmentSimilarity;
 use Phpdup\Similarity\JaccardSimilarity;
 use Phpdup\Similarity\TreeEditDistance;
 use Phpdup\Util\LineRange;
+use Symfony\Component\Console\Output\NullOutput;
 
 /**
  * E1 — F3 Σmin multiset upper-bound filter (improve_logic.md item 0.5;
@@ -637,4 +644,147 @@ final class CandidateMassFilterTest extends TestCase
         $this->fail(sprintf('expected CandidateBudgetException at budget %d', $budget));
     }
 
+
+    public function testEscapeKeyDefaultsAndRoundTripsWithoutACliFlag(): void
+    {
+        $this->assertTrue((new Config(paths: ['/x'], exclude: []))->candidateMassFilter,
+            'default-ON: the §3 proof measured 42-46x with 0/640k edge loss');
+
+        $dir = sys_get_temp_dir() . '/phpdup-cmf-' . bin2hex(random_bytes(5));
+        mkdir($dir, 0o775, true);
+        $cfgFile = $dir . '/phpdup.json';
+        file_put_contents($cfgFile, json_encode(['candidate_mass_filter' => false]));
+        $config = (new ConfigLoader())->load([$dir], $cfgFile, ['paths' => [$dir]]);
+        $this->assertFalse($config->candidateMassFilter, 'root config file must flip the escape hatch off');
+
+        // Root-only: a planted per-directory copy is refused loudly.
+        $sub = $dir . '/app';
+        mkdir($sub, 0o775, true);
+        file_put_contents($sub . '/.phpdup.json', json_encode(['candidate_mass_filter' => false]));
+        try {
+            (new ConfigLoader())->load([$dir . '/app'], null, ['paths' => [$dir . '/app']]);
+            $this->fail('per-directory candidate_mass_filter must be refused');
+        } catch (\RuntimeException $ex) {
+            $this->assertStringContainsString('candidate_mass_filter is not a per-directory key', $ex->getMessage());
+        }
+        @unlink($sub . '/.phpdup.json');
+        @rmdir($sub);
+        unlink($cfgFile);
+        @rmdir($dir);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('candidate_mass_filter must be a boolean');
+        (new ConfigLoader())->validate(['candidate_mass_filter' => 1]);
+    }
+
+    public function testFilterKnobDoesNotInvalidateTheClusterCache(): void
+    {
+        // Counter-legend pin: unlike max_ted_size, this knob is byte-identity
+        // lawful on both sides, so a snapshot warmed on one side is STILL
+        // VALID on the other — binding it would only waste cache space.
+        $stage = new ClusterStage(exactOnly: false, useClusterCache: false);
+        $key = new \ReflectionMethod(ClusterStage::class, 'cacheConfigKey');
+        $on = new Config(paths: ['/x'], exclude: [], candidateMassFilter: true);
+        $off = new Config(paths: ['/x'], exclude: [], candidateMassFilter: false);
+        $this->assertSame($key->invoke($stage, $on), $key->invoke($stage, $off),
+            'the escape hatch must NOT fork the cluster cache namespace (both sides are proven equivalent)');
+    }
+
+    public function testStageThreadsTheKnobIntoBothEngines(): void
+    {
+        // The parent-side stream is the ONLY enumeration point in the
+        // product (serial and fork consume it), so the twin law holds by
+        // placement — this drives scan -> preprocess -> cluster on real
+        // PHP and checks every corner of the {on/off} x {serial/fork}
+        // square with real preprocessed bags.
+        $dir = sys_get_temp_dir() . '/phpdup-cmf-stage-' . bin2hex(random_bytes(5));
+        mkdir($dir, 0o775, true);
+        $seed = "  \$a = 1;\n  \$b = 2;\n  \$c = 3;\n";
+        for ($i = 0; $i < 6; $i++) {
+            file_put_contents($dir . "/fam_{$i}.php", "<?php function fam_{$i}() {\n{$seed}  return \$c;\n}\n");
+        }
+        mt_srand(7);
+        for ($i = 0; $i < 30; $i++) {
+            $body = '';
+            for ($k = 0; $k < 6 + mt_rand(0, 6); $k++) {
+                $body .= "  \$w{$i}_{$k} = {$k};\n";
+            }
+            file_put_contents($dir . "/var_{$i}.php", "<?php function var_{$i}() {\n{$seed}{$body}  return 1;\n}\n");
+        }
+
+        $run = static function (int $workers, bool $filter) use ($dir): PipelineState {
+            $config = new Config(
+                paths: [$dir],
+                exclude: [],
+                maxDocumentFrequency: 1.0,
+                workers: $workers,
+                candidateMassFilter: $filter,
+                incremental: false,
+            );
+            $state = new PipelineState($config);
+            $out = new NullOutput();
+            (new ScanningStage())->run($state, $out);
+            (new PreprocessStage(useCache: false))->run($state, $out);
+            (new ClusterStage(exactOnly: false, useClusterCache: false))->run($state, $out);
+            return $state;
+        };
+
+        $serialOff = $run(1, false);
+        $serialOn = $run(1, true);
+        $this->assertNotEmpty($serialOff->edges, 'the stage corpus must mint edges (non-vacuity)');
+        $this->assertLessThan($serialOff->candidatePairs, $serialOn->candidatePairs,
+            'the stage-level corpus must exercise kills through the real pipeline');
+        $this->assertSame(
+            $this->edgeCanonical($serialOff->edges),
+            $this->edgeCanonical($serialOn->edges),
+            'serial engine: edges byte-identical filter-on vs filter-off',
+        );
+
+        if (!\function_exists('pcntl_fork')) {
+            $this->addToAssertionCount(1);
+            return;
+        }
+        $forkOff = $run(3, false);
+        $forkOn = $run(3, true);
+        $this->assertGreaterThanOrEqual(64, $forkOff->candidatePairs, 'the fork path only arms at >= 64 pairs');
+        $this->assertSame(
+            $this->edgeCanonical($serialOff->edges),
+            $this->edgeCanonical($forkOff->edges),
+            'twin law: fork and serial engines agree filter-off',
+        );
+        $this->assertSame(
+            $this->edgeCanonical($serialOn->edges),
+            $this->edgeCanonical($forkOn->edges),
+            'twin law: fork and serial engines agree filter-on',
+        );
+    }
+
+    public function testDefaultOnFilterNeverChangesRealBenchCorpusEdges(): void
+    {
+        // The shipped bench corpus through the real pipeline both ways: the
+        // golden-suite stance expressed as a unit assertion (E2 holds the
+        // Golden token; edges here must not move).
+        $corpus = dirname(__DIR__, 3) . '/bench/corpora';
+        if (!is_dir($corpus)) {
+            $this->markTestSkipped('bench corpora absent');
+        }
+        $out = new NullOutput();
+        $collect = static function (bool $filter) use ($corpus, $out): PipelineState {
+            $config = new Config(paths: [$corpus], exclude: [], candidateMassFilter: $filter, incremental: false);
+            $state = new PipelineState($config);
+            (new ScanningStage())->run($state, $out);
+            (new PreprocessStage(useCache: false))->run($state, $out);
+            (new ClusterStage(exactOnly: false, useClusterCache: false))->run($state, $out);
+            return $state;
+        };
+        $off = $collect(false);
+        $on = $collect(true);
+        $this->assertSame(
+            $this->edgeCanonical($off->edges),
+            $this->edgeCanonical($on->edges),
+            'bench/corpora edges must be byte-identical across the filter',
+        );
+    }
+
+// ---------------------------------------------------------------------------
 }

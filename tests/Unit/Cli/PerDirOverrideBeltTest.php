@@ -26,7 +26,7 @@ use PHPUnit\Framework\TestCase;
  * load() → effectiveFor()/PreprocessWorker channels) or the key must be
  * REFUSED loudly at discovery. The BANKED list is emptied: every former
  * bank member (sort + the five optional_blocks_* flat keys) joined the
- * refused roster, as did the nine whole-run stances that passed the
+ * refused roster, as did the ten whole-run stances that passed the
  * property proxy without ever being observed per-file, and the fourteen
  * root-only keys (incl. paths, report, apply, the ML/IR sidecar pair)
  * whose old crime was vanishing in total silence. The path/ref family
@@ -205,7 +205,7 @@ final class PerDirOverrideBeltTest extends TestCase
 
     /**
      * Refused key => a schema-VALID root value, so the refusal must bite
-     * on KEY PRESENCE, never hide behind a shape error. Covers the 24
+     * on KEY PRESENCE, never hide behind a shape error. Covers the 25
      * once-S67 refusals AND the 10 legacy-era arms (their dedicated throw
      * blocks predate S67; the matrix pins them under one voice).
      *
@@ -237,6 +237,7 @@ final class PerDirOverrideBeltTest extends TestCase
             'fail_on_impact'        => 11,
             'max_clusters'          => 12,
             'candidate_budget'      => 777,
+            'candidate_mass_filter' => true,
             'window_oversized'      => true,
             // legacy family (dedicated arms; same voice pinned here)
             'fingerprint_id_mode'   => 'numbered',
@@ -290,7 +291,7 @@ final class PerDirOverrideBeltTest extends TestCase
         self::assertIsArray($refused);
 
         $covered = array_merge(self::ADMITTED_PARENTS, $refused, self::LEGACY_REFUSED);
-        self::assertCount(45, $known, 'the root-config universe is 45 keys');
+        self::assertCount(46, $known, 'the root-config universe is 46 keys');
         self::assertCount(count($covered), $known, 'no key may be counted twice across the three sides');
         sort($known);
         sort($covered);
@@ -300,7 +301,7 @@ final class PerDirOverrideBeltTest extends TestCase
             'every KNOWN_KEYS member must be admitted-parent, refused, or legacy-refused (once-S67 totality)',
         );
 
-        self::assertCount(24, $refused, 'the once-S67 roster refuses exactly 24 new keys');
+        self::assertCount(25, $refused, 'the once-S67 roster refuses exactly 25 new keys');
         self::assertEmpty(array_intersect(self::ADMITTED_PARENTS, $refused));
         self::assertEmpty(array_intersect(self::ADMITTED_PARENTS, self::LEGACY_REFUSED));
         self::assertEmpty(array_intersect($refused, self::LEGACY_REFUSED));

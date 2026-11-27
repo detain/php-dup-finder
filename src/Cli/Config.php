@@ -254,6 +254,22 @@ final class Config
         // opted out entirely. Default mirrors Clusterer::MAX_CANDIDATE_PAIRS
         // (60,000,000); a pinned unit test keeps the two values equal.
         public readonly int $candidateBudget = 60_000_000,
+        // Item 0.5 (F3, improve_logic_info.md §3 "The 80 GB memory story"):
+        // the Σmin multiset upper-bound pre-test inside candidate generation.
+        // For ngram bags A,B the exact shared-mass sum Σ_v min(A(v),B(v))
+        // upper-bounds the true multiset intersection, so a pair whose bound
+        // (plus the df-cap skipped-mass slack) cannot reach the Jaccard or
+        // containment threshold is skipped WITHOUT the intersection scoring
+        // walk — measured 42-46x fewer pairs enumerated into the storm tier,
+        // 0 of 640k true edges lost (§3's corpus census; losslessness re-
+        // pinned in CandidateMassFilterTest against the storm fixture).
+        // Default true; this config-only key is the escape hatch: an operator
+        // sets "candidate_mass_filter": false to restore the pre-F3
+        // enumeration byte-for-byte (max_ted_size precedent: deliberately NO
+        // CLI flag — it is an engine-consistency stance, not a per-invocation
+        // preference, and a per-directory file would vary it across one
+        // shared candidate stream, so it is root-only, refused at discovery).
+        public readonly bool $candidateMassFilter = true,
         // Item 5.1: reported-cluster scope filter — 'all' (default),
         // 'single' (one repo per cluster), 'multi' (cross-repo clusters),
         // or any exact repo label (basename of a scan root). Applied in
@@ -659,6 +675,11 @@ final class Config
             // (same silent-misfeed class as max_ted_size; refused at
             // discovery in ConfigLoader::discoverPerDirectoryOverrides()).
             maxHoleCoverage:                 $this->maxHoleCoverage,
+            // Item 0.5 (F3): root-only, copied — a candidate pair spans two
+            // directories, so a per-directory filter stance is ambiguous
+            // (same class as max_ted_size / candidate_budget; refused at
+            // discovery). The one enumeration stream must carry one stance.
+            candidateMassFilter:             $this->candidateMassFilter,
         );
     }
 

@@ -160,6 +160,7 @@ final class ConfigLoader
             'low_memory', 'fail_on_impact', 'max_clusters',
             'optional_blocks_containment',
             'baseline', 'baseline_out', 'diff_base', 'apply',
+            'candidate_mass_filter',
         ];
         $resolver = new OverrideResolver($flatKeys);
         // shell-S24 (php-dup-finder-shell-014): optional_blocks.containment
@@ -226,6 +227,7 @@ final class ConfigLoader
             'baseline_out' => $base->baselineOutFile,
             'diff_base' => $base->diffBase,
             'apply' => $base->apply,
+            'candidate_mass_filter' => $base->candidateMassFilter,
         ]));
 
         $report = is_array($data['report'] ?? null) ? $data['report'] : [];
@@ -406,6 +408,9 @@ final class ConfigLoader
             scoreMode:                     $flat['score_mode'],
             maxTedSize:                    $flat['max_ted_size'],
             maxHoleCoverage:               $flat['max_hole_coverage'],
+            // F3 escape hatch (item 0.5): bool validated by the door below;
+            // root-only, refused at per-directory discovery.
+            candidateMassFilter:           $flat['candidate_mass_filter'],
             // Items 1.2 + 0.6: window posture (bool validated by the door
             // below; root-only, refused at per-directory discovery like the
             // max_ted_size family it pairs with).
@@ -888,12 +893,12 @@ final class ConfigLoader
                     // never be planted by a scanned tree, the once-S54
                     // make-it-loud sidecar law, sibling of the S22 write/
                     // ref/code family the report/normalization/apply keys
-                    // join here), the 9 whole-run stances that are inert
+                    // join here), the 10 whole-run stances that are inert
                     // per-subtree because clusters, reports and gates span
                     // the entire run (similarity_threshold, tree_threshold,
                     // min_cluster_impact, max_df, fail_on_impact,
-                    // max_clusters, candidate_budget, window_oversized, sort
-                    // — every score
+                    // max_clusters, candidate_budget, candidate_mass_filter,
+                    // window_oversized, sort — every score
                     // and tier in the report would carry only one
                     // directory's stance, chosen ambiguously), and the
                     // optional_blocks parent (all five sub-knobs have
@@ -1122,6 +1127,7 @@ final class ConfigLoader
         'fail_on_impact',
         'max_clusters',
         'candidate_budget',
+        'candidate_mass_filter',
         'max_ted_size',
         'max_hole_coverage',
         'window_oversized',
@@ -1132,12 +1138,12 @@ final class ConfigLoader
 
     /**
      * once-S67 (php-dup-finder-once-077): the admission-totality roster —
-     * the 24 KNOWN_KEYS members that per-directory `.phpdup.json` files may
+     * the 25 KNOWN_KEYS members that per-directory `.phpdup.json` files may
      * NOT carry, refused loudly by {@see discoverPerDirectoryOverrides()}.
-     * The equation the belt pins: KNOWN_KEYS (45) = the 11 parents
+     * The equation the belt pins: KNOWN_KEYS (46) = the 11 parents
      * shapeOverrides() admits (exclude, exclude_reset, min_block_size,
      * max_block_size, normalization_mode, ngram_size, kinds, db_symbols,
-     * db_aware, trinity_collapse, low_memory) + these 24 + the 10 with
+     * db_aware, trinity_collapse, low_memory) + these 25 + the 10 with
      * dedicated era arms above the roster check (fingerprint_id_mode, scope,
      * score_mode, max_ted_size, max_hole_coverage, ml_pair_allow_private,
      * baseline, baseline_out, diff_base, debug_log). A new KNOWN_KEYS member
@@ -1150,7 +1156,7 @@ final class ConfigLoader
         'lazy_ast', 'sort', 'ted_weights', 'optional_blocks', 'report',
         'normalization', 'scorer', 'ir_threshold', 'ml_pair_url',
         'ml_pair_threshold', 'apply', 'fail_on_impact', 'max_clusters',
-        'candidate_budget', 'window_oversized',
+        'candidate_budget', 'candidate_mass_filter', 'window_oversized',
     ];
 
     /**
@@ -1354,6 +1360,12 @@ final class ConfigLoader
             // friendly exit 2; Command's load door additionally catches
             // \TypeError as a class (shell-S27).
             throw new \RuntimeException("apply must be a boolean$where");
+        }
+        if (array_key_exists('candidate_mass_filter', $data) && !is_bool($data['candidate_mass_filter'])) {
+            // F3 (item 0.5): same voice as the bool family — a non-boolean
+            // here is a typo, and a typo must not silently flip the
+            // mass-bound filter on or off.
+            throw new \RuntimeException("candidate_mass_filter must be a boolean$where");
         }
         if (array_key_exists('window_oversized', $data) && !is_bool($data['window_oversized'])) {
             // Items 1.2 + 0.6: same voice — a non-boolean must not silently

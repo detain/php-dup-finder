@@ -366,6 +366,12 @@ final class ClusterStage implements CooperativeStageInterface
             candidateGuardNgramSize:  $config->ngramSize,
             // Item 1.2: root-only TED-size cap (config file 'max_ted_size').
             maxTedSize:               $config->maxTedSize,
+            // Item 0.5 (F3): mass-bound filter escape hatch (config file
+            // 'candidate_mass_filter', root-only). Both scoring engines
+            // consume the SAME parent-side candidate stream (the fork zone
+            // only scores dispatched pairs), so this stance cannot fork
+            // verdicts — the twin law holds by placement.
+            candidateMassFilter:      $config->candidateMassFilter,
         );
     }
 
