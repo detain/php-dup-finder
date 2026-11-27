@@ -132,6 +132,24 @@ final class Clusterer
         // that completes today (measured: this repo's 4,090 blocks charge
         // 715,006 units in total — see TedSizeGateTest) is untouched.
         private readonly int $maxTedCost = self::DEFAULT_MAX_TED_COST,
+        // Item 0.5 (F3, improve_logic_info.md §3 "The 80 GB memory story"):
+        // the multiset upper-bound pre-test inside candidate generation.
+        // Σ_v min(A(v),B(v)) is an exact upper bound on the two bags'
+        // intersection, so a pair whose bound cannot reach either scoring
+        // threshold can be dropped BEFORE the intersection walk — measured
+        // 42-46× fewer scored pairs on the storm corpora, 0 of 640k true
+        // edges lost (§3's census; re-proven losslessly in
+        // {@see \Phpdup\Tests\Unit\Clustering\CandidateMassFilterTest}).
+        // Default ON; the config-only escape key candidate_mass_filter
+        // restores the pre-F3 enumeration. The filter
+        // is INERT whenever a non-bag lens could still mint an edge for a
+        // killed pair — IR scoring or the ML sidecar (§3's bound is about
+        // the ngram bags only) — and guard-injected pairs bypass it (R-4:
+        // pairs the numbered lane alone proposes enter untested; the
+        // injection dedup uses the RAW base list, so a bound-killed base
+        // twin is not resurrected — outcome-equal, the scorer judges live
+        // bags in both modes and would reject that pair anyway).
+        private readonly bool $candidateMassFilter = true,
     ) {
         if ($this->minSplitSize < 2) {
             throw new \InvalidArgumentException(sprintf(
@@ -236,7 +254,15 @@ final class Clusterer
 
     /**
      * Safety budget on total candidate-pair output of
-     * {@see generateCandidatePairs()} (item 0.5, F3 gen-loop guard).
+     * {@see generateCandidatePairs()} (item 0.5 — the pair-COUNT guard).
+     *
+     * Erratum (E1): this block previously labelled itself the "F3 gen-loop
+     * guard". F3 is the Σmin multiset upper-bound filter (improve_logic_info.md
+     * §3), a DIFFERENT lever that drops unwinnable pairs before scoring;
+     * the budget below only bounds how many pairs the loop may yield at
+     * all. With the filter armed the budget counts SURVIVORS (pairs it
+     * yields, hence pairs the scorer will be asked to judge) — the storm
+     * this guard exists for is exactly the stream the filter shortens.
      *
      * Rare-gram posting unions make pair count quadratic inside a clone
      * family: measured corpora stay at 787-882 pairs/block (18.8M pairs on
@@ -278,7 +304,11 @@ final class Clusterer
      * Output is hard-capped by the candidate budget: yielding pair number
      * $maxCandidatePairs + 1 throws instead. The cap never reorders, skips
      * or duplicates pairs below it, so any run that completes under the
-     * guard produces exactly what the uncapped loop would have.
+     * guard produces exactly what the uncapped loop would have. The F3
+     * mass-bound filter (when armed) does drop pairs below the cap — only
+     * ones the scorer provably cannot turn into an edge — so the EMITTED
+     * stream stays a subsequence of the unfiltered enumeration and the
+     * resulting edge set stays byte-identical to it.
      *
      * @param int|null $maxCandidatePairs total pairs this enumeration may
      *        yield; null = self::MAX_CANDIDATE_PAIRS (use
@@ -343,6 +373,17 @@ final class Clusterer
             $output->writeln(sprintf('ngram-index: enumerating candidate pairs for %d blocks', $totalBlocks));
         }
 
+        // F3 pre-test arming (item 0.5): the bound speaks about the ngram
+        // bags only. The IR tier ($irBag token species) and the ML sidecar
+        // (external features) can mint an edge for a pair the bag bound
+        // kills — with either configured the filter stays INERT (byte-
+        // identical pre-F3 enumeration). Guard-injected pairs bypass it too
+        // (the §5a R-4 law below); the kill test applies to base candidates.
+        $massFilterArmed = $this->candidateMassFilter
+            && !$this->irScoring
+            && $this->mlPairClient === null;
+        $filterKills = 0;
+
         // Bounded $seen map for dedup — O(SEEN_CAP) memory instead of O(corpus).
         // When the cap is exceeded the map is cleared; this means some very
         // rare pairs that appear after the cap is hit and were duplicates of
@@ -357,11 +398,38 @@ final class Clusterer
             if (count($seen) > self::SEEN_CAP) {
                 $seen = [];
             }
-            $candidates = $inverted->candidatesFor($a, $this->maxDocumentFrequency);
+            $own = null;
+            if ($massFilterArmed) {
+                $own = $inverted->candidatesWithSharedMass($a, $this->maxDocumentFrequency);
+                $candidates = $own['ids'];
+                // F3 kill lane runs over the BASE suggestions only; the
+                // guard merge below dedups against the RAW base list, so a
+                // bound-killed base twin is not resurrected through the
+                // numbered lane. That is outcome-equal, not a loss: the
+                // scorer judges live bags in BOTH modes, so a pair the
+                // bound kills fails the scorer's own gates too — the kill
+                // removes a verdict the run would only have reconfirmed.
+                // The bypass that matters is preserved exactly: pairs the
+                // base never proposed (the numbered-lane-only class R-4
+                // exists for) enter untested at their guard slot.
+                $kept = [];
+                foreach ($candidates as $i => $bid) {
+                    if ($this->massBoundAllows($a, $own, $i, $index)) {
+                        $kept[] = $bid;
+                    } else {
+                        $filterKills++;
+                    }
+                }
+                $guardDedup = $candidates;
+                $candidates = $kept;
+            } else {
+                $candidates = $inverted->candidatesFor($a, $this->maxDocumentFrequency);
+                $guardDedup = $candidates;
+            }
             if ($guardInverted !== null && $guardIndex !== null) {
                 $view = $guardIndex->get($a->id);
                 if ($view !== null) {
-                    $seenLocal = array_fill_keys($candidates, true);
+                    $seenLocal = array_fill_keys($guardDedup, true);
                     foreach ($guardInverted->candidatesFor($view, $this->maxDocumentFrequency) as $gid) {
                         if (!isset($seenLocal[$gid])) {
                             $candidates[] = $gid;
@@ -402,7 +470,80 @@ final class Clusterer
 
         if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG) {
             $output->writeln(sprintf('ngram-index: enumeration complete, %d candidate pairs found [%s]', $yieldCount, MemoryDebug::getMemoryUsage()));
+            if ($massFilterArmed) {
+                $enumerated = $yieldCount + $filterKills;
+                $output->writeln(sprintf(
+                    'ngram-index: F3 mass-bound filter skipped %d of %d enumerated pairs (%.1f%%, bound test replaces the intersection walk)',
+                    $filterKills,
+                    $enumerated,
+                    $enumerated > 0 ? 100 * $filterKills / $enumerated : 0.0,
+                ));
+            }
         }
+    }
+
+    /**
+     * F3 (item 0.5): relative epsilon on the bound comparisons. Σmin is an
+     * integer sum while the thresholds turn it into floats; a pair is killed
+     * only when its UPPER BOUND misses every required mass by more than this
+     * margin — never on a float hairline. The algebraic boundary of a double
+     * with masses of any realistic corpus size sits trillions of ulps inside
+     * this slack, so a pair whose true intersection could reach the gate can
+     * never be killed by rounding.
+     */
+    private const BOUND_EPSILON = 1e-9;
+
+    /**
+     * The F3 kill test for one base candidate.
+     *
+     * Mirror of the scorer's acceptance gates over the SAME arithmetic the
+     * scoring chain applies (src/Similarity/JaccardSimilarity + the
+     * containment arm of scorePairsSerially): a pair can mint an edge only
+     * if I/(S−I) ≥ similarityThreshold with S = mass_a + mass_b (the union
+     * Σmax equals S−I exactly), or the containment lens is armed with
+     * I ≥ containmentThreshold·mass_min ∧ mass_min/mass_max ≥ minOverlap.
+     * I is the TRUE multiset intersection; the index hands this method its
+     * upper bound ub = min(mass_min, shared + min(skipped_a, skipped_b)).
+     * If ub misses every required mass, no I ≤ ub can reach one — the pair
+     * is dead under full scoring too, so dropping it here loses no edge.
+     * The one bag-blind lane the scorer runs, the exact-hash short-circuit,
+     * gets its veto before any kill. KEEP verdicts are never final: kept
+     * pairs go to the real scorer exactly as before, so the ON stream's edge
+     * set is identical to OFF's by construction, not by trust.
+     *
+     * @param array{ids: list<string>, shared: list<int>, mass: list<int>,
+     *               skipped: list<int>, ownMass: int, ownSkipped: int} $own
+     *        the candidatesWithSharedMass() shape; $i indexes it.
+     */
+    private function massBoundAllows(Block $a, array $own, int $i, BlockIndex $index): bool
+    {
+        $massA   = $own['ownMass'];
+        $massB   = $own['mass'][$i];
+        $massMin = min($massA, $massB);
+        $massMax = max($massA, $massB);
+        $ub      = min($massMin, $own['shared'][$i] + min($own['ownSkipped'], $own['skipped'][$i]));
+
+        $needJ = $this->similarityThreshold * ($massA + $massB) / (1.0 + $this->similarityThreshold);
+        if ($ub + self::BOUND_EPSILON * max(1.0, $needJ) >= $needJ) {
+            return true; // the Jaccard arm could still accept — let the scorer decide
+        }
+
+        if ($this->optionalBlocksEnabled) {
+            $needC = $this->containmentThreshold * $massMin;
+            $ratio = $massMax > 0 ? $massMin / $massMax : 0.0;
+            if ($ub + self::BOUND_EPSILON * max(1.0, $needC) >= $needC
+                && $ratio + self::BOUND_EPSILON >= $this->optionalBlocksMinOverlap
+            ) {
+                return true; // the containment arm could still accept
+            }
+        }
+
+        // Bag-blind lane: an exact structuralHash match short-circuits to a
+        // 1.0 edge BEFORE any bag comparison in both engines. The index can
+        // propose such a pair with bags that under-report the hash (library
+        // fixtures do exactly this) — the hash veto outranks the bound.
+        $b = $index->get($own['ids'][$i]);
+        return $b === null || $a->structuralHash === $b->structuralHash;
     }
 
     /**

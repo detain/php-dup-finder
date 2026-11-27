@@ -56,6 +56,31 @@ final class NgramInvertedIndex
     /** @var array<string,int> block id → internal int id (interning table) */
     private array $intById = [];
 
+    /**
+     * Item 0.5 (F3, improve_logic_info.md §3): per-block bag snapshots kept
+     * beside the postings so the candidate walk can price each proposed
+     * pair's Σmin upper bound without re-touching the corpus. PHP arrays are
+     * copy-on-write: this slot is a REFERENCE to the block's bag array, not
+     * a duplicate — the bytes already lived in the Block. The bound is only
+     * sound while nobody rewrites a bag between build() and enumeration,
+     * and nothing in the pipeline does: the only post-build ngramBag writer
+     * is the §5a guard, and it writes a FRESH array onto a CLONE (the live
+     * block's bag is never touched). This invariant is pinned by
+     * {@see \Phpdup\Tests\Unit\Index\NgramInvertedIndexMassTest}.
+     *
+     * @var array<int,array<string|int,int>> internal int id → build-time bag
+     */
+    private array $bagsByInt = [];
+
+    /** @var array<int,int> internal int id → total bag mass (Σ of counts) */
+    private array $massByInt = [];
+
+    /** @var float|null document-frequency cap the {@see $skippedByInt} pass was computed for */
+    private ?float $skipDf = null;
+
+    /** @var array<int,int> internal int id → mass sitting in df-FAILING grams (for {@see $skipDf} only) */
+    private array $skippedByInt = [];
+
     private int $blockCount = 0;
 
     /**
@@ -66,6 +91,10 @@ final class NgramInvertedIndex
         $this->postings = [];
         $this->idByInt = [];
         $this->intById = [];
+        $this->bagsByInt = [];
+        $this->massByInt = [];
+        $this->skipDf = null;
+        $this->skippedByInt = [];
         $this->blockCount = $index->size();
         $indexed = 0;
         foreach ($index->all() as $b) {
@@ -92,6 +121,13 @@ final class NgramInvertedIndex
         foreach ($grams as $gram) {
             $this->postings[$gram][] = $intId;
         }
+        // F3 mass substrate (item 0.5): the bag reference + its total ride
+        // alongside the postings. array_sum walks the bag once per block
+        // here — the O(corpus·bag) pass the enumeration later amortises
+        // across every pair touching the block (candidates run 787-3,400
+        // per block on measured corpora).
+        $this->bagsByInt[$intId] = $b->ngramBag;
+        $this->massByInt[$intId] = array_sum($b->ngramBag);
     }
 
     /** Map a block id to its stable sequential int, assigning one on first sight. */
@@ -116,13 +152,7 @@ final class NgramInvertedIndex
         if ($block->ngramBag === null) {
             return [];
         }
-        // Rareness cap: ceil(df × N), floored at 2. The floor keeps the
-        // smallest informative signal — a gram shared by exactly two
-        // blocks — proposable on ANY corpus; without it, every corpus
-        // under 1/df blocks prunes all postings (df ≥ 2 there) and
-        // near-dup candidate generation is dead. What the pair actually
-        // is, the score gates decide.
-        $maxDf = max(2, (int)ceil($this->blockCount * $maxDocumentFrequency));
+        $maxDf = $this->maxDfFor($maxDocumentFrequency);
         // Self-exclusion on the int side: a block that was never interned
         // (queried outside this index, or bag-less at build time) gets an
         // int no real posting can hold.
@@ -147,5 +177,122 @@ final class NgramInvertedIndex
             $candidates[] = $this->idByInt[$intId];
         }
         return $candidates;
+    }
+
+    /**
+     * Rareness cap: ceil(df × N), floored at 2. The floor keeps the
+     * smallest informative signal — a gram shared by exactly two
+     * blocks — proposable on ANY corpus; without it, every corpus
+     * under 1/df blocks prunes all postings (df ≥ 2 there) and
+     * near-dup candidate generation is dead. What the pair actually
+     * is, the score gates decide. Shared verbatim between
+     * {@see candidatesFor()} and the F3 walk below — the two MUST
+     * agree on which grams pass, or the exact shared mass the bound
+     * credits would not be the mass the proposal stream saw.
+     */
+    private function maxDfFor(float $maxDocumentFrequency): int
+    {
+        return max(2, (int)ceil($this->blockCount * $maxDocumentFrequency));
+    }
+
+    /**
+     * Candidate list + Σmin mass evidence in one walk (item 0.5, F3).
+     *
+     * Same ids, same first-touch order, same self-exclusion as
+     * {@see candidatesFor()} — the returned list is byte-identical to what
+     * candidatesFor() hands the enumeration. Alongside it rides the raw
+     * material for the multiset upper-bound pre-test
+     * ({@see \Phpdup\Clustering\Clusterer} kills with it): for each
+     * candidate, the EXACT sum Σ min(count_a(g), count_b(g)) over the
+     * shared grams that passed the rareness cap, plus both blocks' total
+     * bag mass and df-failed (skipped) mass.
+     *
+     * Soundness contract (improve_logic_info.md §3): the true multiset
+     * intersection I of the two live bags satisfies
+     *     I ≤ min(mass_min, shared + min(skipped_a, skipped_b))
+     * — df-passing shared grams contribute exactly their min (the walk
+     * sums them); df-failing grams contribute at most the smaller side's
+     * skipped mass; nothing exceeds the smaller bag. The caller uses only
+     * these figures; the bound arithmetic (threshold algebra, epsilon)
+     * lives beside the scorer's comparisons it must mirror.
+     *
+     * @return array{ids: list<string>, shared: list<int>, mass: list<int>,
+     *               skipped: list<int>, ownMass: int, ownSkipped: int}
+     *         six parallel arrays/lists (index i describes ids[i])
+     */
+    public function candidatesWithSharedMass(Block $block, float $maxDocumentFrequency): array
+    {
+        if ($block->ngramBag === null) {
+            return ['ids' => [], 'shared' => [], 'mass' => [], 'skipped' => [], 'ownMass' => 0, 'ownSkipped' => 0];
+        }
+        $maxDf = $this->maxDfFor($maxDocumentFrequency);
+        $this->ensureSkippedMass($maxDocumentFrequency);
+
+        $ownInt = $this->intById[$block->id] ?? -1;
+        /** @var array<int,int> internal int id → exact df-passing shared mass (first-touch order) */
+        $sharedSeen = [];
+        $ownSkipped = 0;
+        foreach ($block->ngramBag as $gram => $count) {
+            $posting = $this->postings[$gram] ?? [];
+            if (count($posting) > $maxDf) {
+                // Too common to propose through — its mass is invisible to
+                // the shared sum and must be credited back as bound slack
+                // (exactly the grams ensureSkippedMass() counts per block).
+                $ownSkipped += $count;
+                continue;
+            }
+            foreach ($posting as $otherInt) {
+                if ($otherInt === $ownInt) {
+                    continue;
+                }
+                $theirBag = $this->bagsByInt[$otherInt] ?? [];
+                $sharedSeen[$otherInt] = ($sharedSeen[$otherInt] ?? 0) + min($count, $theirBag[$gram] ?? 0);
+            }
+        }
+
+        $ids = [];
+        $shared = [];
+        $mass = [];
+        $skipped = [];
+        foreach ($sharedSeen as $otherInt => $sum) {
+            $ids[]     = $this->idByInt[$otherInt];
+            $shared[]  = $sum;
+            $mass[]    = $this->massByInt[$otherInt];
+            $skipped[] = $this->skippedByInt[$otherInt];
+        }
+        return [
+            'ids'        => $ids,
+            'shared'     => $shared,
+            'mass'       => $mass,
+            'skipped'    => $skipped,
+            'ownMass'    => $this->massByInt[$ownInt] ?? array_sum($block->ngramBag),
+            'ownSkipped' => $ownSkipped,
+        ];
+    }
+
+    /**
+     * One lazy pass computing every interned block's df-failed mass for the
+     * given cap (the bound's slack term). Recomputed only when the cap
+     * changes — the enumeration queries one fixed df per run, so the walk
+     * costs O(corpus·bag) exactly once per candidate generation.
+     */
+    private function ensureSkippedMass(float $maxDocumentFrequency): void
+    {
+        if ($this->skipDf === $maxDocumentFrequency) {
+            return;
+        }
+        $maxDf = $this->maxDfFor($maxDocumentFrequency);
+        $skipped = [];
+        foreach ($this->bagsByInt as $intId => $bag) {
+            $sum = 0;
+            foreach ($bag as $gram => $count) {
+                if (count($this->postings[$gram] ?? []) > $maxDf) {
+                    $sum += $count;
+                }
+            }
+            $skipped[$intId] = $sum;
+        }
+        $this->skippedByInt = $skipped;
+        $this->skipDf = $maxDocumentFrequency;
     }
 }
