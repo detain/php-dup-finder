@@ -60,8 +60,16 @@ HELP
         $configFile = $cwd . DIRECTORY_SEPARATOR . 'phpdup.json';
 
         if (is_file($configFile) && !$input->getOption('force')) {
-            $output->writeln("<error>phpdup init: phpdup.json already exists (use --force to overwrite)</error>");
-            return Command::FAILURE;
+            // once-S98 (php-dup-finder-once-123, QA-L5b): "nothing to do"
+            // used to exit 1 with an <error> tag even though re-running
+            // init over an already-present config writes nothing and
+            // breaks nothing. Honest no-op: announce the nothing-written
+            // state and exit 0 — scripts that run `phpdup init` before
+            // every analysis no longer see a spurious failure. --force
+            // keeps its overwrite contract; unknown-profile and write
+            // failures still exit 1 (loud failure posture untouched).
+            $output->writeln("<comment>phpdup init: phpdup.json already exists — nothing written (use --force to overwrite)</comment>");
+            return Command::SUCCESS;
         }
 
         $profileOpt = $input->getOption('profile');
