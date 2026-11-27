@@ -1858,4 +1858,50 @@ class S13WindowSink
     public function stream_close()
     {
     }
+    // ── once-S98 (php-dup-finder-once-123, TEST-015): serial gate trio ──────
+
+    public function testIsAvailableTruthfullyReportsThisHostsForkPrimitives(): void
+    {
+        // The CI fleet is Linux with pcntl+posix compiled; if this ever
+        // reads false, EVERY "pool" test below silently degrades into
+        // the serial path while still being named green. This pin is
+        // the canary that would surface that drift loudly.
+        $this->assertTrue(WorkerPool::isAvailable(), 'pcntl_fork/pcntl_waitpid/posix_kill must exist on this host for the pool paths to be real');
+    }
+
+    public function testSerialFallbackGateIsTheAdvertisedThreeWayDisjunction(): void
+    {
+        // Shape pin (repo idiom): the documented serial contract is
+        // workers=1, no-fork-primitives, OR too-few-items-to-beat-the-
+        // spawn-cost. Only the first and third arms can execute on the
+        // Linux fleet (the second needs a pcntl-less build), so a silent
+        // narrowing of this line would drop the no-pcntl fallback with
+        // zero red tests. Pin the trio AND its immediate serial body.
+        $src = (string)file_get_contents(
+            (new \ReflectionClass(WorkerPool::class))->getFileName()
+        );
+        $gate = $src;
+        $pos = strpos($src, "
+    public function runStreaming");
+        if ($pos !== false) {
+            $end = strpos($src, "
+    }", $pos);
+            $this->assertIsInt($end);
+            $gate = substr($src, $pos, $end - $pos);
+        }
+
+        $this->assertMatchesRegularExpression(
+            '/\$workers === 1 .*!self::isAvailable\(\).*count\(\$items\) < 8/',
+            $gate,
+            'the serial gate must keep all three arms: workers=1, !isAvailable(), <8 items'
+        );
+
+        $gatePos = strpos($gate, '$workers === 1');
+        $this->assertIsInt($gatePos);
+        $this->assertMatchesRegularExpression(
+            '/\$workers === 1 \|\| !self::isAvailable\(\) \|\| count\(\$items\) < 8\) \{\s*yield from \$task\(\$items\);/',
+            $gate,
+            'the gate body must remain the direct serial yield — no fork bookkeeping past it'
+        );
+    }
 }
