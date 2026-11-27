@@ -1,5 +1,14 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes"?>
-<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd" bootstrap="vendor/autoload.php" colors="true" cacheDirectory=".phpunit.cache" failOnWarning="true" failOnNotice="true">
+<!-- once-S98 (php-dup-finder-once-123, XP-10): src-attributed PHP
+     deprecations now FAIL the battery (failOnDeprecation on the runner;
+     restrictDeprecations scopes consideration to the <source> whitelist
+     below — the "ignore list scoped to vendor/" posture, so
+     vendor/sugarcraft dev-master drift is named-but-not-failed).
+     failOnWarning/failOnNotice are the once-S93 vacuity-sweep era
+     posture and stay SACRED: this change only tightens. The network
+     group's CI exclusion lives in the ci.yml legs' exclude-group
+     flags (once-S93 era), not in this file. -->
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd" bootstrap="vendor/autoload.php" colors="true" cacheDirectory=".phpunit.cache" failOnWarning="true" failOnNotice="true" failOnDeprecation="true">
   <php>
     <!-- Ini-hermeticity (owner steer 2026-11-21): pin the float serializer
          so JSON bytes written by golden regeneration and read by consumers
@@ -24,7 +33,7 @@
       <directory>tests/Fuzz</directory>
     </testsuite>
   </testsuites>
-  <source>
+  <source restrictDeprecations="true">
     <include>
       <directory>src</directory>
     </include>
