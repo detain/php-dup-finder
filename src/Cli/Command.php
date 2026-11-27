@@ -706,6 +706,31 @@ HELP;
                 $pipelineOpts['reportArgs']['applyDir'] = $applyCwd . '/' . $applyDir;
             }
         }
+        $applyRoot = $pipelineOpts['reportArgs']['applyDir'];
+
+        // once-S29 (php-dup-finder-once-033): APPLY-DIR SYMLINK GATE. The
+        // absolutized apply directory is the root every apply-posture write
+        // must stay inside — but the posture's OWN artifacts (apply.diff in
+        // preview, apply-summary.md under real apply) are written by
+        // RefactorPatchReporter before ApplyExtractor::confineWriteTargets()
+        // ever sees a path, so a planted `refactored` symlink (output-S52
+        // review probe E2E-1: the artifact silently landed in the link's
+        // target) escapes the requested root at the shell venue even though
+        // every member rewrite is individually confined. Refuse it here,
+        // up front, in BOTH postures: named path + named link target +
+        // remedy, loud, exit `3` riding the once-S04 safety-gate family,
+        // zero analysis run and zero bytes written.
+        if (is_string($applyRoot) && $applyRoot !== '' && is_link($applyRoot)) {
+            $linkTarget = readlink($applyRoot);
+            $output->writeln('<error>phpdup: apply refused — the apply directory '
+                . self::escapeMarkup($applyRoot) . ' is a symbolic link'
+                . ($linkTarget === false ? '' : ' (target ' . self::escapeMarkup($linkTarget) . ')')
+                . '; apply-posture writes would follow it out of the requested root</error>');
+            $output->writeln('<comment>phpdup: remove the link (or run from a tree where '
+                . self::escapeMarkup($applyRoot) . ' is a plain directory) and re-run. '
+                . 'No analysis was run and no file was written.</comment>');
+            return 3;
+        }
 
         // once-S04 (php-dup-finder-once-004): ARMED-APPLY DIRTY GATE.
         // "Dormant stays dormant until gated": the armed posture is
@@ -746,6 +771,14 @@ HELP;
             $output->writeln('<comment>phpdup: real apply armed (--dry-run=false) — '
                 . 'member files will be rewritten; originals back up under '
                 . self::escapeMarkup((string) $pipelineOpts['reportArgs']['applyDir']) . '/backup</comment>');
+        } elseif (is_string($applyRoot)) {
+            // once-S29: honest PREVIEW posture announcement, mirroring the
+            // armed line above — every apply run now states, before the
+            // pipeline is built, exactly what will and will not touch disk
+            // (finding once-033: the surface was inert-but-documented).
+            $output->writeln('<comment>phpdup: dry-run apply posture (--dry-run default) — '
+                . 'a preview patch lands under ' . self::escapeMarkup($applyRoot)
+                . '/apply.diff; no member file is rewritten. Re-run with --dry-run=false to apply.</comment>');
         }
 
         $buildPipeline = $this->buildPipelineFactory($pipelineOpts);
