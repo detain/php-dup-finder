@@ -9,7 +9,7 @@ namespace Phpdup\Testing;
  * Inputs are simple arrays so the renderer is unit-testable without
  * spinning up the full bench pipeline. The bench harness
  * (`bench/run.php`) hydrates these arrays from real tool runs; the
- * tests under `tests/Unit/Bench/` construct synthetic inputs.
+ * tests under `tests/Unit/Testing/` construct synthetic inputs.
  */
 final class BenchmarkResultsRenderer
 {

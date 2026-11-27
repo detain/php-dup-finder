@@ -37,7 +37,7 @@ namespace Phpdup\Testing;
  * transitive closure over shared members — before it reaches score().
  *
  * Used by the bench harness (`bench/run.php` + `bench/score.php`) and by
- * `tests/Unit/Bench/BenchmarkScoreCalculatorTest.php`.
+ * `tests/Unit/Testing/BenchmarkScoreCalculatorTest.php`.
  */
 final class BenchmarkScoreCalculator
 {
