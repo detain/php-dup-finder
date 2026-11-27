@@ -136,6 +136,12 @@ $ phpdup serve --host 0.0.0.0
 phpdup serve: refusing to bind to non-loopback host '0.0.0.0' without --bind-public.
 ```
 
+Any startup refusal — a blocked host/token combination, an invalid
+`--serve-workers` value, a foreign-owned results directory, a failed
+socket bind — ends the process with exit `1`: `serve` refuses ride the
+runtime posture, never the invalid-input `2` door (classified in the
+single source-of-truth [docs/CLI.md § Exit codes](CLI.md#exit-codes)).
+
 Exposing the server beyond loopback is the deliberate, guarded case,
 and it takes two opt-ins. `--bind-public` on its own is refused the
 same way, because an unauthenticated public endpoint hands anyone on
@@ -637,7 +643,7 @@ of truth, and the unit suite pins the payload against it):
 ```
 
 Response: `200` + `{ "similarity": 0.91, "confidence": 0.78 }` — both
-numbers must be finite and within `[0, 1]` (they pass
+numbers must be finite and within `0..1` (they pass
 `MlClient::coerceUnitFloat()` before the tier compares `similarity`
 with `--ml-pair-threshold`; engine-S20).
 
@@ -658,7 +664,7 @@ the client consumes it positionally (engine-S20). Each entry is either
 a named object or a positional list whose first two elements are
 `similarity` then `confidence` (trailing fields are ignored). A
 malformed entry — not an array, too short, or numbers failing the
-`[0, 1]` fence — becomes a null slot: that pair receives no ML-tier
+`0..1` fence — becomes a null slot: that pair receives no ML-tier
 edge while its neighbours keep their verdicts.
 
 ### What the sidecar sees on the wire
@@ -667,9 +673,14 @@ Every endpoint URL passes the shared SSRF gate (`MlClient::gateUrl()`,
 engine-S19a/b): http(s) only, canonical-IP-literal-or-resolving host,
 and every candidate address cleared of the refused spaces (loopback,
 RFC 1918, CGNAT, link-local, ULA, IPv4-mapped, multicast/reserved/
-broadcast, localhost deny-list) — so today a loopback or private-range
-sidecar URL is refused at admission; the planned opt-in
-`--ml-pair-allow-private` (once-S54, default off) does not exist yet.
+broadcast, localhost deny-list) — so by default a loopback or
+private-range sidecar URL is refused at admission. The
+`ml_pair_allow_private` opt-in (once-S54, default off, root config
+only — subtree `.phpdup.json` copies are refused) admits the private
+families; reserved space stays refused even with it on. The argv
+spelling `--ml-pair-allow-private` is not registered yet — the opt-in
+is config-file-only at this tip (see the flag's row in
+[docs/CLI.md](CLI.md#analyze--options)).
 The gate-checked addresses are then the dialled addresses (curl
 `CURLOPT_RESOLVE`; stream rewrite + explicit `Host` + `ssl.peer_name`),
 the gate decision is computed once per client instance and one reused
