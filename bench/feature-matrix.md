@@ -15,12 +15,12 @@ labeled and force-committed with the claims they back).
 
 Tools evaluated:
 
-| Tool        | Origin | Last release (as of 2026-05) | Language       |
+| Tool        | Origin | Last release (2026-05; jscpd row re-checked Nov 2026) | Language       |
 |-------------|--------|------------------------------|----------------|
-| **phpdup**  | this repo | 0.1.x active                | PHP            |
+| **phpdup**  | this repo | 0.1.x active                | PHP (structural tier) + text tier `--kinds text` (js/ts/json/tpl/twig/yaml/sh/css/html) |
 | phpcpd      | sebastianbergmann | 6.0.3 (archived 2023, no longer maintained) | PHP |
 | pmd-cpd     | PMD    | 7.x active                   | Java           |
-| jscpd       | kucherenko | 4.x active                | Node/TS        |
+| jscpd       | kucherenko | 5.x native Rust binary (4.x line npm/Node) | multi-language (per-format) |
 | simian      | RedHill | commercial, sporadic         | Java           |
 
 ## Capability matrix
@@ -35,6 +35,8 @@ N/A = not applicable.
 | Type-3 (gapped, optional segments)      | ✓      | ✗      | ✗       | ✗     | ✗      |
 | Type-4 (semantic equivalence)           | partial (heuristic via tags) | ✗ | ✗ | ✗ | ✗ |
 | AST-based matching                      | ✓      | ✗ (token) | ✗ (token) | ✗ (token) | ✗ (line) |
+| Non-PHP text tier (js/ts/json/tpl/twig/yaml/sh/css/html) | ✓ (`--kinds text`, type-1/2 lexical) | ✗ | ✗ | ✓ (per-format CLI) | ✗ |
+| Cross-language twin pairs (.js ↔ .tpl)  | ✓ (text tier — keyed in `bench/corpora/text-twins`) | ✗ | ✗ | ✗ (formats compared per-language) | ✗ |
 | Anti-unification → suggested abstraction| ✓      | ✗      | ✗       | ✗     | ✗      |
 | Pattern-tag classification              | ✓ (sql-builder, crud-handler, validation-chain, …) | ✗ | ✗ | ✗ | ✗ |
 | Refactor-patch generation               | ✓ (`--refactor-patch`) | ✗ | ✗ | ✗ | ✗ |
@@ -120,9 +122,17 @@ N/A = not applicable.
 - Mature IDE integration. PMD has a JetBrains plugin going back over
   a decade; phpdup has none yet. If your team already lives inside
   PhpStorm's PMD inspections, that's a real lock-in.
-- Multi-language support. jscpd handles PHP, JS/TS, Python, Java,
-  Ruby, Go, Rust, etc. from a single binary. phpdup is PHP-only by
-  design.
+- Multi-language support. jscpd 5.x handles PHP, JS/TS, Python, Java,
+  Ruby, Go, Rust, etc. as per-format token streams from a single
+  self-contained Rust binary. phpdup's structural (AST) tier remains
+  PHP by design; since item 7.1 the `--kinds text` tier adds a
+  language-neutral token tier that catches type-1/2 clones in
+  js/ts/json/tpl/twig/yaml/sh/css/html — including cross-language
+  twins jscpd cannot see (its formats are compared per-language).
+  Measured on `bench/corpora/text-twins`: native keyed recall 4/4;
+  jscpd 5.4.3 default 2/4, and 3/4 with `--ignore-identifiers
+  --ignore-literals` — blind to the cross-language family in every
+  stance (CI job `text-tier-bench`, see docs/CI.md).
 - Maintenance perception. phpcpd is archived but it's the historical
   default — many CI pipelines still run it. New tools fight history.
 
@@ -136,8 +146,10 @@ and don't care about the long-term lack of maintenance.
 want a JetBrains plugin, or have a polyglot codebase that includes
 Java/Apex/Salesforce code along with PHP.
 
-**Choose jscpd when:** the codebase is multi-language and you want
-one tool to cover everything.
+**Choose jscpd when:** you want per-language token clones across many
+language families (Python/Java/Go/Rust …) from one binary. For JS/
+template/YAML text twins and cross-language clones, phpdup's text tier
+now covers those keyed families itself (see the measured row above).
 
 **Choose simian when:** … you probably won't. It's commercial,
 language-agnostic, line-based, and has fallen behind the open-source

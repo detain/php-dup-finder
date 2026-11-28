@@ -105,6 +105,28 @@ docs tree — the target file must exist and any `#fragment` must match a
 GitHub-style slug of a real heading outside fenced code. A docs edit
 that breaks an href turns this leg red before merge.
 
+The `text-tier-bench` job (JLEG, item 7.1 interim comparator) gates the
+native text tier's keyed recall on `bench/corpora/text-twins`:
+`php bench/corpora.php --text-twins-only` materializes the deterministic
+planter output under the `[text-twins]` pins, then
+`php bench/text-tier-acceptance.php` must report every keyed family
+CAUGHT with zero false-positive clusters — any miss or negative-control
+hit exits 1 and reddens the job. The jscpd columns it also prints are
+informational deltas only (what the per-format competitor catches, what
+it is blind to). The comparator is the self-contained jscpd 5.x Rust
+release binary pinned by version + per-arch SHA256 in
+`bench/corpus-pins.txt` `[jscpd-rust]`; the CI step resolves the asset
+for the runner arch behind a graceful skip — if the download is
+unreachable the step prints a `::notice::` and the leg still gates
+native-only. A COMPLETE download whose digest does not match the pin is
+the opposite posture: hard red, unverified bytes are never executed.
+Knobs: `--jscpd=PATH` / `$JSCPD_BIN` force a binary, `--no-jscpd`
+skips the comparator deterministically, `--corpus=DIR` points the gate
+at an alternative planted root, `--out=FILE` writes the machine-readable
+evidence JSON (the job uploads it as `text-tier-acceptance-evidence`).
+The same gate is belted hermetically inside the Integration suite by
+`tests/Integration/TextTierBenchAcceptanceTest.php`.
+
 ### Consumer composite action
 
 A maintained composite action lives at `.github/actions/phpdup/action.yml` in
