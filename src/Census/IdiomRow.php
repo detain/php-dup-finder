@@ -12,7 +12,8 @@ namespace Phpdup\Census;
  * two-pass memory policy: a hash seen at only ONE site stores NO
  * locations at all (the per-hash pending slot exists only long enough
  * to pair with a second sighting); hashes seen >= 2 times carry up to
- * `sampleCap` 'file:line' samples.
+ * `sampleCap` 'file:line' samples in canonical ascending order — the
+ * survivor set is invariant under ingest order (r1-M1).
  */
 final class IdiomRow
 {

@@ -5,6 +5,7 @@ namespace Phpdup\Tests\Unit\Census;
 
 use PHPUnit\Framework\TestCase;
 use Phpdup\Census\SubtreeCensus;
+use Phpdup\Census\SubtreeMiner;
 
 /**
  * Item 3.1 substrate — cross-file census: the doc's two-pass location
@@ -73,6 +74,67 @@ final class SubtreeCensusTest extends TestCase
         $row = $census->rows()[0];
         self::assertSame(5, $row->sites);
         self::assertCount(2, $row->locations, 'locations are bounded per hash no matter the repetition');
+        self::assertSame(
+            ['f0.php:1', 'f1.php:2'],
+            $row->locations,
+            'cap pressure retains the LOWEST keys (canonical survivors)',
+        );
+    }
+
+    public function testSampleLocationsAreCanonicalAcrossIngestOrders(): void
+    {
+        // r1-M1: rows()/maximalRows() must render byte-identically over
+        // permuted file order AND permuted per-row line order — the old
+        // append-until-cap list leaked ingest interleaving into both the
+        // survivors and the rendering under sampleCap pressure.
+        $rowsFor = static function (array $files): array {
+            $census = new SubtreeCensus(sampleCap: 3);
+            foreach ($files as [$file, $lines]) {
+                $census->recordFile($file, self::payload([['k', 'a', 8, 'Stmt_x', 1, $lines]]));
+            }
+            return array_map(
+                static fn($r): array => [
+                    $r->exactHash, $r->abstractHash, $r->nodes, $r->rootType,
+                    $r->sites, $r->files, $r->locations,
+                ],
+                $census->maximalRows(),
+            );
+        };
+
+        // As strings: 'p.php:40' < 'p.php:5' < 'q.php:1' < 'r.php:9'.
+        $forward  = $rowsFor([['q.php', [1]], ['p.php', [40, 5]], ['r.php', [9]]]);
+        $reverse  = $rowsFor([['r.php', [9]], ['p.php', [40, 5]], ['q.php', [1]]]);
+        $shuffled = $rowsFor([['p.php', [5, 40]], ['r.php', [9]], ['q.php', [1]]]);
+
+        self::assertSame($forward, $reverse, 'permuted file order renders byte-identical rows');
+        self::assertSame($forward, $shuffled, 'permuted in-row line order renders byte-identical rows');
+        self::assertSame(
+            ['p.php:40', 'p.php:5', 'q.php:1'],
+            $forward[0][6],
+            'survivors are exactly the lowest sampleCap keys, canonically ordered',
+        );
+    }
+
+    public function testWireRejectsMoreThanFourSampleLines(): void
+    {
+        // r1-m1: the CONTRACT FOR CONSUMERS wire shape is lines[≤4];
+        // a longer row must halt at the boundary, not ingest silently.
+        $census = new SubtreeCensus();
+        $census->recordFile('a.php', self::payload([['k', 'ab', 6, 'Expr_a', 5, [1, 2, 3, 4]]]));
+        self::assertSame(5, $census->sitesOf('k'), 'the 4-line boundary row is legal');
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('wire cap is 4');
+        $census->recordFile('b.php', self::payload([['k', 'ab', 6, 'Expr_a', 6, [1, 2, 3, 4, 5]]]));
+    }
+
+    public function testWireCapMatchesMinerRowCap(): void
+    {
+        self::assertSame(
+            SubtreeMiner::DEFAULT_ROW_CAP,
+            SubtreeCensus::MAX_WIRE_LINES,
+            'miner sealing cap and census wire cap are one contract',
+        );
     }
 
     public function testRankingOrderIsSitesFilesHash(): void

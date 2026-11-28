@@ -22,19 +22,35 @@ namespace Phpdup\Census;
  *    the first sighting parks a single pending scalar, the second
  *    pairs them into the sample list; a hash seen at exactly one site
  *    stores ZERO location strings;
- *  - each hash's sample list is capped at `sampleCap` — bounded per
- *    distinct hash no matter how often it repeats.
+ *  - each hash's sample list is capped at `sampleCap` AND
+ *    canonicalised: it is kept in ascending 'file:line' order and an
+ *    insert that overflows the cap evicts the HIGHEST key, so the
+ *    survivors are always the lowest `sampleCap` keys seen —
+ *    invariant under the record/interleave order (forked worker-pool
+ *    ingest included). Which hashes carry samples at all still
+ *    follows the two-pass first-pairing rule above.
  *
  * The keyspace is the EXACT hash (the letter counts "each hash" — the
  * abstract key rides along on the row for the pseudo-cluster tier).
  * Rows ordered by sites desc, files desc, then exact-hash asc — the
- * FindingId-law tie-break so two runs over permuted file order render
- * byte-identical tables.
+ * FindingId-law tie-break — and with the canonicalised sample lists
+ * this means two runs over permuted file order render byte-identical
+ * tables: row order, counters AND the per-hash location lists
+ * (rows() and, through it, maximalRows()).
  */
 final class SubtreeCensus
 {
     /** Default per-hash location-sample cap. */
     public const DEFAULT_SAMPLE_CAP = 10;
+
+    /**
+     * Wire bound on the sample-line list of one site row — the
+     * CONTRACT FOR CONSUMERS shape `lines[≤4]`, matching the miner's
+     * sealing cap {@see SubtreeMiner::DEFAULT_ROW_CAP}. A longer row
+     * is malformed at the boundary regardless of which producer
+     * emitted it.
+     */
+    public const MAX_WIRE_LINES = 4;
 
     /**
      * @var array<string, array{
@@ -101,6 +117,14 @@ final class SubtreeCensus
             [$exact, $abstract, $nodes, $rootType, $count, $lines] = $entry;
             if ($exact === '' || $count < 1) {
                 throw new \InvalidArgumentException('idiom site row needs a key and count>=1 in ' . $file);
+            }
+            if (count($lines) > self::MAX_WIRE_LINES) {
+                throw new \InvalidArgumentException(sprintf(
+                    'idiom site row carries %d sample lines, wire cap is %d in %s',
+                    count($lines),
+                    self::MAX_WIRE_LINES,
+                    $file,
+                ));
             }
             $this->sitesTotal += $count;
             if (!isset($this->byExact[$exact])) {
@@ -225,21 +249,48 @@ final class SubtreeCensus
      * Two-pass materialisation: first sighting parks ONE pending
      * scalar; the second pairs it into the capped list. One-site hashes
      * never grow a locations array.
+     *
+     * Canonicalisation (r1-M1): the pair materialises sorted, and
+     * later sightings insert sorted with the highest key evicted over
+     * the cap — the surviving sample set (and its rendered order)
+     * cannot depend on ingest order.
      */
     private function noteLocation(string $exact, string $location): void
     {
         if (isset($this->locations[$exact])) {
-            if (count($this->locations[$exact]) < $this->sampleCap) {
-                $this->locations[$exact][] = $location;
-            }
+            $this->insertSample($exact, $location);
             return;
         }
         if ($this->pending[$exact] === null) {
             $this->pending[$exact] = $location;
             return;
         }
-        $this->locations[$exact] = [$this->pending[$exact], $location];
+        $pair = [$this->pending[$exact], $location];
+        sort($pair);
+        // sampleCap may be 1: the fresh pair must trim to the cap too.
+        $this->locations[$exact] = array_slice($pair, 0, $this->sampleCap);
         $this->pending[$exact]   = null; // release the scalar
+    }
+
+    /**
+     * Ascending insert into the capped list, evicting the highest key
+     * on overflow (list stays at most sampleCap + 1 transiently — the
+     * same bounded posture an append-until-cap list has). Ties on the
+     * key are fine: equal locations render equally either way.
+     */
+    private function insertSample(string $exact, string $location): void
+    {
+        /** @var list<string> $list */
+        $list = $this->locations[$exact];
+        $pos  = count($list);
+        while ($pos > 0 && $list[$pos - 1] > $location) {
+            $pos--;
+        }
+        array_splice($list, $pos, 0, [$location]);
+        if (count($list) > $this->sampleCap) {
+            array_pop($list);
+        }
+        $this->locations[$exact] = $list;
     }
 
     /**
