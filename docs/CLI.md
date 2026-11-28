@@ -96,8 +96,8 @@ for the full JSON-Schema-compatible spec.
 | `--plantuml FILE`                          | —       | Write a PlantUML class diagram to FILE — render with `plantuml FILE`.                  |
 | `--refactor-patch DIR`                     | —       | Emit one `.patch` file per cluster into DIR — heuristic, manual-review-required; generated names follow the naming posture below. |
 | `--refactor-tests DIR`                     | —       | Emit a PHPUnit test skeleton per cluster into DIR (data-provider rows mirror the hole observations). |
-| `--baseline FILE`                          | —       | CI baseline file. If FILE exists: compare and exit 4 if new clusters found. If FILE does not exist: write baseline and exit 0 (first-run auto-baseline). |
-| `--baseline-out FILE`                      | —       | Write current clusters as a baseline snapshot to FILE (overwrites existing).           |
+| `--baseline FILE`                          | —       | CI baseline file. If FILE exists: compare and exit 4 if new clusters found. If FILE does not exist: write baseline and exit 0 (first-run auto-baseline). A v4 baseline may also carry a `dispositions` register of accepted findings: an accepted finding currently present drops out of the main report into the baseline appendix, is excluded from the exit-4 new-cluster count, and an acceptance whose code drifted (live id no longer matches) RESURFACES fail-open — the replacement cluster stays in the main report, still gates, and the appendix names the superseded id. |
+| `--baseline-out FILE`                      | —       | Write current clusters as a baseline snapshot to FILE (overwrites existing). Live acceptances harvested this run — `@phpdup-ignore` directives and the root `accepted` config list — are persisted into the snapshot as v4 dispositions, merged over (incoming wins on) any dispositions the prior FILE already carried. |
 | `--limit N`                                | `50`    | Maximum number of cluster detail cards printed to the terminal. `N` is an integer ≥ 0; a negative or non-numeric value is fatal (exit 2). Doesn't affect file outputs — `--json`/`--html`/etc. always carry every cluster. `0` prints NO detail cards: unlike the `--candidate-budget` / `max_clusters` family (where `0` = unlimited), `--limit 0` is not a show-all sentinel — the totals banner and summary line still describe the full set while the card list stays empty. To see every cluster, pass a large `N`. |
 | `--summary-only`                           | off     | Render only the top banner and the final summary line — the per-cluster detail cards are skipped (banner totals still describe the full set). |
 | `--clusters`                               | off     | Render a one-line-per-cluster table instead of the full per-cluster breakdown.         |
@@ -278,6 +278,30 @@ CI build only when **new** duplicate clusters appear in subsequent runs.
    # Replaces baseline.json atomically (temp + fsync + rename under
    # LOCK_EX: readers never see a half-written file), exits 0
    ```
+
+**Accepted findings and the appendix (v4).** A baseline is not only a hash
+snapshot: a team decision to KEEP a duplication (suppressed with
+acknowledgement) rides the same file as a `dispositions` map,
+`{finding_id: {status, note?, accepted_at?, provenance}}`, where status is
+`accepted` or `unresolved` and provenance records the member files, their
+mtimes, the member hashes and the git SHA (when one is available) of the
+run that took the decision. Acceptances come from three sources, in
+precedence order: the registry (dispositions inside the `--baseline`
+file), in-code directives (`// @phpdup-ignore <finding-id>` or
+`// @phpdup-ignore *`, optionally followed by a free-text reason, inside
+one of the finding's member files — a directive can only accept findings
+that touch its own file), and the root `accepted` list in `phpdup.json`.
+Persisting is NEVER the default (FunctionNameRegistry posture): decisions
+reach a file only through the explicit `--baseline-out` / first-run-write
+legs above. An accepted current finding leaves the main report — CLI,
+HTML and the cluster counts — and is enumerated in the baseline appendix
+instead; `unresolved` entries never suppress anything; and an acceptance
+whose provenance files now carry a DIFFERENT finding id RESURFACES: the
+live cluster stays in the main report and still trips the exit-4 gate
+(fail-open re-review), while the appendix names both the live id and the
+superseded one. Nothing renders when no decision exists — a run without
+baseline dispositions, directives or an `accepted` list reports exactly
+as before this feature.
 
 **Exit codes:** every `--baseline` / `--baseline-out` outcome — first-run
 write, `--baseline-out` refresh, clean compare, an empty or corrupt gate
@@ -804,6 +828,7 @@ with the offending field path on the first violation.
 | `optional_blocks.min_segment_length`   | integer          | `1`              | `>= 1`. Minimum stmt-array gap length to promote.                        |
 | `report.html`                          | string           | —                | Equivalent to `--html DIR`.                                              |
 | `report.json`                          | string           | —                | Equivalent to `--json FILE`.                                             |
+| `accepted`                               | list of strings  | `[]`             | Baseline decisions held in config: finding ids the team has accepted. Suppressed from the main report into the baseline appendix with source `config`, excluded from the `--baseline` gate's new-cluster count, and fail-open resurfaced when the finding's code drifts (see "Accepted findings and the appendix" under CI / Baseline). Precedence: registry > directive > this list. Root config only — per-directory `.phpdup.json` files carrying this key fail the load; no CLI flag (`baseline` sibling posture). |
 
 Unknown top-level keys and unknown nested keys under `optional_blocks`
 or `report` are rejected with a clear error.
@@ -812,8 +837,8 @@ or `report` are rejected with a clear error.
 
 Discovery walks every scan root (pruned by the exclude layers above) and
 reads each `.phpdup.json` it meets. Admission is **total** (once-S67,
-php-dup-finder-once-077): of the 44 top-level keys above, **11 are
-honored per subtree and 33 are refused at load** — there is no third
+php-dup-finder-once-077): of the 46 top-level keys above, **11 are
+honored per subtree and 34 are refused at load** — there is no third
 state of "admitted but inert". The third state used to be the file's own
 lie: the seven clustering/gate stances (`similarity_threshold`,
 `tree_threshold`, `min_cluster_impact`, `max_df`, `candidate_budget`,
@@ -845,12 +870,12 @@ subtree file invalidates exactly that subtree's warm cache):
 
 **Refused at load** — a subtree file carrying any of these fails the run
 with `"<key> is not a per-directory key (root phpdup.json only): <file>"`
-(exit 2, naming key and file). The 33-key roster in four families:
+(exit 2, naming key and file). The 35-key roster in four families:
 
 | Family | Keys | Why root-only |
 |--------|------|---------------|
 | Fingerprint / pair / report stance | `fingerprint_id_mode`, `scope`, `score_mode`, `max_ted_size`, `window_oversized`, `honor_gitignore`, `max_hole_coverage`, `ted_weights`, `scorer`, `ir_threshold` | Pairs and clusters span directories; the stance is chosen once per run (a per-directory value would be ambiguous even if it were read). |
-| Write / ref / code / sidecar | `report`, `apply`, `normalization`, `baseline`, `baseline_out`, `diff_base`, `debug_log`, `ml_pair_allow_private`, `ml_pair_url`, `ml_pair_threshold` | They name files the run reads or WRITES, argv for git, plugin class loaders, or a network sidecar — the shell-S22 family posture: no scanned subtree may choose them (a planted `ml_pair_url` must fail loudly, once-S54; the old silent inertness was the once-076 exploit's vehicle). |
+| Write / ref / code / sidecar | `report`, `apply`, `normalization`, `baseline`, `baseline_out`, `accepted`, `diff_base`, `debug_log`, `ml_pair_allow_private`, `ml_pair_url`, `ml_pair_threshold` | They name files the run reads or WRITES, argv for git, plugin class loaders, or a network sidecar — the shell-S22 family posture: no scanned subtree may choose them (a planted `ml_pair_url` must fail loudly, once-S54; the old silent inertness was the once-076 exploit's vehicle). |
 | Run plumbing | `paths`, `cache_dir`, `parallelism`, `workers`, `incremental`, `lazy_ast` | One cache root and one worker pool per run; `paths` is fixed before discovery walks the trees; `lazy_ast` mints the reload machinery from the ROOT flag only, so a subtree `true` would unload ASTs the run could never reload. |
 | Whole-run clustering / gate stances (shed by once-S67) | `similarity_threshold`, `tree_threshold`, `min_cluster_impact`, `max_df`, `candidate_budget`, `sort`, `fail_on_impact`, `max_clusters`, `optional_blocks` | Every reader receives the root config — admission without observability was the dishonesty; refusal replaces it. |
 
