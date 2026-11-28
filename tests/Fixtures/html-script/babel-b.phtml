@@ -1,0 +1,25 @@
+<?php
+
+namespace Phpdup\Fixtures\BabelBeta;
+
+function tag(): string
+{
+    return 'babel-beta';
+}
+?>
+<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="utf-8"><title>Jauge Beta</title></head>
+<body class="babel-b">
+  <header><h1>Tableau de bord</h1></header>
+  <section class="zone"><span id="gauge-root"></span></section>
+      <script type="text/babel" data-presets="react">
+function Gauge(props) {
+  const pct = Math.min(100, Math.max(0, props.value / props.max * 100));
+  return <div className="gauge"><span style={{width: pct + '%'}}>{pct}</span></div>;
+}
+ReactDOM.render(<Gauge value={window.__G.value} max={window.__G.max} />, document.getElementById('gauge-root'));
+  </script>
+  <footer>étiquette <?= tag() ?></footer>
+</body>
+</html>

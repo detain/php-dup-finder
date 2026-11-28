@@ -1,0 +1,25 @@
+<?php
+
+namespace Phpdup\Fixtures\EscapedWindow;
+
+function guard(): string
+{
+    return 'escaped-window';
+}
+?>
+<div class="shell">
+  <h1>Escaped input</h1>
+  <script>
+<?php
+$who = htmlspecialchars($_GET['who'] ?? 'world', \ENT_QUOTES);
+$epoch = \time();
+?>
+var greeting = "hello";
+var recipient = "<?= $who ?>";
+var issued = <?= $epoch ?>;
+console.log(greeting + ' ' + recipient, issued);
+navigator.sendBeacon('/collect', JSON.stringify({w: recipient, e: issued}));
+  </script>
+  <script src="/static/external-reporter.js"></script>
+  <p>guard <?= guard() ?></p>
+</div>

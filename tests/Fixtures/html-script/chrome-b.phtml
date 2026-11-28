@@ -1,0 +1,35 @@
+<?php
+
+namespace Phpdup\Fixtures\BetaChrome;
+
+function note(): string
+{
+    return 'beta-chrome';
+}
+?>
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>Beta Hinweis</title>
+  <link rel="stylesheet" href="/static/beta.css">
+</head>
+<body class="beta-seite">
+  <nav><a href="/beta">Beta</a><a href="/impressum">Impressum</a></nav>
+  <div class="inhalt">
+    <h2>Beta-Übersicht</h2>
+    <p>Diese Seite zeigt Hinweise in einer anderen Chrome-Anordnung.</p>
+    <table><tr><td>Spalte</td><td>Wert</td></tr></table>
+      <script>
+function bootReport(cfg) {
+  var rows = cfg.map(function (r) { return r.value * 2 + r.bonus; });
+  var total = rows.reduce(function (a, b) { return a + b; }, 0);
+  document.getElementById('alpha-total').textContent = total;
+  return total;
+}
+bootReport(window.__REPORT_CFG || []);
+  </script>
+  </div>
+  <aside><small>Beta-Hinweis <?= note() ?></small></aside>
+</body>
+</html>

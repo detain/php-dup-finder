@@ -1,0 +1,26 @@
+<?php
+
+namespace Phpdup\Fixtures\AlphaChrome;
+
+function stamp(): string
+{
+    return 'alpha-chrome';
+}
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Alpha panel</title></head>
+<body class="alpha-page">
+  <h1>Alpha totals</h1>
+  <script>
+function bootReport(cfg) {
+  var rows = cfg.map(function (r) { return r.value * 2 + r.bonus; });
+  var total = rows.reduce(function (a, b) { return a + b; }, 0);
+  document.getElementById('alpha-total').textContent = total;
+  return total;
+}
+bootReport(window.__REPORT_CFG || []);
+  </script>
+  <footer>rendered by <?= stamp() ?></footer>
+</body>
+</html>

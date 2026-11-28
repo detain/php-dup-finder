@@ -23,8 +23,11 @@ final class FileScannerTest extends TestCase
         $scanner = new FileScanner([]);
         $files = iterator_to_array($scanner->scan(__DIR__ . '/../../Fixtures'), false);
         $this->assertNotEmpty($files);
+        // The accepted-extension roster is wider than '.php' alone since the
+        // item 7.2b html-script corpus landed (.phtml templates ride the same
+        // door as .inc/.php8 — FileScanner's own extension list governs).
         foreach ($files as $f) {
-            $this->assertStringEndsWith('.php', $f);
+            $this->assertMatchesRegularExpression('/\.(php|php8|phtml|inc)$/', $f);
         }
     }
 
