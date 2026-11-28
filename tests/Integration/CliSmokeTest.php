@@ -923,7 +923,16 @@ final class CliSmokeTest extends TestCase
         // block; the CLI-level fire/inert/refusal pins target this dir,
         // see CliDriftVocabularyTest), so the corpus grows 91 -> 95 files,
         // clusters 43 -> 45 and duplicated_lines 1023 -> 1122, all
-        // zero-parse-error, balance law intact.
+        // zero-parse-error, balance law intact. Re-pin T1a 7.2b era
+        // (+tests/Fixtures/html-script): 5 .phtml templates; their inline
+        // <script> window folds are NEVER minted under the default roster
+        // (html_script is opt-in, never-implicit-at-mint), but the five
+        // files' namespace guard functions share one shape (function x():
+        // string { return 'lit'; }), so they cluster as one honest 5-member
+        // exact family — the corpus's first default-roster proof that PHP
+        // blocks extract from .phtml at all. Files 95 -> 100, clusters
+        // 45 -> 46, duplicated_lines 1122 -> 1142, schema still 1.8, zero
+        // parse errors, balance law intact.
         $fixtures = realpath(__DIR__ . '/../Fixtures');
         $this->assertIsString($fixtures);
 
@@ -937,10 +946,10 @@ final class CliSmokeTest extends TestCase
         $decoded = json_decode((string) file_get_contents($this->tmp . '/r.json'), true);
         $s = $decoded['summary'];
         $this->assertSame('1.8', $decoded['schema_version']);
-        $this->assertSame(95, $s['files_scanned']);
+        $this->assertSame(100, $s['files_scanned']);
         $this->assertSame(0, $s['parse_errors'], 'the fixture corpus must parse cleanly');
-        $this->assertSame(45, $s['clusters'], 'planted fixture clones must keep being found (re-pin only WITH fixture changes)');
-        $this->assertSame(1122, $s['duplicated_lines']);
+        $this->assertSame(46, $s['clusters'], 'planted fixture clones must keep being found (re-pin only WITH fixture changes)');
+        $this->assertSame(1142, $s['duplicated_lines']);
         $this->assertSame(
             $s['files_scanned'],
             $s['files_reused'] + $s['files_processed'] + $s['files_without_blocks'] + $s['parse_errors'],
