@@ -6,6 +6,7 @@ namespace Phpdup\Reporting;
 use Phpdup\Cli\Config;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
+use Phpdup\Extraction\BlockExtractor;
 use Phpdup\Refactor\Hole;
 use Phpdup\Refactor\HoleCoverage;
 use Phpdup\Refactor\PlacementAdvisor;
@@ -234,7 +235,7 @@ final class JsonReporter
         // output-S41: canonical template resolved once per cluster —
         // template/source/evidence all ask the same question.
         $template    = HoleCoverage::canonicalTemplate($c);
-        return [
+        $payload = [
             'id'           => $c->id,
             // Governed by JsonSchemaSpec::clusterShape() as string|null:
             // a populated cluster states its block kind, the null case
@@ -340,6 +341,87 @@ final class JsonReporter
             // Item 5.3: trailing-additive placement advice — where the
             // extraction should live, classified from holes + labels only.
             'placement'     => $advisor->advise($c),
+        ];
+        // Item 2.3: the class-shape table — a CONDITIONAL key, present
+        // only when the cluster's first member is a class block (the
+        // kind is opt-in, so default payloads keep their byte-frozen
+        // key set: this is precisely why it cannot ride hole_fragment's
+        // always-present-null style — every extra always-key moves the
+        // golden files, and the shape table exists to cluster without
+        // moving them).
+        if ($c->members !== [] && $c->members[0]->kind === BlockExtractor::CLASS_KIND) {
+            $payload['class_shape'] = self::classShapePayload($c);
+        }
+        return $payload;
+    }
+
+    /**
+     * Item 2.3 — the doc's skeleton-family table, computed from the
+     * members' shape sidecars (never persisted on Cluster, same law as
+     * `scope` above).
+     *
+     * shape_exact: every member shares one name-blanked skeleton hash
+     * (declaration twins: RateLimitState pairs, interface clones).
+     * shared_methods: per method NAME present in ≥2 members, how many
+     * members carry it and the distinct hash counts on both lanes,
+     * with the doc's three-way verdict —
+     *   identical-in-all    one strict `s` hash (byte-equal bodies):
+     *                       pull the method up as-is;
+     *   parameterizable     splits on the strict lane but one run-fold
+     *                       `d` hash: same shape modulo literals/vars —
+     *                       the template-method proposal;
+     *   divergent           body SHAPE differs — flagged for 6.1-grade
+     *                       unification before any base-class claim.
+     *
+     * @return array{shape_exact:bool,class_names:list<string>,shared_methods:array<string,array{members_with_method:int,distinct_strict_hashes:int,distinct_fold_hashes:int,verdict:string}>}
+     */
+    private static function classShapePayload(Cluster $c): array
+    {
+        $hashes = [];
+        $names  = [];
+        $byMethodStrict  = [];
+        $byMethodFold    = [];
+        $methodSeen      = [];
+        foreach ($c->members as $m) {
+            // Mixed-kind clusters are pre-existing Clusterer behavior (the
+            // ngram tiers are kind-blind; a class's bag overlaps its own
+            // members' heavily). The shape table describes the CLASS
+            // members only — a co-clustered method/fragment block must
+            // never contaminate class_names or the verdict counts.
+            if ($m->kind !== BlockExtractor::CLASS_KIND) {
+                continue;
+            }
+            $hashes[$m->structuralHash] = true;
+            $names[] = $m->name ?? '';
+            foreach ($m->shapeMethods as $method => $pair) {
+                $byMethodStrict[$method][$pair['s']] = true;
+                $byMethodFold[$method][$pair['d']] = true;
+                $methodSeen[$method][spl_object_id($m)] = true;
+            }
+        }
+        $memberCount = count($c->members);
+        $shared = [];
+        foreach ($methodSeen as $method => $owners) {
+            $with = count($owners);
+            if ($with < 2) {
+                continue; // a member nobody shares nothing to propose
+            }
+            $sDistinct = count($byMethodStrict[$method] ?? []);
+            $dDistinct = count($byMethodFold[$method] ?? []);
+            $shared[$method] = [
+                'members_with_method'   => $with,
+                'distinct_strict_hashes' => $sDistinct,
+                'distinct_fold_hashes'   => $dDistinct,
+                'verdict' => $sDistinct <= 1
+                    ? 'identical-in-all'
+                    : ($dDistinct <= 1 ? 'parameterizable' : 'divergent'),
+            ];
+        }
+        ksort($shared);
+        return [
+            'shape_exact'  => count($hashes) === 1,
+            'class_names'  => $names,
+            'shared_methods' => $shared,
         ];
     }
 

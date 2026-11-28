@@ -14,6 +14,7 @@ use Phpdup\Ir\IrPrinter;
 use Phpdup\Normalization\DbOpRegistry;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Normalization\PluginRegistry;
+use Phpdup\Normalization\ShapeFingerprint;
 use Phpdup\Parsing\AstCache;
 use Phpdup\Parsing\AstParser;
 use Phpdup\Util\LineRange;
@@ -316,8 +317,33 @@ final class PreprocessWorker
                         $output->writeln(sprintf('worker:   extracted block kind=%s size=%d from %s', $block->kind, $block->size, $path));
                     }
                     $tools['normalizer']->normalize($block);
-                    $block->structuralHash = $hasher->hash($block->canonical);
-                    $block->ngramBag = $tools['fp']->fingerprint($block->canonical);
+                    // Item 2.3: a class block's whole-unit identity IS its
+                    // name-blanked SHAPE skeleton (the doc's same-shape-
+                    // different-name law, realized on the existing fold
+                    // chain per f08's groundwork note) — the regular
+                    // structuralHash/ngramBag are minted over the skeleton
+                    // instead of the named tree. Shape tokens ride the
+                    // sidecar fields ($shapeMembers: the doc's literal
+                    // member table; $shapeMethods: the skeleton-family
+                    // verdict fuel). Opt-in posture: the arm is inert for
+                    // every default run (the extractor never mints the
+                    // kind without an explicit roster).
+                    if ($block->kind === BlockExtractor::CLASS_KIND
+                        && $block->ast instanceof Stmt\ClassLike
+                    ) {
+                        $skeleton = ShapeFingerprint::skeleton($block->canonical);
+                        $block->structuralHash = $hasher->hash($skeleton);
+                        $block->ngramBag = $tools['fp']->fingerprint($skeleton);
+                        $block->shapeMembers = ShapeFingerprint::memberSignatures($block->ast);
+                        $block->shapeMethods = ShapeFingerprint::methodHashes(
+                            $block->ast,
+                            $tools['normalizer'],
+                            $hasher,
+                        );
+                    } else {
+                        $block->structuralHash = $hasher->hash($block->canonical);
+                        $block->ngramBag = $tools['fp']->fingerprint($block->canonical);
+                    }
                     // Option-5 IR-tier preprocessing: lift the block's
                     // *original* AST (pre-canonicalisation, so library
                     // surface still informs the lifter's pattern matchers)

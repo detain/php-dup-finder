@@ -322,6 +322,15 @@ final class JsonSchemaSpec
             'safety'                 => 'float',
             'impact'                 => 'int',
             'pattern_tags'           => 'list<string>',
+            // Item 2.3: CONDITIONAL key (the only one in this shape) —
+            // present only on '--kinds class' clusters, so every
+            // default-run payload (the byte-frozen goldens) keeps its
+            // historical key set. Value:
+            // {shape_exact: bool, class_names: list<string>,
+            //  shared_methods: map<method, {members_with_method: int,
+            //  distinct_strict_hashes: int, distinct_fold_hashes: int,
+            //  verdict: identical-in-all|parameterizable|divergent}>}
+            'class_shape'            => '?object  // present ONLY on opt-in class-kind clusters (item 2.3)',
             'outlier_members'        => 'list<int>',
             'architectural_findings' => 'list<object>',
             'signature'              => 'string|null',
