@@ -224,6 +224,7 @@ final class BaselineFilter
 
     /**
      * @param list<array<string, mixed>> $directives
+     * @return array<string, mixed>|null
      */
     private function matchDirective(Cluster $cluster, array $directives): ?array
     {
@@ -250,6 +251,7 @@ final class BaselineFilter
     }
 
     /**
+     * @param list<Cluster> $main
      * @return array<string, list<array{id: string, members: int, impact: int, files: list<string>}>>
      */
     private function indexMainFiles(array $main): array

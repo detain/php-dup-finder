@@ -20,6 +20,7 @@ final class Report
     /**
      * @param list<Cluster> $clusters
      * @param list<array<string, mixed>> $declaredTwins
+     * @param list<array<string, mixed>> $baselineAppendix Item 4.4: accepted/unresolved/resurfaced rows (empty = no decisions).
      * @param list<string> $scanNotes
      * @param list<array{file:string,message:string}> $parseFailures
      */

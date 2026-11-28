@@ -44,6 +44,7 @@ final class Config
      * @param list<string> $paths
      * @param list<string> $exclude
      * @param list<string> $allowedKinds Empty list = accept all kinds.
+     * @param list<string> $accepted Item 4.4: root-only phpdup.json accepted finding ids.
      */
     public function __construct(
         public readonly array $paths,
