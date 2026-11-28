@@ -219,12 +219,31 @@ final class ReportStage implements CooperativeStageInterface
             $pumpDue = $pump() + self::YIELD_BUDGET_SECONDS;
         }
 
+        // Item 6.3 (demand-armed): fold subsumed clone families under
+        // their maximal ancestors BEFORE ranking, per the corrected
+        // placement (improve_logic_info.md §6.3 — ReportStage pre-
+        // Ranker, after the 1.4 medoid-ball split which ClusterStage
+        // already ran). Subsumed families leave the ranked/payload set
+        // entirely — inner clones annotate the outer family (its own
+        // lines already cover theirs) instead of multiplying cluster
+        // counts, total_impact and rank slots. Armed ONLY on the
+        // idiom_mining demand knob (the census-class posture the
+        // statement-fragment nesting rides; no new key): default runs —
+        // every golden, CI smoke and library route — skip this block
+        // byte-identically. The fold shares ONE suppression rule with
+        // 2.1/3.1/7.2c (NestedFamilySuppression::keepMaximal), never a
+        // second copy.
+        $rankInput = $state->clusters;
+        if ($config->idiomMining) {
+            $rankInput = (new \Phpdup\Reporting\SubsumptionFolder())->fold($state->clusters)['maximal'];
+        }
+
         $clusters = (new Ranker(
             minImpact:  $config->minClusterImpact,
             sort:       \Phpdup\Reporting\ClusterSort::parse($config->sort),
             minSafety:  $this->minSafety,
             scoreMode:  $config->scoreMode,
-        ))->rank($state->clusters);
+        ))->rank($rankInput);
 
         // Item 5.1: --scope filters between rank and report (order
         // pinned): gates and reporters both see the filtered set, so a

@@ -108,6 +108,32 @@ final class Cluster
     public array $architecturalFindings = [];
 
     /**
+     * Item 6.3 subsumption fold (improve_logic.md §6.3: "when every
+     * member of cluster B lies inside a member of cluster A, in the
+     * same pairing, fold B under A. Report maximal clones only."):
+     * ids of the clone families folded directly under THIS cluster —
+     * populated only by {@see \Phpdup\Reporting\SubsumptionFolder} on
+     * idiom_mining-armed runs (demand posture: default runs never grow
+     * this, so the frozen goldens keep their key sets). Deterministically
+     * sorted by id. The subsumed families are annotated, not counted:
+     * they leave the rank/report payload and ride here instead, so
+     * inner-clone families cannot multiply the cluster count or the
+     * duplicated-line totals their outer witness already covers.
+     *
+     * @var list<string>
+     */
+    public array $subsumes = [];
+
+    /**
+     * Item 6.3: the maximal ancestor this cluster was folded under —
+     * set on SUBSUMED clusters only (null on every reported maximal
+     * cluster and on all default runs). Chains fold to the maximal
+     * ancestor through this field; the survivor's {@see self::$subsumes}
+     * names the folded ids.
+     */
+    public ?string $subsumedBy = null;
+
+    /**
      * @param list<Block> $members
      */
     public function __construct(string $id, array $members, float $similarity, bool $exact)

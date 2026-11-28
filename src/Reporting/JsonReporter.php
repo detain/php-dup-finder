@@ -406,6 +406,17 @@ final class JsonReporter
         if ($c->members !== [] && $c->members[0]->kind === BlockExtractor::CLASS_KIND) {
             $payload['class_shape'] = self::classShapePayload($c);
         }
+        // Item 6.3: the subsumption annotation — a CONDITIONAL key in
+        // exactly the class_shape posture: present only when the armed
+        // fold attributed a maximal family to this cluster. An unarmed
+        // (default) run never populates the field, so no payload the
+        // frozen goldens measure can ever grow this key; the armed rows
+        // are the doc's "report maximal clones only" made auditable —
+        // the folded families are named here instead of multiplying the
+        // cluster count above.
+        if ($c->subsumes !== []) {
+            $payload['subsumes'] = $c->subsumes;
+        }
         return $payload;
     }
 

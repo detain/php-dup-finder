@@ -367,6 +367,12 @@ final class JsonSchemaSpec
             //  distinct_strict_hashes: int, distinct_fold_hashes: int,
             //  verdict: identical-in-all|parameterizable|divergent}>}
             'class_shape'            => '?object  // present ONLY on opt-in class-kind clusters (item 2.3)',
+            // Item 6.3: second CONDITIONAL cluster key, same posture —
+            // present ONLY on idiom_mining-armed runs whose subsumption
+            // fold attributed families to this maximal cluster (the
+            // "annotate, do not multiply" surface of the fold; unarmed
+            // payloads never grow this key, frozen goldens unchanged).
+            'subsumes'               => '?list<string>  // ids of clone families folded under this maximal cluster (item 6.3, conditional)',
             'outlier_members'        => 'list<int>',
             'architectural_findings' => 'list<object>',
             'signature'              => 'string|null',
