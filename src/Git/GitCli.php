@@ -54,16 +54,15 @@ final class GitCli
             return ['', 'could not create a scratch file for git stderr', self::CODE_NO_LAUNCH];
         }
 
+        $rawEnv = getenv();
         /** @var array<string,string>|null $env */
-        $env = getenv();
-        if (is_array($env)) {
+        $env    = is_array($rawEnv) ? $rawEnv : null;
+        if ($env !== null) {
             foreach (array_keys($env) as $key) {
                 if (is_string($key) && str_starts_with($key, 'GIT_')) {
                     unset($env[$key]);
                 }
             }
-        } else {
-            $env = null;
         }
 
         $pipes = [];
