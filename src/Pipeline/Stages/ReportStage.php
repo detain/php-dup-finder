@@ -284,6 +284,23 @@ final class ReportStage implements CooperativeStageInterface
         // --profile generic (or auto, which falls back to generic) arms
         // the four shipped predicates.
         $analyzers = [new SolidAnalyzer(), new DesignPatternAnalyzer(), new AntiPatternAnalyzer(), new DriftAnalyzer($config->driftVocabulary)];
+        // Item 3.4 (S4): the duplicate-symbol evidence analyzer is mounted
+        // ONLY when --symbols arms the run — same inert-mount posture as
+        // DriftAnalyzer, and the same reason: a non-armed run (every frozen
+        // Golden, every default corpus) must not construct it at all, so
+        // the payload is byte-identical. It re-builds the SymbolIndex over
+        // the run's final BlockIndex — same inputs, same deterministic pair
+        // list the ClusterStage injection consumed (law pinned in
+        // SymbolIndexTest) — and files one finding per forced pair involving
+        // a cluster member, with the measured similarities.
+        if ($config->symbolsForced && $state->index !== null) {
+            $symbolIndex = new \Phpdup\Index\SymbolIndex();
+            $symbolIndex->build($state->index);
+            $analyzers[] = new \Phpdup\Architecture\Analyzers\SymbolDuplicationAnalyzer(
+                symbols: $symbolIndex,
+                similarityThreshold: $config->similarityThreshold,
+            );
+        }
         foreach ($clusters as $c) {
             $findings = [];
             foreach ($analyzers as $a) {
