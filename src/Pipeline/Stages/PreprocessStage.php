@@ -5,6 +5,8 @@ namespace Phpdup\Pipeline\Stages;
 
 use Phpdup\Extraction\Block;
 use Phpdup\Extraction\BlockExtractor;
+use Phpdup\Fingerprint\NgramFingerprint;
+use Phpdup\Fingerprint\SubtreeHasher;
 use Phpdup\Index\SequenceIndex;
 use Phpdup\Parallel\PreprocessWorker;
 use Phpdup\Parallel\WorkerPool;
@@ -15,6 +17,11 @@ use Phpdup\Pipeline\NullProgressListener;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Pipeline\Stage;
+use Phpdup\Text\LangProfiles;
+use Phpdup\Text\TextBlockFactory;
+use Phpdup\Text\TextFileTokens;
+use Phpdup\Text\TextRunHarvester;
+use Phpdup\Text\TextTokenizer;
 use Phpdup\Util\CountPhrase;
 use Phpdup\Util\MemoryDebug;
 use Symfony\Component\Console\Formatter\OutputFormatter;
@@ -102,6 +109,30 @@ final class PreprocessStage implements CooperativeStageInterface
     {
         $config = $state->config;
         $files  = $state->files;
+
+        // Item 7.1: the token tier partition. Under an armed run ('text'
+        // named explicitly in the kind roster — Config::tokenTierArmed())
+        // the non-PHP files LangProfiles speaks are pulled out of the PHP
+        // pipeline HERE, before the cache check and the workers, because
+        // neither may ever see non-PHP bytes (a PHP parse of a .js would
+        // mint a bogus parse error). They come back as kind-'text' blocks
+        // through the harvest below. Unarmed, $textFiles stays empty and
+        // this whole lane is inert — the byte-identical default posture
+        // the frozen goldens require.
+        $scannedFiles = $files; // the summary line counts the FULL scan
+        $textFiles    = [];
+        $tokenTier    = $config->tokenTierArmed();
+        if ($tokenTier) {
+            $phpFiles = [];
+            foreach ($files as $f) {
+                if (LangProfiles::profileFor($f) !== null) {
+                    $textFiles[] = $f;
+                } else {
+                    $phpFiles[] = $f;
+                }
+            }
+            $files = $phpFiles;
+        }
 
         // once-S66 (finding once-075): the Command-side plugin screen
         // excluded broken entries and handed their notes here. ScanningStage
@@ -388,6 +419,79 @@ final class PreprocessStage implements CooperativeStageInterface
             );
         }
 
+        // Item 7.1: the token tier harvest — cross-file maximal window
+        // matches over blanked non-PHP token streams, appended to $blocks
+        // AFTER the cache-save pass (tier runs are derived across files, so
+        // they are run-local: nothing about them persists in the per-file
+        // IndexStore blobs) and BEFORE id assignment (they are ordinary
+        // canonical-order citizens from here on: suppress pass ignores the
+        // kind, assignCanonicalIds/RepoLabels/clusterer/reporters see plain
+        // Blocks). Counter law joins the 0.6 census: every tier file lands
+        // in exactly one bucket — a file whose runs made it past the floors
+        // counts as processed, one that yielded none as without-blocks, an
+        // unreadable one as a parse error — so the balance law
+        // scanned == reused + processed + no-blocks + errors keeps holding
+        // over the FULL scan including text files.
+        if ($tokenTier && $textFiles !== []) {
+            $factoryRuns = [];
+            $sinceYield  = 0;
+            foreach ($textFiles as $f) {
+                $src = @file_get_contents($f);
+                if ($src === false) {
+                    $state->parseErrors++;
+                    $state->parseFailures[] = [
+                        'file'    => (string) $f,
+                        'message' => 'token tier: file is unreadable',
+                    ];
+                    continue;
+                }
+                $profile      = LangProfiles::profileFor($f);
+                if ($profile === null) {
+                    continue; // unreachable (partition admitted by profile); belt
+                }
+                $factoryRuns[] = new TextFileTokens($f, $profile, TextTokenizer::tokenize($src, $profile));
+                if (++$sinceYield >= self::YIELD_EVERY) {
+                    $sinceYield = 0;
+                    if ($state->cancelled) {
+                        break;
+                    }
+                    yield Stage::Preprocessing;
+                }
+            }
+
+            $harvester = new TextRunHarvester($config->ngramSize);
+            $runs      = $harvester->harvest($factoryRuns);
+            foreach ($harvester->notes() as $note) {
+                $state->scanNotes[] = $note; // honest disclosure at the note channel
+            }
+
+            $tierFingerprinter = new NgramFingerprint(
+                $config->ngramSize,
+                $config->lowMemory,
+                $config->fingerprintIdsUnnumbered(),
+            );
+            $tierFactory = new TextBlockFactory($tierFingerprinter, new SubtreeHasher());
+
+            /** @var array<string, list<\Phpdup\Text\TextRun>> $runsByFile */
+            $runsByFile = [];
+            foreach ($runs as $r) {
+                $runsByFile[$r->file()][] = $r;
+            }
+            foreach ($factoryRuns as $ft) {
+                if (isset($runsByFile[$ft->file])) {
+                    $state->processedFiles++;
+                    foreach ($runsByFile[$ft->file] as $r) {
+                        $blocks[] = $tierFactory->fromRun($r);
+                    }
+                } else {
+                    $state->skippedFiles++;
+                }
+            }
+            $this->listener->onFilePreprocessed(
+                $state->processedFiles, $state->reusedFiles, $state->parseErrors,
+            );
+        }
+
         // Item 2.1 (§5c): corpus-side suppression of the mined runs —
         // AFTER cache-save (suppressed windows persist as maximality
         // evidence, which is what makes a warm replay see the SAME
@@ -460,7 +564,7 @@ final class PreprocessStage implements CooperativeStageInterface
         // parse errors == files.
         $output->writeln(sprintf(
             "<info>phpdup</info> %s (%d reused · %d processed · %d no blocks · %d parse errors) → %d blocks",
-            CountPhrase::files(count($files)), $state->reusedFiles, $state->processedFiles, $state->skippedFiles, $state->parseErrors, count($blocks),
+            CountPhrase::files(count($scannedFiles)), $state->reusedFiles, $state->processedFiles, $state->skippedFiles, $state->parseErrors, count($blocks),
         ));
 
         // once-S37 (php-dup-finder-once-080): the count above is honest but

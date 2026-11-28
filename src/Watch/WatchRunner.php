@@ -10,6 +10,7 @@ use Phpdup\Pipeline\PipelineState;
 use Phpdup\Refactor\ClassKindApplyRefusal;
 use Phpdup\Refactor\FragmentApplyRefusal;
 use Phpdup\Refactor\HtmlFragmentApplyRefusal;
+use Phpdup\Refactor\TextKindApplyRefusal;
 use Phpdup\Refactor\ScriptKindApplyRefusal;
 use Phpdup\Refactor\WindowApplyRefusal;
 use Phpdup\Util\CountPhrase;
@@ -320,7 +321,7 @@ final class WatchRunner
      * Three postures, all keeping the loop alive:
      *  - CandidateBudgetException / ScriptKindApplyRefusal /
      *    WindowApplyRefusal / FragmentApplyRefusal / ClassKindApplyRefusal /
-     *    HtmlFragmentApplyRefusal: typed runtime halts, rendered as the clean
+     *    HtmlFragmentApplyRefusal / TextKindApplyRefusal: typed runtime halts, rendered as the clean
      *    `phpdup:` line in the same posture as the plain path's ft-n2
      *    catch in Command::execute(). Neutral for the failure streak.
      *    The window refusal rides the same family as the script one: a
@@ -350,7 +351,7 @@ final class WatchRunner
             $this->pipeline->run($state, $this->output);
             $this->consecutivePassFailures = 0;
             return true;
-        } catch (CandidateBudgetException | ScriptKindApplyRefusal | WindowApplyRefusal | FragmentApplyRefusal | ClassKindApplyRefusal | HtmlFragmentApplyRefusal $e) {
+        } catch (CandidateBudgetException | ScriptKindApplyRefusal | WindowApplyRefusal | FragmentApplyRefusal | ClassKindApplyRefusal | HtmlFragmentApplyRefusal | TextKindApplyRefusal $e) {
             // shell-S34: a ScriptKindApplyRefusal::forBlock message embeds
             // the offending block's file path — raw filesystem bytes. The
             // window sibling (E2 r1 MAJOR-1) embeds the same material:

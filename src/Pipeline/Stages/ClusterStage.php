@@ -345,7 +345,15 @@ final class ClusterStage implements CooperativeStageInterface
             // the loader REFUSES to relocate them, so unloading would
             // strand the RefactorStage that needs their ASTs for holes.
             if ($b->kind === 'script' || $b->kind === \Phpdup\Extraction\BlockExtractor::WINDOW_KIND
-                || $b->kind === \Phpdup\Extraction\BlockExtractor::FRAGMENT_KIND) {
+                || $b->kind === \Phpdup\Extraction\BlockExtractor::FRAGMENT_KIND
+                // Item 7.1: 'text' folds join the exemption on the identical
+                // argument — the synthetic InlineHTML over the blanked stream
+                // is the block's ONLY copy (the file behind it is not PHP; the
+                // loader answers any load ask with the typed refusal). Folds
+                // are bounded by the run's own harvest floors — keeping them
+                // loaded is cheap, and unloading would destroy the plain
+                // `--kinds text` report run at RefactorStage's rebase sweep.
+                || $b->kind === \Phpdup\Extraction\BlockExtractor::TEXT_KIND) {
                 continue;
             }
             $b->unloadAst();

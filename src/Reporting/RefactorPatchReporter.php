@@ -258,6 +258,12 @@ final class RefactorPatchReporter
                 if ($member->kind === \Phpdup\Extraction\BlockExtractor::HTML_SCRIPT_KIND) {
                     throw \Phpdup\Refactor\HtmlFragmentApplyRefusal::forCluster($cluster, 'RefactorPatchReporter');
                 }
+                // Item 7.1: text token folds likewise ride the whole-surface
+                // refusal — the member carries no PHP at all; a patch has no
+                // honest target in a non-PHP file (v1 NO-GO).
+                if ($member->kind === \Phpdup\Extraction\BlockExtractor::TEXT_KIND) {
+                    throw \Phpdup\Refactor\TextKindApplyRefusal::forCluster($cluster, 'RefactorPatchReporter');
+                }
             }
         }
 

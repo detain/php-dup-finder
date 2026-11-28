@@ -8,6 +8,7 @@ use PhpParser\PrettyPrinter\Standard;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
 use Phpdup\Extraction\BlockAstLoader;
+use Phpdup\Extraction\BlockExtractor;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Util\AstSerializer;
 use Phpdup\Util\NodePath;
@@ -160,6 +161,19 @@ final class AntiUnifier
         $this->lastWalkCount = 0;
         if ($count === 0) {
             return;
+        }
+        // Item 7.1: a 'text' cluster is a cross-file lexical agreement
+        // already computed by the harvester (its maximal run IS the
+        // generalization); the member ASTs are synthetic InlineHTML fold
+        // wrappers, not statement trees, so there is nothing here for the
+        // LCS walk to consume. Left honestly untouched: no generalizedAst,
+        // no holes — every later consumer (signature, taggers, reporters)
+        // is null-guarded, and apply refuses the kind by type. One entry
+        // point covers both the serial loop and the forked RefactorWorker.
+        foreach ($members as $m) {
+            if ($m->kind === BlockExtractor::TEXT_KIND) {
+                return;
+            }
         }
         if ($count === 1) {
             $cluster->generalizedAst = Normalizer::deepClone($this->astOf($members[0]));

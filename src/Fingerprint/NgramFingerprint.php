@@ -169,11 +169,53 @@ final class NgramFingerprint
             // touches the array → byte-identical grams.
             $tokens = array_map([IdentifierIds::class, 'strip'], $tokens);
         }
+        return $this->bagFromStream($tokens);
+    }
+
+    /**
+     * Item 7.1: bag a ready-made token stream (the native token tier's
+     * blanked non-PHP alphabet) through the EXACT gram algebra this class
+     * applies to AST streams — same window width, same join/substr byte
+     * algebra, same master dictionary, same low-memory compaction. The
+     * one-formula law of the 7.1 design: the text tier must not fork a
+     * dialect, so it rides the only door this class already has to a bag.
+     *
+     * No foldStamps/strip pass here: those maps rewrite PHP serialization
+     * details (`__CALL_name`, `__V1` counters) that do not exist in the
+     * blanked text alphabet — folding them in would be a walk over a
+     * stream that cannot carry what they look for.
+     *
+     * @param list<string> $tokens
+     * @return array<string|int,int> same bag contract as {@see fingerprint()}
+     */
+    public function fingerprintTokens(array $tokens): array
+    {
+        return $this->bagFromStream($tokens);
+    }
+
+    /**
+     * The roll-window gram mint itself: every width-$n window of the
+     * stream (EOS-padded so sub-window streams still produce exactly one
+     * gram), hashed xxh64 over the joined bytes. Order-preserving: index
+     * $k of the result is the window starting at token $k. This is the
+     * single formula behind BOTH the AST bags and (item 7.1) the token
+     * tier's harvest seeds and text bags — engine-034's byte-algebra
+     * argument (see below) holds verbatim for any token content.
+     *
+     * @param list<string> $tokens
+     * @param int<2, max>  $n
+     * @return list<string> xxh64 digest per window, in stream order
+     */
+    public static function windows(array $tokens, int $n): array
+    {
+        if ($n < 2) {
+            throw new \InvalidArgumentException('n must be >= 2');
+        }
         $count = count($tokens);
-        if ($count < $this->n) {
+        if ($count < $n) {
             // pad with sentinels so very short blocks still produce ngrams
-            $tokens = array_pad($tokens, $this->n, '<EOS>');
-            $count = $this->n;
+            $tokens = array_pad($tokens, $n, '<EOS>');
+            $count  = $n;
         }
         // Roll-window gram minting (engine-S33, engine-034's second
         // half): join the stream ONCE and cut every window out of it,
@@ -212,20 +254,39 @@ final class NgramFingerprint
         }
         $start[] = $offset;
 
-        $bag   = [];
-        $upper = $count - $this->n;
+        $keys  = [];
+        $upper = $count - $n;
         for ($i = 0; $i <= $upper; $i++) {
-            $key = hash(
+            $keys[] = hash(
                 'xxh64',
-                substr($stream, $start[$i], $start[$i + $this->n] - $start[$i] - $sepLen),
+                substr($stream, $start[$i], $start[$i + $n] - $start[$i] - $sepLen),
             );
+        }
+        return $keys;
+    }
+
+    /**
+     * Shared bag tail: intern every window digest of the stream through
+     * the master gram dictionary (engine-011) and compact under
+     * --low-memory. Reached only through fingerprint()/fingerprintTokens()
+     * so the Node path and the token path can never drift apart.
+     *
+     * @param list<string> $tokens already-normalized stream
+     * @return array<string|int,int>
+     */
+    private function bagFromStream(array $tokens): array
+    {
+        $keys = self::windows($tokens, $this->n);
+
+        $bag = [];
+        foreach ($keys as $key) {
             // Intern through the master gram dictionary: the fresh hash()
-            // output above dies after the lookup, and the bag slot points
-            // at the dictionary's canonical string instead of keeping its
-            // own copy (engine-011). Same key content → same bucket, same
+            // output dies after the lookup, and the bag slot points at the
+            // dictionary's canonical string instead of keeping its own
+            // copy (engine-011). Same key content → same bucket, same
             // order, same persisted bytes as the pre-dictionary build.
-            $canonical   = $this->internGram($key);
-            $bag[$canonical] = ($bag[$canonical] ?? 0) + 1;
+            $canonical         = $this->internGram($key);
+            $bag[$canonical]   = ($bag[$canonical] ?? 0) + 1;
         }
 
         if ($this->lowMemory) {

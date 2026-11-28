@@ -692,6 +692,11 @@ final class FileScanner
         private readonly bool $warnOnSkip = true,
         array $perDirExcludes = [],
         private readonly bool $honorGitignore = false,
+        // Item 7.1: the token tier's second admission gate. An EMPTY list
+        // (every default run) keeps looksLikeText() false everywhere, so
+        // the walk is byte-identical to the pre-7.1 scanner; a non-empty
+        // list is the armed run's extension set (LangProfiles::extensions()).
+        private readonly array $textExtensions = [],
     ) {
         $this->patterns = array_map([$this, 'compilePattern'], $excludeGlobs);
         foreach ($perDirExcludes as $dir => $layer) {
@@ -846,7 +851,9 @@ final class FileScanner
     {
         $root = rtrim($root, '/');
         if (!is_dir($root)) {
-            if (is_file($root) && $this->looksLikePhp($root)) {
+            // item 7.1: a named root file may be a tier file too — the
+            // second gate is inert (false for all) unless armed.
+            if (is_file($root) && ($this->looksLikePhp($root) || $this->looksLikeText($root))) {
                 yield $root;
             } elseif (!is_file($root)) {
                 // once-S37 (once-041): a path the user named that does not
@@ -985,7 +992,10 @@ final class FileScanner
                 if (!$info->isFile()) {
                     continue;
                 }
-                if (!$this->looksLikePhp($info->getPathname())) {
+                // item 7.1: php OR (armed && tier extension) — disarmed,
+                // looksLikeText() is false for every path and this arm is
+                // the historical gate verbatim.
+                if (!$this->looksLikePhp($info->getPathname()) && !$this->looksLikeText($info->getPathname())) {
                     continue;
                 }
                 yield $info->getPathname();
@@ -1209,6 +1219,25 @@ final class FileScanner
     {
         $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
         return in_array($ext, ['php', 'php8', 'phtml', 'inc'], true);
+    }
+
+    /**
+     * Item 7.1: the token tier's second gate — true exactly for files whose
+     * extension is in the armed run's language table. Disarmed (empty list,
+     * the default) this answers false for every path, which keeps the
+     * scanner walk byte-identical to the pre-7.1 posture (the goldens'
+     * foundation). The gate is admission only; whether a text file ever
+     * becomes BLOCKS is the harvester's demand-gated decision in
+     * PreprocessStage, and the tier never mints from a file whose extension
+     * LangProfiles does not speak.
+     */
+    private function looksLikeText(string $path): bool
+    {
+        if ($this->textExtensions === []) {
+            return false;
+        }
+        $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+        return $ext !== '' && in_array($ext, $this->textExtensions, true);
     }
 
     /**

@@ -17,6 +17,7 @@ use Phpdup\Parsing\AstParser;
 use Phpdup\Refactor\FragmentApplyRefusal;
 use Phpdup\Refactor\HtmlFragmentApplyRefusal;
 use Phpdup\Refactor\ScriptKindApplyRefusal;
+use Phpdup\Refactor\TextKindApplyRefusal;
 use Phpdup\Refactor\WindowApplyRefusal;
 use Phpdup\Util\CanonicalNodePool;
 use Phpdup\Util\LineRange;
@@ -285,6 +286,15 @@ final class BlockAstLoader
         // sequences and Block::$fragmentLineage makes the positional match
         // honest. lazyAst unloads this species exactly like script/window/
         // fragment (the pipeline blacklist never heard of it), so this arm
+        // Item 7.1: a 'text' block has no PHP origin to resolve — the file
+        // behind it is not PHP at all, so there is nothing a (fresh) parse
+        // could re-derive it from. The fold is minted complete by the
+        // harvest; being asked to load one is the bug-ask side of the
+        // apply refusal family.
+        if ($block->kind === BlockExtractor::TEXT_KIND) {
+            throw TextKindApplyRefusal::forBlock($block, 'BlockAstLoader::resolve()');
+        }
+
         // is the LIVE path, not a backstop. A fresh parse still carrying
         // the same (range, lineage, namespace, class) window serves a
         // byte-identical wrapper — and because raw text hashes as raw
@@ -884,6 +894,12 @@ final class BlockAstLoader
                 // the loud backstop).
                 if ($member->kind === BlockExtractor::FRAGMENT_KIND) {
                     throw FragmentApplyRefusal::forBlock($member, 'BlockAstLoader::rebaseClusters()');
+                }
+                // Item 7.1: same law for text folds (they should never
+                // reach here unloaded — the ClusterStage/worker exemptions
+                // guard them; this is the loud backstop).
+                if ($member->kind === BlockExtractor::TEXT_KIND) {
+                    throw TextKindApplyRefusal::forBlock($member, 'BlockAstLoader::rebaseClusters()');
                 }
                 // Item 7.2b: html_script folds RE-derive on warm replays
                 // (live path, lazyAst unloads them): same positional

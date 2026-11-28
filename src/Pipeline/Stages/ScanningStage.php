@@ -10,6 +10,7 @@ use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\ProgressListener;
 use Phpdup\Pipeline\Stage;
 use Phpdup\Scanning\FileScanner;
+use Phpdup\Text\LangProfiles;
 use Phpdup\Util\MemoryDebug;
 use Phpdup\Util\PathCanonical;
 use Symfony\Component\Console\Formatter\OutputFormatter;
@@ -79,7 +80,15 @@ final class ScanningStage implements CooperativeStageInterface
         // excluded subtree never enters the scan census below, and a
         // resetting subtree re-roots. Configs without either key produce no
         // layer and cannot change the walk.
-        $scanner = new FileScanner($config->exclude, perDirExcludes: self::excludeLayers($config), honorGitignore: $config->honorGitignore);
+        $scanner = new FileScanner(
+            $config->exclude,
+            perDirExcludes: self::excludeLayers($config),
+            honorGitignore: $config->honorGitignore,
+            // Item 7.1: the token tier's second gate, armed only by an
+            // explicit 'text' kind selection — an unarmed run passes []
+            // and the walk is the historical one, byte for byte.
+            textExtensions: $config->tokenTierArmed() ? LangProfiles::extensions() : [],
+        );
 
         // once-S37 (php-dup-finder-once-041): arm the exclude-typo census
         // with the globs the USER owns (see userExcludeGlobs) — a misspelled

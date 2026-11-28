@@ -159,6 +159,13 @@ final class BlockExtractor
         // never implicit like the three rows above; classifyKind never
         // mints it, only extract()'s 7.2b leg does (see HTML_SCRIPT_KIND).
         'html_script',
+        // Item 7.1: opt-in lexical token runs of NON-PHP files (the native
+        // token tier — js/ts/json/yaml/sh/css/tpl/twig/html windows). Never
+        // implicit like the four rows above, and minted by NEITHER
+        // classifyKind NOR extract(): this kind exists only through the
+        // demand-gated harvester in PreprocessStage (see TEXT_KIND),
+        // because its files are not PHP and never reach this extractor.
+        'text',
     ];
 
     /**
@@ -202,6 +209,19 @@ final class BlockExtractor
      * refuse it in v1 ({@see \Phpdup\Refactor\HtmlFragmentApplyRefusal}).
      */
     public const HTML_SCRIPT_KIND = 'html_script';
+
+    /**
+     * Item 7.1: the lexical kind of the native token tier. It IS in
+     * ALL_KINDS (a user selects it with --kinds, like the opt-in rows
+     * above) but classifyKind and extract() never mint it: the tier's
+     * files are not PHP, so its blocks are minted ONLY by the demand-gated
+     * cross-file harvester in {@see \Phpdup\Text\TextRunHarvester} (fed by
+     * {@see \Phpdup\Text\TextBlockFactory}). The fold carrier is a
+     * synthetic InlineHTML over the blanked token stream (T1a's raw-text
+     * identity channel); apply/patch refuse the kind in v1
+     * ({@see \Phpdup\Refactor\TextKindApplyRefusal}).
+     */
+    public const TEXT_KIND = 'text';
 
     /**
      * Item 7.2b: largest raw-text sentinel slice the window scanner cuts

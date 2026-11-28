@@ -334,6 +334,13 @@ final class ApplyExtractor
             if ($member->kind === \Phpdup\Extraction\BlockExtractor::HTML_SCRIPT_KIND) {
                 throw HtmlFragmentApplyRefusal::forCluster($cluster, 'ApplyExtractor::apply()');
             }
+            // item 7.1: 'text' blocks are lexical folds of NON-PHP files —
+            // there is no PHP in the member to extract and no call site in
+            // a .js/.yaml to rewrite. Zero-write pre-refusal, same shape as
+            // the rows above; the cluster is report evidence, read it.
+            if ($member->kind === \Phpdup\Extraction\BlockExtractor::TEXT_KIND) {
+                throw TextKindApplyRefusal::forCluster($cluster, 'ApplyExtractor::apply()');
+            }
             // output-002 (S46): a Closure/arrow member has no declaration
             // to keep. The only node-local rewrite would replace the
             // callable ITSELF with an immediate call — running the

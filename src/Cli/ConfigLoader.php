@@ -1075,6 +1075,25 @@ final class ConfigLoader
                         }
                     }
 
+                    // Item 7.1: a per-directory 'kinds' roster may name PHP
+                    // extraction kinds (the worker honors it per subtree), but
+                    // it cannot arm the token tier: the scanner's second gate
+                    // and the harvest read the ROOT config once — 'text' in a
+                    // nested file would silently do nothing. Refuse it loud in
+                    // the same voice as the families above; arm the tier in the
+                    // root phpdup.json (or with --kinds).
+                    $kindNames = $payload['kinds'] ?? $payload['allowed_kinds'] ?? [];
+                    if (is_array($kindNames)) {
+                        foreach ($kindNames as $kindName) {
+                            if ($kindName === \Phpdup\Extraction\BlockExtractor::TEXT_KIND) {
+                                throw new \RuntimeException(
+                                    "kinds:'text' is not a per-directory key (the token tier arms the scan and the harvest run-wide; root phpdup.json or --kinds only): "
+                                    . $file->getPathname()
+                                );
+                            }
+                        }
+                    }
+
                     $dir = realpath($file->getPath());
                     if ($dir === false) {
                         continue;

@@ -579,14 +579,38 @@ final class Config
         return $this->fingerprintIdMode === self::FINGERPRINT_ID_UNNUMBERED;
     }
 
+    /**
+     * Item 7.1: is the native token tier armed? True exactly when the kind
+     * roster explicitly names 'text' (--kinds text or config "kinds":
+     * ["text"]). The empty roster means "all DEFAULT kinds" and
+     * deliberately does NOT arm the tier: 'text' joins script/fragment/
+     * class/html_script as never-implicit-at-mint, so every default run —
+     * and every golden — is byte-identical to the pre-7.1 posture.
+     *
+     * Arming widens the scanner gate (this predicate is read once in
+     * ScanningStage to hand LangProfiles' extensions to FileScanner) and
+     * runs the PreprocessStage harvest. It is a ROOT-config decision: the
+     * scanner gate precedes every subtree, so per-directory overrides
+     * naming 'text' are refused at load time (ConfigLoader), mirroring the
+     * idiom_mining invariant style.
+     */
+    public function tokenTierArmed(): bool
+    {
+        return \in_array(\Phpdup\Extraction\BlockExtractor::TEXT_KIND, $this->allowedKinds, true);
+    }
+
     /** @param list<string> $paths */
     public static function defaults(array $paths): self
     {
         // 7.2(a): *.tpl.php is deliberately NOT excluded any more — PHP code
         // inside template-suffixed files is real duplicate surface and must
-        // be scanned by default. Plain *.tpl (and every other non-PHP
-        // extension) is still invisible until FileScanner::looksLikePhp()
-        // is widened, which is an owner-gated decision (plan §6 #6).
+        // be scanned by default. Plain *.tpl and every other non-PHP
+        // extension stays invisible to the DEFAULT walk: item 7.1 shipped
+        // the answer as a demand-gated token tier — name 'text' in the kind
+        // roster (--kinds text / config "kinds") to widen the scanner gate
+        // to LangProfiles' languages and harvest lexical clone runs. The
+        // old "owner-gated scanner widening" park (plan §6 #6) is lifted;
+        // the tier is opt-in, so the default posture here is unchanged.
         //
         // 5.2: the generic build/vendor-style dirs are promoted to `**`/x/**
         // (any depth) now that FileScanner's glob compiler is segment-safe.
