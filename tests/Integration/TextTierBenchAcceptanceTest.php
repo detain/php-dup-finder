@@ -14,9 +14,11 @@ use PHPUnit\Framework\TestCase;
  *     committed [text-twins] pins in bench/corpus-pins.txt exactly;
  *  2. the native gate passes EXACT (4/4 keyed families, zero false
  *     positives) via bench/text-tier-acceptance.php --no-jscpd;
- *  3. the jscpd leg degrades to an honest green skip when the binary is
- *     absent — asserted with a sanitized environment (PATH holding only
- *     the PHP dir) so a host-installed jscpd can never flip the case.
+ *  3. the jscpd leg degrades to an honest green skip when no usable
+ *     binary is discoverable — with a sanitized PATH the case is proven
+ *     as the INVARIANT skip-notice line (a vendored bench/tools npm 4.x
+ *     shim on dev hosts legitimately changes the notice text, never the
+ *     green behavior; see testAutoDiscovery docblock).
  *
  * No network, no jscpd install, no golden/`src/` coupling. Runtime is a
  * couple of seconds; every artifact lives under a TMP dir.
@@ -91,8 +93,13 @@ final class TextTierBenchAcceptanceTest extends TestCase
         \generateTextTwins($this->corpus);
 
         // PATH holds only the PHP binary dir → command -v jscpd cannot hit;
-        // JSCPD_BIN unset; bench/tools/node_modules is gitignored and absent
-        // from a checkout → resolver prints the absent-notice skip.
+        // JSCPD_BIN unset. The repo-relative bench/tools/node_modules
+        // candidate is NOT env-hermetic: a dev host that followed the
+        // documented npm install for the PHP-corpus comparator has a
+        // `#!/usr/bin/env node` shim there whose --version probe cannot
+        // resolve under the stripped PATH. Behavior is correct either way
+        // (green skip, null columns), so assert the INVARIANT — a skip
+        // notice line — not one host-specific notice text.
         $cmd = sprintf(
             '%s %s --corpus=%s 2>&1',
             escapeshellarg(PHP_BINARY),
@@ -102,7 +109,7 @@ final class TextTierBenchAcceptanceTest extends TestCase
         [$rc, $out] = $this->execWithEnv($cmd, ['PATH' => dirname(PHP_BINARY)]);
 
         $this->assertSame(0, $rc, "absent-binary leg must stay green, exited {$rc}:\n" . $out);
-        $this->assertStringContainsString('[skip] jscpd comparator leg: no jscpd binary', $out);
+        $this->assertMatchesRegularExpression('/^\[skip\] jscpd comparator leg: /m', $out);
         $this->assertStringContainsString('[GATE] native text-tier recall EXACT', $out);
     }
 

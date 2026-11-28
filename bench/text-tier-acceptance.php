@@ -54,8 +54,11 @@ $corpusDir = $args['corpus'] ?? ($root . '/bench/corpora/text-twins');
 $tmp       = sys_get_temp_dir() . '/phpdup-text-tier-' . bin2hex(random_bytes(5));
 mkdir($tmp, 0o777, true);
 
-$fail = static function (string $msg): never {
+// Every $fail exit also sweeps the scratch dir — the early pin/report
+// failures used to litter /tmp on each CI retry (m1, JLEG r1).
+$fail = static function (string $msg) use ($tmp): never {
     fwrite(STDERR, "[FAIL] {$msg}\n");
+    rmrf($tmp);
     exit(1);
 };
 
