@@ -230,6 +230,7 @@ final class Command extends SymfonyCommand
             ->addOption('plantuml', null, InputOption::VALUE_REQUIRED, 'Write a PlantUML class diagram to FILE — render with `plantuml FILE`')
             ->addOption('refactor-patch', null, InputOption::VALUE_REQUIRED, 'Emit one .patch file per cluster into DIR — heuristic, manual-review-required.')
             ->addOption('refactor-tests', null, InputOption::VALUE_REQUIRED, 'Emit a PHPUnit test skeleton per cluster into DIR (data-provider rows mirror hole observations).')
+            ->addOption('evidence-packs', null, InputOption::VALUE_REQUIRED, 'Write a size-capped, ranked evidence-pack JSON document per finding into DIR (members + excerpts, generalized template, per-member diff, drift flags, history, adoption, scope — item 8.1).')
             ->addOption('diff', null, InputOption::VALUE_REQUIRED, 'Write per-cluster unified diffs into DIR')
             ->addOption('patch', null, InputOption::VALUE_REQUIRED, 'Write a single cumulative patch file containing every cluster diff')
             ->addOption('apply', null, InputOption::VALUE_NONE, 'Write a cumulative apply.diff containing all cluster refactor patches')
@@ -311,6 +312,7 @@ Options grouped by category:
     --csv, --prometheus, --timeseries,
     --graphviz, --plantuml,
     --refactor-patch, --refactor-tests,
+    --evidence-packs,
     --diff, --patch, --apply, --dry-run, --limit, --sort, --stats,
     --summary-only, --clusters, --scope, --pager, --debug-log, --history
 
@@ -1797,6 +1799,7 @@ HELP;
             'sarifFile'      => $input->getOption('sarif'),
             'gitlabSastFile' => $input->getOption('gitlab-sast'),
             'diffDir'        => $input->getOption('diff'),
+            'evidencePacksDir' => $input->getOption('evidence-packs'),
             'patchFile'      => $input->getOption('patch'),
             // shell-S27 (php-dup-finder-shell-053): apply mode rides the
             // Config-folded flag OR file value (execute() always passes
@@ -1872,6 +1875,7 @@ HELP;
                         pagerMode:      $opts['reportArgs']['pagerMode'],
                         refactorPatchDir: $opts['reportArgs']['refactorPatchDir'],
                         refactorTestsDir: $opts['reportArgs']['refactorTestsDir'],
+                        evidencePacksDir: $opts['reportArgs']['evidencePacksDir'],
                     ),
                 ],
                 stopAfter: $opts['stopAfter'],

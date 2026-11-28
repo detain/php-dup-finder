@@ -22,6 +22,7 @@ use Phpdup\Reporting\CoherenceAnalyzer;
 use Phpdup\Reporting\CsvReporter;
 use Phpdup\Reporting\DeclaredTwinAnalyzer;
 use Phpdup\Reporting\DiffReporter;
+use Phpdup\Reporting\EvidencePackBuilder;
 use Phpdup\Reporting\GitLabSastReporter;
 use Phpdup\Reporting\GraphvizReporter;
 use Phpdup\Reporting\HtmlReporter;
@@ -124,6 +125,7 @@ final class ReportStage implements CooperativeStageInterface
         private readonly string $pagerMode = Pager::MODE_NEVER,
         private readonly ?string $refactorPatchDir = null,
         private readonly ?string $refactorTestsDir = null,
+        private readonly ?string $evidencePacksDir = null,
         ?\Closure $pumpClock = null,
     ) {
         $this->pumpClock = $pumpClock ?? static fn(): float => microtime(true);
@@ -845,6 +847,21 @@ final class ReportStage implements CooperativeStageInterface
             (new RefactorTestReporter())->writeTo($report, $this->refactorTestsDir);
             $output->writeln("<info>phpdup</info> refactor test skeletons → {$this->refactorTestsDir}/");
         }
+        if ($this->evidencePacksDir !== null) {
+            // Item 8.1: standalone per-finding evidence packs. Rides the
+            // shared per-run SourceTextStore (output-038 single-read law)
+            // and the SAME 3.2 adoption rows PlacementAdvisor was armed
+            // with above — one join source, never a re-mine.
+            $state->currentTask = 'writing evidence packs';
+            if ($pump() >= $pumpDue) {
+                $state->stageProgress = min(0.999, ++$unitsDone / $unitTotal);
+                yield Stage::Reporting;
+                $pumpDue = $pump() + self::YIELD_BUDGET_SECONDS;
+            }
+            (new EvidencePackBuilder($sourceText, $state->sequenceIndex?->helperAdoption()?->rows()))
+                ->writeTo($report, $this->evidencePacksDir);
+            $output->writeln("<info>phpdup</info> evidence packs → {$this->evidencePacksDir}/");
+        }
     }
 
     /**
@@ -868,6 +885,7 @@ final class ReportStage implements CooperativeStageInterface
             $this->plantumlFile,
             $this->refactorPatchDir,
             $this->refactorTestsDir,
+            $this->evidencePacksDir,
         ];
         $active = 0;
         foreach ($sinks as $sink) {
