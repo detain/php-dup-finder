@@ -7,6 +7,7 @@ use Phpdup\Cli\Config;
 use Phpdup\Clustering\Cluster;
 use Phpdup\Extraction\Block;
 use Phpdup\Index\BlockIndex;
+use Phpdup\Index\SequenceIndex;
 use Phpdup\Reporting\Report;
 use Symfony\Component\Console\Output\OutputInterface;
 
@@ -39,6 +40,21 @@ final class PipelineState
     /** @var list<Block> Extracted blocks after PreprocessStage. */
     public array $blocks = [];
     public ?BlockIndex $index = null;
+
+    /**
+     * Item 2.1 §5c: the ONE sequence store built from PreprocessWorker's
+     * `mined` rows (statement-hash lists per executable statement list).
+     * Null unless a consumer armed the miner (v1: 'fragment' in
+     * allowedKinds; 3.x census legs add their own demands).
+     *
+     * Partial-on-warm law: cache-reused files emit no rows, so this index
+     * is corpus-complete only on cold runs. Consumers that need
+     * warm-completeness must add their own demand/reprocess leg — the
+     * fragment suppression deliberately does NOT read this index (it
+     * reads the persisted Block fields), which is what makes cold and
+     * warm cluster output identical.
+     */
+    public ?SequenceIndex $sequenceIndex = null;
     public int $parseErrors    = 0;
     public int $reusedFiles    = 0;
     public int $processedFiles = 0;

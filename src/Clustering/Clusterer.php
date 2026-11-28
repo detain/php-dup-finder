@@ -398,6 +398,37 @@ final class Clusterer
         $seen = [];
         $yieldCount = 0;
         $blockNum = 0;
+
+        // Item 2.1 (R-4-analogous fragment discipline): same-file fragment
+        // runs whose line ranges OVERLAP are nested/adjacent windows of one
+        // statement list — structure, not duplication evidence. The
+        // suppression pass deliberately keeps a falling-support chain apart
+        // (5,4,3… sites); merging chain members through the ngram tier
+        // (nested bags share most mass) would dilute every row of it. Such
+        // pairs therefore never enter the stream. The extent map is built
+        // ONLY when the run actually minted fragments — default corpora pay
+        // one scan and a null check, and the enumeration is byte-identical.
+        // The guard is an exclusion inside the SAME stream: removals only
+        // shrink it, so E1's budget/mass-bound subsequence law holds.
+        $fragExtent = null;
+        $allExtent = null;
+        foreach ($index->all() as $b) {
+            if ($b->kind === \Phpdup\Extraction\BlockExtractor::FRAGMENT_KIND) {
+                $fragExtent = [];
+                $allExtent = [];
+                break;
+            }
+        }
+        if ($fragExtent !== null) {
+            foreach ($index->all() as $b) {
+                $allExtent[$b->id] = [$b->file, $b->range->start, $b->range->end];
+                if ($b->kind !== \Phpdup\Extraction\BlockExtractor::FRAGMENT_KIND) {
+                    continue;
+                }
+                $fragExtent[$b->id] = [$b->file, $b->range->start, $b->range->end, $b->fragmentKey];
+            }
+        }
+
         foreach ($index->all() as $a) {
             $blockNum++;
             if (count($seen) > self::SEEN_CAP) {
@@ -450,6 +481,45 @@ final class Clusterer
             // yielded tuple is exactly what the dedup key encodes.
             $aId = $a->id;
             foreach ($candidates as $bid) {
+                if ($fragExtent !== null) {
+                    $fa2 = $fragExtent[$aId] ?? null;
+                    $fb2 = $fragExtent[$bid] ?? null;
+                    if ($fa2 !== null && $fb2 !== null) {
+                        $ka = $fa2[3];
+                        $kb = $fb2[3];
+                        // (i) same-file overlapping runs: one list, nested
+                        // windows — structure, never duplication evidence.
+                        // (ii) key prefix/suffix nesting: one run literally
+                        // extends the other (the §5c nested-family class) —
+                        // the suppression pass keeps the chain apart by
+                        // design; an ngram edge (nested bags share mass,
+                        // ~0.9 here) would re-dilute every row of it.
+                        // Exact-key twins ($ka === $kb) stay allowed: that
+                        // is the finding.
+                        if (
+                            ($fa2[0] === $fb2[0] && $fa2[1] <= $fb2[2] && $fb2[1] <= $fa2[2])
+                            || str_starts_with($kb, $ka . '~')
+                            || str_starts_with($ka, $kb . '~')
+                            || str_ends_with($kb, '~' . $ka)
+                            || str_ends_with($ka, '~' . $kb)
+                        ) {
+                            continue;
+                        }
+                    } elseif ($fa2 !== null || $fb2 !== null) {
+                        // (iii) fragment against a same-file host run whose
+                        // range it overlaps: the window is a cut OF that
+                        // block — the splitComponent machinery already
+                        // surfaces the block families; an ngram edge here
+                        // only pulls fragments into declaration components
+                        // and dilutes the stitched rows.
+                        $frag = $fa2 ?? $fb2;
+                        $other = $fa2 !== null ? ($allExtent[$bid] ?? null) : ($allExtent[$aId] ?? null);
+                        if ($frag !== null && $other !== null
+                            && $frag[0] === $other[0] && $frag[1] <= $other[2] && $other[1] <= $frag[2]) {
+                            continue;
+                        }
+                    }
+                }
                 if (strcmp($aId, $bid) < 0) {
                     $lo = $aId;
                     $hi = $bid;

@@ -310,6 +310,12 @@ final class ApplyExtractor
             if ($member->kind === \Phpdup\Extraction\BlockExtractor::WINDOW_KIND) {
                 throw WindowApplyRefusal::forCluster($cluster, 'ApplyExtractor::apply()');
             }
+            // Item 2.1 law (fragment twin): a mined statement run is a
+            // detection device across declaration boundaries, not an
+            // extractable unit in v1 — same zero-write pre-refusal.
+            if ($member->kind === \Phpdup\Extraction\BlockExtractor::FRAGMENT_KIND) {
+                throw FragmentApplyRefusal::forCluster($cluster, 'ApplyExtractor::apply()');
+            }
             // output-002 (S46): a Closure/arrow member has no declaration
             // to keep. The only node-local rewrite would replace the
             // callable ITSELF with an immediate call — running the

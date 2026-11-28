@@ -14,6 +14,7 @@ use Phpdup\Normalization\Normalizer;
 use Phpdup\Normalization\PluginRegistry;
 use Phpdup\Parsing\AstCache;
 use Phpdup\Parsing\AstParser;
+use Phpdup\Refactor\FragmentApplyRefusal;
 use Phpdup\Refactor\ScriptKindApplyRefusal;
 use Phpdup\Refactor\WindowApplyRefusal;
 use Phpdup\Util\CanonicalNodePool;
@@ -271,6 +272,11 @@ final class BlockAstLoader
         // refusal, same backstop posture (the pipeline never unloads them).
         if ($block->kind === BlockExtractor::WINDOW_KIND) {
             throw WindowApplyRefusal::forBlock($block, 'BlockAstLoader::resolve()');
+        }
+        // Item 2.1: fragment runs are synthetic cuts of the statement-list
+        // miner — same by-construction refusal, same backstop posture.
+        if ($block->kind === BlockExtractor::FRAGMENT_KIND) {
+            throw FragmentApplyRefusal::forBlock($block, 'BlockAstLoader::resolve()');
         }
 
         $group   = self::groupKey($block);
@@ -802,6 +808,12 @@ final class BlockAstLoader
                 // be re-anchored either — typed refusal, no positional guess.
                 if ($member->kind === BlockExtractor::WINDOW_KIND) {
                     throw WindowApplyRefusal::forBlock($member, 'BlockAstLoader::rebaseClusters()');
+                }
+                // Item 2.1: same law for fragment runs (they should never
+                // reach here unloaded — the exemption guards them; this is
+                // the loud backstop).
+                if ($member->kind === BlockExtractor::FRAGMENT_KIND) {
+                    throw FragmentApplyRefusal::forBlock($member, 'BlockAstLoader::rebaseClusters()');
                 }
                 if ($this->config === null || $member->structuralHash === '') {
                     continue; // nothing content-bound to rebase against

@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Phpdup\Parallel;
 
+use PhpParser\Node\Stmt;
 use Phpdup\Cli\Config;
 use Phpdup\Extraction\Block;
 use Phpdup\Extraction\BlockExtractor;
@@ -15,8 +16,10 @@ use Phpdup\Normalization\Normalizer;
 use Phpdup\Normalization\PluginRegistry;
 use Phpdup\Parsing\AstCache;
 use Phpdup\Parsing\AstParser;
+use Phpdup\Util\LineRange;
 use Phpdup\Util\MemoryDebug;
 use Phpdup\Util\CanonicalNodePool;
+use Phpdup\Util\StmtHash;
 use Symfony\Component\Console\Output\OutputInterface;
 
 /**
@@ -40,6 +43,7 @@ use Symfony\Component\Console\Output\OutputInterface;
  *   |array{type: 'error', file: string, message: string}
  *   |array{type: 'skipped', file: string, blocks: 0}
  *   |array{type: 'oversized', file: string, dropped: int}
+ *   |array{type: 'mined', file: string, flavor: string, payload: string}
  */
 final class PreprocessWorker
 {
@@ -338,11 +342,83 @@ final class PreprocessWorker
                     // ClusterStage::unloadAsts carries the matching guard for
                     // replayed/serial-sourced blocks. Item 1.2: 'window' cuts
                     // join the exemption on the identical argument — never
-                    // unload what can never be reloaded.
-                    if ($cfg->lazyAst && $block->kind !== 'script' && $block->kind !== BlockExtractor::WINDOW_KIND) {
+                    // unload what can never be reloaded. Item 2.1:
+                    // 'fragment' runs join the exemption on the identical
+                    // argument — the loader REFUSES relocating them
+                    // (FragmentApplyRefusal), so an unloaded fragment AST
+                    // would be unrecoverable; their wrapper keeps live
+                    // statement refs anyway (cheap), and the kind is
+                    // opt-in cost by posture.
+                    if ($cfg->lazyAst
+                        && $block->kind !== 'script'
+                        && $block->kind !== BlockExtractor::WINDOW_KIND
+                        && $block->kind !== BlockExtractor::FRAGMENT_KIND
+                    ) {
                         $block->unloadAst();
                     }
                     $fileRows[] = ['type' => 'block', 'file' => $path, 'block' => $block];
+                }
+                // Item 2.1 (§5c shared miner, the master-side half of the
+                // ONE-walker contract): for every statement list the
+                // extractor's single traversal collected, normalize the
+                // WHOLE list once — per-block numbering is by first
+                // appearance inside the block, so a list-level pass gives
+                // every run in the list consistent, position-independent
+                // fold keys — then hash each canonical statement
+                // (Util\StmtHash, the one shared formula) and decorate the
+                // fragments minted from that list with their list-relative
+                // run key plus prev/next witnesses. The sequences then
+                // leave the process as ONE scalar 'mined' row per file
+                // (flavor stmtseq; 3.x adds flavors without a second pass,
+                // never a second row type) — objects never ride the wire,
+                // the SOCKETPAIR law the row-shape union documents.
+                $minedLists = [];
+                foreach ($tools['extractor']->lastStatementLists() as $listEntry) {
+                    $lstmts = $listEntry['stmts'];
+                    $first  = $lstmts[0]->getStartLine();
+                    $last   = $lstmts[\count($lstmts) - 1]->getEndLine();
+                    if ($first <= 0 || $last <= 0 || $last < $first) {
+                        continue; // same line-guard every mint leg applies
+                    }
+                    $wrapper   = new Stmt\Block(array_values($lstmts), ['startLine' => $first, 'endLine' => $last]);
+                    $listBlock = new Block(
+                        file: $path,
+                        range: new LineRange($first, $last),
+                        kind: 'stmtseq',
+                        namespace: $listEntry['namespace'],
+                        class: $listEntry['class'],
+                        name: null,
+                        ast: $wrapper,
+                    );
+                    $tools['normalizer']->normalize($listBlock);
+                    $canonical = $listBlock->canonical;
+                    if (!$canonical instanceof Stmt\Block) {
+                        continue; // defensive: the wrapper shape promise
+                    }
+                    $seq = [];
+                    foreach ($canonical->stmts as $cs) {
+                        $seq[] = StmtHash::hash($cs);
+                    }
+                    foreach ($listEntry['fragments'] as $frag) {
+                        $frag->fragmentKey  = implode('~', \array_slice($seq, $frag->fragmentPos, $frag->fragmentSize));
+                        $frag->fragmentPrev = $frag->fragmentPos > 0 ? $seq[$frag->fragmentPos - 1] : '';
+                        $nxt                = $frag->fragmentPos + $frag->fragmentSize;
+                        $frag->fragmentNext = $nxt < \count($seq) ? $seq[$nxt] : '';
+                    }
+                    $minedLists[] = [
+                        'hashes'    => $seq,
+                        'firstLine' => $first,
+                        'lastLine'  => $last,
+                        'ownerKind' => $listEntry['ownerKind'],
+                    ];
+                }
+                if ($minedLists !== []) {
+                    $fileRows[] = [
+                        'type'    => 'mined',
+                        'file'    => $path,
+                        'flavor'  => 'stmtseq',
+                        'payload' => json_encode($minedLists, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+                    ];
                 }
                 $oversizedDrops = $tools['extractor']->oversizedDrops();
                 if ($debug) {

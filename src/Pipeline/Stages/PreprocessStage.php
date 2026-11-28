@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace Phpdup\Pipeline\Stages;
 
 use Phpdup\Extraction\Block;
+use Phpdup\Extraction\BlockExtractor;
+use Phpdup\Index\SequenceIndex;
 use Phpdup\Parallel\PreprocessWorker;
 use Phpdup\Parallel\WorkerPool;
 use Phpdup\Persistence\IndexStore;
@@ -30,6 +32,12 @@ final class PreprocessStage implements CooperativeStageInterface
      * the truth.
      */
     private const PARSE_FAILURE_DISPLAY = 50;
+
+    /**
+     * Item 2.1 doc parameter fragment_min_sites: a mined run is reported
+     * only when at least this many sites carry it.
+     */
+    private const FRAGMENT_MIN_SITES = 3;
 
     private readonly ProgressListener $listener;
 
@@ -106,6 +114,11 @@ final class PreprocessStage implements CooperativeStageInterface
         }
 
         $configKey = $this->indexStoreConfigKey($config);
+        // Item 2.1: the §5c miner's ONE row stream has its consumer armed
+        // by demand — the 'fragment' kind selection. (3.x census legs add
+        // their own demand predicates here; they must NOT get a second
+        // walker or a second row type.)
+        $sequenceDemand = in_array(BlockExtractor::FRAGMENT_KIND, $config->allowedKinds, true);
         $store = ($this->useCache && $config->incremental)
             ? new IndexStore($config->cacheDir, $configKey)
             : null;
@@ -239,6 +252,33 @@ final class PreprocessStage implements CooperativeStageInterface
                     // run-total; files stay identifiable through the row,
                     // the CLI/JSON surface the honest aggregate.
                     $state->oversizedBlocks += (int) ($row['dropped'] ?? 0);
+                } elseif ($row['type'] === 'mined') {
+                    // Item 2.1 (§5c): the one generic scalar row — flavor-
+                    // keyed payload, v1 flavor stmtseq. Feeds the single
+                    // SequenceIndex when a consumer armed demand; silently
+                    // ignored otherwise (rows cannot appear without demand
+                    // today — the walker is demand-gated — but the row
+                    // stream is deliberately dumb so 3.x flavors never
+                    // touch this dispatch again).
+                    if ($sequenceDemand) {
+                        $entries = json_decode((string) ($row['payload'] ?? ''), true);
+                        if (is_array($entries)) {
+                            $index = $state->sequenceIndex ??= new SequenceIndex();
+                            $file = (string) $row['file'];
+                            foreach ($entries as $e) {
+                                if (!is_array($e) || !isset($e['hashes']) || !is_array($e['hashes'])) {
+                                    continue; // tolerate future payload shape
+                                }
+                                $index->recordList(
+                                    $file,
+                                    array_values(array_map('strval', $e['hashes'])),
+                                    (int) ($e['firstLine'] ?? 0),
+                                    (int) ($e['lastLine'] ?? 0),
+                                    (string) ($e['ownerKind'] ?? ''),
+                                );
+                            }
+                        }
+                    }
                 }
                 $state->processedFiles = count($processedFilesSet);
                 $state->skippedFiles = count($skippedFilesSet);
@@ -288,6 +328,15 @@ final class PreprocessStage implements CooperativeStageInterface
                 $state->processedFiles, $state->reusedFiles, $state->parseErrors,
             );
         }
+
+        // Item 2.1 (§5c): corpus-side suppression of the mined runs —
+        // AFTER cache-save (suppressed windows persist as maximality
+        // evidence, which is what makes a warm replay see the SAME
+        // dictionary as a cold run: the pass below reads Block fields
+        // only, never SequenceIndex, so cache-reused files contribute
+        // sites identically) and BEFORE id assignment (ranks mint over
+        // the survivors clustering actually sees).
+        $blocks = self::suppressNonMaximalFragments($blocks);
 
         // Assign IDs (after collecting from all sources). CI-85 determinism:
         // assignCanonicalIds() establishes a content-derived canonical order
@@ -521,6 +570,74 @@ final class PreprocessStage implements CooperativeStageInterface
             $prefix = substr($b->structuralHash, 0, 8);
             $b->id = $prefix . '_' . ($rankByPrefix[$prefix] = ($rankByPrefix[$prefix] ?? -1) + 1);
         }
+        return $blocks;
+    }
+
+    /**
+     * Item 2.1 §5c/2.1 suppression — the doc's three rules, expressed on
+     * the list-relative fields every fragment carries:
+     *   S-eq    ($fragmentWhole): the run equals a whole block ALREADY
+     *           MINTED (a declaration body present in the roster, or a
+     *           top-level bucket the script fold minted) — the doc's
+     *           "suppress a fragment when it equals a whole block already
+     *           clustered", stated on extraction evidence because
+     *           clustering has not happened yet at this seam.
+     *   S-floor: fewer than FRAGMENT_MIN_SITES (doc fragment_min_sites=3)
+     *           sites carry the run key.
+     *   S-max:   a one-statement extension of the run (prev~key or
+     *           key~next) exists in the corpus with support >= this run's
+     *           (doc: extend matches left and right to maximal runs; the
+     *           chain argument makes ONE-step lookahead exact: any site of
+     *           an s+2 run is a site of its s+1 prefix, so non-maximality
+     *           always shows a one-step witness).
+     * Nested chains with strictly falling support survive at every step
+     * (5,4,3…) — honest "maximal at this support" findings; the deeper
+     * nested-family/parent-fold fold shared with 3.1/6.3/7.2 is those
+     * items' lane per the §5c sharing ruling. v1 stitches GAP-FREE runs
+     * only; the doc's type-3 gap budget rides its consumers.
+     *
+     * The pass MUST run over the union of reused and freshly processed
+     * blocks and MUST NOT consult SequenceIndex (warm files emit no rows)
+     * — that asymmetry is what keeps cold and warm runs identical.
+     *
+     * @param list<Block> $blocks
+     * @return list<Block>
+     */
+    private static function suppressNonMaximalFragments(array $blocks): array
+    {
+        $sites = [];
+        foreach ($blocks as $b) {
+            if ($b->kind === BlockExtractor::FRAGMENT_KIND && $b->fragmentKey !== '') {
+                $sites[$b->fragmentKey] = ($sites[$b->fragmentKey] ?? 0) + 1;
+            }
+        }
+        if ($sites !== []) {
+            $kept = [];
+            foreach ($blocks as $b) {
+                if ($b->kind !== BlockExtractor::FRAGMENT_KIND) {
+                    $kept[] = $b;
+                    continue;
+                }
+                $key = $b->fragmentKey;
+                if ($key === '' || $b->fragmentWhole) {
+                    continue; // malformed, or S-eq
+                }
+                $support = $sites[$key];
+                if ($support < self::FRAGMENT_MIN_SITES) {
+                    continue; // S-floor
+                }
+                $need = max(self::FRAGMENT_MIN_SITES, $support);
+                if ($b->fragmentPrev !== '' && ($sites[$b->fragmentPrev . '~' . $key] ?? 0) >= $need) {
+                    continue; // S-max: left witness
+                }
+                if ($b->fragmentNext !== '' && ($sites[$key . '~' . $b->fragmentNext] ?? 0) >= $need) {
+                    continue; // S-max: right witness
+                }
+                $kept[] = $b;
+            }
+            $blocks = $kept;
+        }
+
         return $blocks;
     }
 

@@ -242,6 +242,11 @@ final class RefactorPatchReporter
                 if ($member->kind === \Phpdup\Extraction\BlockExtractor::WINDOW_KIND) {
                     throw \Phpdup\Refactor\WindowApplyRefusal::forCluster($cluster, 'RefactorPatchReporter');
                 }
+                // Item 2.1: fragment clusters likewise ride the whole-
+                // surface refusal (mined statement run, not extractable v1).
+                if ($member->kind === \Phpdup\Extraction\BlockExtractor::FRAGMENT_KIND) {
+                    throw \Phpdup\Refactor\FragmentApplyRefusal::forCluster($cluster, 'RefactorPatchReporter');
+                }
             }
         }
 

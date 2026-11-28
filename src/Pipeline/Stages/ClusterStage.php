@@ -318,8 +318,11 @@ final class ClusterStage implements CooperativeStageInterface
             // never be reloaded. Item 1.2: 'window' cuts join the exemption
             // on the identical argument (this site is the replay/serial-
             // sourced twin; PreprocessWorker carries the matching fresh-run
-            // guard).
-            if ($b->kind === 'script' || $b->kind === \Phpdup\Extraction\BlockExtractor::WINDOW_KIND) {
+            // guard). Item 2.1: 'fragment' runs join for the same reason —
+            // the loader REFUSES to relocate them, so unloading would
+            // strand the RefactorStage that needs their ASTs for holes.
+            if ($b->kind === 'script' || $b->kind === \Phpdup\Extraction\BlockExtractor::WINDOW_KIND
+                || $b->kind === \Phpdup\Extraction\BlockExtractor::FRAGMENT_KIND) {
                 continue;
             }
             $b->unloadAst();

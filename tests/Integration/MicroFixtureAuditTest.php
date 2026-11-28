@@ -49,7 +49,9 @@ final class MicroFixtureAuditTest extends TestCase
      * similarity re-measured on the 4c543f3 lineage, 2026-11-21 — see row note;
      * full signature re-derived on the f382e73/9fc8e86 lineage, 2026-11-22 —
      * the engine-S15 (d997604) exact-bucket pair mint at index 2, see its
-     * row note).
+     * row note). Fragment rows added 2026-11-28 (item 2.1: the opt-in
+     * 'fragment' kind minted over this same payload — four rows, notes in
+     * situ).
      * Each row: [kind, memberCount, impact, similarity, sortedMembers(file:start-end)].
      * Sorted canonically by impact desc, then kind, then first member.
      */
@@ -67,13 +69,42 @@ final class MicroFixtureAuditTest extends TestCase
         // (git-archive extract + hardlinked vendor, earliest mover located
         // by bisection dbbf493..HEAD); all other eight rows byte-identical.
         // Similarity stays < 1.0 — P1 remains an unfixed blind spot.
+        // Flip 2026-11-28 (item 2.1, fragment kind): the near-aggregate view
+        // of the nested fragment family. The engine's exact buckets mint the
+        // three stitched findings below; the splitter also emits this
+        // overlapping whole-family view — same established class as the
+        // 2026-11-22 method pair row (2/114 ⊂ 5/434), which is why it rides
+        // the pin instead of being suppressed by hand.
+        ['fragment', 8, 602, 0.9403, [
+            "preamble_0.php:12-27", "preamble_0.php:12-28", "preamble_1.php:12-26",
+            "preamble_2.php:12-26", "preamble_2.php:12-27", "preamble_3.php:12-26",
+            "preamble_4.php:12-26", "preamble_4.php:12-27",
+        ]],
         ['method', 5, 434, 0.9226, [
             "preamble_0.php:10-33", "preamble_1.php:10-28", "preamble_2.php:10-29",
             "preamble_3.php:10-28", "preamble_4.php:10-29",
         ]],
+        // Flip 2026-11-28 (item 2.1): exact stitched cross-function run, all
+        // five preambles — lines 12-13 and 17-18 (the hole-pinned glue) are
+        // now members of a 1.0 cluster. P1's blind spot is cured.
+        ['fragment', 5, 336, 1.0, [
+            "preamble_0.php:12-27", "preamble_1.php:12-26", "preamble_2.php:12-26",
+            "preamble_3.php:12-26", "preamble_4.php:12-26",
+        ]],
         ['method', 5, 312, 1.0, [
             "inline_0.php:14-23", "inline_1.php:14-23", "inline_2.php:14-23",
             "inline_3.php:14-23", "inline_4.php:14-23",
+        ]],
+        // Item 2.1: nested s9 family (falling support 5 -> 3) kept
+        // deliberately — the chain is support-honest evidence, one step per
+        // maximal row (the §5c suppression law runs one-step lookahead).
+        ['fragment', 3, 176, 1.0, [
+            "preamble_0.php:12-28", "preamble_2.php:12-27", "preamble_4.php:12-27",
+        ]],
+        // P2 cured: whole top-level run (lines 8-17, $rows=[] through the
+        // trailing echo) exact across the three scripts.
+        ['fragment', 3, 140, 1.0, [
+            "scripts_0.php:8-17", "scripts_1.php:8-17", "scripts_2.php:8-17",
         ]],
         // Flip 2026-11-22 (audit-leg discipline honoured: "if a wave cure
         // landed, re-derive truth and update RED_STATE_SIGNATURE + SHOULD_FIND
@@ -146,9 +177,9 @@ final class MicroFixtureAuditTest extends TestCase
      */
     public const SHOULD_FIND = [
         ['P1', '2.1 + 1.1', 'one hole-pinned preamble-sequence cluster (lines 12-24) across all 5 preambles',
-            'whole-method 5-preamble near-dup at sim 0.9226 + (since the 2026-11-22 wave-3 mint) an exact p0<->p2 method pair from parameter-equivalent tails; statements 12-13 and 17-18 still never appear as shared fragments — no hole-pinned sequence view yet'],
+            'CURED 2026-11-28 (item 2.1): the exact 5-member fragment row (preamble_*:12-26/27, RED_STATE) stitches the shared run across declaration boundaries — statements 12-13 and 17-18 now sit in a sim-1.0 cluster; the whole-method 0.9226 near-dup and the exact p0<->p2 pair row persist as method-level views'],
         ['P2', '1.3', 'the three top-level scripts as one sequence family (one table name apart)',
-            'only inner while/foreach control blocks cluster; script statements (lines 8-10, 17) invisible'],
+            'CURED 2026-11-28 (item 2.1): the exact fragment row scripts_*:8-17 carries the whole top-level run (statements 8-10 and 17, one table name folded apart); the inner while/foreach control-block rows persist as narrower views'],
         ['P3', '3.2 + 1.1', 'Env::isDev/baseUrl helper bodies linked to the 5 inline re-implementations (lines 16-17 of inline_*)',
             'Env.php is in ZERO clusters (probe confirmed it only clusters with exact twins); inline copies visible only swallowed in the handle() method'],
         ['P4', '3.3', 'the duplicated $assetBase URL string literal (inline_*:12, 5 copies)',
@@ -177,39 +208,49 @@ final class MicroFixtureAuditTest extends TestCase
         $rows = $this->canonicalRows($payload);
 
         $methodPreamble = null;
-        $ifPreambleRows = [];
+        $fragmentPreamble = null;
         foreach ($rows as $row) {
             $pre = (bool) preg_grep('/preamble_/', $row[4]);
             if ($row[0] === 'method' && $pre && count($row[4]) === 5) {
                 $methodPreamble = $row;
             }
-            if ($row[0] === 'if' && $pre) {
-                $ifPreambleRows[] = $row;
+            if ($row[0] === 'fragment' && $pre && count($row[4]) === 5) {
+                $fragmentPreamble = $row;
             }
         }
         $this->assertNotNull($methodPreamble, 'P1 baseline: whole-method 5-preamble cluster expected present');
-        $this->assertNotEmpty($ifPreambleRows, 'P1 baseline: preamble if-fragment clusters expected present');
-        $this->assertLessThan(1.0, (float) $methodPreamble[3], self::FLIP_MARKER . ': method match became exact — sequence fragment now visible, flip P1');
-        // The signature carries 5-member preamble if-fragments at 14-16 /
-        // 19-21 / 22-24 only; the acquisition statements (lines 12-13) and the
-        // resolve/get_service glue (17-18) are covered by NO fragment — the
-        // 9-line sequence (10-24) exists solely inside the sim<1 method cluster.
-        foreach ($ifPreambleRows as $row) {
-            foreach ($row[4] as $member) {
-                [, $range] = explode(':', $member, 2);
-                [$start, $end] = array_map('intval', explode('-', $range));
-                $this->assertFalse(
-                    ($start <= 13 && $end >= 12) || ($start <= 18 && $end >= 17),
-                    self::FLIP_MARKER . " (P1): if-fragment {$member} now covers preamble glue lines — flip P1"
-                );
+        $this->assertLessThan(1.0, (float) $methodPreamble[3], 'P1: whole-method preamble match stays inexact (tails differ)');
+        // FLIPPED 2026-11-28 (item 2.1): the cross-function statement sequence
+        // is now VISIBLE — a 5-member fragment cluster stitches the preamble
+        // runs (lines 12-17/18 included) across declaration boundaries at
+        // exact similarity. The blind spot ("exists solely inside the sim<1
+        // method cluster") is cured; the cure's truth row is pinned here.
+        $this->assertNotNull($fragmentPreamble, self::FLIP_MARKER . ' (P1): no 5-member fragment preamble row — cross-function stitching regressed');
+        $this->assertSame(1.0, (float) $fragmentPreamble[3], 'P1 cure: stitched preamble fragment is exact');
+        $coversGlue = false;
+        foreach ($fragmentPreamble[4] as $member) {
+            [, $range] = explode(':', $member, 2);
+            [$start, $end] = array_map('intval', explode('-', $range));
+            if ($start <= 13 && $end >= 17) {
+                $coversGlue = true; // acquisition (12-13) AND resolve glue (17-18)
             }
         }
+        $this->assertTrue($coversGlue, 'P1 cure: a fragment member covers preamble glue lines 12-13 and 17-18');
     }
 
     public function testP2TopLevelScriptsAreOnlyVisibleAsControlBlocks(): void
     {
         $rows = $this->canonicalRows($this->buildPayload());
+        $fragmentScriptRow = null;
         foreach ($rows as $row) {
+            if ($row[0] === 'fragment' && (bool) preg_grep('#scripts_\d\.php#', $row[4])) {
+                $fragmentScriptRow = $row;
+            }
+            // Control-block rows keep the old reach bound (blind-spot
+            // baseline for while/foreach members):
+            if ($row[0] === 'fragment') {
+                continue;
+            }
             foreach ($row[4] as $member) {
                 if (!preg_match('#scripts_\d\.php:(\d+)-(\d+)#', $member, $x)) {
                     continue;
@@ -217,10 +258,17 @@ final class MicroFixtureAuditTest extends TestCase
                 [$start, $end] = [(int) $x[1], (int) $x[2]];
                 $this->assertTrue(
                     $start >= 11 && $end <= 16,
-                    self::FLIP_MARKER . " (P2): script member {$member} reaches top-level statements — flip P2"
+                    "P2 baseline: control-block script member {$member} escaped 11-16"
                 );
             }
         }
+        // FLIPPED 2026-11-28 (item 2.1): top-level statements are visible —
+        // the whole 6-statement run (lines 8-17, from $rows=[] through the
+        // trailing echo) clusters across the three scripts at exact
+        // similarity. The blind spot ("only control blocks") is cured.
+        $this->assertNotNull($fragmentScriptRow, self::FLIP_MARKER . ' (P2): no fragment row over scripts_* — top-level stitching regressed');
+        $this->assertCount(3, $fragmentScriptRow[4], 'P2 cure: all three scripts join the top-level fragment row');
+        $this->assertSame(1.0, (float) $fragmentScriptRow[3], 'P2 cure: the stitched top-level run is exact');
         $scriptMembers = [];
         foreach ($rows as $row) {
             foreach ($row[4] as $member) {
@@ -272,9 +320,11 @@ final class MicroFixtureAuditTest extends TestCase
     {
         $this->assertCount(6, self::SHOULD_FIND, 'the Appendix-A truth manifest has exactly six patterns');
         // 10 clusters since the 2026-11-22 wave-3 pair mint (see the row note
-        // at RED_STATE_SIGNATURE index 2); the manifest count 6 is pattern
+        // at RED_STATE_SIGNATURE index 2); 14 since the 2026-11-28 fragment
+        // mint (item 2.1: four fragment rows, incl. the whole-family view);
+        // the manifest count 6 is pattern
         // state, not cluster count, and stays.
-        $this->assertCount(10, $this->buildPayload()['clusters']);
+        $this->assertCount(14, $this->buildPayload()['clusters']);
     }
 
     /** @return array<string,mixed> */
@@ -290,6 +340,9 @@ final class MicroFixtureAuditTest extends TestCase
             minClusterImpact: 1,
             workers: 1,
             lazyAst: false,
+            // Item 2.1 (2026-11-28): fragment runs join the roster — the P1/P2
+            // cure is the opt-in 'fragment' kind (never implicit, like script).
+            allowedKinds: ['function', 'method', 'closure', 'arrow', 'if', 'for', 'foreach', 'while', 'do', 'try', 'switch', 'match', 'fragment'],
         );
         $state = new PipelineState($config);
         $out = new NullOutput();

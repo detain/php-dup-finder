@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Phpdup\Cli;
 
 use Phpdup\Clustering\CandidateBudgetException;
+use Phpdup\Refactor\FragmentApplyRefusal;
 use Phpdup\Refactor\FunctionNameRegistry;
 use Phpdup\Refactor\ScriptKindApplyRefusal;
 use Phpdup\Refactor\WindowApplyRefusal;
@@ -1920,7 +1921,7 @@ HELP;
                     break;
                 }
             }
-        } catch (CandidateBudgetException | ScriptKindApplyRefusal | WindowApplyRefusal | ReportWriteException $e) {
+        } catch (CandidateBudgetException | ScriptKindApplyRefusal | WindowApplyRefusal | FragmentApplyRefusal | ReportWriteException $e) {
             // ft-n2: the budget halt is a runtime stop, not an invalid
             // invocation — its message already names every remedy. Render
             // it as the clean `phpdup:` error line (the same posture the
