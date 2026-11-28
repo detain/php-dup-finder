@@ -64,7 +64,11 @@ final class SubtreeFold
     /** Sentinel for a blanked bareword constant fetch (abstract key). */
     public const CONST_SENTINEL = '__CONST';
 
-    /** @param array<string,bool> $userVarNames */
+    /**
+     * @param array<string,bool>    $userVarNames real variable names of this subtree
+     * @param array<string,string>  $varRenames   original name => dealt slot (mutable map)
+     * @param array<string,true>    $seenBySlot   slots dealt by THIS fold (mutable set)
+     */
     private function __construct(
         private readonly bool $blankLiterals,
         private readonly array $userVarNames,
