@@ -2005,7 +2005,6 @@ HELP;
             return (new WatchRunner($pipeline, $rebuild, $output, $logger, $scanRoot))->run();
         }
 
-
         return $this->runAnalysis($config, $buildPipeline, $diffCohort, $output)['exit'];
     }
 
@@ -2258,9 +2257,7 @@ HELP;
         }
 
         return ['exit' => 0, 'state' => $state];
-
     }
-
 
     /**
      * Run the live SugarCraft dashboard with a 1.5 s poll loop that

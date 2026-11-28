@@ -34,6 +34,27 @@
 # Idempotent. Safe to run repeatedly.
 set -euo pipefail
 
+# r1 n-1 (item 8.2 review): answer --help BEFORE any bootstrap work — a
+# reviewer or operator probing the script must not trigger tool downloads,
+# corpus materialization or result writes from a usage question.
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+	cat <<'USAGE'
+bench/run-all.sh — end-to-end duplicate-detection benchmark.
+
+Steps: 1 phpcpd.phar (pinned+SHA256) · 2 jscpd (pinned, --ignore-scripts)
+       3 corpora materialize (bench/corpora.php enforces bench/corpus-pins.txt)
+       4 run all tools across all corpora · 5 score the synthetic corpus
+       6 audit-truth leg — OPTIONAL, env-gated (truth payloads are never
+         vendored; owner privacy ruling):
+           AUDIT_TRUTH_JSON=/path/truth.json AUDIT_TRUTH_REPORT=/path/report.json \
+           [AUDIT_TRUTH_PREFIX=…] bench/run-all.sh
+         Absent = honest skip echo; set-but-unreadable = fatal.
+
+No options beyond -h/--help. Results land under bench/results/. Idempotent.
+USAGE
+	exit 0
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TOOLS="${ROOT}/bench/tools"
 mkdir -p "${TOOLS}"

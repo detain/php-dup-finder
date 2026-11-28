@@ -502,7 +502,13 @@ deferred to item 8.2 — and writes the summary and a landing order. The
 deliverable is a standalone `phpdup-audit` JSON document (schema
 `phpdup-audit`): the analyze report shapes never grow a field, so every
 existing consumer and the Golden snapshots are untouched by this
-command's existence.
+command's existence. DATA EGRESS, stated plainly: the evidence packs
+embed source excerpts of the scanned code, so setting `llm_url` is the
+operator's consent for those excerpts — alongside the finding metadata —
+to leave the machine toward that endpoint; a private-range endpoint
+additionally requires the explicit `llm_allow_private` opt-in (SSRF
+admission), and the bearer token never rides any artifact, only the live
+request header.
 
 | Option              | Default | Description                                                            |
 |---------------------|---------|------------------------------------------------------------------------|
