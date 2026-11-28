@@ -946,3 +946,43 @@ remain documented-inert at the ROOT layer (once-078 wire-or-retire
 families) — inert-at-root is a wiring question for the owner ruling;
 inert-BUT-ADMITTED per-directory is the lie this table forbids.
 
+
+### Placement advice (`clusters[].placement`)
+
+Every cluster carries a `placement` object answering WHERE an extraction
+belongs. The DEFAULT (conservative) mode emits exactly `{shape,
+rationale, same_host, lca_namespace, host_packages}` — shapes `move`
+(zero holes, verbatim relocation), `data_table` (all-literal holes: "the
+pair differs by data, not control flow"), `expression_function` (any
+subtree hole), `defaulted_function` (any optional_block),
+`parameterized_function` (identifier/name slots). `host_packages` is a
+sorted require ∪ require-dev intersection computed only when members
+span ≥2 scan roots with readable composer manifests; null means the
+topology could not be answered (the reason is folded into `rationale`).
+
+Full 5.3 depth arms itself from the item 3.2 adoption ledger — the two
+root-only config-file knobs (`"idiom_mining": true, "helper_adoption":
+true`, `helper_adoption` config-file-only and requiring `idiom_mining`;
+NO CLI flag, NO new key). When the ledger is armed, `placement` also:
+
+- names an existing canonical target when the ledger accounts for every
+  member (each member carries a recorded inline copy of one helper's
+  mined pattern, or IS that helper): the conditional `canonical` key
+  `{label, file, line, inline_copies, is_member}` — call the named
+  helper instead of extracting a new one; `is_member: true` means the
+  cluster already contains the canonical implementation ("keep it,
+  replace the clones with calls to it").
+- lifts the shape vocabulary to the doc's first-class member forms:
+  `trait` when all members share one namespaced class (the lift keeps
+  every call site), `base_class` when sibling classes repeat one
+  same-named method under a shared namespace root (pull-up). `move` and
+  `data_table` keep precedence — all-literal holes stay table-driven.
+- falls back honestly: the conditional `lca_directory` key gives the
+  lowest common directory of the member files when the namespaces share
+  no root, and a cross-package cluster whose host-package intersection
+  computes EMPTY gets the 'create a shared package' guidance in
+  `rationale` (the empty list itself already said so).
+
+The conditional keys ride the current schema without a version event
+(armed-surface-only emit, per the program's conditional-key posture);
+unarmed payloads keep their byte-frozen five-key placement shape.

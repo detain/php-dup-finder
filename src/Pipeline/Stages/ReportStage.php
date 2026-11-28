@@ -571,6 +571,15 @@ final class ReportStage implements CooperativeStageInterface
         $state->report   = $report;
         $state->clusters = $clusters;
 
+        // Item 5.3 (W3): arm the placement advisor's 3.2 adoption probe
+        // for THIS run. The reporters construct PlacementAdvisor inside
+        // their build paths, so the ledger rows cross as a documented
+        // per-run arm — ReportStage is the only writer and re-arms on
+        // every run (helper_adoption unarmed ⇒ null ⇒ byte-identical
+        // conservative payloads), so a stale arm cannot leak across
+        // runs even in the long-lived `serve` workers.
+        \Phpdup\Refactor\PlacementAdvisor::armAdoptionProbe($state->sequenceIndex?->helperAdoption()?->rows());
+
         // Cache cluster ids so the `phpdup completion` drill-down can
         // suggest them. One id per line; refreshed when the id list
         // changes, so stale ids age out automatically without a
