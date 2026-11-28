@@ -523,6 +523,24 @@ final class Config
         // precondition here. Root config only (refused per-directory: one
         // rollup census per run, never one per subtree).
         public readonly bool $corpusRollups = false,
+        // Item 6.4 (THEME): theming demand knob (config-file key
+        // `themes`, JSON bool; deliberately NO CLI flag — the Command.php
+        // option roster is another lane's live file, same staging posture
+        // as corpus_rollups/idiom_mining). True: ReportStage runs
+        // ThemeAnalyzer over the REPORTED findings plus the armed call
+        // census, and the JSON report gains the conditional trailing
+        // `summary.themes` block (callee-vocabulary and directory themes
+        // with an honest themeless residual — JsonSchemaSpec::
+        // themeBlockShape()). False (default): the analyzer never runs,
+        // the key is ABSENT, and every payload stays byte-identical to
+        // the historical report (the idiom_census/corpus_rollups
+        // conditional-key carve-out: an opt-in key rides the current
+        // schema with no version event). Report-stage recompute only:
+        // nothing persists, no cache key binds it; the pass reads the
+        // call_sequence census when armed and degrades honestly to
+        // pattern-tags vocabulary when not (basis.call_census). Root
+        // config only (refused per-directory: one theming pass per run).
+        public readonly bool $themes = false,
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -961,6 +979,10 @@ final class Config
             // (one rollup census per run; refused at discovery in
             // ConfigLoader::discoverPerDirectoryOverrides()).
             corpusRollups:                   $this->corpusRollups,
+            // Item 6.4: root-only, copied — never replaced — per-directory
+            // (one theming pass per run; refused at discovery in
+            // ConfigLoader::discoverPerDirectoryOverrides()).
+            themes:                          $this->themes,
         );
     }
 

@@ -38,6 +38,7 @@ use Phpdup\Reporting\SarifReporter;
 use Phpdup\Reporting\ScanWindow;
 use Phpdup\Reporting\SourceTextStore;
 use Phpdup\Reporting\TimeseriesReporter;
+use Phpdup\Reporting\ThemeAnalyzer;
 use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -537,6 +538,35 @@ final class ReportStage implements CooperativeStageInterface
             }
         }
 
+        // Item 6.4 (THEME): finding themes — shared callee vocabulary
+        // and directory groups over the REPORTED findings — ARMED ONLY
+        // (config->themes, the rollups conditional-key family): an
+        // unarmed run never runs the analyzer and the summary key is
+        // absent, so every default payload stays byte-identical and the
+        // goldens stay frozen (no version event). Report-stage recompute
+        // (§5f trailing-param seam): nothing persists, no cache key
+        // binds the knob, no Block field is added. Unlike the rollup —
+        // which measures corpus DENSITY over the FULL ranked set —
+        // themes group the findings a summary reader actually sees, so
+        // $mainClusters feeds them (4.4-suppressed rows live in the
+        // appendix, not the summary). The vocabulary reads the EXISTING
+        // call-sequence census when call_sequence is armed and degrades
+        // to pattern tags alone otherwise (basis.call_census) — no new
+        // mining pass, the §5c one-walker law holds.
+        $themes = null;
+        if ($config->themes) {
+            $state->currentTask = 'theming findings';
+            $themes = (new ThemeAnalyzer(relRoots: $config->paths))->analyze(
+                $mainClusters,
+                $state->sequenceIndex?->callCensus(),
+            );
+            if ($pump() >= $pumpDue) {
+                $state->stageProgress = min(0.999, ++$unitsDone / $unitTotal);
+                yield Stage::Reporting;
+                $pumpDue = $pump() + self::YIELD_BUDGET_SECONDS;
+            }
+        }
+
         // once-S59: carry the run's real wall-clock window on the Report.
         // A state driven by Pipeline::iter() knows when the scan began; a
         // hand-driven stage run (library-style callers) does not, and then
@@ -610,6 +640,13 @@ final class ReportStage implements CooperativeStageInterface
             // null on every unarmed run — the reporter's conditional key
             // is what keeps default payloads byte-identical.
             rollups: $rollups,
+            // E-THEME (item 6.4): the theming payload rides the same
+            // state→Report seam (ThemeAnalyzer's own read of the
+            // reported clusters plus the census snapshot — the stage
+            // holds no theme state). null on every unarmed run — the
+            // reporter's conditional key keeps default payloads
+            // byte-identical.
+            themes: $themes,
         );
         $state->report   = $report;
         $state->clusters = $clusters;

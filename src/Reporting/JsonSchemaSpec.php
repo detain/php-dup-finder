@@ -273,13 +273,17 @@ final class JsonSchemaSpec
      *     (after vendored_duplicates when all arm), same demand-armed
      *     law; likewise $literalsArmed for the item-3.3
      *     `literal_census` block. Callers should pass named arguments —
-     *     six positional booleans is exactly the shape this family must
+     *     seven positional booleans is exactly the shape this family must
      *     not silently shuffle.
      * @param bool $rollups true asks for the shape of a corpus_rollups-
      *     ARMED run (item 2.2, ROLLUP): the base keys plus the
      *     conditional trailing `rollups` block (last when all arm). Same
      *     carve-out posture — an unarmed payload never grows the key, so
      *     no version event rides it.
+     * @param bool $themes true asks for the shape of a themes-ARMED run
+     *     (item 6.4, THEME): the conditional `themes` block after
+     *     `rollups` when both arm. Same carve-out posture — demand-armed
+     *     conditional key, declared armed shape, NO SCHEMA_VERSION event.
      *
      * @return array<string, string>
      */
@@ -290,6 +294,7 @@ final class JsonSchemaSpec
         bool $callsArmed = false,
         bool $literalsArmed = false,
         bool $rollups = false,
+        bool $themes = false,
     ): array {
         $shape = [
             'files'                => 'int',   // = files scanned (historical key)
@@ -326,6 +331,9 @@ final class JsonSchemaSpec
         }
         if ($rollups) {
             $shape['rollups'] = 'object  // item 2.2 (ROLLUP): the corpus-awareness block (see rollupBlockShape()); present ONLY on corpus_rollups-armed runs — an unarmed payload never grows this key (frozen goldens, same idiom_census/class_shape posture; no version event)';
+        }
+        if ($themes) {
+            $shape['themes'] = 'object  // item 6.4 (THEME): the finding-themes block (see themeBlockShape()); present ONLY on themes-armed runs — an unarmed payload never grows this key (frozen goldens, same demand-armed posture as rollups; no version event)';
         }
         return $shape;
     }
@@ -497,6 +505,30 @@ final class JsonSchemaSpec
             'dirs_truncated'         => 'int  // directory pairs past the TOP_DIRS row cap',
             'declared_only_pairs'    => 'list<object{a_root:string,a_path:string,b_root:string,b_path:string,shared:string}>',
             'declared_only_truncated'=> 'int  // declared-only rows past the TOP_DECLARED cap',
+        ];
+    }
+
+    /**
+     * Shape of the conditional `summary.themes` block (item 6.4, THEME —
+     * grouping the REPORTED findings by shared callee vocabulary and
+     * directory). Emitted ONLY on themes-armed runs (see summaryShape()'s
+     * $themes flag); the theme list and every per-theme sample are
+     * presentation-capped by ThemeAnalyzer's TOP_* budgets with sibling
+     * *_truncated counters, while totals and per-theme cluster counts
+     * stay full. Semantic labels ("outbound HTTP" as a phrase) are item
+     * 8.2's LLM layer; until then a label is the seed token plus its
+     * dominant directory, joined heuristically and disclosed. Theme ids
+     * are content-derived (kind + seed), never positional.
+     *
+     * @return array<string, string>
+     */
+    public static function themeBlockShape(): array
+    {
+        return [
+            'basis'  => 'object{call_census:bool}  // false = the vocabulary degraded to pattern tags only (call_sequence unarmed for this run) — disclosed, never silent',
+            'totals' => 'object{clusters:int,themed_clusters:int,themeless_clusters:int,themes:int}  // themeless_clusters is the honest residual: findings no theme claimed',
+            'themes' => 'list<object{id:string,kind:string,seed:string,label:string,clusters:int,lines:int,dominant_dir:string,dirs:list<string>,dirs_truncated:int,vocabulary:list<string>,vocabulary_truncated:int,cluster_ids:list<string>,cluster_ids_truncated:int}>',
+            'themes_truncated' => 'int  // themes past the TOP_THEMES row cap (totals still count them)',
         ];
     }
 

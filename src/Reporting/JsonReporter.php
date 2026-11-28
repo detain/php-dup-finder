@@ -286,6 +286,18 @@ final class JsonReporter
         if ($report->rollups !== null) {
             $payload['summary']['rollups'] = $report->rollups;
         }
+        // Item 6.4 (THEME): a further conditional trailing summary key,
+        // same idiom_census/corpus_rollups carve-out voice. Present ONLY
+        // when the run armed `themes` and the analyzer produced a payload
+        // — absent otherwise, which is what keeps every frozen payload
+        // byte-identical (no SCHEMA_VERSION move: no default run's bytes
+        // change). Declared by JsonSchemaSpec::summaryShape(themes: true) /
+        // themeBlockShape(). A measured findings-free run is the
+        // zero-shaped block, never null — null means the pass was not
+        // armed.
+        if ($report->themes !== null) {
+            $payload['summary']['themes'] = $report->themes;
+        }
         return $payload;
     }
 

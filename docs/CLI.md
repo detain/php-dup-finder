@@ -241,6 +241,43 @@ from bytes the run already holds plus one throwaway parse pass per file —
 nothing is persisted and no cache key takes them, so warm and cold armed
 runs always show the same census.
 
+#### Finding themes (item 6.4)
+
+`summary.themes` is a report-stage, read-only view over the run's REPORTED
+findings, emitted ONLY on `themes`-armed runs (root `phpdup.json`, boolean;
+deliberately no CLI flag at this tip — the `corpus_rollups` staging
+posture). Unarmed — the default — the key is ABSENT and every payload
+stays byte-identical to the frozen goldens: a conditional key rides the
+current schema with no version event (the `idiom_census`/corpus_rollups
+carve-out). It groups findings by shared callee vocabulary and directory —
+the doc's "outbound HTTP", "IP math", "error envelopes" archetype — and
+feeds NOTHING into clustering or into any other finding: the same findings
+are simply presented under themes.
+
+- `basis.call_census` — whether the vocabulary could read the item-3.5
+  call-sequence census. `false` means `call_sequence` was unarmed for this
+  run and the vocabulary degraded to the refiner's pattern tags alone —
+  disclosed, never silent. No second mining pass is ever minted (§5c
+  one-walker law): the pass is a pure read of state the run already
+  carries, so no cache key binds this knob.
+- `totals` — `clusters` (reported findings measured), `themed_clusters`,
+  the honest `themeless_clusters` residual (findings no theme claimed —
+  counted, never dropped), and `themes`.
+- `themes` — at most `TOP_THEMES` rows, ordered coverage desc / kind /
+  seed asc. Each row: content-derived `id` (kind + seed, positional
+  churn-proof), `kind` (`vocabulary` or `directory`), the winning `seed`,
+  a heuristic `label` (the seed plus its dominant directory — semantic
+  naming is item 8.2's LLM layer), the FULL `clusters` count and `lines`
+  sum, `dominant_dir` (member-weighted, tie-break label asc), and
+  bounded `dirs` / `vocabulary` / `cluster_ids` samples, each with its
+  own `*_truncated` counter.
+
+Claim law: seeds are tokens or directories shared by at least two
+clusters; vocabulary seeds claim before directory seeds (the letter's
+primary axis); a finding joins at most one theme, the highest-ranked seed
+that still finds >= 2 uncovered members for it. The ordering is a total
+order over content, so arrival order cannot change the payload.
+
 ### Runtime
 
 | Option                                     | Default     | Description                                                                                            |
@@ -939,6 +976,7 @@ with the offending field path on the first violation.
 | `history_window_months`              | integer          | `12`             | Item 4.2: the "last N months" window for lone-change and activity claims (snapped to a UTC day boundary so the `git --since` argument and the `cache_dir/history/log` key are stable for the calendar day). Must be ≥ 1. Only consulted when `history: true`. Deliberately NO CLI flag — numeric report-tuning knob, `max_ted_size` precedent: `--history` arms, phpdup.json tunes. Root config only (same posture as `history`). |
 | `call_sequence`                      | boolean          | `false`          | Item 3.5 call-sequence idioms. `true`: the SAME fragment-gated statement-list walker §5c licenses (§5c one-traversal law — no second pass) captures each body's ORDERED callee-name sequence (receiver-blind method names, `Class::method` statics, dynamic names dropped) and mines sliding windows of length 2–4 shared by ≥2 sites with differing literals/constant args abstracted into per-slot value tables — the doc's cURL-bootstrap archetype collapses to one protocol row whose arg-diff table carries `CURLOPT_SSL_VERIFYPEER => false ×2 / true ×1`. PRECONDITION: `idiom_mining` must be `true` (Config invariant, exit 2 — the miner rides the fragment-gated capture and the armed-census door, mirroring `helper_adoption` exactly). Mints worker rows, so (like `idiom_mining`, unlike `helper_adoption`) an armed run bypasses cache reuse AND the key binds into the extraction cache key (flip invalidates warm caches once; no `PARSER_VERSION` bump). The JSON summary grows the conditional trailing `summary.call_sequences` block ONLY while armed (demand-armed keys ride schema 1.8, no `SCHEMA_VERSION` change; unarmed payload byte-identical, goldens frozen): window/site counters + top-50 maximal rows (nested windows suppressed), canonical `file:line` samples, corpus-complete per-slot constant tables (≤8 values/slot). Feeds NOTHING into clustering or scoring — no `MatchTier` minted, sequence evidence stays a census ledger like idioms. With `helper_adoption` armed, adoption rows gain `callers` counts via a receiver-blind name join over this census (own-definition-span occurrences excluded; name-location overflow counted — honest worst direction). Deliberately NO CLI flag at this tip (`idiom_mining` staging posture) — phpdup.json speaks. Root config only — per-directory `.phpdup.json` files carrying this key fail the load: one call census per run. |
 | `literal_census`                     | boolean          | `false`          | Item 3.3 repeated-literal census. `true`: preprocessing reads each file's RAW parsed tree (normalization erases literals downstream — the census reads raw, in-worker, same single walk) and counts five buckets: `string` ≥12 bytes (URLs, SQL, messages; heredoc/nowdoc included), `array` literals ≥3 entries hashed ORDER-INSENSITIVELY (status maps/allow-lists match across shuffles; spread items become value holes), `number` constants grouped by value + syntactic position (trivial 0/1/-1 and array-entry values skipped — the doc's "86400 on 112 lines" archetype surfaces at its call sites), `skeleton` interpolated strings grouped by literal skeleton with recognized SQL folded to verb+table (`SqlTableExtractor`; concat-built SQL NOT captured — disclosed follow-on), `const` class-constant declarations, enum cases and every const FETCH grouped by NAME alone (five `STATUS_MAP`s across five classes = one row with decl/enum_case/use role counters). Near-duplicate strings union into edit-distance families within length bands (drifting allow-lists read as one family); >400 distinct strings skips families honestly (`families_computed: false`). No precondition, no fragment roster — but it mints worker rows, so armed runs bypass the `IndexStore` and the key binds into the extraction cache key (flip invalidates once; no `PARSER_VERSION` bump). The JSON summary grows the conditional trailing `summary.literal_census` block ONLY while armed (schema 1.8, no bump; unarmed byte-identical, goldens frozen): per-bucket totals at every support level, top-50 rows needing ≥2 sites (numbers ≥2 files), roles and canonical samples, plus the family list. Feeds NOTHING into clustering — literals stay invisible to cluster membership; only the trailing block moves. Deliberately NO CLI flag at this tip (`idiom_mining` precedent) — phpdup.json speaks. Root config only — per-directory `.phpdup.json` files carrying this key fail the load: one literal census per run. |
+| `themes`                             | boolean          | `false`          | Item 6.4 finding themes. `true`: the report stage runs `ThemeAnalyzer` over the REPORTED findings — per-cluster signature = shared callee vocabulary (a span-scoped read of the `call_sequence` census name index when armed; degrades honestly to pattern tags alone otherwise, disclosed in `basis.call_census`) plus member directories — and seeds shared by ≥2 clusters greedily claim findings into themes (vocabulary seeds before directory seeds, coverage desc / seed asc with the FindingId tie-break, one theme per finding). The JSON summary grows the conditional trailing `summary.themes` block ONLY while armed (demand-armed key rides schema 1.8, no `SCHEMA_VERSION` event; unarmed payload byte-identical, goldens frozen): basis + corpus-complete totals (including the honest `themeless_clusters` residual) + presentation-capped theme rows with content-derived ids and truncation counters. Pure report-stage view: §5c one-walker law honored (no second mining pass — it reads the census the run already carries), nothing persists, NO cache key binds the knob, and clustering/scoring output is identical armed or unarmed. Semantic labels ("outbound HTTP" as a phrase) are item 8.2's LLM layer; until then a label is the seed plus its dominant directory. Deliberately NO CLI flag at this tip (`corpus_rollups` staging precedent) — phpdup.json speaks. Root config only — per-directory `.phpdup.json` files carrying this key fail the load: themes group the whole summary, never one subtree. |
 | `max_hole_coverage`                    | number           | `1.0`            | `0..1`. Hole-coverage ceiling for extraction honesty: a cluster whose generalized template is MORE than this fraction hole is marked `re_expressed` in reports and gets its longest hole-free statement run surfaced as `hole_fragment`. Default `1.0` = rule never fires (byte-identical reports). CLI `--max-hole-coverage`. Root config only — per-directory `.phpdup.json` files carrying this key fail the load (a cluster spans directories). |
 | `cache_dir`                            | string           | `".phpdup-cache"`| Any path; created on first use.                                          |
 | `parallelism`                          | string           | `"auto"`         | One of `auto`, `off`, `manual`.                                          |

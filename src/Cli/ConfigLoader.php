@@ -163,6 +163,7 @@ final class ConfigLoader
             'call_sequence',
             'literal_census',
             'corpus_rollups',
+            'themes',
             'ir_threshold', 'ml_pair_threshold', 'debug_log',
             'low_memory', 'fail_on_impact', 'max_clusters',
             'optional_blocks_containment',
@@ -231,6 +232,7 @@ final class ConfigLoader
             'call_sequence' => $base->callSequence,
             'literal_census' => $base->literalCensus,
             'corpus_rollups' => $base->corpusRollups,
+            'themes' => $base->themes,
             'ir_threshold' => $base->irThreshold,
             'ml_pair_threshold' => $base->mlPairThreshold,
             'debug_log' => $base->debugLog,
@@ -487,6 +489,12 @@ final class ConfigLoader
             // roster staging precedent). Report-stage recompute only: no
             // cache-key binding, no armed construction precondition.
             corpusRollups:                 $flat['corpus_rollups'],
+            // Item 6.4 (THEME): the theming demand knob, same flat-
+            // resolver route (root-only, refused per-directory, default
+            // OFF). No argv leg at this tip (Command.php option roster
+            // staging precedent). Report-stage recompute only: no
+            // cache-key binding, no armed construction precondition.
+            themes:                        $flat['themes'],
             // Item 4.4 APPLY half: root-only accepted-decision register.
             // No CLI override leg (deliberate: suppressions belong to the
             // committed config + baseline file, not ephemeral flags), so
@@ -1343,6 +1351,8 @@ final class ConfigLoader
         'history',
         'history_window_months',
         'corpus_rollups',
+        // Item 6.4 (THEME): theming demand knob.
+        'themes',
     ];
 
     /**
@@ -1404,6 +1414,10 @@ final class ConfigLoader
         'history',
         'history_window_months',
         'corpus_rollups',
+        // Item 6.4 (THEME): one theming pass over the reported findings
+        // per run — themes group the whole summary, so a per-directory
+        // flip would theme some findings only. Same refused family.
+        'themes',
     ];
 
     /**
@@ -1676,6 +1690,12 @@ final class ConfigLoader
             // silently flip whether the run pays the report-stage rollup
             // pass and grows the summary.rollups block.
             throw new \RuntimeException("corpus_rollups must be a boolean$where");
+        }
+        if (array_key_exists('themes', $data) && !is_bool($data['themes'])) {
+            // Item 6.4 (THEME): same voice — a non-boolean must not
+            // silently flip whether the run themes its reported findings
+            // and grows the summary.themes block.
+            throw new \RuntimeException("themes must be a boolean$where");
         }
         if (array_key_exists('scorer', $data)) {
             $assertEnum($data['scorer'], 'scorer', ['default', 'ir']);

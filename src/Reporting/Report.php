@@ -25,6 +25,7 @@ final class Report
      * @param list<array{file:string,message:string}> $parseFailures
      * @param null|array<string, mixed> $vendoredDuplicates Item 5.2 (W2b): the demoted 'vendored duplicates' section (null = scope unarmed, key never opens).
      * @param null|array<string, mixed> $rollups
+     * @param null|array<string, mixed> $themes Item 6.4 (THEME): demand-armed `summary.themes` payload (null = pass never ran).
      */
     public function __construct(
         public readonly int $files,
@@ -146,6 +147,21 @@ final class Report
         // distinct from an empty corpus that was measured — same
         // tracked-not-fabricated law as the counters above.
         public readonly ?array $rollups = null,
+        // Item 6.4 (THEME): the finding-theme roll-up (see
+        // {@see ThemeAnalyzer::analyze()} for the shape and the design
+        // law). EMITTED at schema 1.8 as the demand-armed conditional
+        // key `summary.themes` — JsonReporter opens the block ONLY when
+        // this is non-null (armed shape declared by
+        // summaryShape(themes: true)/themeBlockShape(); no
+        // SCHEMA_VERSION event, the MINE-D §4 carve-out), so unarmed
+        // payloads stay byte-identical and the goldens hold. Recomputed
+        // at report time over the REPORTED findings plus the armed call
+        // census — nothing persists, so no cache key moves and no Block
+        // field is added. null = the producer never ran the pass
+        // (legacy library/server/hand-built reports), distinct from a
+        // findings-free run that was measured and returned zero-shaped
+        // — same tracked-not-fabricated law as $rollups above.
+        public readonly ?array $themes = null,
     ) {
     }
 

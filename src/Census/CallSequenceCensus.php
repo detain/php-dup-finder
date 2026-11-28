@@ -348,6 +348,48 @@ final class CallSequenceCensus
         return count($this->nameIndex);
     }
 
+    /**
+     * Item 6.4 (THEME): the distinct callee tokens of one file's line
+     * window — the theming lane's span-scoped vocabulary read over the
+     * SAME name index the helper-caller join above uses (no second
+     * mining pass, §5c one-walker law).
+     *
+     * A token matches when any retained line for (token, file) falls
+     * inside [startLine, endLine], OR the (token, file) list overflowed
+     * the cap — then its unretained occurrences count as INSIDE, the
+     * opposite assumption to {@see self::sitesForMethod()}'s exclusion
+     * (there, overflow counted EXTERNAL so caller counts could not
+     * inflate; here, over-inclusion is the worst honest direction for a
+     * theme seed: a 17-call-per-file helper is exactly the vocabulary
+     * signal a theme wants, and dropping it would silently thin the
+     * grouping). Disclosed, like the sibling law.
+     *
+     * Tokens are returned as-written (the miner's spelling), ascending.
+     *
+     * @return list<string>
+     */
+    public function calleeTokensIn(string $file, int $startLine, int $endLine): array
+    {
+        $hits = [];
+        foreach ($this->nameIndex as $token => $entry) {
+            $member = false;
+            foreach ($entry['lines'][$file] ?? [] as $line) {
+                if ($line >= $startLine && $line <= $endLine) {
+                    $member = true;
+                    break;
+                }
+            }
+            if (!$member && isset($entry['overflow'][$file])) {
+                $member = true;
+            }
+            if ($member) {
+                $hits[] = (string) $token;
+            }
+        }
+        sort($hits);
+        return $hits;
+    }
+
     // ---------------------------------------------------------------- state
 
     /**
