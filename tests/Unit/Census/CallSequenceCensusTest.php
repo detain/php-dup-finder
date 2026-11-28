@@ -107,6 +107,39 @@ final class CallSequenceCensusTest extends TestCase
             'corpus-complete counters, not sample-windowed: 2 false, 1 true in full');
     }
 
+    public function testEmptyStringWitnessSpellingFlowsThroughTables(): void
+    {
+        // r1 CRITICAL-1 cure (miner side): the empty-string argument
+        // spells as "''" (its own source spelling), so the shape that
+        // used to abort armed runs — preg_replace's '' replacement,
+        // implode('') glue — rides the tables like any other witness.
+        $census = new CallSequenceCensus();
+        $census->recordFileJson('e1.php', self::record(['preg_replace', 'finish'], [2, 3], [["''"], ['/x/']]));
+        $census->recordFileJson('e2.php', self::record(['preg_replace', 'finish'], [2, 3], [["''"], ['/x/']]));
+        $census->recordFileJson('e3.php', self::record(['preg_replace', 'finish'], [2, 3], [['/y/'], ['/x/']]));
+
+        $rows = $census->rows();
+        self::assertCount(1, $rows);
+        self::assertSame(3, $rows[0]->sites);
+        $table = $rows[0]->argDiff;
+        self::assertCount(1, $table, 'only slot 0 differs — slot 1 is the universal /x/');
+        self::assertSame(["''", '/y/'], array_column($table[0]['values'], 'token'),
+            'the empty-string witness is a first-class token (count desc, token asc)');
+        self::assertSame([2, 1], array_column($table[0]['values'], 'sites'));
+        self::assertSame(0, $table[0]['none']);
+    }
+
+    public function testRawEmptyArgTokenStillRefused(): void
+    {
+        // The census guard stays meaningful as a wire-format contract:
+        // a producer that emits a raw '' token is broken by definition;
+        // the cure lives in the miner's vocabulary, not in loosening it.
+        $census = new CallSequenceCensus();
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('calls record arg tokens must be non-empty strings');
+        $census->recordFileJson('bad.php', self::record(['a', 'b'], [1, 2], [[''], []]));
+    }
+
     public function testValuesPerSlotCap(): void
     {
         $tokens = [];

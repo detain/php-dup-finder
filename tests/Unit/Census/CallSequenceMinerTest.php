@@ -106,6 +106,32 @@ final class CallSequenceMinerTest extends TestCase
         );
     }
 
+    public function testEmptyStringArgumentsSpellAsQuotes(): void
+    {
+        // r1 CRITICAL-1 cure: '' as a call argument (the universal
+        // preg_replace-replacement / implode-glue shape that aborted
+        // armed runs over the repo's own src) is a REAL witness — it
+        // spells as its own source form "''", never an empty token,
+        // and is never dropped to a hole (which would erase the signal
+        // that distinguishes implode('', $parts) from a ''-vs-',' split).
+        $records = self::mine(self::source(<<<'PHP'
+            <?php
+            $reason = preg_replace('/^x/', '', $message);
+            $blob = implode('', $parts);
+            $out = render(['pad' => '', 'fill' => 'x']);
+            PHP));
+        self::assertSame(['preg_replace', 'implode', 'render'], $records[0]['names']);
+        self::assertSame([['/^x/', "''"], ["''"], ["pad=>''", 'fill=>x']], $records[0]['args'],
+            'direct empty arg and empty array values all spell as the two-quote token in place');
+        foreach ($records as $record) {
+            foreach ($record['args'] as $bag) {
+                foreach ($bag as $token) {
+                    self::assertNotSame('', $token, 'the miner never mints an empty token (census wire law)');
+                }
+            }
+        }
+    }
+
     public function testCallCapAndListCap(): void
     {
         $many = "<?php\n";
