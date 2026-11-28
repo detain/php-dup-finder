@@ -96,6 +96,10 @@ final class CliReporter
                 $out->writeln(StatusLine::success('no clusters above threshold — clean.', $theme));
             }
             $this->renderFileAccounting($report, $theme, $out);
+            // Item 4.4: an accepted-only report is not a silent report —
+            // the appendix names every suppression even when the main
+            // payload is empty.
+            $this->renderBaselineAppendix($report, $theme, $out);
             return;
         }
 
@@ -140,6 +144,79 @@ final class CliReporter
             $totalImpact,
         ), $theme));
         $this->renderFileAccounting($report, $theme, $out);
+        $this->renderBaselineAppendix($report, $theme, $out);
+    }
+
+    /**
+     * Item 4.4 APPLY half: the baseline appendix. Accepted findings are
+     * SUPPRESSED FROM THE MAIN REPORT — this surface makes the
+     * suppression visible: what was dropped, who accepted it (registry
+     * file / @phpdup-ignore directive / phpdup.json list), when, where
+     * (member files), and whether it RESURFACED after content drift.
+     * Renders only when decisions were in play; the default report is
+     * byte-unchanged.
+     */
+    private function renderBaselineAppendix(Report $report, Theme $theme, OutputInterface $out): void
+    {
+        $rows = $report->baselineAppendix;
+        if ($rows === []) {
+            return;
+        }
+
+        $accepted = 0;
+        $unresolved = 0;
+        $resurfaced = 0;
+        foreach ($rows as $row) {
+            if (($row['status'] ?? null) === BaselineDisposition::STATUS_UNRESOLVED) {
+                $unresolved++;
+            } elseif (($row['resurfaced'] ?? false) === true) {
+                $resurfaced++;
+                $accepted++;
+            } else {
+                $accepted++;
+            }
+        }
+
+        $out->writeln('');
+        $out->writeln(StatusLine::info(sprintf(
+            'baseline  %d accepted · %d resurfaced · %d unresolved',
+            $accepted,
+            $resurfaced,
+            $unresolved,
+        ), $theme));
+
+        foreach ($rows as $row) {
+            $id = (string)($row['finding_id'] ?? '?');
+            $status = (string)($row['status'] ?? BaselineDisposition::STATUS_ACCEPTED);
+            $source = (string)($row['source'] ?? 'registry');
+            $bits = ["  $id  $status ($source"];
+            if ($source === 'directive' && isset($row['directive_file'])) {
+                $bits[0] .= ', ' . $row['directive_file'] . ':' . (int)($row['directive_line'] ?? 0);
+            }
+            $bits[0] .= ')';
+
+            if (($row['resurfaced'] ?? false) === true) {
+                $bits[] = 'RESURFACED (was accepted as ' . (string)($row['accepted_id'] ?? '?') . ' — re-accept or remove the entry)';
+            } elseif (($row['absent'] ?? false) === true) {
+                $bits[] = 'not found this run';
+            } elseif ($status === BaselineDisposition::STATUS_ACCEPTED) {
+                $bits[] = sprintf('%d members · impact %d', (int)($row['members'] ?? 0), (int)($row['impact'] ?? 0));
+            }
+
+            $files = (array)($row['files'] ?? []);
+            if ($files !== []) {
+                $shown = array_slice($files, 0, 3);
+                $bits[] = implode(', ', $shown) . (count($files) > 3 ? sprintf(' (+%d files)', count($files) - 3) : '');
+            }
+            if (isset($row['note']) && is_string($row['note']) && $row['note'] !== '') {
+                $bits[] = '"' . $row['note'] . '"';
+            }
+            if (isset($row['accepted_at']) && is_string($row['accepted_at']) && $status === BaselineDisposition::STATUS_UNRESOLVED) {
+                $bits[] = 'since ' . $row['accepted_at'];
+            }
+
+            $out->writeln(implode('  ', $bits));
+        }
     }
 
     /**

@@ -73,6 +73,16 @@ final class Report
         // PipelineState::$mlConnectionStatus for the four values and the
         // fork-zone semantics boundary). null = producer never wired one.
         public readonly ?string $mlStatus = null,
+        // Item 4.4 APPLY half (§5f trailing-param law): the baseline
+        // appendix — findings ACCEPTED as kept duplication, suppressed
+        // from $clusters with acknowledgement. Each row is the
+        // BaselineFilter shape (finding_id, status, source, resurfaced,
+        // provenance). Empty list = no decisions touched this run; the
+        // CLI trailer and HTML appendix render only when rows exist, so
+        // the default report is byte-unchanged. The JSON emit rides the
+        // next schema-1.8 train (JsonReporter is another lane's live
+        // file; it reads this property).
+        public readonly array $baselineAppendix = [],
     ) {
     }
 

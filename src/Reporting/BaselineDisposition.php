@@ -57,6 +57,32 @@ final class BaselineDisposition
         }
     }
 
+    /**
+     * Rehydrate a disposition from an appendix row produced during this
+     * run (BaselineFilter row shape). Used by the baseline write legs to
+     * persist directive/config acceptances — the rows already carry the
+     * full provenance snapshot captured at accept time.
+     *
+     * @param array<string, mixed> $row
+     */
+    public static function fromAppendixRow(array $row): self
+    {
+        $findingId = (string)($row['finding_id'] ?? '');
+
+        return new self(
+            findingId: $findingId,
+            status: (string)($row['status'] ?? self::STATUS_ACCEPTED),
+            note: isset($row['note']) && is_string($row['note']) ? $row['note'] : null,
+            acceptedAt: isset($row['accepted_at']) && is_string($row['accepted_at'])
+                ? $row['accepted_at']
+                : date('c'),
+            gitSha: isset($row['git_sha']) && is_string($row['git_sha']) ? $row['git_sha'] : null,
+            files: array_values(array_map('strval', (array)($row['files'] ?? []))),
+            mtimes: array_map('intval', (array)($row['mtimes'] ?? [])),
+            memberHashes: array_values(array_map('strval', (array)($row['member_hashes'] ?? []))),
+        );
+    }
+
     public function isAccepted(): bool
     {
         return $this->status === self::STATUS_ACCEPTED;

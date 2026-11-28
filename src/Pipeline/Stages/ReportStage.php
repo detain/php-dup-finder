@@ -12,6 +12,8 @@ use Phpdup\Pipeline\CooperativeStageInterface;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\Stage;
 use Phpdup\Refactor\FunctionNameRegistry;
+use Phpdup\Reporting\BaselineFilter;
+use Phpdup\Reporting\BaselineStore;
 use Phpdup\Reporting\CheckstyleReporter;
 use Phpdup\Reporting\CliReporter;
 use Phpdup\Reporting\ClusterScope;
@@ -332,6 +334,31 @@ final class ReportStage implements CooperativeStageInterface
         }
         (new FunctionNameRegistry())->resolve($clusters);
 
+        // Item 4.4 APPLY half: accepted-finding disposition. The ranked
+        // full set stays on $state->clusters (gates, max-clusters, the
+        // cluster-id cache and the baseline hash comparison all keep
+        // their view); only the REPORT payload splits into main findings
+        // plus the appendix of suppressions. With no decisions in play
+        // (no registry dispositions, no accepted list, no directives)
+        // this is a passthrough and the report is byte-unchanged.
+        $mainClusters = $clusters;
+        $baselineAppendix = [];
+        $directiveRows = array_values(array_filter(
+            $declaredTwins,
+            static fn(array $row): bool => ($row['kind'] ?? null) === 'directive',
+        ));
+        if ($config->accepted !== [] || $directiveRows !== [] || $config->baselineFile !== null) {
+            $registryDispositions = $config->baselineFile !== null
+                ? (new BaselineStore(scanRoots: $config->paths))->readDispositions($config->baselineFile)
+                : [];
+            if ($registryDispositions !== [] || $config->accepted !== [] || $directiveRows !== []) {
+                $baselineFilter = new BaselineFilter(scanRoots: $config->paths);
+                $split = $baselineFilter->split($clusters, $registryDispositions, $config->accepted, $directiveRows);
+                $mainClusters = $split['main'];
+                $baselineAppendix = $split['appendix'];
+            }
+        }
+
         // once-S59: carry the run's real wall-clock window on the Report.
         // A state driven by Pipeline::iter() knows when the scan began; a
         // hand-driven stage run (library-style callers) does not, and then
@@ -347,7 +374,7 @@ final class ReportStage implements CooperativeStageInterface
             files: count($state->files),
             blocks: count($state->blocks),
             parseErrors: $state->parseErrors,
-            clusters: $clusters,
+            clusters: $mainClusters,
             config: $config,
             reusedFiles: $state->reusedFiles,
             processedFiles: $state->processedFiles,
@@ -372,6 +399,11 @@ final class ReportStage implements CooperativeStageInterface
             // carriers (the 1.7 freeze prose below is history).
             oversizedBlocks: $state->oversizedBlocks,
             mlStatus: $state->mlConnectionStatus,
+            // Item 4.4 APPLY half: accepted findings suppressed from the
+            // main payload, enumerated here (renderers draw the appendix
+            // only when rows exist; JsonReporter's top-level 'baseline'
+            // section is this carrier's schema-1.8 consumer leg).
+            baselineAppendix: $baselineAppendix,
         );
         $state->report   = $report;
         $state->clusters = $clusters;

@@ -25,6 +25,8 @@ use Phpdup\Pipeline\Stages\ReportStage;
 use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Normalization\PluginRegistry;
 use Phpdup\Parsing\AstCache;
+use Phpdup\Reporting\BaselineDisposition;
+use Phpdup\Reporting\BaselineFilter;
 use Phpdup\Reporting\BaselineStore;
 use Phpdup\Reporting\ReportWriteException;
 use Phpdup\Scanning\FileScanner;
@@ -2033,9 +2035,27 @@ HELP;
                 ];
             }
 
+            // Item 4.4 APPLY half: decisions ride the baseline. The
+            // appendix the pipeline just built (ReportStage's
+            // BaselineFilter split) supplies directive/config
+            // acceptances; a pre-existing file's dispositions are
+            // merged so the operator's durable record survives every
+            // write. Persisting here — and only here — is the opt-in
+            // leg: the FunctionNameRegistry posture, never auto-write.
+            $appendixRows = $state->report !== null ? $state->report->baselineAppendix : [];
+            $incomingDispositions = [];
+            foreach (BaselineFilter::persistableRows($appendixRows) as $row) {
+                $incomingDispositions[(string)$row['finding_id']] = BaselineDisposition::fromAppendixRow($row);
+            }
+            $priorPath = $config->baselineOutFile ?? $config->baselineFile;
+            $mergedDispositions = BaselineStore::mergeDispositions(
+                $priorPath !== null ? $baselineStore->readDispositions($priorPath) : [],
+                $incomingDispositions,
+            );
+
             // --baseline-out wins: always write baseline and exit 0
             if ($config->baselineOutFile !== null) {
-                $baselineStore->writeBaseline($state->clusters, $config->baselineOutFile);
+                $baselineStore->writeBaseline($state->clusters, $config->baselineOutFile, $mergedDispositions);
                 $output->writeln("<info>phpdup</info> baseline written to {$config->baselineOutFile}");
                 return 0;
             }
@@ -2044,7 +2064,7 @@ HELP;
             if ($config->baselineFile !== null) {
                 if (!is_file($config->baselineFile)) {
                     // First run: write baseline and exit 0
-                    $baselineStore->writeBaseline($state->clusters, $config->baselineFile);
+                    $baselineStore->writeBaseline($state->clusters, $config->baselineFile, $mergedDispositions);
                     $output->writeln("<info>phpdup</info> baseline created at {$config->baselineFile}");
                     return 0;
                 }
@@ -2053,10 +2073,39 @@ HELP;
                 $baselineEntries = $baselineStore->readBaseline($config->baselineFile);
                 $newClusters = $baselineStore->compareBaselines($currentEntries, $baselineEntries);
 
+                // Item 4.4: the team's accepted decisions never trip the
+                // gate — an accepted finding excluded from the report is
+                // excluded from the count. Resurfaced findings (drifted
+                // content, new id) DO count: fail-open re-review until
+                // the operator re-accepts or removes the entry.
+                $acceptedCurrentIds = [];
+                foreach ($appendixRows as $row) {
+                    if (($row['status'] ?? null) === BaselineDisposition::STATUS_ACCEPTED
+                        && ($row['resurfaced'] ?? false) !== true
+                        && ($row['absent'] ?? false) !== true) {
+                        $acceptedCurrentIds[(string)$row['finding_id']] = true;
+                    }
+                }
+                $excludedAccepted = 0;
+                if ($acceptedCurrentIds !== []) {
+                    $before = count($newClusters);
+                    $newClusters = array_values(array_filter(
+                        $newClusters,
+                        static fn(array $entry): bool => !isset($acceptedCurrentIds[$entry['id']]),
+                    ));
+                    $excludedAccepted = $before - count($newClusters);
+                }
+
                 if ($newClusters !== []) {
                     $count = count($newClusters);
-                    $output->writeln("<error>phpdup</error> {$count} new duplicate cluster(s) found since baseline — exit 4");
+                    $note = $excludedAccepted > 0
+                        ? " ($excludedAccepted accepted finding(s) not counted)"
+                        : '';
+                    $output->writeln("<error>phpdup</error> {$count} new duplicate cluster(s) found since baseline{$note} — exit 4");
                     return 4;
+                }
+                if ($excludedAccepted > 0) {
+                    $output->writeln("<info>phpdup</info> baseline gate passed — {$excludedAccepted} accepted finding(s) excluded from the new-cluster count");
                 }
             }
         }

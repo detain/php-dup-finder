@@ -310,11 +310,87 @@ final class HtmlReporter
 <tr class="empty-state"><td colspan="7">No clusters found — nothing to list.</td></tr>
 <?php endif; ?>
 </tbody></table>
+<?= $this->renderBaselineSection($report) ?>
 </main>
 <script src="app.js"></script>
 </body></html>
         <?php
         return (string)ob_get_clean();
+    }
+
+    /**
+     * Item 4.4 APPLY half: baseline appendix section. Renders nothing
+     * when no decisions were in play (so the default report is
+     * byte-unchanged); otherwise names each suppressed finding, its
+     * acceptance source, provenance and resurface state. The main
+     * cluster table above NEVER carries these rows — they were accepted
+     * as kept duplication, and this section is the acknowledgement
+     * surface (improve_logic.md item 4.4: excluded but enumerated).
+     */
+    private function renderBaselineSection(Report $report): string
+    {
+        $rows = $report->baselineAppendix;
+        if ($rows === []) {
+            return '';
+        }
+
+        $html = "<section class=\"baseline-appendix\" id=\"baseline\">\n";
+        $html .= "<h2>Baseline appendix</h2>\n";
+        $html .= "<p class=\"muted\">Findings the team accepted as kept duplication, suppressed from "
+            . "the report above with acknowledgement. Resurfaced findings are back in the main report "
+            . "for re-review; they never vanish silently.</p>\n";
+        $html .= "<table class=\"baseline\"><thead><tr>"
+            . "<th>Finding</th><th>Status</th><th>Source</th><th>Accepted</th><th>Members</th><th>Files</th><th>Note</th>"
+            . "</tr></thead><tbody>\n";
+
+        foreach ($rows as $row) {
+            $id = htmlspecialchars((string)($row['finding_id'] ?? '?'), ENT_QUOTES);
+            $status = htmlspecialchars((string)($row['status'] ?? 'accepted'), ENT_QUOTES);
+            $source = htmlspecialchars((string)($row['source'] ?? 'registry'), ENT_QUOTES);
+            $resurfaced = ($row['resurfaced'] ?? false) === true;
+            $absent = ($row['absent'] ?? false) === true;
+
+            $state = $status;
+            if ($resurfaced) {
+                $acceptedId = htmlspecialchars((string)($row['accepted_id'] ?? '?'), ENT_QUOTES);
+                $state = '<strong class="resurfaced">resurfaced</strong>'
+                    . " <span class=\"muted\">(accepted as <code>$acceptedId</code> — re-accept or remove)</span>";
+            } elseif ($absent) {
+                $state .= ' <span class="muted">(not found this run)</span>';
+            }
+
+            $when = isset($row['accepted_at']) && is_string($row['accepted_at'])
+                ? htmlspecialchars($row['accepted_at'], ENT_QUOTES)
+                : '—';
+            $members = (int)($row['members'] ?? 0);
+
+            $files = (array)($row['files'] ?? []);
+            $fileHtml = [];
+            foreach (array_slice($files, 0, 6) as $file) {
+                $fileHtml[] = '<code>' . htmlspecialchars((string)$file, ENT_QUOTES) . '</code>';
+            }
+            if (count($files) > 6) {
+                $fileHtml[] = '<span class="muted">+' . (count($files) - 6) . ' more</span>';
+            }
+
+            $note = isset($row['note']) && is_string($row['note'])
+                ? htmlspecialchars($row['note'], ENT_QUOTES)
+                : '';
+            if ($source === 'directive' && isset($row['directive_file'])) {
+                $note .= ' <span class="muted">@' . htmlspecialchars((string)$row['directive_file'], ENT_QUOTES)
+                    . ':' . (int)($row['directive_line'] ?? 0) . '</span>';
+            }
+            $sha = isset($row['git_sha']) && is_string($row['git_sha'])
+                ? ' <span class="muted">git ' . htmlspecialchars(substr($row['git_sha'], 0, 12), ENT_QUOTES) . '</span>'
+                : '';
+
+            $html .= "<tr><td><code>$id</code></td><td>$state</td><td>$source</td>"
+                . "<td>$when</td><td>$members</td><td>" . implode(' ', $fileHtml) . "</td>"
+                . "<td>$note$sha</td></tr>\n";
+        }
+
+        $html .= "</tbody></table>\n</section>\n";
+        return $html;
     }
 
     private function renderMinimap(Report $report): string

@@ -456,6 +456,19 @@ final class BaselineStore
      * Best-effort HEAD sha of the first scan root for accept-time
      * provenance. Mirrors Server binary-lookup and RepoLabels precedent:
      * only trust git along an explicit path; absent repo (or absent
+     * git) records no sha rather than guessing. Public so the
+     * BaselineFilter's live-acceptance rows carry the same provenance
+     * the store writes for registry acceptances.
+     */
+    public function currentGitSha(): ?string
+    {
+        return $this->recordGitSha();
+    }
+
+    /**
+     * Best-effort HEAD sha of the first scan root for accept-time
+     * provenance. Mirrors Server binary-lookup and RepoLabels precedent:
+     * only trust git along an explicit path; absent repo (or absent
      * git) records no sha rather than guessing.
      */
     private function recordGitSha(): ?string

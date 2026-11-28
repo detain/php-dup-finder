@@ -46,6 +46,10 @@ final class BaselineFilter
 
     private BaselineStore $store;
 
+    private ?string $liveGitSha = null;
+
+    private bool $gitShaProbed = false;
+
     /**
      * @param list<string> $scanRoots configured scan roots (provenance
      *                          canonicalization, shared with the store)
@@ -83,25 +87,23 @@ final class BaselineFilter
 
         $main = [];
         $appendix = [];
-        $usedRegistryIds = [];
 
         foreach ($clusters as $cluster) {
             $disposition = $registry[$cluster->id] ?? null;
 
             if ($disposition !== null && $disposition->isAccepted()) {
-                $usedRegistryIds[$cluster->id] = true;
-                $appendix[] = $this->row($cluster) + [
+                $appendix[] = array_merge($this->row($cluster), [
                     'source' => 'registry',
                     'note' => $disposition->note,
-                    'accepted_at' => $disposition->acceptedAt,
-                ];
+                    'accepted_at' => $disposition->acceptedAt ?? date('c'),
+                    'git_sha' => $disposition->gitSha ?? $this->liveGitSha(),
+                ]);
                 continue;
             }
 
             if ($disposition !== null) {
                 // 'unresolved' registry entry: never suppress, but name
                 // the pending triage state in the appendix.
-                $usedRegistryIds[$cluster->id] = true;
                 $appendix[] = [
                     'finding_id' => $cluster->id,
                     'status' => BaselineDisposition::STATUS_UNRESOLVED,
@@ -147,7 +149,6 @@ final class BaselineFilter
             if (!$disposition->isAccepted() || isset($currentIds[$findingId])) {
                 continue;
             }
-            $usedRegistryIds[$findingId] = true;
 
             $matched = [];
             foreach ($disposition->files as $canonicalFile) {
@@ -208,7 +209,13 @@ final class BaselineFilter
     {
         $rows = [];
         foreach ($appendix as $row) {
-            if (($row['source'] ?? null) !== 'registry' && ($row['resurfaced'] ?? false) !== true) {
+            // Only directive (source 'live') and config acceptances persist —
+            // registry rows already live in the file; unresolved and resurfaced
+            // rows never re-accept a drifted finding.
+            $source = $row['source'] ?? null;
+            $status = $row['status'] ?? null;
+            $isAccepted = $status === BaselineDisposition::STATUS_ACCEPTED;
+            if ($isAccepted && $source !== 'registry' && ($row['resurfaced'] ?? false) !== true) {
                 $rows[] = $row;
             }
         }
@@ -267,6 +274,19 @@ final class BaselineFilter
     }
 
     /**
+     * Lazy once-only probe of the scan root's git HEAD for live
+     * accept-time provenance (row() and the registry merge share it).
+     */
+    private function liveGitSha(): ?string
+    {
+        if (!$this->gitShaProbed) {
+            $this->liveGitSha = $this->store->currentGitSha();
+            $this->gitShaProbed = true;
+        }
+        return $this->liveGitSha;
+    }
+
+    /**
      * Shared accepted-row fields: identity + provenance captured fresh
      * this run (the file list and member hashes recompute against the
      * current scan, so the appendix always shows what exists NOW).
@@ -296,6 +316,7 @@ final class BaselineFilter
             'status' => BaselineDisposition::STATUS_ACCEPTED,
             'resurfaced' => false,
             'accepted_at' => date('c'),
+            'git_sha' => $this->liveGitSha(),
             'members' => count($cluster->members),
             'impact' => $cluster->impact,
             'files' => $files,
