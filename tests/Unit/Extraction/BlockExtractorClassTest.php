@@ -76,8 +76,8 @@ final class BlockExtractorClassTest extends TestCase
         // never minted even under the explicit roster.
         $this->assertCount(4, $classes);
         $this->assertSame(['Page', 'I', 'T', 'Suit'], array_map(static fn (Block $b): string => (string) $b->name, $classes));
-        $this->assertSame(['class', 'interface', 'trait', 'enum'], array_map(
-            static fn (Block $b): string => (string) $b->ast->getType(),
+        $this->assertSame(['Stmt_Class', 'Stmt_Interface', 'Stmt_Trait', 'Stmt_Enum'], array_map(
+            static fn (Block $b): string => $b->ast->getType(),
             $classes,
         ));
         foreach ($classes as $block) {
@@ -142,12 +142,14 @@ final class BlockExtractorClassTest extends TestCase
         file_put_contents($dir . '/rel.php', $code);
         $block->file = $dir . '/rel.php';
         $block->unloadAst();
-        $loader = new BlockAstLoader(new AstCache(), new AstParser());
+        $loader = new BlockAstLoader(new AstCache($dir . '/ast'), new AstParser());
         $node = $loader->resolve($block);
         $this->assertInstanceOf(\PhpParser\Node\Stmt\Class_::class, $node);
         $this->assertSame('Page', $node->name->toString());
-        unlink($dir . '/rel.php');
-        rmdir($dir);
+        @unlink($dir . '/rel.php');
+        @array_map('unlink', glob($dir . '/ast/*') ?: []);
+        @rmdir($dir . '/ast');
+        @rmdir($dir);
     }
 
     public function testApplyExtractorRefusesClassClustersLoudly(): void
