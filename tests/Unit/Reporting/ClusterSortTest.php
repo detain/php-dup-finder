@@ -44,6 +44,27 @@ final class ClusterSortTest extends TestCase
         $this->assertSame('block-size', ClusterSort::parse('block_size')->key);
     }
 
+    public function testParseRecognisesScoreKey(): void
+    {
+        // Item 6.2: the composite ranking key.
+        $this->assertSame('score', ClusterSort::parse('score')->key);
+        $this->assertSame('desc', ClusterSort::parse('-score')->direction);
+    }
+
+    public function testApplyByScoreDesc(): void
+    {
+        $clusters = [
+            $this->cluster('A', impact: 10),
+            $this->cluster('B', impact: 10),
+            $this->cluster('C', impact: 10),
+        ];
+        $clusters[0]->score = 1.5;
+        $clusters[1]->score = 12.25;
+        $clusters[2]->score = 7.0;
+        $sorted = ClusterSort::parse('score:desc')->apply($clusters);
+        $this->assertSame(['B', 'C', 'A'], array_map(fn(Cluster $c) => $c->id, $sorted));
+    }
+
     public function testParseRejectsUnknownKey(): void
     {
         $this->expectException(\InvalidArgumentException::class);

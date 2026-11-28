@@ -373,7 +373,7 @@ final class ApplyEndToEndTest extends TestCase
         $arrivedMode = substr(sprintf('%o', (int) fileperms($fileHigh)), -4);
 
         $run = $this->cli(['analyze', $tree, '--apply', '--dry-run=false',
-            '--max-df=0.5', '--min-block-size=3', '--workers=1'], $dir);
+            '--max-df=0.5', '--min-block-size=3', '--workers=1', '--min-impact=5'], $dir);
 
         $this->assertSame(0, $run['exit'], 'CLI apply happy path exits 0 — output: ' . $run['combined']);
 
@@ -673,7 +673,7 @@ final class ApplyEndToEndTest extends TestCase
         ];
 
         $run = $this->cli(['analyze', $tree, '--apply', '--dry-run=false',
-            '--max-df=0.5', '--min-block-size=3', '--workers=1', '--max-hole-coverage=0.01'], $dir);
+            '--max-df=0.5', '--min-block-size=3', '--workers=1', '--min-impact=5', '--max-hole-coverage=0.01'], $dir);
         $this->assertSame(0, $run['exit'], 'a refused apply is a Skipped row, not a crash: ' . $run['combined']);
 
         $summary = (string) file_get_contents($dir . '/refactored/' . RefactorPatchReporter::APPLY_SUMMARY_FILE);
@@ -706,7 +706,7 @@ final class ApplyEndToEndTest extends TestCase
         ];
 
         $run = $this->cli(['analyze', $tree, '--apply', '--dry-run=false',
-            '--max-df=0.5', '--min-block-size=3', '--workers=1'], $dir);
+            '--max-df=0.5', '--min-block-size=3', '--workers=1', '--min-impact=5'], $dir);
         $this->assertSame(0, $run['exit'], 'an unsafe-gated cluster is a Skipped row, not a crash: ' . $run['combined']);
 
         $summary = (string) file_get_contents($dir . '/refactored/' . RefactorPatchReporter::APPLY_SUMMARY_FILE);
@@ -1046,7 +1046,7 @@ final class ApplyEndToEndTest extends TestCase
         $this->gitIn($dir, '-c', 'user.name=e2e', '-c', 'user.email=e2e@example.invalid', 'commit', '-q', '-m', 'clean baseline');
 
         $run = $this->cli(['analyze', $tree, '--apply', '--dry-run=false',
-            '--max-df=0.5', '--min-block-size=3', '--workers=1'], $dir);
+            '--max-df=0.5', '--min-block-size=3', '--workers=1', '--min-impact=5'], $dir);
         $this->assertSame(0, $run['exit'], 'clean git tree arms the apply — output: ' . $run['combined']);
         $this->assertStringContainsString('real apply armed', $run['combined'],
             'the armed posture announces itself, with the backup location');
@@ -1106,7 +1106,7 @@ final class ApplyEndToEndTest extends TestCase
         $preLow = (string) file_get_contents($fileLow);
 
         $run = $this->cli(['analyze', $tree, '--apply', '--dry-run=false',
-            '--max-df=0.5', '--min-block-size=3', '--workers=1'], $dir);
+            '--max-df=0.5', '--min-block-size=3', '--workers=1', '--min-impact=5'], $dir);
         $this->assertSame(3, $run['exit'], 'dirty work tree trips the gate, exit 3 — output: ' . $run['combined']);
         $this->assertStringContainsString('real apply refused', $run['combined']);
         $this->assertStringContainsString('the target tree is dirty', $run['combined']);
@@ -1146,7 +1146,7 @@ final class ApplyEndToEndTest extends TestCase
         $before = $this->treeDigests($tree);
 
         $run = $this->cli(['analyze', $tree, '--apply',
-            '--max-df=0.5', '--min-block-size=3', '--workers=1'], $dir);
+            '--max-df=0.5', '--min-block-size=3', '--workers=1', '--min-impact=5'], $dir);
         $this->assertSame(0, $run['exit'], 'preview apply still exits 0 — output: ' . $run['combined']);
         $this->assertStringNotContainsString('real apply armed', $run['combined'],
             'the preview posture never announces the armed apply');
@@ -1376,7 +1376,7 @@ final class ApplyEndToEndTest extends TestCase
         $this->gitIn($dir, '-c', 'user.name=e2e', '-c', 'user.email=e2e@example.invalid', 'commit', '-q', '-m', 'clean baseline');
 
         $run = $this->cli(['analyze', $tree, '--apply', '--dry-run=false',
-            '--max-df=0.5', '--min-block-size=3', '--workers=1'], $dir);
+            '--max-df=0.5', '--min-block-size=3', '--workers=1', '--min-impact=5'], $dir);
         $this->assertSame(0, $run['exit'], 'output: ' . $run['combined']);
 
         $summary = (string) file_get_contents($dir . '/refactored/' . RefactorPatchReporter::APPLY_SUMMARY_FILE);

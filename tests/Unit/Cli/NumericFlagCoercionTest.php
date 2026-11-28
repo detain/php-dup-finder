@@ -344,14 +344,16 @@ final class NumericFlagCoercionTest extends TestCase
         $baseline = $this->commandTester();
         $this->assertSame(0, $baseline->execute([
             'paths'  => [$this->s49CorpusDir()],
+            '--min-impact' => '0',
             '--plain' => true,
         ]));
-        $this->assertSame(3, substr_count($baseline->getDisplay(), 'Cluster #'),
-            'the pinned corpus must carry exactly 3 cluster cards by default');
+        $this->assertSame(6, substr_count($baseline->getDisplay(), 'Cluster #'),
+            'the pinned corpus must carry exactly 6 cluster cards at the pinned floor (6.2: floor is removable LINES now; --limit legs pin card rendering, not the gate)');
 
         $tester = $this->commandTester();
         $this->assertSame(0, $tester->execute([
             'paths'   => [$this->s49CorpusDir()],
+            '--min-impact' => '0',
             '--limit' => '0',
             '--plain' => true,
         ]));
@@ -362,7 +364,7 @@ final class NumericFlagCoercionTest extends TestCase
             '0 is not unlimited: no detail cards are printed');
         // The totals banner and the trailer still describe the FULL set —
         // that half of the output is limit-blind and stays honest.
-        $this->assertStringContainsString('3 clusters', $display);
+        $this->assertStringContainsString('6 clusters', $display);
         $this->assertStringContainsString('summary', $display);
     }
 
@@ -374,6 +376,7 @@ final class NumericFlagCoercionTest extends TestCase
         $tester = $this->commandTester();
         $this->assertSame(0, $tester->execute([
             'paths'   => [$this->s49CorpusDir()],
+            '--min-impact' => '0',
             '--limit' => '1',
             '--json'  => $jsonPath,
             '--plain' => true,
@@ -393,7 +396,7 @@ final class NumericFlagCoercionTest extends TestCase
         $decoded = json_decode((string)file_get_contents($jsonPath), true);
         $this->assertIsArray($decoded);
         $this->assertArrayHasKey('clusters', $decoded);
-        $this->assertCount(3, $decoded['clusters'],
+        $this->assertCount(6, $decoded['clusters'],
             'the terminal cap must not reach the file sink');
         @unlink($jsonPath);
     }
@@ -405,13 +408,14 @@ final class NumericFlagCoercionTest extends TestCase
         $tester = $this->commandTester();
         $this->assertSame(0, $tester->execute([
             'paths'   => [$this->s49CorpusDir()],
+            '--min-impact' => '0',
             '--limit' => '999999',
             '--plain' => true,
         ]));
         $display = $tester->getDisplay();
 
-        $this->assertStringContainsString('showing top 3', $display);
-        $this->assertSame(3, substr_count($display, 'Cluster #'));
+        $this->assertStringContainsString('showing top 6', $display);
+        $this->assertSame(6, substr_count($display, 'Cluster #'));
     }
 
     // ── once-S20 (php-dup-finder-once-023): exit-2 admission closure ──────

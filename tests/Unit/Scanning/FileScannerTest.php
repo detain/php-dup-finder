@@ -1733,13 +1733,13 @@ final class FileScannerTest extends TestCase
         file_put_contents($dir . '/phpdup.json', json_encode(['cache_dir' => $dir . '/cache']));
 
         $first = $this->s34CommandTester();
-        $exit = $first->execute(['paths' => [$dir . '/tree'], '--config' => $dir . '/phpdup.json']);
+        $exit = $first->execute(['paths' => [$dir . '/tree'], '--config' => $dir . '/phpdup.json', '--min-impact' => '0']);
         $this->assertSame(0, $exit, 'display was: ' . $first->getDisplay());
         $this->assertStringContainsString('1 clusters', $first->getDisplay(), 'premise: the corpus clusters');
         $this->assertStringNotContainsString('clusters replayed', $first->getDisplay(), 'a cold run never claims replay');
 
         $second = $this->s34CommandTester();
-        $exit = $second->execute(['paths' => [$dir . '/tree'], '--config' => $dir . '/phpdup.json']);
+        $exit = $second->execute(['paths' => [$dir . '/tree'], '--config' => $dir . '/phpdup.json', '--min-impact' => '0']);
         $this->assertSame(0, $exit, 'display was: ' . $second->getDisplay());
         $this->assertStringContainsString(
             'phpdup: clusters replayed from the cluster cache — member line ranges are from the saving run, not re-derived from current bytes',

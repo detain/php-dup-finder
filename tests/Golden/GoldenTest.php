@@ -133,6 +133,16 @@ final class GoldenTest extends TestCase
             paths: [$fixtureDir],
             exclude: Config::defaults([])->exclude,
             lazyAst: false,
+            // E3 / item 6.2 re-baseline: impact is now REMOVABLE DUPLICATED
+            // LINES (interval-union x (m-1)/m), so the shipped default
+            // floor of 20 lines is far stricter than the old 20-node one
+            // and would empty every manifest (measured: notify 12/6, sql
+            // 14, optional 8 removable). The goldens pin DETECTION
+            // contracts on small synthetic clones, so they run an explicit
+            // floor of 5 — the same value the ci.yml smoke leg uses
+            // (--min-impact 5) — keeping membership stable across the
+            // flip; only impact values move.
+            minClusterImpact: 5,
         );
         $state = new PipelineState($config);
         $out   = new NullOutput();

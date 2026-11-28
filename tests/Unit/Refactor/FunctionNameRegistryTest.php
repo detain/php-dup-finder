@@ -325,7 +325,7 @@ final class FunctionNameRegistryTest extends TestCase
         // exempt over the occupied root.
         $root = $this->scratchDir();
         $tree = $this->writeDupTree($root);
-        $args = ['analyze', $tree, '--apply', '--dry-run=false', '--max-df=0.5', '--min-block-size=3', '--workers=1'];
+        $args = ['analyze', $tree, '--apply', '--dry-run=false', '--max-df=0.5', '--min-block-size=3', '--workers=1', '--min-impact=5'];
 
         $first = $this->cliRun($args, $root);
         $this->assertSame(0, $first['exit'], 'run 1 (fresh root) must apply — output: ' . $first['combined']);

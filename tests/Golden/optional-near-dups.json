@@ -6,8 +6,8 @@
         "blocks": 4,
         "parse_errors": 0,
         "clusters": 1,
-        "duplicated_lines": 16,
-        "total_impact": 25,
+        "duplicated_lines": 44,
+        "total_impact": 22,
         "files_scanned": 1,
         "files_reused": 0,
         "files_processed": 1,
@@ -23,7 +23,7 @@
         "normalization_mode": "aggressive",
         "similarity_threshold": 0.8,
         "tree_threshold": 0.85,
-        "min_cluster_impact": 20,
+        "min_cluster_impact": 5,
         "max_hole_coverage": 1,
         "score_mode": "global",
         "scope": "all",
@@ -31,13 +31,13 @@
     },
     "clusters": [
         {
-            "id": "Febb1d08b65e85222",
+            "id": "F1ad0f124429f37bd",
             "kind": "if",
             "exact": false,
-            "similarity": 0.9643,
+            "similarity": 0.9655,
             "confidence": 1,
-            "safety": 0.9643,
-            "impact": 25,
+            "safety": 0.9655,
+            "impact": 22,
             "pattern_tags": [
                 "optional-segments"
             ],
@@ -47,35 +47,35 @@
             "members": [
                 {
                     "file": "tests/Fixtures/optional/Pair.php",
-                    "start": 8,
-                    "end": 16,
+                    "start": 35,
+                    "end": 55,
                     "kind": "if",
                     "namespace": "Fixtures\\Optional",
                     "class": "Pair",
                     "name": null,
-                    "size": 30,
+                    "size": 21,
                     "repo": "optional",
                     "scope": "single"
                 },
                 {
                     "file": "tests/Fixtures/optional/Pair.php",
-                    "start": 21,
-                    "end": 27,
+                    "start": 8,
+                    "end": 30,
                     "kind": "if",
                     "namespace": "Fixtures\\Optional",
                     "class": "Pair",
                     "name": null,
-                    "size": 20,
+                    "size": 31,
                     "repo": "optional",
                     "scope": "single"
                 }
             ],
             "pairs": [
                 {
-                    "blockA": "60d6a596_0",
-                    "blockB": "72eb6957_0",
+                    "blockA": "819ff5c9_0",
+                    "blockB": "7dc07a63_0",
                     "matchTier": "containment",
-                    "matchScore": 0.9643
+                    "matchScore": 0.9655
                 }
             ],
             "holes": [
@@ -85,13 +85,13 @@
                     "inferred_type": "bool",
                     "suggested_name": "$includeSomeOtherLogic",
                     "observed": [
-                        "some_other_logic($here);",
-                        null
+                        null,
+                        "some_other_logic($here);"
                     ],
                     "value_count": 2,
                     "degraded": false,
                     "present_in_members": [
-                        0
+                        1
                     ]
                 },
                 {
@@ -100,36 +100,36 @@
                     "inferred_type": "bool",
                     "suggested_name": "$includeAndMore",
                     "observed": [
-                        "and_more($f);",
-                        null
+                        null,
+                        "and_more($f);"
                     ],
                     "value_count": 2,
                     "degraded": false,
                     "present_in_members": [
-                        0
+                        1
                     ]
                 }
             ],
             "scope": "single",
             "template": {
-                "id": "60d6a596_0",
+                "id": "7dc07a63_0",
                 "file": "tests/Fixtures/optional/Pair.php",
-                "start": 8,
-                "end": 16
+                "start": 35,
+                "end": 55
             },
             "source": {
-                "text": "        if ($something == $somethingelse) {\n            // more logic\n            base64_encode($stuff);\n            $ret = other_stuff($blah);\n            some_other_logic($here);\n            and_more($f);\n        } else {\n            return false;\n        }\n",
+                "text": "        if ($something == $somethingelse) {\n            // more logic\n            base64_encode($stuff);\n            $ret = other_stuff($blah);\n            // E3 6.2 span pad 01 - comments never enter the canonical AST\n            // E3 6.2 span pad 02 - comments never enter the canonical AST\n            // E3 6.2 span pad 03 - comments never enter the canonical AST\n            // E3 6.2 span pad 04 - comments never enter the canonical AST\n            // E3 6.2 span pad 05 - comments never enter the canonical AST\n            // E3 6.2 span pad 06 - comments never enter the canonical AST\n            // E3 6.2 span pad 07 - comments never enter the canonical AST\n            // E3 6.2 span pad 08 - comments never enter the canonical AST\n            // E3 6.2 span pad 09 - comments never enter the canonical AST\n            // E3 6.2 span pad 10 - comments never enter the canonical AST\n            // E3 6.2 span pad 11 - comments never enter the canonical AST\n            // E3 6.2 span pad 12 - comments never enter the canonical AST\n            // E3 6.2 span pad 13 - comments never enter the canonical AST\n            // E3 6.2 span pad 14 - comments never enter the canonical AST\n        } else {\n            return false;\n        }\n",
                 "truncated": false
             },
             "evidence_diff": {
-                "member": "72eb6957_0",
+                "member": "819ff5c9_0",
                 "file": "tests/Fixtures/optional/Pair.php",
-                "start": 21,
-                "end": 27,
-                "diff": "--- atests/Fixtures/optional/Pair.php\n+++ btests/Fixtures/optional/Pair.php\n@@ @@\n             // more logic\n             base64_encode($stuff);\n             $ret = other_stuff($blah);\n-            some_other_logic($here);\n-            and_more($f);\n         } else {\n             return false;\n         }\n",
+                "start": 8,
+                "end": 30,
+                "diff": "--- atests/Fixtures/optional/Pair.php\n+++ btests/Fixtures/optional/Pair.php\n@@ @@\n             // more logic\n             base64_encode($stuff);\n             $ret = other_stuff($blah);\n+            some_other_logic($here);\n+            and_more($f);\n             // E3 6.2 span pad 01 - comments never enter the canonical AST\n             // E3 6.2 span pad 02 - comments never enter the canonical AST\n             // E3 6.2 span pad 03 - comments never enter the canonical AST\n",
                 "truncated": false
             },
-            "hole_coverage": 0.36,
+            "hole_coverage": 0.3529,
             "re_expressed": false,
             "hole_fragment": null,
             "placement": {

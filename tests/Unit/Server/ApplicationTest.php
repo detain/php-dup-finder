@@ -1680,7 +1680,7 @@ final class ApplicationTest extends TestCase
         $cwd  = getcwd();
         chdir($root);
         try {
-            $payload = json_encode(['paths' => ['tests/Fixtures/notify']]);
+            $payload = json_encode(['paths' => ['tests/Fixtures/notify'], 'min_cluster_impact' => 5]);
             $app = new Application(new JobQueue(), $root, null);
 
             $response = $app->handle('POST', '/jobs', $payload, []);
@@ -1718,7 +1718,7 @@ final class ApplicationTest extends TestCase
         chdir($root);
         try {
             $response = (new Application(new JobQueue(), $root, null))
-                ->handle('POST', '/analyze', json_encode(['paths' => ['tests/Fixtures/optional']]), []);
+                ->handle('POST', '/analyze', json_encode(['paths' => ['tests/Fixtures/optional'], 'min_cluster_impact' => 5]), []);
             $this->assertSame(200, $response['status']);
             $decoded = json_decode($response['body'], true);
             $this->assertIsArray($decoded);
@@ -1866,7 +1866,7 @@ final class ApplicationTest extends TestCase
 
             // Frame 1: no posture key → full report lands.
             [$client, $controller] = $this->makeWorkerPair();
-            fwrite($controller, "RUN 0000000000000001 {\"paths\":[\"tests/Fixtures/optional\"]}\n");
+            fwrite($controller, "RUN 0000000000000001 {\"paths\":[\"tests/Fixtures/optional\"],\"min_cluster_impact\":5}\n");
             $handleClient->invoke(new AnalysisWorker(
                 '/tmp/phpdup-worker-defence-unused.sock',
                 $this->workerResultDir,
@@ -1933,7 +1933,7 @@ final class ApplicationTest extends TestCase
             $this->assertSame('ok', $health['body']);
 
             // The headline async admission over the wire.
-            $submit = $this->s94Http($serve['port'], 'POST', '/jobs', '{"paths":["tests/Fixtures/notify"]}');
+            $submit = $this->s94Http($serve['port'], 'POST', '/jobs', '{"paths":["tests/Fixtures/notify"],"min_cluster_impact":5}');
             $this->assertSame(202, $submit['status'], 'live async POST /jobs must answer 202: ' . $submit['body']);
             $decodedSubmit = json_decode($submit['body'], true);
             $this->assertSame(['job_id'], array_keys($decodedSubmit), 'ordinary 202 shape survives the live transport');
@@ -2001,7 +2001,7 @@ final class ApplicationTest extends TestCase
             // the near-dup (holes + signature in the payload), and the
             // optional key really short-circuits. A mistyped posture is a
             // pre-mint 400, not a dispatched-but-wrong job.
-            $analyze = $this->s94Http($serve['port'], 'POST', '/analyze', '{"paths":["tests/Fixtures/optional"]}');
+            $analyze = $this->s94Http($serve['port'], 'POST', '/analyze', '{"paths":["tests/Fixtures/optional"],"min_cluster_impact":5}');
             $this->assertSame(200, $analyze['status']);
             $near = json_decode($analyze['body'], true);
             $this->assertSame(1, $near['summary']['clusters'], 'the full report posture rides live HTTP');

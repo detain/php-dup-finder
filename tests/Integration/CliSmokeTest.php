@@ -306,18 +306,18 @@ final class CliSmokeTest extends TestCase
     {
         $corpus = $this->makeSingleClusterCorpus();
 
-        $probe = $this->cli(['analyze', $corpus, '--json', $this->tmp . '/p1.json']);
+        $probe = $this->cli(['analyze', $corpus, '--json', $this->tmp . '/p1.json', '--min-impact=4']);
         $this->assertSame(0, $probe['exit'], $probe['combined']);
         $impacts = $this->clusterImpacts($this->tmp . '/p1.json');
         $this->assertCount(1, $impacts, 'single-twin corpus must cluster exactly once (a split would collapse the total==max trap): ' . json_encode($impacts));
         $k = $impacts[0];
         $this->assertGreaterThan(0, $k, 'the planted twin must carry positive impact');
 
-        $trip = $this->cli(['analyze', $corpus, '--fail-on-impact=' . $k]);
+        $trip = $this->cli(['analyze', $corpus, '--fail-on-impact=' . $k, '--min-impact=4']);
         $this->assertSame(3, $trip['exit'], 'boundary AT the cluster max must trip (max >= N): ' . $trip['combined']);
         $this->assertStringContainsString('--fail-on-impact gate tripped', $trip['combined']);
 
-        $above = $this->cli(['analyze', $corpus, '--fail-on-impact=' . ($k + 1)]);
+        $above = $this->cli(['analyze', $corpus, '--fail-on-impact=' . ($k + 1), '--min-impact=4']);
         $this->assertSame(0, $above['exit'], 'one above the max must pass: ' . $above['combined']);
     }
 
@@ -732,7 +732,7 @@ final class CliSmokeTest extends TestCase
         $cache  = $this->tmp . '/fork-parity';
 
         $cold = $this->cli(
-            ['analyze', $corpus, '--workers=1', '--json', $this->tmp . '/fp-cold.json'],
+            ['analyze', $corpus, '--workers=1', '--json', $this->tmp . '/fp-cold.json', '--min-impact=0'],
             cacheDir: $cache,
         );
         $this->assertSame(0, $cold['exit'], $cold['combined']);
@@ -746,14 +746,14 @@ final class CliSmokeTest extends TestCase
         $this->deleteTopFillers($corpus . '/fam_1t.php', '/^\/\/ f\d\d$/');
 
         $w1 = $this->cli(
-            ['analyze', $corpus, '--workers=1', '--json', $this->tmp . '/fp-w1.json'],
+            ['analyze', $corpus, '--workers=1', '--json', $this->tmp . '/fp-w1.json', '--min-impact=0'],
             cacheDir: $cache,
         );
         $this->assertSame(0, $w1['exit'], $w1['combined']);
         $this->assertStringContainsString('clusters from cache', $w1['combined']);
 
         $w2 = $this->cli(
-            ['analyze', $corpus, '--workers=2', '--stats', '--json', $this->tmp . '/fp-w2.json'],
+            ['analyze', $corpus, '--workers=2', '--stats', '--json', $this->tmp . '/fp-w2.json', '--min-impact=0'],
             cacheDir: $cache,
         );
         $this->assertSame(0, $w2['exit'], $w2['combined']);
@@ -831,7 +831,7 @@ final class CliSmokeTest extends TestCase
         $cache  = $this->tmp . '/fork5-apply';
 
         $cold = $this->cli(
-            ['analyze', $corpus, '--workers=1', '--json', $this->tmp . '/f5-cold.json'],
+            ['analyze', $corpus, '--workers=1', '--json', $this->tmp . '/f5-cold.json', '--min-impact=0'],
             cacheDir: $cache,
         );
         $this->assertSame(0, $cold['exit'], $cold['combined']);
@@ -844,7 +844,7 @@ final class CliSmokeTest extends TestCase
         }
 
         $apply = $this->cli(
-            ['analyze', $corpus, '--workers=2', '--apply', '--json', $this->tmp . '/f5-af.json'],
+            ['analyze', $corpus, '--workers=2', '--apply', '--json', $this->tmp . '/f5-af.json', '--min-impact=0'],
             cacheDir: $cache,
         );
 
@@ -881,14 +881,20 @@ final class CliSmokeTest extends TestCase
     public function testFixturesCorpusMatchesCommittedContract(): void
     {
         // Strict mirror of the CI smoke step (see .github/workflows/ci.yml).
-        // Truth at writing: 20 files, 19 clusters, 356 duplicated lines,
+        // Truth at writing: 29 files, 29 clusters, 656 duplicated lines,
         // zero parse errors — the planted clones in tests/Fixtures are a
         // contract, so these numbers may only move with the fixtures (or
         // with an engine fix that revives detection: engine-S01 lifted the
         // df-cap floor from 1 to 2, and with 71 blocks in this corpus the
         // old cap of 1 left the ENTIRE near-dup tier dead at the shipped
         // default — the 4 extra clusters are planted near-dups finally
-        // being found, not noise).
+        // being found, not noise). Re-pin 6.2/E3 era: +9 files and ~10
+        // clusters from the declarative-shape corpus tests/Fixtures/dto
+        // (item 6.2 done-when fixture); duplicated_lines 356 -> 656 moved
+        // with the same fixtures plus the notify/optional padding that
+        // keeps the default-20-LINE gate alive for the server contract
+        // tests (impact is removable lines post-6.2, so floor semantics
+        // shifted corpus-wide).
         $fixtures = realpath(__DIR__ . '/../Fixtures');
         $this->assertIsString($fixtures);
 
@@ -902,10 +908,10 @@ final class CliSmokeTest extends TestCase
         $decoded = json_decode((string) file_get_contents($this->tmp . '/r.json'), true);
         $s = $decoded['summary'];
         $this->assertSame('1.8', $decoded['schema_version']);
-        $this->assertSame(20, $s['files_scanned']);
+        $this->assertSame(29, $s['files_scanned']);
         $this->assertSame(0, $s['parse_errors'], 'the fixture corpus must parse cleanly');
-        $this->assertSame(19, $s['clusters'], 'planted fixture clones must keep being found (re-pin only WITH fixture changes)');
-        $this->assertSame(356, $s['duplicated_lines']);
+        $this->assertSame(29, $s['clusters'], 'planted fixture clones must keep being found (re-pin only WITH fixture changes)');
+        $this->assertSame(656, $s['duplicated_lines']);
         $this->assertSame(
             $s['files_scanned'],
             $s['files_reused'] + $s['files_processed'] + $s['files_without_blocks'] + $s['parse_errors'],
@@ -993,7 +999,7 @@ final class CliSmokeTest extends TestCase
         // end-to-end regression pin: one run, four JSON-family surfaces,
         // Latin-1 bytes in BOTH the file name and the file content.
         $corpus = $this->makeLatin1Corpus();
-        $run = $this->cli(['analyze', $corpus,
+        $run = $this->cli(['analyze', $corpus, '--min-impact=0',
             '--json', $this->tmp . '/l1.json',
             '--sarif', $this->tmp . '/l1.sarif',
             '--gitlab-sast', $this->tmp . '/l1.gitlab.json',
@@ -1045,7 +1051,7 @@ final class CliSmokeTest extends TestCase
         // consumer contract.
         $corpus = $this->makeLatin1Corpus();
         for ($i = 1; $i <= 2; $i++) {
-            $run = $this->cli(['analyze', $corpus, '--timeseries', $this->tmp . '/l1.jsonl']);
+            $run = $this->cli(['analyze', $corpus, '--timeseries', $this->tmp . '/l1.jsonl', '--min-impact=0']);
             $this->assertContains($run['exit'], [0, 1], "run {$i}:\n" . $run['combined']);
             $this->assertStringNotContainsString('Fatal error', $run['combined']);
         }

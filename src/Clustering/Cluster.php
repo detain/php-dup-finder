@@ -18,7 +18,8 @@ use Phpdup\Refactor\Hole;
  *   - AntiUnifier fills $generalizedAst, $holes.
  *   - ParameterSynthesizer + SignatureBuilder fill $signature.
  *   - PatternRecognizer fills $patternTags.
- *   - Ranker fills $impact, $confidence and sorts.
+ *   - Ranker fills $impact (duplicated lines), $confidence, $safety
+ *     and the composite $score, and sorts.
  */
 final class Cluster
 {
@@ -57,6 +58,18 @@ final class Cluster
 
     public int $impact = 0;
     public float $confidence = 0.0;
+
+    /**
+     * Composite ranking score (item 6.2, improve_logic.md §6.2 letter
+     * "Score = removable lines × spread × divergence risk × confidence").
+     * Populated by {@see \Phpdup\Reporting\Ranker} alongside impact;
+     * readable via `--sort=score`. Distinct from $impact, which stays
+     * the pure duplicated-LINES quantity (removable share) the
+     * min_cluster_impact floor gates on — per the owner exec ruling
+     * 2026-11-28 the lines quantity lives on $impact itself and no
+     * dual quantity is shipped. 0.0 until ranked.
+     */
+    public float $score = 0.0;
 
     /**
      * Intra-cluster pairs with their match tier and score.
@@ -110,13 +123,50 @@ final class Cluster
         return count($this->members);
     }
 
+    /**
+     * Distinct source lines covered by the members — the per-file
+     * UNION of member ranges, never the sum (item 6.2). Overlapping
+     * or nested members (two blocks of the same class, a block and a
+     * window packed over it) must not double-count the shared lines;
+     * touching-but-not-overlapping ranges merge only when their
+     * coverage is contiguous, which leaves totals unchanged, so the
+     * merge test uses start <= end + 1.
+     */
     public function totalLines(): int
     {
-        $sum = 0;
-        foreach ($this->members as $m) {
-            $sum += $m->range->lines();
+        return self::unionLineSpan($this->members);
+    }
+
+    /**
+     * Interval-union line count over an arbitrary member list.
+     *
+     * @param list<Block> $members
+     */
+    public static function unionLineSpan(array $members): int
+    {
+        $byFile = [];
+        foreach ($members as $m) {
+            $byFile[$m->file][] = [$m->range->start, $m->range->end];
         }
-        return $sum;
+        $total = 0;
+        foreach ($byFile as $ranges) {
+            usort($ranges, static fn(array $a, array $b): int => $a[0] <=> $b[0]);
+            $curStart = $ranges[0][0];
+            $curEnd   = $ranges[0][1];
+            $n = \count($ranges);
+            for ($i = 1; $i < $n; $i++) {
+                [$start, $end] = $ranges[$i];
+                if ($curEnd >= $start - 1) {
+                    $curEnd = max($curEnd, $end);
+                    continue;
+                }
+                $total += $curEnd - $curStart + 1;
+                $curStart = $start;
+                $curEnd   = $end;
+            }
+            $total += $curEnd - $curStart + 1;
+        }
+        return $total;
     }
 
     public function avgBlockSize(): float

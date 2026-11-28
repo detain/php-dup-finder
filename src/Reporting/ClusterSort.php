@@ -19,7 +19,12 @@ use Phpdup\Clustering\Cluster;
  *
  * Supported keys (all available on the CLI as `--sort=<key>`):
  *
- *   impact       — duplicated-line count after holes-penalty (default)
+ *   impact       — removable duplicated lines (interval-deduped member
+ *                  union × (members−1)/members; item 6.2 — it is a
+ *                  line count, not an AST-node count) (default)
+ *   score        — Ranker's composite ranking score: impact × spread ×
+ *                  divergence × confidence × declarative-shape demotion
+ *                  (item 6.2; the doc's §6.2 scoring prescription)
  *   members      — number of duplicate blocks in the cluster
  *   block-size   — average AST node count per member
  *   lines        — total duplicated lines across all members
@@ -32,6 +37,7 @@ use Phpdup\Clustering\Cluster;
 final class ClusterSort
 {
     public const KEY_IMPACT      = 'impact';
+    public const KEY_SCORE       = 'score';
     public const KEY_MEMBERS     = 'members';
     public const KEY_BLOCK_SIZE  = 'block-size';
     public const KEY_LINES       = 'lines';
@@ -43,6 +49,7 @@ final class ClusterSort
 
     public const ALL_KEYS = [
         self::KEY_IMPACT,
+        self::KEY_SCORE,
         self::KEY_MEMBERS,
         self::KEY_BLOCK_SIZE,
         self::KEY_LINES,
@@ -210,6 +217,7 @@ final class ClusterSort
 
         return match ($this->key) {
             self::KEY_IMPACT      => $c->impact,
+            self::KEY_SCORE       => $c->score,
             self::KEY_MEMBERS     => $c->size(),
             self::KEY_BLOCK_SIZE  => $c->avgBlockSize(),
             self::KEY_LINES       => $c->totalLines(),

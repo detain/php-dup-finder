@@ -269,7 +269,7 @@ final class ScopeFlagTest extends TestCase
     private function cli(array $args, array $cfgExtra = [], ?string $cacheDir = null): array
     {
         $cfgPath      = $this->tmp . '/cfg.json';
-        $cfgExtraFull = ['cache_dir' => $cacheDir ?? $this->tmp . '/cache'] + $cfgExtra;
+        $cfgExtraFull = ['cache_dir' => $cacheDir ?? $this->tmp . '/cache', 'min_cluster_impact' => 0] + $cfgExtra; // E3 6.2 re-baseline: this suite pins scope labels, not the impact floor
         file_put_contents($cfgPath, (string) json_encode($cfgExtraFull));
 
         $cmd = array_merge([PHP_BINARY, dirname(__DIR__, 2) . '/bin/phpdup'], $args, ['-c', $cfgPath]);

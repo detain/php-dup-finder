@@ -248,6 +248,7 @@ final class ReportStageTest extends TestCase
             paths: [$scanDir],
             exclude: $exclude ?? Config::defaults([])->exclude,
             minBlockSize: 1,
+            minClusterImpact: 5, // E3 6.2 re-baseline: impact is removable LINES; the 20-line default would empty these small synthetic kits
             cacheDir: $cacheDir,
             lazyAst: false,
         );

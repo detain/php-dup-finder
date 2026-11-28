@@ -135,7 +135,15 @@ final class CliDefaultShadowingTest extends TestCase
                 $f = $e . 'z';
                 $g = strlen((string) $f);
                 $h = $g + $d;
-                return [$h, $g, $f, $e, $d, $c, $b, $a];
+                $i = $h % 11;
+                $j = $i * 3 - $e;
+                $k = ($j + $c) % 17;
+                $l = $k ^ $b;
+                $m = $l + $a - $g;
+                $n = abs($m) % 29;
+                $o = $n + 1;
+                $p = $o * 2 % 37;
+                return [$p, $o, $n, $m, $l, $k, $j, $i, $h, $g, $f, $e, $d, $c, $b, $a];
             }
         }
         PHP;

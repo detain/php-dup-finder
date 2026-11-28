@@ -694,12 +694,12 @@ final class ConfigLoaderTest extends TestCase
         file_put_contents($corpus . '/real.php', "<?php\nfunction real_helper(): int { return 4242; }\n");
         // Decoy source AND its honest (unclustered) twin file.
         file_put_contents($corpus . '/twin.php',
-            "<?php\nfunction decoy_fn(int \$m): int {\n    \$acc = 0;\n    for (\$j = 0; \$j < \$m; \$j++) {\n        \$acc += \$j;\n    }\n    return \$acc;\n}\n");
+            "<?php\nfunction decoy_fn(int \$m): int {\n    \$acc = 0;\n    \$tmp = 0;\n    for (\$j = 0; \$j < \$m; \$j++) {\n        \$acc += \$j;\n        \$tmp = (\$acc + \$j) % 13;\n        \$acc -= \$tmp >> 1;\n    }\n    \$tail = \$acc + \$tmp;\n    if (\$tail < 0) {\n        \$tail = 0 - \$tail;\n    }\n    \$cut = \$tail % 991;\n    if (\$cut > 977) {\n        \$cut = \$cut - 977;\n    }\n    \$flip = \$cut * 3;\n    if (\$flip > 1949) {\n        \$flip = \$flip - 1949;\n    }\n    \$final = (\$flip + \$cut) % 983;\n    return \$final;\n}\n");
         // Ground truth: a genuine EXACT pair so "the report ran" and
         // "only the real cluster is reported" are both assertable.
         foreach (['alpha', 'beta'] as $f) {
             file_put_contents($corpus . '/' . $f . '.php',
-                "<?php\nfunction shared_util(int \$n): int {\n    \$total = 0;\n    for (\$i = 0; \$i < \$n; \$i++) {\n        \$total += \$i;\n    }\n    return \$total;\n}\n");
+                "<?php\nfunction shared_util(int \$n): int {\n    \$total = 0;\n    \$carry = 0;\n    for (\$i = 0; \$i < \$n; \$i++) {\n        \$total += \$i;\n        \$carry += \$i % 3;\n        \$total -= \$carry >> 2;\n        \$total = \$total > 1000000 ? \$total - 1000000 : \$total;\n    }\n    \$guard = \$total + \$carry;\n    if (\$guard < 0) {\n        \$guard = 0 - \$guard;\n    }\n    \$rounded = \$guard % 1000;\n    if (\$rounded > 997) {\n        \$rounded = \$rounded - 997;\n    }\n    \$scaled = \$rounded * 2;\n    if (\$scaled > 1900) {\n        \$scaled = \$scaled - 1900;\n    }\n    \$mixed = (\$scaled + \$rounded) % 1000;\n    return \$mixed;\n}\n");
         }
         $configPath = $dir . '/phpdup-s25.json';
         file_put_contents($configPath, json_encode(['cache_dir' => $corpus . '/.phpdup-cache']) ?: '{}');
