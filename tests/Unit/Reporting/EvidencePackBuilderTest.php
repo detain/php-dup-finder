@@ -331,6 +331,21 @@ final class EvidencePackBuilderTest extends TestCase
         $under = $this->firstDoc([$cluster], adoption: [$rows[0], $rows[1]]);
         $this->assertCount(2, $under['adoption']['helpers']);
         $this->assertFalse($under['adoption']['helpers_truncated']);
+
+        // r2 m-1 boundary table: the flag means "rows were DROPPED", so an
+        // exactly-cap corpus must ship complete and unflagged. The pre-fix
+        // post-append `>=` flipped the 50-arm to true (echoed pre-fix).
+        $edge49 = $this->firstDoc([$cluster], adoption: array_slice($rows, 0, 49));
+        $this->assertCount(49, $edge49['adoption']['helpers']);
+        $this->assertFalse($edge49['adoption']['helpers_truncated']);
+
+        $exactly50 = $this->firstDoc([$cluster], adoption: array_slice($rows, 0, 50));
+        $this->assertCount(50, $exactly50['adoption']['helpers']);
+        $this->assertFalse($exactly50['adoption']['helpers_truncated'], 'exactly the cap is not a truncation — mutation to >= re-fails this');
+
+        $over51 = $this->firstDoc([$cluster], adoption: array_slice($rows, 0, 51));
+        $this->assertCount(50, $over51['adoption']['helpers']);
+        $this->assertTrue($over51['adoption']['helpers_truncated'], 'the dropped 51st row earns the flag');
     }
 
     // ── fixtures ────────────────────────────────────────────────────────────

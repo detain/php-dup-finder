@@ -418,6 +418,15 @@ final class EvidencePackBuilder
             if ($attach === []) {
                 continue;
             }
+            // Cap BEFORE the append (the holes-family `>` semantics): a 51st
+            // touching row is dropped and flagged; EXACTLY 50 rows ship in
+            // full with truncated=false. The post-append `>=` version
+            // flagged the 50th row's corpus as truncated while dropping
+            // nothing (r2 m-1).
+            if (count($helpers) >= self::ADOPTION_MAX_ROWS) {
+                $truncated = true;
+                break;
+            }
             $helpers[] = [
                 'helper_label'   => $row->helperLabel,
                 'helper_kind'    => $row->helperKind,
@@ -429,10 +438,6 @@ final class EvidencePackBuilder
                 'join'           => $samplesComplete ? 'line_exact' : 'file_level',
                 'attach'         => $attach,
             ];
-            if (count($helpers) >= self::ADOPTION_MAX_ROWS) {
-                $truncated = true;
-                break;
-            }
         }
         return ['helpers' => $helpers, 'helpers_truncated' => $truncated];
     }
