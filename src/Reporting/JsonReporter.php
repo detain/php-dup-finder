@@ -248,6 +248,20 @@ final class JsonReporter
         if ($report->clusterHistory !== null) {
             $payload['summary']['cluster_history'] = self::historyPayload($report->clusterHistory);
         }
+        // Item 5.2 (W2b): the 'vendored duplicates' section, third key of
+        // the same demand-armed family — present ONLY when the run armed
+        // --scope (the info-doc ruling: demotion of vendored↔vendored
+        // rides the scope slice); absent when scope is unarmed, so every
+        // frozen payload stays byte-identical (no SCHEMA_VERSION move).
+        // Declared by JsonSchemaSpec::summaryShape(vendoredArmed: true) /
+        // vendoredBlockShape(). A measured vendored-free corpus is the
+        // zero-shaped block, never null — null means the pass was not
+        // armed. The section is data the split already built at the
+        // report seam; this leg is pure pass-through, like the sibling
+        // conditional keys above.
+        if ($report->vendoredDuplicates !== null) {
+            $payload['summary']['vendored_duplicates'] = $report->vendoredDuplicates;
+        }
         return $payload;
     }
 

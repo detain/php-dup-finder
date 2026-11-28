@@ -14,7 +14,9 @@ use PHPUnit\Framework\TestCase;
  *
  * A new consumer that legitimately reads a report field must update this
  * guard ON PURPOSE (name your field in $allowedReads below with a
- * one-line rationale), not by accident.
+ * one-line rationale), not by accident. Item 5.2 (W2b) rides the same
+ * rule — the demotion section and its `summary.vendored_duplicates` key
+ * are report-side only; the guard roster grows to say so on purpose.
  */
 final class TuiReportCarrierGuardTest extends TestCase
 {
@@ -22,7 +24,7 @@ final class TuiReportCarrierGuardTest extends TestCase
     private const ALLOWED_REPORT_READS = [];
 
     /** Tokens that must never surface in src/Tui without an explicit ruling. */
-    private const FORBIDDEN_TOKENS = ['clusterHistory', 'idiomCensus', '->report'];
+    private const FORBIDDEN_TOKENS = ['clusterHistory', 'idiomCensus', 'vendoredDuplicates', '->report'];
 
     public function testTuiNeverReadsReportPayloadFields(): void
     {

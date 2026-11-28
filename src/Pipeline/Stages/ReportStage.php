@@ -190,13 +190,34 @@ final class ReportStage implements CooperativeStageInterface
         // Cluster objects whose members carry the ROOTS OF THE SAVING
         // RUN. Restamp every cluster member so repo/scope as reported
         // (and as scored per-repo/typed) always speaks for this run.
+        //
+        // Item 5.2 (W2b): the vendored mark rides the identical law —
+        // a cached blob may restore a stale $vendored (whole-object
+        // serialization, the P1 Hole safe-direction precedent), and the
+        // restamp here overwrites it from THIS run's roots before the
+        // scope demotion below reads one. That is why no PARSER_VERSION
+        // or cluster-cache key binds the marker.
+        $vendorMarker = \Phpdup\Scanning\VendorMarker::forRoots($config->paths);
         $state->currentTask = 'restamping cluster labels';
         foreach ($state->clusters as $cluster) {
             \Phpdup\Scanning\RepoLabels::stampAll($cluster->members, $config->paths);
+            $vendorMarker->stampAll($cluster->members);
             if ($pump() >= $pumpDue) {
                 $state->stageProgress = min(0.999, ++$unitsDone / $unitTotal);
                 yield Stage::Reporting;
                 $pumpDue = $pump() + self::YIELD_BUDGET_SECONDS;
+            }
+        }
+
+        // Item 5.2 (W2b): lock fail-open notes ride the same skip-with-
+        // note channel; the run usually saw them already at the
+        // PreprocessStage stamp (same roots, same wording), so this
+        // merge only adds what is genuinely new — a library-driven
+        // ReportStage over hand-built state is the case that still
+        // surfaces its corrupt lock instead of swallowing it.
+        foreach ($vendorMarker->notes() as $note) {
+            if (!in_array($note, $state->scanNotes, true)) {
+                $state->scanNotes[] = $note;
             }
         }
 
@@ -279,6 +300,40 @@ final class ReportStage implements CooperativeStageInterface
                 // (TUI, NullOutput tests) keeps the passed stream unchanged.
                 $target = $output instanceof ConsoleOutputInterface ? $output->getErrorOutput() : $output;
                 $target->writeln($hint);
+            }
+        }
+
+        // Item 5.2 (W2b): auto-demote vendored↔vendored under --scope
+        // (info-doc §5.2 ruling). Runs AFTER the label-miss hint above
+        // (a demotion-emptied slice is not a typo'd label — the hint
+        // already spoke for the set that matched), and BEFORE everything
+        // downstream, so coherence/architecture/history/name-registry/
+        // gates all measure the first-party slice the report then shows
+        // — the doc's exact complaint is vendor-polluted scope
+        // denominators. Fully-vendored clusters move to the conditional
+        // `summary.vendored_duplicates` section; mixed clusters are not
+        // vendored↔vendored and stay in the main report. An armed scope
+        // run over a vendored-free corpus is an identity partition
+        // (zero-shaped section); the unarmed path never builds the split
+        // at all — $vendoredDuplicates stays null, the key never opens,
+        // goldens byte-hold.
+        $vendoredDuplicates = null;
+        if ($config->scope !== ClusterScope::FILTER_ALL) {
+            $vendoredSplit      = \Phpdup\Reporting\VendoredSection::split($clusters, $vendorMarker);
+            $clusters           = $vendoredSplit['main'];
+            $vendoredDuplicates = $vendoredSplit['section'];
+            if ($vendoredDuplicates['clusters'] > 0) {
+                // One honest visibility line (scope-hint lineage): the
+                // slice shrank and the reader is told where the rows
+                // went. Same error-output routing as the label hint.
+                $demoteLine = sprintf(
+                    'phpdup: --scope=%s demoted %d vendored-duplicate cluster(s), %d lines, to the report\'s vendored_duplicates section',
+                    $config->scope,
+                    $vendoredDuplicates['clusters'],
+                    $vendoredDuplicates['lines'],
+                );
+                $demoteTarget = $output instanceof ConsoleOutputInterface ? $output->getErrorOutput() : $output;
+                $demoteTarget->writeln($demoteLine);
             }
         }
 
@@ -507,6 +562,11 @@ final class ReportStage implements CooperativeStageInterface
             // the unarmed path, so every default payload stays byte-
             // identical and the conditional key never opens unasked.
             clusterHistory: $clusterHistory,
+            // Item 5.2 (W2b): the demoted vendored rows cross the same
+            // seam — null whenever scope was not armed (the section was
+            // never asked for), a zero-shaped array when it was armed
+            // over a vendored-free corpus (measured, not fabricated).
+            vendoredDuplicates: $vendoredDuplicates,
         );
         $state->report   = $report;
         $state->clusters = $clusters;

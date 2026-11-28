@@ -140,6 +140,25 @@ final class Block
      */
     public array $shapeMethods = [];
 
+    /**
+     * Item 5.2 (W2b): third-party-copy marker — true when the file this
+     * block was extracted from looks like a vendored copy of a package
+     * (declared in a scan root's composer.lock and living under a
+     * package-named path, sitting inside a nested vendor/ tree, or
+     * carrying a known upstream header). Stamped per run by
+     * {@see \Phpdup\Scanning\VendorMarker} in BOTH consumption funnels
+     * (PreprocessStage for blocks, ReportStage for cluster members —
+     * the latter covers cache replay), exactly like the RepoLabels
+     * train before it: this is RUN CONTEXT, not a content fact. Index
+     * and cluster-cache blobs serialize whole Block objects, so a stale
+     * blob can restore a mark — and the restamp pass always overwrites
+     * it from this run's roots before any consumer reads one (safe
+     * direction, the P1 Hole serialization precedent; the stale-restore
+     * posture is pinned, which is why no PARSER_VERSION bump rides this
+     * field). Public-mutable by design.
+     */
+    public bool $vendored = false;
+
     public function __construct(
         public string $file,
         public LineRange $range,

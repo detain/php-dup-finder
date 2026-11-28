@@ -248,10 +248,16 @@ final class JsonSchemaSpec
      *     payload carrying it stays a pin-failure (MINE-D §4 ruling:
      *     demand-armed keys ride the current schema with the armed shape
      *     spelled here; NO SCHEMA_VERSION change).
+     * @param bool $vendoredArmed true asks for the item-5.2 armed shape:
+     *     the trailing conditional `vendored_duplicates` block (after
+     *     cluster_history when both arm), same demand-armed law — the
+     *     arm is an armed --scope run (info-doc §5.2: "auto-demote
+     *     vendored↔vendored under --scope"), and an unarmed payload
+     *     carrying it stays a pin-failure (NO SCHEMA_VERSION change).
      *
      * @return array<string, string>
      */
-    public static function summaryShape(bool $armed = false, bool $historyArmed = false): array
+    public static function summaryShape(bool $armed = false, bool $historyArmed = false, bool $vendoredArmed = false): array
     {
         $shape = [
             'files'                => 'int',   // = files scanned (historical key)
@@ -276,6 +282,9 @@ final class JsonSchemaSpec
         }
         if ($historyArmed) {
             $shape['cluster_history'] = 'object  // item 4.2: the git-history correlation block (see historyBlockShape()); present ONLY on history-armed runs — an unarmed payload never grows this key (frozen goldens, same demand-armed posture as idiom_census)';
+        }
+        if ($vendoredArmed) {
+            $shape['vendored_duplicates'] = 'object  // item 5.2 (W2b): the vendored-duplicates demotion section (see vendoredBlockShape()); present ONLY on --scope-armed runs (an unarmed or scope=all payload never grows this key — frozen goldens, same demand-armed posture as idiom_census/cluster_history)';
         }
         return $shape;
     }
@@ -340,6 +349,35 @@ final class JsonSchemaSpec
             . 'members:list<object{file:string,last_sha:string|null,last_date:string|null,'
             . 'lone:object{sha:string,date:string,subject:string,fix:bool}|null}>,'
             . 'co_change:list<object{a:string,b:string,times:int}>}';
+    }
+
+    /**
+     * Shape of the conditional `summary.vendored_duplicates` block (item
+     * 5.2, W2b). The scope-armed demotion section: `clusters` counts the
+     * fully-vendored clusters pulled out of the reported slice (every
+     * member file carrying a vendor signal), `lines` their total
+     * distinct source lines (union span, item-6.2 counting law),
+     * `omitted` is the VendoredSection::MAX_ROWS presentation cap on
+     * `rows`, never a counting bound. Each row states one demoted
+     * cluster's identity and evidence: `signals` are the distinct
+     * vendor-marker labels that marked its files — 'vendor_dir',
+     * 'composer_lock_path:<package>' (a directory spelled after a
+     * package declared by a scan root's composer.lock), or
+     * 'upstream_header:<family>' (a known upstream copyright header);
+     * `locations` lists up to VendoredSection::MAX_LOCATIONS member
+     * locations. Mixed (first-party + vendored) clusters are never
+     * demoted — vendored↔vendored is the ruling's exact pair semantics.
+     *
+     * @return array<string, string>
+     */
+    public static function vendoredBlockShape(): array
+    {
+        return [
+            'clusters' => 'int  // fully-vendored clusters demoted out of the scope slice',
+            'lines'    => 'int  // their total distinct source lines (union spans)',
+            'omitted'  => 'int  // demoted clusters beyond the MAX_ROWS presentation cap',
+            'rows'     => 'list<object{id:string,kind:string,members:int,files:int,lines:int,signals:list<string>,locations:list<string>}>',
+        ];
     }
 
     /**

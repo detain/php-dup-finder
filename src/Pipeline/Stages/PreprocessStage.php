@@ -416,8 +416,21 @@ final class PreprocessStage implements CooperativeStageInterface
         // label-shaped therefore reaches the `.idx` blobs: a stale cache
         // cannot serve a stale (or silently empty) label because the stamp
         // always overwrites the default.
+        //
+        // Item 5.2 (W2b): the vendored marker rides the same pass with the
+        // same law — run context, master-side only (no mark crosses the
+        // worker wire), overwritten from THIS run's roots before any
+        // consumer reads one. Detection is always-on (inert to output by
+        // default); the demotion it feeds is armed by --scope at the
+        // report seam. Fail-open lock notes join the run's skip-notes
+        // channel (FileScanner lineage), never a silent swallow.
+        $vendorMarker = \Phpdup\Scanning\VendorMarker::forRoots($config->paths);
         foreach ($blocks as $b) {
             RepoLabels::stamp($b, $config->paths);
+            $vendorMarker->stamp($b);
+        }
+        foreach ($vendorMarker->notes() as $note) {
+            $state->scanNotes[] = $note;
         }
         $state->debug($output, sprintf('preprocess: ID assignment complete, transitioning to next stage... [%s]', MemoryDebug::getMemoryUsage()));
 

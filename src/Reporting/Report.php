@@ -23,6 +23,7 @@ final class Report
      * @param list<array<string, mixed>> $baselineAppendix Item 4.4: accepted/unresolved/resurfaced rows (empty = no decisions).
      * @param list<string> $scanNotes
      * @param list<array{file:string,message:string}> $parseFailures
+     * @param null|array<string, mixed> $vendoredDuplicates Item 5.2 (W2b): the demoted 'vendored duplicates' section (null = scope unarmed, key never opens).
      */
     public function __construct(
         public readonly int $files,
@@ -106,6 +107,17 @@ final class Report
         // block ONLY when this is non-null, so the default payload stays
         // byte-identical and the goldens hold (§8.4: opt-in zero churn).
         public readonly ?\Phpdup\Git\ClusterHistory $clusterHistory = null,
+        // Item 5.2 (W2b, vendored third-party awareness): the demoted
+        // 'vendored duplicates' section ReportStage computes when the
+        // scope filter is armed (see {@see VendoredSection::split()} for
+        // the row shape and the doc law behind every field). Same
+        // trailing-param law as the carriers above: null = the section
+        // was never asked for (scope unarmed = every default run), a
+        // zero-shaped array = armed over a vendored-free corpus.
+        // JsonReporter emits the conditional `summary.vendored_duplicates`
+        // block ONLY when non-null — no default payload moves, no
+        // SCHEMA_VERSION event (demand-armed conditional key, MINE-D §4).
+        public readonly ?array $vendoredDuplicates = null,
     ) {
     }
 
