@@ -744,9 +744,10 @@ final class BlockVisitor extends NodeVisitorAbstract
             $add($node->stmts, 'for-body');
         } elseif ($node instanceof Stmt\Foreach_) {
             $add($node->stmts, 'foreach-body');
-            if ($node->else !== null) {
-                $add($node->else->stmts, 'foreach-else-body');
-            }
+            // php-parser v5 removed foreach-else (the gramms removed the
+            // rule): touching $node->else here minted an undefined-property
+            // WARNING on every foreach list (failOnWarning breaks the 10.5
+            // gate). There is no else arm to collect.
         } elseif ($node instanceof Stmt\TryCatch) {
             $add($node->stmts, 'try-body');
             foreach ($node->catches as $catch) {

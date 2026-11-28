@@ -135,7 +135,7 @@ final class PreprocessWorker
      * mid-file throw still never leaks partial rows for that file.
      *
      * @param list<string> $files
-     * @return \Generator<int, array{type: 'block'|'error'|'skipped'|'oversized', file: string, block?: Block, message?: string, blocks?: 0, dropped?: int}>
+     * @return \Generator<int, array{type: 'block'|'error'|'skipped'|'oversized'|'mined', file: string, block?: Block, message?: string, blocks?: 0, dropped?: int, flavor?: string, payload?: string}>
      */
     public function processStream(array $files, ?OutputInterface $output = null): \Generator
     {
@@ -375,8 +375,11 @@ final class PreprocessWorker
                 $minedLists = [];
                 foreach ($tools['extractor']->lastStatementLists() as $listEntry) {
                     $lstmts = $listEntry['stmts'];
+                    if ($lstmts === []) {
+                        continue; // the extractor never collects empty lists; belt for the offset arithmetic
+                    }
                     $first  = $lstmts[0]->getStartLine();
-                    $last   = $lstmts[\count($lstmts) - 1]->getEndLine();
+                    $last   = $lstmts[count($lstmts) - 1]->getEndLine();
                     if ($first <= 0 || $last <= 0 || $last < $first) {
                         continue; // same line-guard every mint leg applies
                     }
@@ -400,10 +403,10 @@ final class PreprocessWorker
                         $seq[] = StmtHash::hash($cs);
                     }
                     foreach ($listEntry['fragments'] as $frag) {
-                        $frag->fragmentKey  = implode('~', \array_slice($seq, $frag->fragmentPos, $frag->fragmentSize));
-                        $frag->fragmentPrev = $frag->fragmentPos > 0 ? $seq[$frag->fragmentPos - 1] : '';
+                        $frag->fragmentKey  = implode('~', array_slice($seq, $frag->fragmentPos, $frag->fragmentSize));
+                        $frag->fragmentPrev = $frag->fragmentPos > 0 ? (string) $seq[$frag->fragmentPos - 1] : '';
                         $nxt                = $frag->fragmentPos + $frag->fragmentSize;
-                        $frag->fragmentNext = $nxt < \count($seq) ? $seq[$nxt] : '';
+                        $frag->fragmentNext = isset($seq[$nxt]) ? (string) $seq[$nxt] : '';
                     }
                     $minedLists[] = [
                         'hashes'    => $seq,

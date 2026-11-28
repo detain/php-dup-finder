@@ -50,8 +50,14 @@ final class MicroFixtureAuditTest extends TestCase
      * full signature re-derived on the f382e73/9fc8e86 lineage, 2026-11-22 —
      * the engine-S15 (d997604) exact-bucket pair mint at index 2, see its
      * row note). Fragment rows added 2026-11-28 (item 2.1: the opt-in
-     * 'fragment' kind minted over this same payload — four rows, notes in
-     * situ).
+     * 'fragment' kind minted over this same payload — three exact stitched
+     * rows, notes in situ).
+     * Impact column re-derived 2026-11-28 (item 6.2): Ranker::impactOf now
+     * expresses REMOVABLE LINES (per-file interval-union line span x (m-1)/m)
+     * instead of AST nodes — integers renumbered, rows reordered under the
+     * pinned canon; member ranges, counts and similarities are unchanged
+     * from the 2.1 re-pin. Row notes keep citing their old node values as
+     * history.
      * Each row: [kind, memberCount, impact, similarity, sortedMembers(file:start-end)].
      * Sorted canonically by impact desc, then kind, then first member.
      */
@@ -69,42 +75,30 @@ final class MicroFixtureAuditTest extends TestCase
         // (git-archive extract + hardlinked vendor, earliest mover located
         // by bisection dbbf493..HEAD); all other eight rows byte-identical.
         // Similarity stays < 1.0 — P1 remains an unfixed blind spot.
-        // Flip 2026-11-28 (item 2.1, fragment kind): the near-aggregate view
-        // of the nested fragment family. The engine's exact buckets mint the
-        // three stitched findings below; the splitter also emits this
-        // overlapping whole-family view — same established class as the
-        // 2026-11-22 method pair row (2/114 ⊂ 5/434), which is why it rides
-        // the pin instead of being suppressed by hand.
-        ['fragment', 8, 602, 0.9403, [
-            "preamble_0.php:12-27", "preamble_0.php:12-28", "preamble_1.php:12-26",
-            "preamble_2.php:12-26", "preamble_2.php:12-27", "preamble_3.php:12-26",
-            "preamble_4.php:12-26", "preamble_4.php:12-27",
-        ]],
-        ['method', 5, 434, 0.9226, [
+        // 6.2 impact: was 434 nodes -> 82 removable lines (union 102 x 4/5).
+        ['method', 5, 82, 0.9226, [
             "preamble_0.php:10-33", "preamble_1.php:10-28", "preamble_2.php:10-29",
             "preamble_3.php:10-28", "preamble_4.php:10-29",
         ]],
         // Flip 2026-11-28 (item 2.1): exact stitched cross-function run, all
         // five preambles — lines 12-13 and 17-18 (the hole-pinned glue) are
         // now members of a 1.0 cluster. P1's blind spot is cured.
-        ['fragment', 5, 336, 1.0, [
+        // 6.2 impact: was 336 nodes -> 61 removable lines (union 76 x 4/5).
+        ['fragment', 5, 61, 1.0, [
             "preamble_0.php:12-27", "preamble_1.php:12-26", "preamble_2.php:12-26",
             "preamble_3.php:12-26", "preamble_4.php:12-26",
         ]],
-        ['method', 5, 312, 1.0, [
+        // 6.2 impact: was 312 nodes -> 40 removable lines (union 50 x 4/5).
+        ['method', 5, 40, 1.0, [
             "inline_0.php:14-23", "inline_1.php:14-23", "inline_2.php:14-23",
             "inline_3.php:14-23", "inline_4.php:14-23",
         ]],
         // Item 2.1: nested s9 family (falling support 5 -> 3) kept
         // deliberately — the chain is support-honest evidence, one step per
         // maximal row (the §5c suppression law runs one-step lookahead).
-        ['fragment', 3, 176, 1.0, [
+        // 6.2 impact: was 176 nodes -> 33 removable lines (union 49 x 2/3).
+        ['fragment', 3, 33, 1.0, [
             "preamble_0.php:12-28", "preamble_2.php:12-27", "preamble_4.php:12-27",
-        ]],
-        // P2 cured: whole top-level run (lines 8-17, $rows=[] through the
-        // trailing echo) exact across the three scripts.
-        ['fragment', 3, 140, 1.0, [
-            "scripts_0.php:8-17", "scripts_1.php:8-17", "scripts_2.php:8-17",
         ]],
         // Flip 2026-11-22 (audit-leg discipline honoured: "if a wave cure
         // landed, re-derive truth and update RED_STATE_SIGNATURE + SHOULD_FIND
@@ -113,64 +107,67 @@ final class MicroFixtureAuditTest extends TestCase
         // structural-hash-exact method bucket previously suppressed while
         // riding the weaker 5-preamble component. Causal evidence: parent
         // f583c1e ran this file 7/7 green (Integration OK 87/1558); d997604
-        // produced exactly these two failures. Era context (cures since the
-        // f541a8ad re-pin): engine-S18a int-postings 588c431, engine-S18b
-        // gram-dict interning 15c4a0c, engine-S15 tier-honesty d997604,
-        // engine-S09 memoise 7fc37bf/ecedabd, engine-S31b/c + shell-* batches.
-        // Detection strictly IMPROVED: an exact method-pair cluster is now
-        // minted for preamble_0.php:10-33 <-> preamble_2.php:10-29. Truth
-        // adjudication on the fixture bytes: the 13-line preamble (lines
-        // 12-24) is BYTE-IDENTICAL across all five preamble_* files, and
-        // p0/p2 are the only pair whose tails are also parameter-equivalent
-        // (query -> accumulator init -> while-append -> json_response,
-        // differing only in string/identifier literals — the fixture's
-        // designed parameterization); this pin ALREADY recorded their
-        // while-tails as an exact 1.0 clone (preamble_0.php:29-31 <->
-        // preamble_2.php:27-27, last row). The pair row lifts that
-        // established tail truth to method granularity: a genuine
-        // parameterizable clone, precisely what the tool exists to find.
-        // p1/p3/p4 tails differ in statement shape (e.g. p1's count(*)/
+        // produced exactly these two failures. Truth adjudication on the
+        // fixture bytes: the 13-line preamble (lines 12-24) is BYTE-IDENTICAL
+        // across all five preamble_* files, and p0/p2 are the only pair whose
+        // tails are also parameter-equivalent (query -> accumulator init ->
+        // while-append -> json_response, differing only in string/identifier
+        // literals — the fixture's designed parameterization); this pin
+        // ALREADY recorded their while-tails as an exact 1.0 clone
+        // (preamble_0.php:29-31 <-> preamble_2.php:27-27, last row). The pair
+        // row lifts that established tail truth to method granularity: a
+        // genuine parameterizable clone, precisely what the tool exists to
+        // find. p1/p3/p4 tails differ in statement shape (e.g. p1's count(*)/
         // return one-liner), so the 5-member cluster correctly stays at
         // sim 0.9226 < 1.0 — P1 remains open. SHOULD_FIND DECISION (kept at
         // 6 patterns, deliberately): the manifest lists BLIND SPOTS, and the
         // new pair is detected truth, not a blind spot — a 7th entry would
-        // invert the manifest's meaning. P1's should-find (one hole-pinned
-        // preamble-sequence cluster across ALL 5 preambles) remains unmet:
-        // the pair covers 2 of 5 at method level without exposing the
-        // 12-24 fragment. Rows re-derived hermetically at f382e73 and
-        // re-confirmed at 9fc8e86 (git-archive extracts + hardlinked
-        // read-only vendor, PHP 8.3): all nine pre-existing rows
-        // byte-identical, only this row inserted (clusters 9 -> 10).
-        ['method', 2, 114, 1.0, [
+        // invert the manifest's meaning. Rows re-derived hermetically at
+        // f382e73 and re-confirmed at 9fc8e86. 6.2 impact: was 114 nodes ->
+        // 22 removable lines (union 44 x 1/2) — the lines scale lifts this
+        // exact pair above the scripts fragment row (support-honesty order
+        // change, membership untouched).
+        ['method', 2, 22, 1.0, [
             "preamble_0.php:10-33", "preamble_2.php:10-29",
         ]],
-        ['if', 5, 84, 1.0, [
+        // P2 cured: whole top-level run (lines 8-17, $rows=[] through the
+        // trailing echo) exact across the three scripts.
+        // 6.2 impact: was 140 nodes -> 20 removable lines (union 30 x 2/3).
+        ['fragment', 3, 20, 1.0, [
+            "scripts_0.php:8-17", "scripts_1.php:8-17", "scripts_2.php:8-17",
+        ]],
+        // 6.2: the four 5-member 3-line control rows converge on 12
+        // removable lines each (union 15 x 4/5) — node-scale spread
+        // (84/68/48/44) collapses to a tie broken by kind then first member.
+        ['if', 5, 12, 1.0, [
             "inline_0.php:19-21", "inline_1.php:19-21", "inline_2.php:19-21",
             "inline_3.php:19-21", "inline_4.php:19-21",
         ]],
-        ['if', 5, 68, 1.0, [
-            "preamble_0.php:22-24", "preamble_1.php:22-24", "preamble_2.php:22-24",
-            "preamble_3.php:22-24", "preamble_4.php:22-24",
-        ]],
-        ['if', 5, 48, 1.0, [
-            "preamble_0.php:19-21", "preamble_1.php:19-21", "preamble_2.php:19-21",
-            "preamble_3.php:19-21", "preamble_4.php:19-21",
-        ]],
-        ['while', 3, 48, 1.0, [
-            "scripts_0.php:11-13", "scripts_1.php:11-13", "scripts_2.php:11-13",
-        ]],
-        ['if', 5, 44, 1.0, [
+        ['if', 5, 12, 1.0, [
             "preamble_0.php:14-16", "preamble_1.php:14-16", "preamble_2.php:14-16",
             "preamble_3.php:14-16", "preamble_4.php:14-16",
         ]],
-        ['foreach', 3, 28, 1.0, [
+        ['if', 5, 12, 1.0, [
+            "preamble_0.php:19-21", "preamble_1.php:19-21", "preamble_2.php:19-21",
+            "preamble_3.php:19-21", "preamble_4.php:19-21",
+        ]],
+        ['if', 5, 12, 1.0, [
+            "preamble_0.php:22-24", "preamble_1.php:22-24", "preamble_2.php:22-24",
+            "preamble_3.php:22-24", "preamble_4.php:22-24",
+        ]],
+        // 6.2: scripts control rows land on a 6-line tie (union 9 x 2/3).
+        ['foreach', 3, 6, 1.0, [
             "scripts_0.php:14-16", "scripts_1.php:14-16", "scripts_2.php:14-16",
         ]],
-        ['while', 2, 13, 1.0, [
+        ['while', 3, 6, 1.0, [
+            "scripts_0.php:11-13", "scripts_1.php:11-13", "scripts_2.php:11-13",
+        ]],
+        // 6.2 impact: was 13 nodes -> 2 removable lines (union 4 x 1/2);
+        // still the last row, the established tail-truth for the S15 note.
+        ['while', 2, 2, 1.0, [
             "preamble_0.php:29-31", "preamble_2.php:27-27",
         ]],
     ];
-
     /**
      * What the audit truth says SHOULD be found — one row per blind spot:
      * [pattern id, wave item, should-find, today's measured state].
@@ -320,11 +317,12 @@ final class MicroFixtureAuditTest extends TestCase
     {
         $this->assertCount(6, self::SHOULD_FIND, 'the Appendix-A truth manifest has exactly six patterns');
         // 10 clusters since the 2026-11-22 wave-3 pair mint (see the row note
-        // at RED_STATE_SIGNATURE index 2); 14 since the 2026-11-28 fragment
-        // mint (item 2.1: four fragment rows, incl. the whole-family view);
-        // the manifest count 6 is pattern
-        // state, not cluster count, and stays.
-        $this->assertCount(14, $this->buildPayload()['clusters']);
+        // at RED_STATE_SIGNATURE index 4); 13 since the 2026-11-28 fragment
+        // mint (item 2.1: three exact stitched fragment rows — the nested
+        // family's one-step extensions all reach the support floor, so the
+        // splitter emits no separate whole-family view under these rules);
+        // the manifest count 6 is pattern state, not cluster count, and stays.
+        $this->assertCount(13, $this->buildPayload()['clusters']);
     }
 
     /** @return array<string,mixed> */
@@ -343,12 +341,17 @@ final class MicroFixtureAuditTest extends TestCase
             // Item 2.1 (2026-11-28): fragment runs join the roster — the P1/P2
             // cure is the opt-in 'fragment' kind (never implicit, like script).
             allowedKinds: ['function', 'method', 'closure', 'arrow', 'if', 'for', 'foreach', 'while', 'do', 'try', 'switch', 'match', 'fragment'],
+            // 6.2 (E3): this file re-pins the FULL red-state census on every
+            // ranking flip, so the run must be cold — a warm cluster cache
+            // shared with sibling CLI/make runs replayed stale membership
+            // here once (the default cacheDir lives inside the checkout).
+            cacheDir: sys_get_temp_dir() . '/phpdup-e3-micro-' . getmypid() . '-' . (string) getmyuid(),
         );
         $state = new PipelineState($config);
         $out = new NullOutput();
         (new ScanningStage())->run($state, $out);
         (new PreprocessStage(useCache: false))->run($state, $out);
-        (new ClusterStage(exactOnly: false))->run($state, $out);
+        (new ClusterStage(exactOnly: false, useClusterCache: false))->run($state, $out);
         (new RefactorStage(useCache: false))->run($state, $out);
 
         $report = new Report(
