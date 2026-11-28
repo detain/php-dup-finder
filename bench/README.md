@@ -64,7 +64,11 @@ Output:
 php bench/corpora.php
 php bench/corpora.php --refresh   # force re-clone
 php bench/corpora.php --list      # show plan, exit
-php bench/corpora.php --text-twins-only  # plant/verify only the text-tier corpus
+php bench/corpora.php --text-twins-only  # plant/verify the text-tier corpus only;
+                                         # host-scoped [reports]/host-repo verifiers
+                                         # are exempt under this flag (dev boxes with
+                                         # unrelated host-file churn can run the exact
+                                         # CI command) — all tree pins still enforce
 
 # Run only one corpus across all tools.
 php bench/run.php --corpus=synthetic-fuzz --label=initial

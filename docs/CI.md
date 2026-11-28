@@ -108,7 +108,9 @@ that breaks an href turns this leg red before merge.
 The `text-tier-bench` job (JLEG, item 7.1 interim comparator) gates the
 native text tier's keyed recall on `bench/corpora/text-twins`:
 `php bench/corpora.php --text-twins-only` materializes the deterministic
-planter output under the `[text-twins]` pins, then
+planter output under the `[text-twins]` pins (host-scoped `[reports]`
+and host-repo verifiers are exempt under that flag, which keeps the
+exact CI command green on dev boxes too);
 `php bench/text-tier-acceptance.php` must report every keyed family
 CAUGHT with zero false-positive clusters — any miss or negative-control
 hit exits 1 and reddens the job. The jscpd columns it also prints are

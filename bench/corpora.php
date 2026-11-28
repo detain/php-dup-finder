@@ -46,7 +46,8 @@
  * Usage:
  *   php bench/corpora.php                   # download missing, regenerate synthetic, verify all
  *   php bench/corpora.php --synthetic-only  # regenerate synthetic only (no network for OSS)
- *   php bench/corpora.php --text-twins-only # plant+verify the text-tier corpus only (no network)
+ *   php bench/corpora.php --text-twins-only # plant+verify the text-tier corpus only (no network;
+ *                                     # host-scoped [reports]/host-repo pins exempt — CI command)
  *   php bench/corpora.php --list            # print the planned corpora and exit
  *   php bench/corpora.php --refresh         # force re-clone everything
  *   php bench/corpora.php --verify-only     # verify what exists; clone nothing, plant nothing
@@ -202,8 +203,18 @@ function main(array $argv): int
         }
     }
 
-    verifyReportDigests($pinsFile, $failures);
-    verifyHostRepoPins($pins, $failures);
+    // Host-scoped verifiers ([reports] byte digests of dev-tree report
+    // files, host-repo commit pins) are EXEMPT under --text-twins-only:
+    // the exact CI command must stay green on dev boxes whose unrelated
+    // host files churn (JLEG r1 n1). All [text-twins]/[synthetic-fuzz]/
+    // [oss-*] TREE pins above still enforce here; bare corpora.php and
+    // --verify-only run the full gauntlet.
+    if ($textTwinsOnly) {
+        echo "[skip] host-scoped verifiers ([reports], host-repo pins) exempt under --text-twins-only\n";
+    } else {
+        verifyReportDigests($pinsFile, $failures);
+        verifyHostRepoPins($pins, $failures);
+    }
 
     if ($failures !== []) {
         fwrite(STDERR, "[FAIL] corpus materialization failed (" . count($failures) . " problem(s)):\n");
