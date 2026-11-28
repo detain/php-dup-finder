@@ -73,6 +73,19 @@ final class Block
     public string $scope = '';
 
     /**
+     * Item 5.1 (package leg): composer package label of the manifest that
+     * owns this file — the 'name' of the nearest composer.json at or below
+     * the file's scan root ('' when no root matches or no manifest is
+     * readable; a manifest without a usable name degrades to the file's
+     * {@see self::$repo} label). Stamped per run by
+     * {@see \Phpdup\Scanning\RepoLabels}; never trusted from a deserialized
+     * cache — same run-context law as $repo, so cache blobs restoring ''
+     * here are always re-stamped before any consumer reads one.
+     * Public-mutable by design like every other field on this class.
+     */
+    public string $package = '';
+
+    /**
      * Item 2.1: fragment identity fields, set by the shared miner ONLY on
      * 'fragment'-kind blocks (list-consistent statement-run metadata; the
      * regular per-block fields above carry the window's own fold). All

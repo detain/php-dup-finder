@@ -240,12 +240,25 @@ final class Command extends SymfonyCommand
             ->addOption('limit', null, InputOption::VALUE_REQUIRED, 'Show at most N clusters in CLI output: 0 prints NO detail cards (unlike the --candidate-budget / --max-clusters family it is NOT the 0=unlimited sentinel — pass a large N to see every cluster), file sinks such as --json/--html always carry every cluster regardless of N, and a negative or non-numeric N is rejected with exit 2', 50)
             ->addOption('summary-only', null, InputOption::VALUE_NONE, 'Render only the top banner + final summary line (skip per-cluster details)')
             ->addOption('clusters', null, InputOption::VALUE_NONE, 'Render a one-line-per-cluster table instead of the full per-cluster breakdown')
-            ->addOption('scope', null, InputOption::VALUE_REQUIRED, 'Report only clusters matching a repo scope: all|single|multi|<repo label>
-                (default all). Clusters carry per-member repo labels derived from the scan roots;
-                single = one repo per cluster, multi = members span >=2 distinct repos, any other
-                value = keep clusters with at least one member from that repo label. Applied after
-                ranking, so --limit/--sort and the CI gates all measure the filtered slice.
-                Equivalently: config key scope.')
+            ->addOption('scope', null, InputOption::VALUE_REQUIRED, 'Report only clusters matching a repo scope: all|single|multi|intra-file|intra-package|cross-package|cross-repo|<repo label>
+                (default all). Members carry per-file repo labels (nearest in-root .git
+                carrier, falling back to the scan root basename) and composer package
+                labels (nearest in-root composer.json name). single = one repo per
+                cluster, multi = members span >=2 distinct repos; the item-5.1 ladder
+                words filter on the coarsest true rung (intra-file = every member in
+                one file, intra-package = several files without a second package/repo
+                label, cross-package = >=2 package labels within one repo, cross-repo
+                = >=2 repo labels — cross-repo is the spelled form of multi). Ladder
+                words are closed-set values checked BEFORE the label branch, so a scan
+                root literally named cross-repo cannot shadow the word. Any other
+                value = keep clusters with at least one member from that repo label.
+                Applied after ranking, so --limit/--sort and the CI gates all measure
+                the filtered slice. Equivalently: config key scope.')
+            ->addOption('scope-labels', null, InputOption::VALUE_NONE, 'Item 5.1: arm the repo/package scope census. Adds summary.scope_counts
+                (one int per ladder rung over the reported clusters), per-cluster
+                scope_ladder, per-member package label, and a CLI trailer line.
+                Report-stage recompute only; unarmed runs stay byte-identical.
+                Equivalently: config key scope_labels (root only).')
             ->addOption('pager', null, InputOption::VALUE_REQUIRED, 'Page CLI report through $PAGER (default `less -R`). Modes: auto|never|always. auto pages when stdout is a TTY and the rendered output exceeds ~60 lines.', 'never')
             ->addOption('sort', null, InputOption::VALUE_REQUIRED, 'Cluster sort: KEY[:asc|desc]. Keys: impact|members|block-size|lines|similarity|confidence|name|file|id. Aliases: size→members, count→members. Default impact:desc.')
             ->addOption('stats', null, InputOption::VALUE_NONE, 'Show pipeline statistics')
@@ -314,7 +327,7 @@ Options grouped by category:
     --refactor-patch, --refactor-tests,
     --evidence-packs,
     --diff, --patch, --apply, --dry-run, --limit, --sort, --stats,
-    --summary-only, --clusters, --scope, --pager, --debug-log, --history
+    --summary-only, --clusters, --scope, --scope-labels, --pager, --debug-log, --history
 
   <comment>CI / Baseline</comment>
     --baseline, --baseline-out
@@ -1288,6 +1301,12 @@ HELP;
             // precedent) — this flag only arms; phpdup.json tunes.
             $overrides['history'] = true;
         }
+        if ($input->getOption('scope-labels')) {
+            // Item 5.1: same posture (flat resolver, root-only key). The
+            // flag only arms the ladder census + the conditional payload
+            // keys; there is nothing to tune beyond on/off.
+            $overrides['scope_labels'] = true;
+        }
         if ($input->getOption('apply')) {
             $overrides['apply'] = true;
         }
@@ -1317,9 +1336,9 @@ HELP;
 
         $scopeOpt = $input->getOption('scope');
         if ($scopeOpt !== null && trim((string)$scopeOpt) === '') {
-            // Open-set value (all|single|multi|<repo label>) — only the
-            // empty string is a shape error the CLI can see.
-            $output->writeln('<error>phpdup: --scope must be a non-empty value (all|single|multi|&lt;repo-label&gt;)</error>');
+            // Open-set value (all|single|multi|ladder word|<repo label>) —
+            // only the empty string is a shape error the CLI can see.
+            $output->writeln('<error>phpdup: --scope must be a non-empty value (all|single|multi|intra-file|intra-package|cross-package|cross-repo|&lt;repo-label&gt;)</error>');
             return null;
         }
 

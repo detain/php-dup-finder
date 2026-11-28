@@ -263,6 +263,32 @@ final class ScopeFlagTest extends TestCase
         $this->assertStringContainsString('score_mode', $cfgBogus['combined']);
     }
 
+    public function testCrossRepoWordIsClosedSetNotATypoLabel(): void
+    {
+        // TRIPWIRE FLIP (verification fleet p5 red-pin on 5.1): pre-lane,
+        // 'cross-repo' was not a known word — an open-set label that
+        // matched nothing and earned the typo hint. Item 5.1 promotes it
+        // to a closed-set value equal to 'multi' (doc letter: "allow
+        // --scope cross-repo"), and closed-set zero-matches stay silent.
+        $multi = $this->cli(['analyze', $this->alpha, $this->beta, '--json', $this->tmp . '/cr.json', '--scope=cross-repo']);
+        $this->assertSame(0, $multi['exit'], $multi['combined']);
+        $clusters = json_decode((string) file_get_contents($this->tmp . '/cr.json'), true)['clusters'];
+        $this->assertGreaterThanOrEqual(1, count($clusters), 'the gamma pair is cross-repo and must survive the word');
+        foreach ($clusters as $c) {
+            $this->assertSame('multi', $c['scope']);
+        }
+        $this->assertStringNotContainsString('matched no clusters', $multi['combined'],
+            "'cross-repo' is a known word: it may legitimately match zero without the hint");
+
+        // Same for the other three ladder words on this corpus.
+        foreach (['intra-file', 'intra-package', 'cross-package'] as $word) {
+            $run = $this->cli(['analyze', $this->alpha, $this->beta, '--json', $this->tmp . '/w.json', '--scope=' . $word]);
+            $this->assertSame(0, $run['exit'], $run['combined']);
+            $this->assertStringNotContainsString('matched no clusters', $run['combined'],
+                "'$word' is a closed-set ladder word — zero matches is honest, not a typo");
+        }
+    }
+
     // ------------------------------------------------------------------ harness
 
     /** @param list<string> $args @param array<string, mixed> $cfgExtra */

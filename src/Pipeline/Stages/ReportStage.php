@@ -201,10 +201,15 @@ final class ReportStage implements CooperativeStageInterface
         // restamp here overwrites it from THIS run's roots before the
         // scope demotion below reads one. That is why no PARSER_VERSION
         // or cluster-cache key binds the marker.
+        // Item 5.1 (package leg): Block::$package rides the identical law —
+        // the repo-labels resolver stamps repo + package together on every
+        // member, so a replayed blob's stale (or ''-defaulted) package
+        // label never reaches the armed payload or the ladder filter.
         $vendorMarker = \Phpdup\Scanning\VendorMarker::forRoots($config->paths);
+        $repoLabels   = \Phpdup\Scanning\RepoLabels::forRoots($config->paths);
         $state->currentTask = 'restamping cluster labels';
         foreach ($state->clusters as $cluster) {
-            \Phpdup\Scanning\RepoLabels::stampAll($cluster->members, $config->paths);
+            $repoLabels->stampAllBlocks($cluster->members);
             $vendorMarker->stampAll($cluster->members);
             if ($pump() >= $pumpDue) {
                 $state->stageProgress = min(0.999, ++$unitsDone / $unitTotal);
@@ -220,6 +225,16 @@ final class ReportStage implements CooperativeStageInterface
         // ReportStage over hand-built state is the case that still
         // surfaces its corrupt lock instead of swallowing it.
         foreach ($vendorMarker->notes() as $note) {
+            if (!in_array($note, $state->scanNotes, true)) {
+                $state->scanNotes[] = $note;
+            }
+        }
+        // Item 5.1: composer-manifest fail-open notes ride the same
+        // skip-with-note channel (same dedup law; the run usually saw them
+        // already at the PreprocessStage stamp, so this merge only adds what
+        // is genuinely new — a library-driven ReportStage over hand-built
+        // state is the case that still surfaces its corrupt manifest).
+        foreach ($repoLabels->notes() as $note) {
             if (!in_array($note, $state->scanNotes, true)) {
                 $state->scanNotes[] = $note;
             }
@@ -278,7 +293,18 @@ final class ReportStage implements CooperativeStageInterface
         $clusters = ClusterScope::filter($clusters, $config->scope);
 
         if ($clusters === [] && $preFilter !== []
-            && !in_array($config->scope, [ClusterScope::FILTER_ALL, ClusterScope::FILTER_SINGLE, ClusterScope::FILTER_MULTI], true)) {
+            && !in_array($config->scope, [
+                ClusterScope::FILTER_ALL,
+                ClusterScope::FILTER_SINGLE,
+                ClusterScope::FILTER_MULTI,
+                // Item 5.1: the ladder words are closed-set values too —
+                // each can legitimately match zero clusters, so none earns
+                // a hint (same law as single/multi above).
+                ClusterScope::LADDER_INTRA_FILE,
+                ClusterScope::LADDER_INTRA_PACKAGE,
+                ClusterScope::LADDER_CROSS_PACKAGE,
+                ClusterScope::LADDER_CROSS_REPO,
+            ], true)) {
             // Review m-2: an open-set scope is a free-form repo label, so a
             // typo empties the report silently (exit 0, zero clusters). One
             // hint line on stderr names the labels this run actually
@@ -567,6 +593,19 @@ final class ReportStage implements CooperativeStageInterface
             }
         }
 
+        // Item 5.1 (scope-counts leg): the ladder census over the REPORTED
+        // set — ARMED ONLY (config->scope_labels, the idiom_census/
+        // vendored_duplicates/rollups conditional-key family): an unarmed
+        // run computes nothing and the key is absent, so every default
+        // payload stays byte-identical and the goldens stay frozen (no
+        // version event, MINE-D §4). Pure report-stage read over the member
+        // facts restamped above — the run-window memo makes it one walk per
+        // cluster; nothing persists, no cache key binds it.
+        $scopeCounts = null;
+        if ($config->scopeLabels) {
+            $scopeCounts = ClusterScope::counts($mainClusters);
+        }
+
         // once-S59: carry the run's real wall-clock window on the Report.
         // A state driven by Pipeline::iter() knows when the scan began; a
         // hand-driven stage run (library-style callers) does not, and then
@@ -647,6 +686,11 @@ final class ReportStage implements CooperativeStageInterface
             // reporter's conditional key keeps default payloads
             // byte-identical.
             themes: $themes,
+            // Item 5.1 (scope-counts leg): the ladder census rides the same
+            // state→Report seam — null on every unarmed run; the sum
+            // identity with count($mainClusters) is structural (ClusterScope
+            // ::counts buckets every cluster into exactly one rung).
+            scopeCounts: $scopeCounts,
         );
         $state->report   = $report;
         $state->clusters = $clusters;

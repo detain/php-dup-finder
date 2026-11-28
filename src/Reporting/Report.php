@@ -26,6 +26,7 @@ final class Report
      * @param null|array<string, mixed> $vendoredDuplicates Item 5.2 (W2b): the demoted 'vendored duplicates' section (null = scope unarmed, key never opens).
      * @param null|array<string, mixed> $rollups
      * @param null|array<string, mixed> $themes Item 6.4 (THEME): demand-armed `summary.themes` payload (null = pass never ran).
+     * @param null|array<string, int> $scopeCounts Item 5.1: armed scope_labels ladder census over the reported clusters (null = scope_labels unarmed, summary.scope_counts never opens).
      */
     public function __construct(
         public readonly int $files,
@@ -162,6 +163,19 @@ final class Report
         // findings-free run that was measured and returned zero-shaped
         // — same tracked-not-fabricated law as $rollups above.
         public readonly ?array $themes = null,
+        // Item 5.1 (scope-counts leg): the ladder counts over the REPORTED
+        // cluster set — {'intra-file'=>n, 'intra-package'=>n,
+        // 'cross-package'=>n, 'cross-repo'=>n} in ladder order, computed by
+        // ReportStage via ClusterScope::counts() ONLY when scope_labels is
+        // armed (§5f trailing-param law). null = the producer never ran the
+        // pass (every default run, legacy library/server/hand-built
+        // reports), distinct from a measured all-zero census of an empty
+        // reported set — same tracked-not-fabricated law as the carriers
+        // above. JsonReporter emits the conditional `summary.scope_counts`
+        // key ONLY when non-null: no default payload moves, no
+        // SCHEMA_VERSION event (demand-armed conditional key, MINE-D §4,
+        // the idiom_census/vendored_duplicates family).
+        public readonly ?array $scopeCounts = null,
     ) {
     }
 

@@ -247,6 +247,33 @@ final class ConfigLoaderTest extends TestCase
         (new ConfigLoader())->validate(['db_aware' => 'yes']);
     }
 
+    // Item 5.1 (scope_labels door trio): same voice as the db_aware pair —
+    // default OFF, root config file reads it, non-boolean fails loudly.
+    public function testScopeLabelsDefaultsOff(): void
+    {
+        $config = (new ConfigLoader())->load(paths: ['src'], configFile: null);
+        $this->assertFalse($config->scopeLabels);
+    }
+
+    public function testScopeLabelsReadsFromConfigFile(): void
+    {
+        $tmp = sys_get_temp_dir() . '/phpdup-' . uniqid() . '.json';
+        file_put_contents($tmp, json_encode(['scope_labels' => true]));
+        try {
+            $config = (new ConfigLoader())->load(paths: ['src'], configFile: $tmp);
+            $this->assertTrue($config->scopeLabels);
+        } finally {
+            @unlink($tmp);
+        }
+    }
+
+    public function testScopeLabelsValidationRejectsNonBoolean(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('scope_labels must be a boolean');
+        (new ConfigLoader())->validate(['scope_labels' => 'yes']);
+    }
+
     public function testTrinityCollapseDefaultsOff(): void
     {
         $config = (new ConfigLoader())->load(paths: ['src'], configFile: null);

@@ -273,7 +273,7 @@ final class JsonSchemaSpec
      *     (after vendored_duplicates when all arm), same demand-armed
      *     law; likewise $literalsArmed for the item-3.3
      *     `literal_census` block. Callers should pass named arguments —
-     *     seven positional booleans is exactly the shape this family must
+     *     eight positional booleans is exactly the shape this family must
      *     not silently shuffle.
      * @param bool $rollups true asks for the shape of a corpus_rollups-
      *     ARMED run (item 2.2, ROLLUP): the base keys plus the
@@ -284,6 +284,12 @@ final class JsonSchemaSpec
      *     (item 6.4, THEME): the conditional `themes` block after
      *     `rollups` when both arm. Same carve-out posture — demand-armed
      *     conditional key, declared armed shape, NO SCHEMA_VERSION event.
+     * @param bool $scopeLabels true asks for the shape of a scope_labels-
+     *     armed run (item 5.1, ladder leg): the base keys plus the
+     *     conditional trailing `scope_counts` block (last when all arm),
+     *     same carve-out posture — an unarmed payload never grows the
+     *     key, no version event; the cluster-level companions (member
+     *     `package`, `scope_ladder`) are declared in clusterShape().
      *
      * @return array<string, string>
      */
@@ -295,6 +301,7 @@ final class JsonSchemaSpec
         bool $literalsArmed = false,
         bool $rollups = false,
         bool $themes = false,
+        bool $scopeLabels = false,
     ): array {
         $shape = [
             'files'                => 'int',   // = files scanned (historical key)
@@ -334,6 +341,9 @@ final class JsonSchemaSpec
         }
         if ($themes) {
             $shape['themes'] = 'object  // item 6.4 (THEME): the finding-themes block (see themeBlockShape()); present ONLY on themes-armed runs — an unarmed payload never grows this key (frozen goldens, same demand-armed posture as rollups; no version event)';
+        }
+        if ($scopeLabels) {
+            $shape['scope_counts'] = 'object  // item 5.1 (ladder leg): one int per ladder word {intra-file,intra-package,cross-package,cross-repo} over the REPORTED cluster set (sum == summary.clusters, structural — ClusterScope::counts() buckets every cluster into exactly one rung). Present ONLY on scope_labels-armed runs — an unarmed payload never grows this key (frozen goldens, same demand-armed posture as idiom_census/vendored_duplicates/rollups; no version event, MINE-D §4)';
         }
         return $shape;
     }
@@ -615,7 +625,7 @@ final class JsonSchemaSpec
             'outlier_members'        => 'list<int>',
             'architectural_findings' => 'list<object>',
             'signature'              => 'string|null',
-            'members'                => 'list<object>  // trailing repo/scope keys since 1.4 (item 5.1); see JsonReporter::clusterPayload()',
+            'members'                => "list<object>  // trailing repo/scope keys since 1.4 (item 5.1); an armed scope_labels run adds a further trailing package key (composer name of the nearest in-root manifest, degrading to the repo label, '' only without a root match) — conditional, unarmed member rows never carry it",
             'pairs'                  => 'list<object>',
             'holes'                  => 'list<object>  // trailing `degraded` bool since 1.5; `observed` entries may be null — any absence row, since 1.7 see holeShape()',
             'scope'                  => "string  // 'single' | 'multi' — item 5.1, trailing (1.4)",
@@ -626,6 +636,7 @@ final class JsonSchemaSpec
             're_expressed'           => 'bool  // hole_coverage > config max_hole_coverage (default 1.0: never) — trailing (1.5)',
             'hole_fragment'          => "?object  // {stmt_start,stmt_length,code,truncated} longest hole-free stmt run, set only when re_expressed — trailing (1.5)",
             'placement'              => 'object  // {shape,rationale,same_host,lca_namespace,host_packages} — item 5.3, trailing (1.6); see placementShape()',
+            'scope_ladder'           => "?string  // CONDITIONAL (scope_labels-armed runs only): 'intra-file'|'intra-package'|'cross-package'|'cross-repo' — the coarsest true rung from the members' file/package/repo labels (item 5.1 ladder leg; demand-armed posture, no version event, MINE-D §4)",
         ];
     }
 

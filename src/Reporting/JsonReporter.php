@@ -298,6 +298,18 @@ final class JsonReporter
         if ($report->themes !== null) {
             $payload['summary']['themes'] = $report->themes;
         }
+
+        // Item 5.1 (scope-counts leg): a further conditional trailing summary
+        // key, same idiom_census/vendored_duplicates/rollups carve-out voice
+        // (MINE-D §4: an opt-in key rides the current schema with no version
+        // event). Present ONLY on scope_labels-armed runs — the four ladder
+        // buckets over the REPORTED cluster set, sum identity with
+        // summary.clusters guaranteed by ClusterScope::counts(). An unarmed
+        // run never grows the key, so every frozen payload stays byte-
+        // identical. Declared by JsonSchemaSpec::summaryShape(scopeLabels: true).
+        if ($report->scopeCounts !== null) {
+            $payload['summary']['scope_counts'] = $report->scopeCounts;
+        }
         return $payload;
     }
 
@@ -464,21 +476,34 @@ final class JsonReporter
                 'suggestion' => $f->suggestion,
             ], $c->architecturalFindings),
             'signature'    => $c->signature,
-            'members' => array_map(static fn($m) => [
-                'file'      => $m->file,
-                'start'     => $m->range->start,
-                'end'       => $m->range->end,
-                'kind'      => $m->kind,
-                'namespace' => $m->namespace,
-                'class'     => $m->class,
-                'name'      => $m->name,
-                'size'      => $m->size,
-                // Item 5.1: trailing-additive run-context labels —
-                // repo is the scan-root basename ('' when no root
-                // matched), scope is 'single' or the repo label.
-                'repo'      => $m->repo,
-                'scope'     => $m->scope,
-            ], $c->members),
+            'members' => array_map(function ($m) use ($config): array {
+                $row = [
+                    'file'      => $m->file,
+                    'start'     => $m->range->start,
+                    'end'       => $m->range->end,
+                    'kind'      => $m->kind,
+                    'namespace' => $m->namespace,
+                    'class'     => $m->class,
+                    'name'      => $m->name,
+                    'size'      => $m->size,
+                    // Item 5.1: trailing-additive run-context labels —
+                    // repo is the scan-root basename ('' when no root
+                    // matched), scope is 'single' or the repo label.
+                    'repo'      => $m->repo,
+                    'scope'     => $m->scope,
+                ];
+                // Item 5.1 (package leg): an armed scope_labels run adds a
+                // trailing package key — the composer name of the nearest
+                // in-root manifest, degrading to the repo label when that
+                // chain finds no usable name. Conditional-by-config, never
+                // by member emptiness: every member row of an armed run
+                // carries the key (even ''), or the payload shape would
+                // depend on tree accidents. Unarmed bytes never move.
+                if ($config->scopeLabels) {
+                    $row['package'] = $m->package;
+                }
+                return $row;
+            }, $c->members),
             'pairs' => array_map(static fn(array $p) => [
                 'blockA'     => $p['blockA'],
                 'blockB'     => $p['blockB'],
@@ -567,6 +592,14 @@ final class JsonReporter
         // cluster count above.
         if ($c->subsumes !== []) {
             $payload['subsumes'] = $c->subsumes;
+        }
+        // Item 5.1 (ladder leg): the four-rung scope word — a CONDITIONAL
+        // key in exactly the class_shape/subsumes posture: present only on
+        // armed scope_labels runs (per-cluster), absent on every default
+        // payload the frozen goldens measure. Rides the same run-window
+        // spread memo as 'scope', so the armed census costs no extra walk.
+        if ($config->scopeLabels) {
+            $payload['scope_ladder'] = ClusterScope::ladder($c);
         }
         return $payload;
     }

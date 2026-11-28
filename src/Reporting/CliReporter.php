@@ -107,6 +107,9 @@ final class CliReporter
             // Item 5.2 (W2b deferred leg, landed here in the rollup train):
             // the scope demotion is trailer-visible too.
             $this->renderVendored($report, $theme, $out);
+            // Item 5.1: the scope-labels census rides the clean path with
+            // its trailer siblings.
+            $this->renderScopeCounts($report, $theme, $out);
             return;
         }
 
@@ -154,6 +157,8 @@ final class CliReporter
         $this->renderBaselineAppendix($report, $theme, $out);
         $this->renderRollups($report, $theme, $out);
         $this->renderVendored($report, $theme, $out);
+        // Item 5.1: the scope-labels census line, same trailer posture.
+        $this->renderScopeCounts($report, $theme, $out);
     }
 
     /**
@@ -286,6 +291,37 @@ final class CliReporter
             $vendored['clusters'],
             $vendored['lines'],
             $vendored['omitted'] > 0 ? sprintf(' · %d beyond the row cap', $vendored['omitted']) : '',
+        ), $theme));
+    }
+
+    /**
+     * Item 5.1 (scope-counts leg): the armed ladder census in one line —
+     * the four buckets over the REPORTED cluster set, the same arithmetic
+     * summary.scope_counts carries (the 'of N' states the identity
+     * denominator). Only armed runs (scope_labels) carry non-null; an
+     * unarmed run prints nothing, so default CLI bytes never move — the
+     * trailer posture of renderRollups above (a measured all-zero census
+     * does print: it is an answer, not an absence).
+     */
+    private function renderScopeCounts(Report $report, Theme $theme, OutputInterface $out): void
+    {
+        $counts = $report->scopeCounts;
+        if ($counts === null) {
+            return;
+        }
+        $out->writeln(StatusLine::info(sprintf(
+            'scope-labels  %d intra-file · %d intra-package · %d cross-package · %d cross-repo (of %d reported clusters)',
+            $counts[ClusterScope::LADDER_INTRA_FILE],
+            $counts[ClusterScope::LADDER_INTRA_PACKAGE],
+            $counts[ClusterScope::LADDER_CROSS_PACKAGE],
+            $counts[ClusterScope::LADDER_CROSS_REPO],
+            // Explicit four-bucket sum — the output-054 once-per-render
+            // guard pins the array-sum helper to the single impact total
+            // above; the ladder census states its own visible arity.
+            $counts[ClusterScope::LADDER_INTRA_FILE]
+                + $counts[ClusterScope::LADDER_INTRA_PACKAGE]
+                + $counts[ClusterScope::LADDER_CROSS_PACKAGE]
+                + $counts[ClusterScope::LADDER_CROSS_REPO],
         ), $theme));
     }
 

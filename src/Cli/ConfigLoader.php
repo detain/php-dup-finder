@@ -164,6 +164,7 @@ final class ConfigLoader
             'literal_census',
             'corpus_rollups',
             'themes',
+            'scope_labels',
             'ir_threshold', 'ml_pair_threshold', 'debug_log',
             'low_memory', 'fail_on_impact', 'max_clusters',
             'optional_blocks_containment',
@@ -233,6 +234,7 @@ final class ConfigLoader
             'literal_census' => $base->literalCensus,
             'corpus_rollups' => $base->corpusRollups,
             'themes' => $base->themes,
+            'scope_labels' => $base->scopeLabels,
             'ir_threshold' => $base->irThreshold,
             'ml_pair_threshold' => $base->mlPairThreshold,
             'debug_log' => $base->debugLog,
@@ -495,6 +497,12 @@ final class ConfigLoader
             // staging precedent). Report-stage recompute only: no
             // cache-key binding, no armed construction precondition.
             themes:                        $flat['themes'],
+            // Item 5.1 (scope-counts leg): the repo/package ladder demand
+            // knob, same flat-resolver route (root-only, refused
+            // per-directory, default OFF). --scope-labels is the CLI arm;
+            // report-stage recompute only: no cache-key binding (restamp
+            // law covers the labels), no armed construction precondition.
+            scopeLabels:                   $flat['scope_labels'],
             // Item 4.4 APPLY half: root-only accepted-decision register.
             // No CLI override leg (deliberate: suppressions belong to the
             // committed config + baseline file, not ephemeral flags), so
@@ -1353,16 +1361,17 @@ final class ConfigLoader
         'corpus_rollups',
         // Item 6.4 (THEME): theming demand knob.
         'themes',
+        'scope_labels',
     ];
 
     /**
      * once-S67 (php-dup-finder-once-077): the admission-totality roster —
-     * the 36 KNOWN_KEYS members that per-directory `.phpdup.json` files may
+     * the 38 KNOWN_KEYS members that per-directory `.phpdup.json` files may
      * NOT carry, refused loudly by {@see discoverPerDirectoryOverrides()}.
-     * The equation the belt pins: KNOWN_KEYS (57) = the 11 parents
+     * The equation the belt pins: KNOWN_KEYS (59) = the 11 parents
      * shapeOverrides() admits (exclude, exclude_reset, min_block_size,
      * max_block_size, normalization_mode, ngram_size, kinds, db_symbols,
-     * db_aware, trinity_collapse, low_memory) + these 36 + the 10 with
+     * db_aware, trinity_collapse, low_memory) + these 38 + the 10 with
      * dedicated era arms above the roster check (fingerprint_id_mode, scope,
      * score_mode, max_ted_size, max_hole_coverage, ml_pair_allow_private,
      * baseline, baseline_out, diff_base, debug_log). A new KNOWN_KEYS member
@@ -1387,6 +1396,15 @@ final class ConfigLoader
      * would mint a half-armed census — some members answerable, others
      * silently not — the same quiet-misfeed family as idiom_mining. Root
      * phpdup.json only (--history is the CLI arm, never a subtree stance).
+     *
+     * Item 5.1 adds 'scope_labels' to the refused set: the ladder counts
+     * ONE scope census over the reported cluster set of the whole run
+     * (and the member 'package' emission reads labels resolved against
+     * the run's roots); a per-directory flip would mint a half-armed
+     * census — scope_counts for some subtrees, silence for others — the
+     * same quiet-misfeed family as corpus_rollups/history. Root
+     * phpdup.json only (--scope-labels is the CLI arm, never a subtree
+     * stance).
      */
     private const REFUSED_PER_DIRECTORY = [
         'paths', 'similarity_threshold', 'tree_threshold', 'min_cluster_impact',
@@ -1418,6 +1436,11 @@ final class ConfigLoader
         // per run — themes group the whole summary, so a per-directory
         // flip would theme some findings only. Same refused family.
         'themes',
+        // Item 5.1: one scope census per run — the ladder words, the
+        // summary.scope_counts census and the member package labels are
+        // run-wide, so a per-directory flip would count some clusters
+        // only. Same refused family as corpus_rollups/themes.
+        'scope_labels',
     ];
 
     /**
@@ -1697,6 +1720,12 @@ final class ConfigLoader
             // and grows the summary.themes block.
             throw new \RuntimeException("themes must be a boolean$where");
         }
+        if (array_key_exists('scope_labels', $data) && !is_bool($data['scope_labels'])) {
+            // Item 5.1: same voice — a non-boolean must not silently flip
+            // whether the run pays the ladder census and grows
+            // summary.scope_counts / scope_ladder / member package keys.
+            throw new \RuntimeException("scope_labels must be a boolean$where");
+        }
         if (array_key_exists('scorer', $data)) {
             $assertEnum($data['scorer'], 'scorer', ['default', 'ir']);
         }
@@ -1715,8 +1744,11 @@ final class ConfigLoader
         }
         if (array_key_exists('scope', $data)) {
             // Item 5.1: open-set value (any non-empty string): 'all',
-            // 'single', 'multi', or an exact repo label. Empty is the
-            // only shape error the loader can see here.
+            // 'single', 'multi', an item-5.1 ladder word
+            // (intra-file|intra-package|cross-package|cross-repo), or an
+            // exact repo label. Empty is the only shape error the loader
+            // can see here; the ladder words ride ClusterScope::filter()
+            // (closed-set, checked before the label branch).
             if (!is_string($data['scope']) || $data['scope'] === '') {
                 throw new \RuntimeException("scope must be a non-empty string$where");
             }

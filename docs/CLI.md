@@ -104,7 +104,8 @@ for the full JSON-Schema-compatible spec.
 | `--limit N`                                | `50`    | Maximum number of cluster detail cards printed to the terminal. `N` is an integer ≥ 0; a negative or non-numeric value is fatal (exit 2). Doesn't affect file outputs — `--json`/`--html`/etc. always carry every cluster. `0` prints NO detail cards: unlike the `--candidate-budget` / `max_clusters` family (where `0` = unlimited), `--limit 0` is not a show-all sentinel — the totals banner and summary line still describe the full set while the card list stays empty. To see every cluster, pass a large `N`. |
 | `--summary-only`                           | off     | Render only the top banner and the final summary line — the per-cluster detail cards are skipped (banner totals still describe the full set). |
 | `--clusters`                               | off     | Render a one-line-per-cluster table instead of the full per-cluster breakdown.         |
-| `--scope VALUE`                            | `all`   | Repo scope filter: `all` \| `single` \| `multi` \| `<repo-label>`. Every cluster member carries a `repo` label (the basename of the longest-matching scan root) and clusters gain a `scope` of `single` (one repo) or `multi` (members span ≥2 distinct repos). `single`/`multi` keep the matching clusters; any other value is treated as an exact repo label and keeps clusters with at least one member from that repo. Applied after ranking, so `--limit`, `--sort` and the CI gates all measure the filtered slice. A typo'd label matches nothing: the run still exits 0 but prints one stderr hint listing the repo labels present. Armed scope also auto-demotes vendored duplicates (item 5.2): clusters whose EVERY member file is a third-party copy — a nested `vendor/` dir, a package-named dir declared by a scan root's `composer.lock`, or a known upstream header (nusoap/workerman/phpmailer/tcpdf) — leave the reported slice (and with it `--fail-on-impact`/`--max-clusters`, which measure exactly what is reported) into the report's own `summary.vendored_duplicates` section, with one stderr line naming the demotion; mixed first-party/vendored clusters are not vendored↔vendored and stay. Detection is always-on but inert to default output; the section key opens only on scope-armed runs (schema 1.8 rides unchanged, conditional-key posture). Cross-repo analysis means one scan path per repository. Root config only — per-directory `.phpdup.json` files carrying this key fail the load. |
+| `--scope VALUE`                            | `all`   | Repo scope filter: `all` \| `single` \| `multi` \| `intra-file` \| `intra-package` \| `cross-package` \| `cross-repo` \| `<repo-label>`. Every cluster member carries a `repo` label — the basename of the nearest directory at or above the file, walking up to and including the longest-matching scan root, that holds a `.git` (directory form or the submodule/linked-worktree file form), falling back to that root's basename when no `.git` sits inside the boundary (markers ABOVE a root are operator machine layout, never project shape) — and a composer `package` label resolved the same bounded way from the nearest `composer.json` name. `single` keeps clusters whose members share one repo, `multi` those spanning ≥2 distinct non-empty repo labels; the item-5.1 ladder words filter on the coarsest true rung (`intra-file` = every member in one file, `intra-package` = several files with no second package/repo label, `cross-package` = ≥2 package labels inside one repo, `cross-repo` = the spelled form of `multi`). Ladder words are closed-set values checked BEFORE the label branch, so a scan root literally named `cross-repo` cannot shadow the word; like `single`/`multi` they match zero legitimately and never earn the typo hint. Any other value is treated as an exact repo label and keeps clusters with at least one member from that repo. Applied after ranking, so `--limit`, `--sort` and the CI gates all measure the filtered slice. A typo'd label matches nothing: the run still exits 0 but prints one stderr hint listing the repo labels present. Armed scope also auto-demotes vendored duplicates (item 5.2): clusters whose EVERY member file is a third-party copy — a nested `vendor/` dir, a package-named dir declared by a scan root's `composer.lock`, or a known upstream header (nusoap/workerman/phpmailer/tcpdf) — leave the reported slice (and with it `--fail-on-impact`/`--max-clusters`, which measure exactly what is reported) into the report's own `summary.vendored_duplicates` section, with one stderr line naming the demotion; mixed first-party/vendored clusters are not vendored↔vendored and stay. Detection is always-on but inert to default output; the section key opens only on scope-armed runs (schema 1.8 rides unchanged, conditional-key posture). Cross-repo analysis means one scan path per repository. Root config only — per-directory `.phpdup.json` files carrying this key fail the load. |
+| `--scope-labels`                           | off     | Item 5.1: arm the repo/package scope census. The run adds `summary.scope_counts` to the JSON payload — one int per ladder word (`intra-file`/`intra-package`/`cross-package`/`cross-repo`) over the REPORTED cluster set, sum equal to `summary.clusters` — a per-cluster `scope_ladder` word, a per-member `package` label (composer name of the nearest in-root manifest, degrading to the repo label), and one compact `scope-labels …` trailer line. Purely report-side: cluster detection is identical armed or unarmed, nothing persists and no cache key binds the knob; the conditional keys ride schema 1.8 with NO `SCHEMA_VERSION` change (demand-armed carve-out — the unarmed payload is byte-identical, goldens frozen). Unlabeled members join no second bucket: a fully-unlabeled multi-file cluster reads `intra-package`, never a speculative cross-*. Equivalently: config key `scope_labels` (root config only — one scope census per run, never one per subtree). |
 | `--sort KEY[:asc\|desc]`                   | `impact:desc` | Cluster sort. Keys: `impact` (removable duplicated lines, item 6.2), `score` (composite: impact × spread × divergence × confidence × declarative-shape demotion), `members`, `block-size`, `lines`, `similarity`, `confidence`, `name`, `file`, `id`. Aliases: `size`/`count` → `members`. Direction may also be given as a leading `-` (desc) or `+` (asc), e.g. `-members`, `+lines`. |
 | `--pager MODE`                             | `never`   | Page the CLI report through `$PAGER` (default `less -R`). Modes: `auto` \| `never` \| `always`. `auto` pages when stdout is a TTY and the rendered output exceeds ~60 lines. An unknown mode is fatal (exit 2). |
 | `--dry-run [=BOOL]`                        | `true`    | With an apply posture (`--apply` or config `"apply": true`): `true` (bare flag or default) previews — the refactor patch lands as `refactored/apply.diff` and member files are untouched; `--dry-run=false` runs the real apply — member files are rewritten in place and `refactored/apply-summary.md` lands instead of `apply.diff`. Accepted boolean spellings: `true`/`false`/`1`/`0`/`yes`/`no`/`on`/`off`; any other value is fatal (exit 2) at admission. Inert without an apply posture. The exit code of the run is unchanged by either posture. The posture is announced before the pipeline runs: a preview prints `phpdup: dry-run apply posture … no member file is rewritten`, real apply prints `phpdup: real apply armed …` instead. |
@@ -279,6 +280,44 @@ clusters; vocabulary seeds claim before directory seeds (the letter's
 primary axis); a finding joins at most one theme, the highest-ranked seed
 that still finds >= 2 uncovered members for it. The ordering is a total
 order over content, so arrival order cannot change the payload.
+
+#### Repo and package labels (item 5.1)
+
+Every scanned block carries a `repo` label and a composer `package` label,
+resolved per file by walking UP from the file to — and including — its
+longest-matching scan root (never above it: markers in a parent of the roots
+are the operator's checkout layout, not a project fact; the same boundary
+law the vendored lock-leg follows):
+
+- `repo`: the basename of the nearest directory in that walk holding a
+  `.git` — directory form or the submodule/linked-worktree *file* form.
+  With no `.git` inside the boundary the word falls back to the root's
+  basename, the identical label every pre-5.1 report printed.
+- `package`: the `name` of the nearest `composer.json` in the same bounded
+  walk, admitted only over composer's own name charset (anything hostile is
+  dropped as unnameable — the output-046 posture). A manifest without a
+  usable name degrades to the repo label; an unreadable or corrupt one
+  prints one skip-with-note per directory on the scan-notes channel and
+  degrades the same way, never failing the run.
+
+Labels are run context: every member of every cluster is re-stamped from
+THIS run's roots on both consumption funnels (preprocess and the report
+restamp that also repairs cluster-cache replay), so nothing label-shaped
+persists and no cache key binds any of it.
+
+Clusters gain a `scope` of `single`/`multi` (the frozen key) and, on
+`--scope-labels`-armed runs only, the item's four-rung ladder —
+`intra-file` → `intra-package` → `cross-package` → `cross-repo` — computed
+over the same member facts. `--scope` accepts the ladder words as closed-set
+filter values (`cross-repo` being the spelled form of `multi`), and armed
+runs grow the conditional `summary.scope_counts` census (sum identity with
+`summary.clusters`), per-cluster `scope_ladder`, per-member `package`, and
+one CLI trailer line. The audit-side leg of the item — reversing the
+cross-namespace penalty for cross-repo clones — is `--score-mode typed`
+(see *Scoring*): cross-repo clusters skip the >3-namespace penalty and gain
+`+0.05` confidence / `+0.10` safety instead, since one shared helper erases
+N repo-local copies. Every conditional key rides schema 1.8 with no version
+event: unarmed payloads stay byte-identical and the goldens stay frozen.
 
 ### Runtime
 
@@ -754,7 +793,7 @@ never hard-count it here, the list grows with each flag): `min_block_size`,
 `normalization_mode`, `similarity_threshold`, `tree_threshold`,
 `min_cluster_impact`, `max_df`, `candidate_budget`, `ngram_size`, `cache_dir`, `parallelism`,
 `workers`, `incremental`, `lazy_ast`, `sort`, `ted_weights`, `scorer`,
-`fingerprint_id_mode`, `scope`, `score_mode`,
+`fingerprint_id_mode`, `scope`, `score_mode`, `scope_labels`,
 `ir_threshold`, `ml_pair_threshold`, `debug_log`, and `low_memory`.
 `max_ted_size` joins this list but has no CLI flag (config
 file only — it sits alongside `fingerprint_id_mode` as a root-only key).
@@ -924,6 +963,7 @@ values.
   "ngram_size":           5,
   "fingerprint_id_mode":  "numbered",
   "scope":                "all",
+  "scope_labels":         false,
   "score_mode":           "global",
   "cache_dir":            ".phpdup-cache",
   "parallelism":          "auto",
@@ -1037,11 +1077,14 @@ subtree file invalidates exactly that subtree's warm cache):
 
 **Refused at load** — a subtree file carrying any of these fails the run
 with `"<key> is not a per-directory key (root phpdup.json only): <file>"`
-(exit 2, naming key and file). The 39-key roster in four families:
+(exit 2, naming key and file). The 44-key roster in four families (four
+more refused keys — `candidate_mass_filter`, `corpus_rollups`,
+`drift_flags`, `themes` — ride `ConfigLoader::REFUSED_PER_DIRECTORY` but
+were never listed here; closeout rider to fold them in):
 
 | Family | Keys | Why root-only |
 |--------|------|---------------|
-| Fingerprint / pair / report stance | `fingerprint_id_mode`, `scope`, `score_mode`, `max_ted_size`, `window_oversized`, `honor_gitignore`, `idiom_mining`, `symbols_forced`, `helper_adoption`, `history`, `history_window_months`, `call_sequence`, `literal_census`, `max_hole_coverage`, `ted_weights`, `scorer`, `ir_threshold` | Pairs and clusters span directories; the stance is chosen once per run (a per-directory value would be ambiguous even if it were read). |
+| Fingerprint / pair / report stance | `fingerprint_id_mode`, `scope`, `score_mode`, `max_ted_size`, `window_oversized`, `honor_gitignore`, `idiom_mining`, `symbols_forced`, `helper_adoption`, `history`, `history_window_months`, `call_sequence`, `literal_census`, `scope_labels`, `max_hole_coverage`, `ted_weights`, `scorer`, `ir_threshold` | Pairs and clusters span directories; the stance is chosen once per run (a per-directory value would be ambiguous even if it were read). |
 | Write / ref / code / sidecar | `report`, `apply`, `normalization`, `baseline`, `baseline_out`, `accepted`, `diff_base`, `debug_log`, `ml_pair_allow_private`, `ml_pair_url`, `ml_pair_threshold` | They name files the run reads or WRITES, argv for git, plugin class loaders, or a network sidecar — the shell-S22 family posture: no scanned subtree may choose them (a planted `ml_pair_url` must fail loudly, once-S54; the old silent inertness was the once-076 exploit's vehicle). |
 | Run plumbing | `paths`, `cache_dir`, `parallelism`, `workers`, `incremental`, `lazy_ast` | One cache root and one worker pool per run; `paths` is fixed before discovery walks the trees; `lazy_ast` mints the reload machinery from the ROOT flag only, so a subtree `true` would unload ASTs the run could never reload. |
 | Whole-run clustering / gate stances (shed by once-S67) | `similarity_threshold`, `tree_threshold`, `min_cluster_impact`, `max_df`, `candidate_budget`, `sort`, `fail_on_impact`, `max_clusters`, `optional_blocks` | Every reader receives the root config — admission without observability was the dishonesty; refusal replaces it. |

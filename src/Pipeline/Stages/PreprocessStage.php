@@ -590,14 +590,23 @@ final class PreprocessStage implements CooperativeStageInterface
         // notes stay honest either way — ReportStage merges the
         // marker's notes into scanNotes on every run.
         $vendorMarker = \Phpdup\Scanning\VendorMarker::forRoots($config->paths);
+        // Item 5.1: one resolver instance for the run (per-directory memo —
+        // a fresh labelOf() per block would re-stat the boundary chain
+        // every time). Stamps repo + package + scope on every block,
+        // unconditional like the legacy static call it replaces.
+        $repoLabels   = RepoLabels::forRoots($config->paths);
         $vendorArmed  = $config->scope !== \Phpdup\Reporting\ClusterScope::FILTER_ALL;
         foreach ($blocks as $b) {
-            RepoLabels::stamp($b, $config->paths);
+            $repoLabels->stampBlock($b);
             if ($vendorArmed) {
                 $vendorMarker->stamp($b);
             }
         }
         foreach ($vendorMarker->notes() as $note) {
+            $state->scanNotes[] = $note;
+        }
+        // Item 5.1: manifest fail-open notes ride the same channel.
+        foreach ($repoLabels->notes() as $note) {
             $state->scanNotes[] = $note;
         }
         $state->debug($output, sprintf('preprocess: ID assignment complete, transitioning to next stage... [%s]', MemoryDebug::getMemoryUsage()));

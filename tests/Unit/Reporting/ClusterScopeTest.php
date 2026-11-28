@@ -379,6 +379,191 @@ final class ClusterScopeTest extends TestCase
         return new Cluster($id, $members, 1.0, true);
     }
 
+    // ── Item 5.1 (ladder leg) ──────────────────────────────────────────
+
+    public function testLadderCoversAllFourRungs(): void
+    {
+        $intraFile = $this->cluster('L1', [
+            self::member('/r1/Same.php', 'Acme\\A', 'repo1', 'acme/pkg'),
+            self::member('/r1/Same.php', 'Acme\\B', 'repo1', 'acme/pkg'),
+        ]);
+        $intraPkg = $this->cluster('L2', [
+            self::member('/r1/A.php', 'Acme\\A', 'repo1', 'acme/pkg'),
+            self::member('/r1/B.php', 'Acme\\B', 'repo1', 'acme/pkg'),
+        ]);
+        $crossPkg = $this->cluster('L3', [
+            self::member('/r1/pkgA/A.php', 'PkgA\\A', 'repo1', 'acme/pkg-a'),
+            self::member('/r1/pkgB/B.php', 'PkgB\\B', 'repo1', 'acme/pkg-b'),
+        ]);
+        $crossRepo = $this->cluster('L4', [
+            self::member('/r1/A.php', 'Acme\\A', 'repo1', 'acme/one'),
+            self::member('/r2/B.php', 'Acme\\B', 'repo2', 'acme/two'),
+        ]);
+        $this->assertSame(ClusterScope::LADDER_INTRA_FILE, ClusterScope::ladder($intraFile));
+        $this->assertSame(ClusterScope::LADDER_INTRA_PACKAGE, ClusterScope::ladder($intraPkg));
+        $this->assertSame(ClusterScope::LADDER_CROSS_PACKAGE, ClusterScope::ladder($crossPkg));
+        $this->assertSame(ClusterScope::LADDER_CROSS_REPO, ClusterScope::ladder($crossRepo));
+        $this->assertSame(
+            [
+                ClusterScope::LADDER_INTRA_FILE,
+                ClusterScope::LADDER_INTRA_PACKAGE,
+                ClusterScope::LADDER_CROSS_PACKAGE,
+                ClusterScope::LADDER_CROSS_REPO,
+            ],
+            ClusterScope::LADDER_ORDER,
+        );
+    }
+
+    public function testLadderCoarsestRungWins(): void
+    {
+        // Two repos AND two packages AND one file each: the ladder is
+        // coarsest-first — cross-repo answers, never cross-package.
+        $c = $this->cluster('LW', [
+            self::member('/r1/A.php', 'Acme\\A', 'repo1', 'acme/one'),
+            self::member('/r2/B.php', 'Acme\\B', 'repo2', 'acme/two'),
+        ]);
+        $this->assertSame(ClusterScope::LADDER_CROSS_REPO, ClusterScope::ladder($c));
+        // Repo spread over one package label is still cross-repo.
+        $samePkg = $this->cluster('LW2', [
+            self::member('/r1/A.php', 'Acme\\A', 'repo1', 'acme/one'),
+            self::member('/r2/B.php', 'Acme\\B', 'repo2', 'acme/one'),
+        ]);
+        $this->assertSame(ClusterScope::LADDER_CROSS_REPO, ClusterScope::ladder($samePkg));
+    }
+
+    public function testLadderUnlabeledMembersFabricateNothing(): void
+    {
+        // Mirror of the isCrossRepo honesty law: empty labels join no
+        // second bucket. Multi-file, no repo, no package => intra-package
+        // (files sit side by side — the strongest evidence-backed claim),
+        // never a speculative cross-*.
+        $c = $this->cluster('LU', [
+            self::member('/r1/A.php', 'Acme\\A', '', ''),
+            self::member('/r1/B.php', 'Acme\\B', '', ''),
+        ]);
+        $this->assertSame(ClusterScope::LADDER_INTRA_PACKAGE, ClusterScope::ladder($c));
+        $oneFile = $this->cluster('LU2', [
+            self::member('/r1/Same.php', 'Acme\\A', '', ''),
+            self::member('/r1/Same.php', 'Acme\\B', '', ''),
+        ]);
+        $this->assertSame(ClusterScope::LADDER_INTRA_FILE, ClusterScope::ladder($oneFile));
+        // Half-labeled: one repo, no packages, two files => intra-package.
+        $half = $this->cluster('LU3', [
+            self::member('/r1/A.php', 'Acme\\A', 'repo1', ''),
+            self::member('/r1/B.php', 'Acme\\B', 'repo1', ''),
+        ]);
+        $this->assertSame(ClusterScope::LADDER_INTRA_PACKAGE, ClusterScope::ladder($half));
+    }
+
+    public function testCountsAreAlwaysFourKeysWithSumIdentity(): void
+    {
+        $clusters = [
+            $this->cluster('C1', [self::member('/f/A.php', 'N', 'r1', 'p')]),
+            $this->cluster('C2', [
+                self::member('/f/A.php', 'N', 'r1', 'p'),
+                self::member('/f/B.php', 'N', 'r1', 'p'),
+            ]),
+            $this->cluster('C3', [
+                self::member('/f/pkgA/A.php', 'N', 'r1', 'p-a'),
+                self::member('/f/pkgB/B.php', 'N', 'r1', 'p-b'),
+            ]),
+            $this->cluster('C4', [
+                self::member('/r1/A.php', 'N', 'r1', ''),
+                self::member('/r2/B.php', 'N', 'r2', ''),
+            ]),
+        ];
+        $counts = ClusterScope::counts($clusters);
+        $this->assertSame(ClusterScope::LADDER_ORDER, array_keys($counts),
+            'all four keys present in doc order, always');
+        $this->assertSame(
+            ['intra-file' => 1, 'intra-package' => 1, 'cross-package' => 1, 'cross-repo' => 1],
+            $counts,
+        );
+        $this->assertCount(array_sum($counts), $clusters, 'sum identity');
+
+        $empty = ClusterScope::counts([]);
+        $this->assertSame(ClusterScope::LADDER_ORDER, array_keys($empty));
+        $this->assertSame([0, 0, 0, 0], array_values($empty),
+            'an empty reported set is a measured zero census, never a missing key');
+    }
+
+    public function testCountsAreListOrderIndependent(): void
+    {
+        $a = $this->cluster('OA', [
+            self::member('/r1/A.php', 'N', 'r1', ''),
+            self::member('/r2/B.php', 'N', 'r2', ''),
+        ]);
+        $b = $this->cluster('OB', [self::member('/r1/A.php', 'N', 'r1', 'p')]);
+        $this->assertSame(ClusterScope::counts([$a, $b]), ClusterScope::counts([$b, $a]),
+            'the census is deterministic in list content, not order');
+    }
+
+    public function testFilterAcceptsLadderWordsAndCrossRepoEqualsMulti(): void
+    {
+        $intraFile  = $this->cluster('FI', [self::member('/f/A.php', 'N', 'r1', 'p')]);
+        $intraPkg   = $this->cluster('FP', [
+            self::member('/f/A.php', 'N', 'r1', 'p'),
+            self::member('/f/B.php', 'N', 'r1', 'p'),
+        ]);
+        $crossPkg   = $this->cluster('FX', [
+            self::member('/f/a/A.php', 'N', 'r1', 'p-a'),
+            self::member('/f/b/B.php', 'N', 'r1', 'p-b'),
+        ]);
+        $crossRepo  = $this->cluster('FR', [
+            self::member('/r1/A.php', 'N', 'r1', 'p-a'),
+            self::member('/r2/B.php', 'N', 'r2', 'p-b'),
+        ]);
+        $all = [$intraFile, $intraPkg, $crossPkg, $crossRepo];
+
+        $this->assertSame([$intraFile], ClusterScope::filter($all, ClusterScope::LADDER_INTRA_FILE));
+        $this->assertSame([$intraPkg], ClusterScope::filter($all, ClusterScope::LADDER_INTRA_PACKAGE));
+        $this->assertSame([$crossPkg], ClusterScope::filter($all, ClusterScope::LADDER_CROSS_PACKAGE));
+        $this->assertSame([$crossRepo], ClusterScope::filter($all, ClusterScope::LADDER_CROSS_REPO));
+        $this->assertSame(
+            ClusterScope::filter($all, ClusterScope::FILTER_MULTI),
+            ClusterScope::filter($all, ClusterScope::LADDER_CROSS_REPO),
+            'cross-repo is the spelled form of multi — identical selection',
+        );
+    }
+
+    public function testLadderWordsBeatRepoLabelsInFilter(): void
+    {
+        // Precedence pin: a scan root LITERALLY named 'cross-repo' cannot
+        // shadow the word's meaning. The lone cluster lives in one repo
+        // called 'cross-repo'; the word filter drops it (it is not
+        // cross-repo in ladder terms), while the same-word-as-label route
+        // is unreachable — exactly the shadow the doc grammar had to close.
+        $shadow = $this->cluster('SH', [
+            self::member('/vol/cross-repo/A.php', 'N', 'cross-repo', 'x/y'),
+            self::member('/vol/cross-repo/B.php', 'N', 'cross-repo', 'x/y'),
+        ]);
+        $kept = ClusterScope::filter([$shadow], ClusterScope::LADDER_CROSS_REPO);
+        $this->assertSame([], $kept,
+            "the closed-set word wins over the same-spelled repo label — a single-repo cluster never passes 'cross-repo'");
+        // The label is still reachable under a non-shadowed word context:
+        // 'x/y' package, one repo => intra-package ladder, selectable.
+        $this->assertSame([$shadow], ClusterScope::filter([$shadow], ClusterScope::LADDER_INTRA_PACKAGE));
+    }
+
+    public function testLadderAndCountsRideTheSpreadMemo(): void
+    {
+        // Walk-count law: ladder()/counts() share the single compute()
+        // per cluster per run — adding the item-5.1 legs must not widen
+        // the pre-S42 one-walk-per-cluster-per-run budget.
+        $c = $this->cluster('WM', [
+            self::member('/f/A.php', 'N', 'r1', 'p-a'),
+            self::member('/f/B.php', 'N', 'r1', 'p-b'),
+        ]);
+        ClusterScope::beginRun();
+        $this->assertSame(ClusterScope::LADDER_CROSS_PACKAGE, ClusterScope::ladder($c));
+        $this->assertSame(1, ClusterScope::memberWalks());
+        $this->assertSame(ClusterScope::SINGLE, ClusterScope::of($c));
+        ClusterScope::counts([$c]);
+        ClusterScope::filter([$c], ClusterScope::LADDER_INTRA_FILE);
+        $this->assertSame(1, ClusterScope::memberWalks(),
+            'ladder + of + counts + filter in one run window: still exactly one member walk');
+    }
+
     /** @return array<string, true> */
     private static function rawNamespaceCount(Cluster $c): array
     {
@@ -389,7 +574,7 @@ final class ClusterScopeTest extends TestCase
         return $namespaces;
     }
 
-    private static function member(string $file, string $namespace, string $repo): Block
+    private static function member(string $file, string $namespace, string $repo, string $package = ''): Block
     {
         $b = new Block(
             file:      $file,
@@ -400,8 +585,9 @@ final class ClusterScopeTest extends TestCase
             name:      'm',
             ast:       new Node\Stmt\Nop(),
         );
-        $b->repo  = $repo;
-        $b->scope = $repo;
+        $b->repo     = $repo;
+        $b->scope    = $repo;
+        $b->package  = $package;
         return $b;
     }
 }

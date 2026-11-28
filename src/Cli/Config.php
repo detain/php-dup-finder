@@ -541,6 +541,31 @@ final class Config
         // pattern-tags vocabulary when not (basis.call_census). Root
         // config only (refused per-directory: one theming pass per run).
         public readonly bool $themes = false,
+        // Item 5.1 (scope-counts leg): repo/package ladder demand knob
+        // (config-file key `scope_labels`, JSON bool, CLI
+        // `--scope-labels`). True: ReportStage counts the item-5.1
+        // ladder over the REPORTED clusters (ClusterScope::counts())
+        // and the JSON report gains the conditional trailing
+        // `summary.scope_counts` block, each cluster gains
+        // `scope_ladder`, each member gains the composer-resolved
+        // `package` label, and the CLI trailer gains a scope-labels
+        // line (JsonSchemaSpec declares every armed shape; the member
+        // `package` key degrades to the repo word exactly like
+        // Block::$package does when a tree has no usable manifest).
+        // False (default): nothing is computed for the ladder, no key
+        // opens, and every payload stays byte-identical to the
+        // historical report (the idiom_census/vendored_duplicates/
+        // rollups conditional-key carve-out: an opt-in key rides the
+        // current schema with no version event, MINE-D §4). Report-
+        // stage recompute only: nothing persists, so no cache key
+        // binds it — the labels themselves are run context
+        // (RepoLabels restamp law), which is why the toolFor()/
+        // configKey()/cacheConfigKey() rosters need no arm here. The
+        // member.package emission reads Block::$package as stamped
+        // THIS run, never a cached value. Root config only (refused
+        // per-directory: one scope census per run, never one per
+        // subtree — same stance as corpus_rollups).
+        public readonly bool $scopeLabels = false,
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -983,6 +1008,10 @@ final class Config
             // (one theming pass per run; refused at discovery in
             // ConfigLoader::discoverPerDirectoryOverrides()).
             themes:                          $this->themes,
+            // Item 5.1: root-only, copied — never replaced — per-directory
+            // (one scope census per run; refused at discovery in
+            // ConfigLoader::discoverPerDirectoryOverrides()).
+            scopeLabels:                     $this->scopeLabels,
         );
     }
 
