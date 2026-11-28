@@ -32,7 +32,9 @@ use Phpdup\Semantic\CallGraph;
  * tokens — direct ConstFetch/Int_/String_/Float_ args, and array
  * literal items as `KEY=>value` pair tokens (the CURLOPT_SSL_VERIFYPEER
  * => false archetype; plain arrays of constants become their item
- * tokens). Variables and dynamic expressions are holes: they carry no
+ * tokens). An empty-string argument spells as "''" (never an empty
+ * token — the census wire law refuses those; see scalarToken).
+ * Variables and dynamic expressions are holes: they carry no
  * token at that position (matching the "replace constant args with
  * name tokens" ruling — the sequence key never sees args, only the
  * per-slot table does).
@@ -167,7 +169,16 @@ final class CallSequenceMiner
             return $n->name->toString();
         }
         if ($n instanceof Node\Scalar\String_) {
-            return self::clip($n->value);
+            $token = self::clip($n->value);
+            // The empty-string argument is a REAL data point ('' glue,
+            // '' regex replacement — CRITICAL-1's crash shape is plain
+            // PHP, universal in real code), so it is spelled "''" —
+            // its own source spelling — instead of minting a token the
+            // census wire law rejects or dropping it to a hole and
+            // losing the signal. A literal source "''" conflates with
+            // the empty string here, the same value-class conflation
+            // bareword names and strings already share (disclosed).
+            return $token === '' ? "''" : $token;
         }
         if ($n instanceof Node\Scalar\Int_) {
             return (string) $n->value;

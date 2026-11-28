@@ -461,7 +461,7 @@ final class Config
         // miner reads the raw AST the same way SubtreeMiner reads the
         // captured lists, and it must read RAW because canonicalisation
         // erases the literals this census counts) and carries per-file
-        // scalar buckets (flavor 'census'): repeated string literals over
+        // scalar buckets (flavor 'literal'): repeated string literals over
         // the length threshold, ≥3-entry array literals hashed
         // order-insensitively, near-duplicate string families by edit
         // distance, interpolated-string SQL skeletons (AstSerializer

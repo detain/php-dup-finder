@@ -35,7 +35,12 @@ use Phpdup\Normalization\SqlTableExtractor;
  *                are skipped.
  *  - 'skeleton': "interpolated strings grouped by their literal
  *                skeleton" — Scalar\InterpolatedString with the
- *                expression parts collapsed to '?'; when
+ *                expression parts collapsed to '?'. Mechanism note
+ *                (r1 n-2): the skeleton is hand-built here on purpose
+ *                — AstSerializer::scalarPart() (the §3.3-design cite)
+ *                produces a framed serialization id, not a literal
+ *                skeleton; the item letter's grouping needs the raw
+ *                fragments verbatim. When
  *                SqlTableExtractor recognises a (verb, table) the row
  *                GROUPS BY THAT SHAPE instead: all statements touching
  *                one table form one repeated SQL shape (bullet 4's

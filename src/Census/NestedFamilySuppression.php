@@ -5,7 +5,8 @@ namespace Phpdup\Census;
 
 /**
  * THE nested-family suppression rule (§5c): implemented exactly once
- * and shared by 3.1 (this census), 6.3 and 7.2c — those consumers pass
+ * and shared by 3.1 (this census), 3.5 (the call-sequence census's
+ * window rows), 6.3 and 7.2c — those consumers pass
  * their own support maps and embedding edges; the semantics never get a
  * second copy.
  *

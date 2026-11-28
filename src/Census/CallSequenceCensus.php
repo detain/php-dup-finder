@@ -152,6 +152,10 @@ final class CallSequenceCensus
             }
             $tokens = [];
             foreach ($argRow as $token) {
+                // Wire-format guard (CRITICAL-1 era): an EMPTY token is
+                // a producer bug, never data — the miner spells real
+                // empty-string arguments as "''" so legitimate shapes
+                // flow through and this refusal stays meaningful.
                 if (!is_string($token) || $token === '') {
                     throw new \InvalidArgumentException('calls record arg tokens must be non-empty strings in ' . $file);
                 }
