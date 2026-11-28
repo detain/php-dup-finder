@@ -427,6 +427,14 @@ final class ConfigLoader
             // per-directory discovery, default OFF until the operator
             // asks); validated by the door below.
             honorGitignore:                $flat['honor_gitignore'],
+            // Item 4.4 APPLY half: root-only accepted-decision register.
+            // No CLI override leg (deliberate: suppressions belong to the
+            // committed config + baseline file, not ephemeral flags), so
+            // it never joins $flatKeys and per-dir discovery refuses it.
+            accepted:                      array_values(array_map(
+                'strval',
+                (array)($data['accepted'] ?? []),
+            )),
         );
     }
 
@@ -1147,21 +1155,28 @@ final class ConfigLoader
         'baseline',
         'baseline_out',
         'diff_base', 'apply',
+        'accepted',
     ];
 
     /**
      * once-S67 (php-dup-finder-once-077): the admission-totality roster —
-     * the 26 KNOWN_KEYS members that per-directory `.phpdup.json` files may
+     * the 27 KNOWN_KEYS members that per-directory `.phpdup.json` files may
      * NOT carry, refused loudly by {@see discoverPerDirectoryOverrides()}.
-     * The equation the belt pins: KNOWN_KEYS (47) = the 11 parents
+     * The equation the belt pins: KNOWN_KEYS (48) = the 11 parents
      * shapeOverrides() admits (exclude, exclude_reset, min_block_size,
      * max_block_size, normalization_mode, ngram_size, kinds, db_symbols,
-     * db_aware, trinity_collapse, low_memory) + these 26 + the 10 with
+     * db_aware, trinity_collapse, low_memory) + these 27 + the 10 with
      * dedicated era arms above the roster check (fingerprint_id_mode, scope,
      * score_mode, max_ted_size, max_hole_coverage, ml_pair_allow_private,
      * baseline, baseline_out, diff_base, debug_log). A new KNOWN_KEYS member
      * that is neither admitted nor refused fails the belt in BOTH
      * directions.
+     *
+     * Item 4.4 adds 'accepted' to the refused set: the suppression list is
+     * a decision register, and per-directory discovery walks the scanned
+     * tree — a subtree config choosing which findings vanish from the
+     * report is exactly the attacker-controlled-suppression hazard the
+     * path/ref family above was carved for. Root phpdup.json only.
      */
     private const REFUSED_PER_DIRECTORY = [
         'paths', 'similarity_threshold', 'tree_threshold', 'min_cluster_impact',
@@ -1171,6 +1186,7 @@ final class ConfigLoader
         'ml_pair_threshold', 'apply', 'fail_on_impact', 'max_clusters',
         'candidate_budget', 'candidate_mass_filter', 'window_oversized',
         'honor_gitignore',
+        'accepted',
     ];
 
     /**
@@ -1462,6 +1478,12 @@ final class ConfigLoader
             if (!is_string($data['baseline_out']) || $data['baseline_out'] === '') {
                 throw new \RuntimeException("baseline_out must be a non-empty string$where");
             }
+        }
+        if (array_key_exists('accepted', $data)) {
+            // Item 4.4 APPLY half: stable finding ids only — the shape
+            // gate mirrors the list-of-strings family; content matching
+            // is exact id equality in BaselineFilter, never patterned.
+            $assertListOfStrings($data['accepted'], 'accepted');
         }
         if (array_key_exists('db_symbols', $data)) {
             if (!is_array($data['db_symbols'])) {

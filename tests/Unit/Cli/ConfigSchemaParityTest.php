@@ -543,6 +543,17 @@ final class ConfigSchemaParityTest extends TestCase
             // stock (empty) plugins list.
             return $base->normalizationPlugins;
         }
+        if ($name === 'accepted') {
+            // Item 4.4: the root-only suppression register. No flat-map
+            // leg, no CLI override — load() feeds the constructor directly
+            // from $data; an absent key yields the empty list.
+            self::assertSame(
+                1,
+                preg_match("~\\\$data\['accepted'\]\s*\?\?\s*\[\]~", $source),
+                "the derivation lost the load() default line for 'accepted' (?? []) — extend it"
+            );
+            return [];
+        }
         if (isset($rootProp[$name])) {
             return $base->{$rootProp[$name]};
         }

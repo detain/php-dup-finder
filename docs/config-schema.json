@@ -332,7 +332,7 @@
         "baseline": {
             "type": "string",
             "default": null,
-            "description": "CI baseline file for incremental duplication gating. If file exists: load baseline and exit 4 if new clusters are found (clusters whose member content hashes are not all present in some baseline cluster). If file does not exist: write baseline snapshot and exit 0 (first-run auto-baseline). CLI: --baseline. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load — it names a file the run reads and writes, so no scanned subtree may choose it (shell-S22)."
+            "description": "CI baseline file for incremental duplication gating and the accepted-decision register. If file exists: load baseline and exit 4 if new clusters are found (clusters whose member content hashes are not all present in some baseline cluster). If file does not exist: write baseline snapshot and exit 0 (first-run auto-baseline). The file may also carry a top-level 'dispositions' map (v4) of finding_id -> {status: accepted|unresolved, provenance, timestamp}: accepted findings drop out of the main report into a baseline appendix, unresolved ones are triage markers only, and an accepted finding whose content resurfaces under a new id re-enters the report fail-open and is annotated resurfaced. CLI: --baseline. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load — it names a file the run reads and writes, so no scanned subtree may choose it (shell-S22)."
         },
         "baseline_out": {
             "type": "string",
@@ -348,6 +348,12 @@
             "type": "boolean",
             "default": false,
             "description": "Enable the report pipeline's apply mode: a cumulative apply.diff of every cluster refactor patch is written under refactored/ (dry-run posture — the preview apply.diff carries the same text --patch emits; real file rewrites happen with --dry-run=false). Effective value is flag OR config file: --apply turns it on from argv, \"apply\": true in the root config activates the same mode with no flag, and the flag wins a disagreement (it arrives as a CLI override, which outranks the file layer). Shape-checked like every other key — a non-boolean value exits 2 from --validate-config and from a run. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load (once-S67: the loud refusal replaces the old silent ignore — apply arms real source rewrites, so no scanned subtree may choose it; sibling of the shell-S22 write/ref family). CLI: --apply."
+        },
+        "accepted": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "default": [],
+            "description": "Item 4.4 (the APPLY half): stable finding ids the team has explicitly ACCEPTED as kept duplication. Matching is exact finding_id equality; accepted findings drop out of the main report and are enumerated in a baseline appendix (CLI trailer + HTML section), never silently. Acceptance sources in precedence order: the --baseline file's 'dispositions' map (registry, with provenance), harvested @phpdup-ignore directives (code-local, file-verified), then this list (project-wide). Accepted entries that RESURFACE after content drift re-enter the report fail-open for re-review and are annotated resurfaced in the appendix. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load — a suppression register is a decision surface, and the discovery walk lets any scanned subtree plant one (same posture as the shell-S22 path/ref family; item 4.4)."
         }
     }
 }

@@ -364,6 +364,12 @@ final class Config
         // (0.0.0.0/8, 192.0.0.0/24, 198.18.0.0/15, multicast) stay
         // refused either way; see MlPairClient::pairUrlAdmissionError().
         public readonly bool $mlPairAllowPrivate = false,
+        // Item 4.4 APPLY half: root-only phpdup.json "accepted" list of
+        // stable finding ids the team decided to keep. Suppressed from
+        // the main report into the baseline appendix (BaselineFilter);
+        // never honored from per-directory configs (attacker-controlled
+        // suppression was the exact hazard of the per-dir gate keys).
+        public readonly array $accepted = [],
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");

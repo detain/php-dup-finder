@@ -41,6 +41,29 @@ use Phpdup\Util\PathCanonical;
  * natively different join form (C:\proj\… vs. /proj/…). Slash-form
  * scans hash byte-identically, so no existing v3 baseline re-hashes.
  *
+ * Baseline v4 (item 4.4 APPLY half) adds an optional top-level
+ * "dispositions" map carrying the team's DECISIONS per stable finding
+ * id — see BaselineDisposition for the record shape and semantics:
+ * {
+ *   "version": 4,
+ *   "clusters": [ ...same entries as v3... ],
+ *   "dispositions": {
+ *     "F77b1cccd981b8db5": {
+ *       "status": "accepted",
+ *       "note": "intentional protocol mirrors",
+ *       "accepted_at": "2026-11-28T12:00:00+00:00",
+ *       "provenance": {
+ *         "files": ["src/A.php"], "mtimes": {"src/A.php": 1764316800},
+ *         "git_sha": "abc123...", "member_hashes": ["sha256:..."]
+ *       }
+ *     }
+ *   }
+ * }
+ * Reads accept [3, 4]: a v3 file is a complete gate baseline with an
+ * empty decision set. Writes stay v3 while no dispositions exist, so
+ * byte-frozen v3 consumers (and the Golden corpus) never observe the
+ * new key until a decision is actually recorded.
+ *
  * Write posture (once-056, step once-S50): writeBaseline() replaces the
  * file atomically — exclusive temp in the target directory, LOCK_EX
  * while its bytes land, fsync before the rename, short-write refusal
@@ -66,7 +89,14 @@ final class BaselineStore
     // the configured scan roots, and finding ids moved with the recipe;
     // v2 files (absolute paths / old ids) mismatch on any other machine,
     // so they fail the same loud refusal — re-accept once.
-    private const CURRENT_VERSION = 3;
+    // v4 (item 4.4 APPLY half): optional top-level "dispositions" map of
+    // accepted/unresolved decisions (BaselineDisposition). Reads accept
+    // [3, 4] — a v3 file is a valid baseline with no decisions. Writes
+    // emit v3 whenever the decision set is empty, so the v3 on-disk
+    // shape stays byte-identical for consumers that never opt in.
+    private const WRITE_VERSION = 4;
+    /** @var list<int> versions readBaseline()/readDispositions() accept */
+    private const SUPPORTED_VERSIONS = [3, 4];
 
     /**
      * @param list<string> $scanRoots configured scan roots, threaded from
@@ -85,8 +115,11 @@ final class BaselineStore
      * sees either the old complete file or the new complete file.
      *
      * @param list<Cluster> $clusters
+     * @param array<string, BaselineDisposition> $dispositions decisions to
+     *                          persist alongside the gate entries; empty
+     *                          keeps the byte-identical v3 document shape.
      */
-    public function writeBaseline(array $clusters, string $path): void
+    public function writeBaseline(array $clusters, string $path, array $dispositions = []): void
     {
         $entries = [];
         foreach ($clusters as $cluster) {
@@ -100,9 +133,17 @@ final class BaselineStore
         }
 
         $payload = [
-            'version' => self::CURRENT_VERSION,
+            'version' => $dispositions === [] ? 3 : self::WRITE_VERSION,
             'clusters' => $entries,
         ];
+
+        if ($dispositions !== []) {
+            $records = [];
+            foreach ($dispositions as $findingId => $disposition) {
+                $records[$findingId] = $disposition->toArray();
+            }
+            $payload['dispositions'] = $records;
+        }
 
         $dir = dirname($path);
         if ($dir !== '' && $dir !== '.' && !is_dir($dir)) {
@@ -241,9 +282,9 @@ final class BaselineStore
             throw new \RuntimeException("Baseline file has invalid structure: $path");
         }
 
-        if ($decoded['version'] !== self::CURRENT_VERSION) {
+        if (!in_array($decoded['version'], self::SUPPORTED_VERSIONS, true)) {
             throw new \RuntimeException(
-                "Baseline version mismatch: expected " . self::CURRENT_VERSION
+                'Baseline version mismatch: expected ' . implode(' or ', self::SUPPORTED_VERSIONS)
                 . ", got {$decoded['version']} in $path"
             );
         }
@@ -283,6 +324,165 @@ final class BaselineStore
         }
 
         return $result;
+    }
+
+    /**
+     * Read the dispositions map from a baseline file (item 4.4 APPLY
+     * half). Lenient by design where the gate read is strict:
+     *
+     *  - missing file            -> [] (first-run posture)
+     *  - unreadable/garbage file -> throws (a corrupt registry must not
+     *    silently un-accept decisions that were made deliberately)
+     *  - version 3, or a v4 file without the key -> [] (v3 predates
+     *    decisions; the file carries none)
+     *  - a malformed record      -> loud refusal naming the id and path
+     *
+     * @return array<string, BaselineDisposition> keyed by finding id
+     */
+    public function readDispositions(string $path): array
+    {
+        if (!is_file($path)) {
+            return [];
+        }
+
+        $content = file_get_contents($path);
+        if ($content === false) {
+            throw new \RuntimeException("Failed to read baseline file: $path");
+        }
+
+        $decoded = json_decode($content, true);
+        if (!is_array($decoded)) {
+            throw new \RuntimeException("Baseline file is not valid JSON: $path");
+        }
+
+        if (!isset($decoded['version']) || !is_int($decoded['version'])) {
+            throw new \RuntimeException("Baseline file has invalid structure: $path");
+        }
+
+        if (!in_array($decoded['version'], self::SUPPORTED_VERSIONS, true)) {
+            throw new \RuntimeException(
+                'Baseline version mismatch: expected ' . implode(' or ', self::SUPPORTED_VERSIONS)
+                . ", got {$decoded['version']} in $path"
+            );
+        }
+
+        if (!isset($decoded['dispositions'])) {
+            return [];
+        }
+
+        if (!is_array($decoded['dispositions'])) {
+            throw new \RuntimeException("Baseline 'dispositions' must be an object: $path");
+        }
+
+        $result = [];
+        foreach ($decoded['dispositions'] as $findingId => $record) {
+            if (!is_string($findingId) || $findingId === '') {
+                throw new \RuntimeException("Baseline 'dispositions' keys must be non-empty finding ids: $path");
+            }
+            if (!is_array($record)) {
+                throw new \RuntimeException("Baseline disposition '$findingId' must be an object: $path");
+            }
+            $result[$findingId] = BaselineDisposition::fromArray($findingId, $record, $path);
+        }
+
+        return $result;
+    }
+
+    /**
+     * Build a disposition record for a cluster accepted during this run
+     * (source-record posture: provenance is captured at accept time
+     * exactly as the doc demands — files + mtimes + git sha if the scan
+     * root sits in a repo + the stable member hashes).
+     *
+     * @param list<Cluster> $acceptedClusters
+     * @return array<string, BaselineDisposition>
+     */
+    public function dispositionsFromClusters(array $acceptedClusters, string $status, ?string $note): array
+    {
+        $records = [];
+        $gitSha = $this->recordGitSha();
+
+        foreach ($acceptedClusters as $cluster) {
+            $files = [];
+            $mtimes = [];
+            foreach ($cluster->members as $block) {
+                $canonical = PathCanonical::underRoots($block->file, $this->scanRoots);
+                if (in_array($canonical, $files, true)) {
+                    continue;
+                }
+                $files[] = $canonical;
+                $mtime = $block->file !== '' ? @filemtime($block->file) : false;
+                if ($mtime !== false) {
+                    $mtimes[$canonical] = $mtime;
+                }
+            }
+
+            $memberHashes = $this->computeMemberHashes($cluster);
+
+            $records[$cluster->id] = new BaselineDisposition(
+                findingId: $cluster->id,
+                status: $status,
+                note: $note,
+                acceptedAt: date('c'),
+                gitSha: $gitSha,
+                files: $files,
+                mtimes: $mtimes,
+                memberHashes: $memberHashes,
+            );
+        }
+
+        return $records;
+    }
+
+    /**
+     * Union two disposition sets by finding id; $incoming wins on
+     * collision (a decision re-recorded this run supersedes the file's
+     * older copy of the same id — the operator's latest word governs).
+     *
+     * @param array<string, BaselineDisposition> $existing
+     * @param array<string, BaselineDisposition> $incoming
+     * @return array<string, BaselineDisposition>
+     */
+    public static function mergeDispositions(array $existing, array $incoming): array
+    {
+        foreach ($incoming as $findingId => $disposition) {
+            $existing[$findingId] = $disposition;
+        }
+        ksort($existing);
+        return $existing;
+    }
+
+    /**
+     * Best-effort HEAD sha of the first scan root for accept-time
+     * provenance. Mirrors Server binary-lookup and RepoLabels precedent:
+     * only trust git along an explicit path; absent repo (or absent
+     * git) records no sha rather than guessing.
+     */
+    private function recordGitSha(): ?string
+    {
+        $root = $this->scanRoots[0] ?? null;
+        if ($root === null || !is_dir($root)) {
+            return null;
+        }
+
+        $git = trim((string) @shell_exec('command -v git 2>/dev/null'));
+        if ($git === '') {
+            return null;
+        }
+
+        $output = [];
+        $status = 1;
+        @exec(
+            escapeshellarg($git) . ' -C ' . escapeshellarg($root) . ' rev-parse HEAD 2>/dev/null',
+            $output,
+            $status,
+        );
+        if ($status !== 0 || $output === []) {
+            return null;
+        }
+
+        $sha = trim($output[0]);
+        return $sha === '' ? null : $sha;
     }
 
     /**

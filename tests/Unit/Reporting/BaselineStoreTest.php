@@ -813,6 +813,187 @@ final class BaselineStoreTest extends TestCase
      * A cluster whose member blocks carry distinct structural hashes at
      * distinct paths, so payload sizes differ measurably between ids.
      */
+    // ------------------------------------------------------------------
+    // v4 dispositions (item 4.4 APPLY half)
+    // ------------------------------------------------------------------
+
+    public function testWriteBaselineWithDispositionsEmitsV4AndRoundtrips(): void
+    {
+        $path = $this->tmpDir . '/baseline.json';
+        $store = new BaselineStore();
+        $clusters = [$this->clusterWithHashes('Faaa', 2)];
+
+        $dispositions = [
+            'Fbbb' => new \Phpdup\Reporting\BaselineDisposition(
+                findingId: 'Fbbb',
+                status: 'accepted',
+                note: 'intentional mirror',
+                acceptedAt: '2026-11-28T00:00:00+00:00',
+                files: ['src/Old.php'],
+                memberHashes: ['sha256:old'],
+            ),
+            'Fccc' => new \Phpdup\Reporting\BaselineDisposition(
+                findingId: 'Fccc',
+                status: 'unresolved',
+            ),
+        ];
+        $store->writeBaseline($clusters, $path, $dispositions);
+
+        $raw = json_decode((string)file_get_contents($path), true);
+        $this->assertSame(4, $raw['version']);
+        $this->assertArrayHasKey('dispositions', $raw);
+        $this->assertSame('accepted', $raw['dispositions']['Fbbb']['status']);
+        $this->assertSame('intentional mirror', $raw['dispositions']['Fbbb']['note']);
+        $this->assertSame(['src/Old.php'], $raw['dispositions']['Fbbb']['provenance']['files']);
+        $this->assertSame(['sha256:old'], $raw['dispositions']['Fbbb']['provenance']['member_hashes']);
+        $this->assertArrayNotHasKey('provenance', $raw['dispositions']['Fccc']);
+
+        // The gate read still works on a v4 file (version [3,4] accepted).
+        $entries = $store->readBaseline($path);
+        $this->assertCount(1, $entries);
+        $this->assertSame('Faaa', $entries[0]['id']);
+    }
+
+    public function testReadDispositionsLenientPosture(): void
+    {
+        $store = new BaselineStore();
+
+        // Missing file: first-run posture, empty map (no throw).
+        $this->assertSame([], $store->readDispositions($this->tmpDir . '/nope.json'));
+
+        // v3 file (no dispositions key): complete gate baseline, no decisions.
+        $v3 = $this->tmpDir . '/v3.json';
+        $store->writeBaseline([$this->clusterWithHashes('Faaa', 1)], $v3);
+        $this->assertSame([], $store->readDispositions($v3));
+    }
+
+    public function testReadDispositionsParsesRecords(): void
+    {
+        $path = $this->tmpDir . '/baseline.json';
+        $store = new BaselineStore();
+        $record = [
+            'status' => 'accepted',
+            'note' => 'protocol twins',
+            'accepted_at' => '2026-11-20T10:00:00+00:00',
+            'provenance' => [
+                'files' => ['src/A.php', 'src/B.php'],
+                'mtimes' => ['src/A.php' => 1764316800],
+                'git_sha' => 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+                'member_hashes' => ['sha256:x'],
+            ],
+        ];
+        file_put_contents($path, json_encode(['version' => 4, 'clusters' => [], 'dispositions' => ['Fabc' => $record]]));
+
+        $parsed = $store->readDispositions($path);
+        $this->assertCount(1, $parsed);
+        $d = $parsed['Fabc'];
+        $this->assertTrue($d->isAccepted());
+        $this->assertSame('protocol twins', $d->note);
+        $this->assertSame('2026-11-20T10:00:00+00:00', $d->acceptedAt);
+        $this->assertSame(['src/A.php', 'src/B.php'], $d->files);
+        $this->assertSame(['src/A.php' => 1764316800], $d->mtimes);
+        $this->assertSame('deadbeefdeadbeefdeadbeefdeadbeefdeadbeef', $d->gitSha);
+        $this->assertSame(['sha256:x'], $d->memberHashes);
+    }
+
+    public function testReadDispositionsRefusesMalformedRecordsLoudly(): void
+    {
+        $store = new BaselineStore();
+
+        $badStatus = $this->tmpDir . '/bad-status.json';
+        file_put_contents($badStatus, json_encode(['version' => 4, 'clusters' => [], 'dispositions' => ['Fx' => ['status' => 'wontfix']]]));
+        try {
+            $store->readDispositions($badStatus);
+            $this->fail('unknown disposition status must refuse loudly');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString("unknown status 'wontfix'", $e->getMessage());
+        }
+
+        $noStatus = $this->tmpDir . '/no-status.json';
+        file_put_contents($noStatus, json_encode(['version' => 4, 'clusters' => [], 'dispositions' => ['Fx' => []]]));
+        try {
+            $store->readDispositions($noStatus);
+            $this->fail('a record without status must refuse loudly');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString("must carry a string 'status'", $e->getMessage());
+        }
+
+        $badMap = $this->tmpDir . '/bad-map.json';
+        file_put_contents($badMap, json_encode(['version' => 4, 'clusters' => [], 'dispositions' => 'nope']));
+        try {
+            $store->readDispositions($badMap);
+            $this->fail('a non-object dispositions map must refuse loudly');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString("must be an object", $e->getMessage());
+        }
+    }
+
+    public function testDispositionsFromClustersCapturesProvenance(): void
+    {
+        // Members point at REAL temp files so mtimes are observed data.
+        $fileA = $this->tmpDir . '/A.php';
+        $fileB = $this->tmpDir . '/B.php';
+        file_put_contents($fileA, "<?php\n");
+        file_put_contents($fileB, "<?php\n");
+
+        $blockA = new Block(file: $fileA, range: new LineRange(1, 5), kind: 'method', namespace: null, class: null, name: 'a', ast: new Node\Stmt\Nop());
+        $blockA->structuralHash = 'ha';
+        $blockB = new Block(file: $fileB, range: new LineRange(1, 5), kind: 'method', namespace: null, class: null, name: 'b', ast: new Node\Stmt\Nop());
+        $blockB->structuralHash = 'hb';
+
+        $cluster = new Cluster('Fprov', [$blockA, $blockB], 1.0, false);
+        $cluster->impact = 10;
+
+        $store = new BaselineStore([$this->tmpDir]);
+        $records = $store->dispositionsFromClusters([$cluster], 'accepted', 'file pair kept');
+
+        $this->assertCount(1, $records);
+        $d = $records['Fprov'];
+        $this->assertTrue($d->isAccepted());
+        $this->assertSame('file pair kept', $d->note);
+        $this->assertNotNull($d->acceptedAt);
+        // tmpDir is not a git repo -> gitSha stays null (provenance is
+        // best-effort, never guessed).
+        $this->assertNull($d->gitSha);
+        // Files canonicalize under the scan root: tmpDir-relative.
+        $this->assertSame(['A.php', 'B.php'], $d->files);
+        $this->assertCount(2, $d->mtimes);
+        foreach ($d->mtimes as $mtime) {
+            $this->assertIsInt($mtime);
+        }
+        $this->assertCount(2, $d->memberHashes);
+        $this->assertStringStartsWith('sha256:', $d->memberHashes[0]);
+    }
+
+    public function testMergeDispositionsIncomingWinsAndSorts(): void
+    {
+        $existing = [
+            'Fzz' => new \Phpdup\Reporting\BaselineDisposition(findingId: 'Fzz', status: 'unresolved'),
+            'Faa' => new \Phpdup\Reporting\BaselineDisposition(findingId: 'Faa', status: 'accepted'),
+        ];
+        $incoming = [
+            'Faa' => new \Phpdup\Reporting\BaselineDisposition(findingId: 'Faa', status: 'unresolved'),
+        ];
+
+        $merged = BaselineStore::mergeDispositions($existing, $incoming);
+        $this->assertSame(['Faa', 'Fzz'], array_keys($merged));
+        $this->assertFalse($merged['Faa']->isAccepted(), 'the re-recorded decision supersedes');
+        $this->assertFalse($merged['Fzz']->isAccepted(), 'untouched entries keep their recorded status');
+    }
+
+    public function testReadBaselineStillRefusesUnknownVersions(): void
+    {
+        $path = $this->tmpDir . '/future.json';
+        file_put_contents($path, json_encode(['version' => 99, 'clusters' => []]));
+        try {
+            (new BaselineStore())->readBaseline($path);
+            $this->fail('version 99 must still refuse loudly');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('version mismatch', $e->getMessage());
+            $this->assertStringContainsString('expected 3 or 4', $e->getMessage());
+        }
+    }
+
     private function clusterWithHashes(string $id, int $members): Cluster
     {
         $blocks = [];
