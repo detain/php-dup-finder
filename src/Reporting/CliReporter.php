@@ -104,6 +104,9 @@ final class CliReporter
             // earns its keep — "no clusters" says more when the rollup
             // line next to it states how much was comparable at all.
             $this->renderRollups($report, $theme, $out);
+            // Item 5.2 (W2b deferred leg, landed here in the rollup train):
+            // the scope demotion is trailer-visible too.
+            $this->renderVendored($report, $theme, $out);
             return;
         }
 
@@ -150,6 +153,7 @@ final class CliReporter
         $this->renderFileAccounting($report, $theme, $out);
         $this->renderBaselineAppendix($report, $theme, $out);
         $this->renderRollups($report, $theme, $out);
+        $this->renderVendored($report, $theme, $out);
     }
 
     /**
@@ -259,6 +263,29 @@ final class CliReporter
             $totals['call_sites'],
             $totals['twin_file_pairs'],
             $totals['mirrored_directories'],
+        ), $theme));
+    }
+
+    /**
+     * Item 5.2 (W2b deferred leg — landed in the rollup train, which owns
+     * this file): the vendored demotion is a one-shot stderr visibility
+     * line and a conditional JSON section; the trailer makes it CLI-
+     * visible where the rows went. Honors the stderr line's posture:
+     * renders only when clusters were actually demoted — a scope-armed,
+     * vendored-free run (zero-shaped section) and an unarmed run print
+     * nothing, so default CLI bytes never move.
+     */
+    private function renderVendored(Report $report, Theme $theme, OutputInterface $out): void
+    {
+        $vendored = $report->vendoredDuplicates;
+        if ($vendored === null || $vendored['clusters'] === 0) {
+            return;
+        }
+        $out->writeln(StatusLine::info(sprintf(
+            'vendored  %d clusters · %d lines demoted to the vendored_duplicates section%s',
+            $vendored['clusters'],
+            $vendored['lines'],
+            $vendored['omitted'] > 0 ? sprintf(' · %d beyond the row cap', $vendored['omitted']) : '',
         ), $theme));
     }
 
