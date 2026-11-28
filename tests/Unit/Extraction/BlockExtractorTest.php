@@ -59,15 +59,18 @@ final class BlockExtractorTest extends TestCase
         // classifyKind can never emit (it is produced only by
         // BlockExtractor::groupTopLevel() folds, and it is never part of
         // the implicit accept-all set; the opt-in posture is pinned in
-        // ScriptKindTest). The equality below is the drift guard: if a
-        // future traversable kind joins classifyKind without ALL_KINDS,
-        // or 'script' leaks into classifyKind, this fails.
+        // ScriptKindTest). Item 2.1 adds 'fragment' to that same never-
+        // implicit, never-classifyKind roster (minted only by the miner
+        // leg; pinned in BlockExtractorFragmentTest). The equality below
+        // is the drift guard: if a future traversable kind joins
+        // classifyKind without ALL_KINDS, or either fold kind leaks into
+        // classifyKind, this fails.
         $traversable = [
             'function', 'method', 'closure', 'arrow',
             'if', 'for', 'foreach', 'while', 'do',
             'try', 'switch', 'match',
         ];
-        $this->assertEqualsCanonicalizing([...$traversable, 'script'], BlockExtractor::ALL_KINDS);
+        $this->assertEqualsCanonicalizing([...$traversable, 'script', 'fragment'], BlockExtractor::ALL_KINDS);
 
         $visitor = new \Phpdup\Extraction\BlockVisitor('virtual.php', 1, 100, [], static function (): void {});
         $classify = new \ReflectionMethod($visitor, 'classifyKind');
@@ -78,6 +81,7 @@ final class BlockExtractorTest extends TestCase
                 $emitted[$kind] = true;
             }
             $this->assertNotSame('script', $kind, 'classifyKind must never produce the fold kind');
+            $this->assertNotSame('fragment', $kind, 'classifyKind must never produce the miner kind');
         }
         $this->assertEqualsCanonicalizing($traversable, array_keys($emitted));
     }

@@ -57,6 +57,35 @@ use SplObjectStorage;
  * accept-all list (empty allowedKinds), because top-level fold blocks
  * must be a deliberate choice — they change what "a block" means for a
  * file, and the apply/extraction machinery cannot relocate them yet.
+ *
+ * Item 2.1 adds a fourteenth kind, 'fragment': a contiguous run of
+ * statements (k = 3..40, the doc's fragment_k and cap) mined from EVERY
+ * executable statement list of a file — function/method/closure bodies,
+ * loop and branch bodies, and the same top-level buckets 'script' folds.
+ * Fragments are how class-B findings ("these 9 consecutive statements
+ * appear in 114 functions") become visible: they address runs ACROSS
+ * declaration boundaries, where whole-unit kinds see only the enclosing
+ * declaration or the inner branches in isolation. Like 'script' the kind
+ * is OPT-IN ONLY (never implicit), mints into synthetic Stmt\Block
+ * wrappers, is refused by every AST-addressing surface
+ * ({@see \Phpdup\Refactor\FragmentApplyRefusal}) and keeps its AST.
+ * Identity is two-layered: the regular per-block fold (structuralHash,
+ * ngramBag) comes from normalizing the window alone — so content-equal
+ * runs cluster exactly like any other species — while list-relative
+ * metadata ({@see Block::$fragmentKey} $fragmentPrev/$fragmentNext
+ * $fragmentPos $fragmentSize $fragmentWhole) is computed by
+ * PreprocessWorker over ONE whole-list normalization, giving the
+ * maximality-suppression dictionary its corpus-consistent keys. The
+ * whole run of a list whose complete content is already minted (a
+ * declaration body whose function/method/closure block survived, a
+ * top-level bucket the script fold minted) is flagged $fragmentWhole and
+ * suppressed: it equals a whole block that already exists.
+ *
+ * The §5c shared-miner contract (improve_logic_info.md): ONE walker
+ * (BlockVisitor's list collection, gated on demand), ONE generic scalar
+ * row stream ('mined' rows from PreprocessWorker, flavor-keyed payloads —
+ * v1 flavor stmtseq), ONE index (SequenceIndex). Items 3.1/3.2/3.5 add
+ * flavors and consumers WITHOUT a second traversal.
  */
 final class BlockExtractor
 {
@@ -67,7 +96,25 @@ final class BlockExtractor
         // Item 1.3: opt-in top-level script blocks — NOT part of the
         // implicit accept-all set (see class docblock and extract()).
         'script',
+        // Item 2.1: opt-in statement-run fragments from the shared miner —
+        // likewise never implicit (they change what clustering sees);
+        // named explicitly like 'script'.
+        'fragment',
     ];
+
+    /**
+     * Item 2.1: the synthetic kind of a mined statement-run fragment. It IS
+     * in ALL_KINDS (a user selects it with --kinds, like 'script') but
+     * classifyKind never mints it — only the miner leg of extract() does
+     * (drift-pinned by BlockExtractorTest and BlockExtractorFragmentTest).
+     */
+    public const FRAGMENT_KIND = 'fragment';
+
+    /** Item 2.1 doc parameter: fragment_k — smallest mined run. */
+    public const FRAGMENT_MIN_STATEMENTS = 3;
+
+    /** Item 2.1 doc parameter: cap 40 statements per mined run. */
+    public const FRAGMENT_MAX_STATEMENTS = 40;
 
     /**
      * Item 1.2: the synthetic kind of a scan window cut out of an
@@ -82,10 +129,21 @@ final class BlockExtractor
     private int $lastOversizedDrops = 0;
 
     /**
+     * Statement lists the most recent extract() collected for the §5c
+     * shared miner (empty unless 'fragment' ∈ allowedKinds): per list the
+     * live statement nodes, the owner-kind label, the namespace/class
+     * context, and the fragment Blocks minted from it (see extract()'s
+     * fragment leg and PreprocessWorker's mining leg for the consumer).
+     *
+     * @var list<array{stmts: list<Node\Stmt>, fragments: list<Block>, ownerKind: string, namespace: ?string, class: ?string}>
+     */
+    private array $lastStatementLists = [];
+
+    /**
      * @param list<string> $allowedKinds Empty list = accept all twelve
-     *        traversable kinds — the 1.3 'script' fold kind is never
-     *        implicit, it must be named (drift-pinned by BlockExtractorTest
-     *        and ScriptKindTest).
+     *        traversable kinds — the 1.3 'script' and 2.1 'fragment' fold
+     *        kinds are never implicit, they must be named (drift-pinned by
+     *        BlockExtractorTest and ScriptKindTest).
      */
     public function __construct(
         private readonly int $minSize = 8,
@@ -114,6 +172,24 @@ final class BlockExtractor
     public function oversizedDrops(): int
     {
         return $this->lastOversizedDrops;
+    }
+
+    /**
+     * The §5c miner's per-file product for the MOST RECENT extract():
+     * every executable statement list the walker collected (declaration,
+     * branch and top-level-bucket lists — class-like bodies are NOT
+     * lists: their members are declarations, already units) together with
+     * the fragment Blocks minted from it. PreprocessWorker consumes this
+     * in-process (same fork) to compute the whole-list statement-hash
+     * sequences and decorate the fragments' list-relative keys; the
+     * sequences themselves leave the process ONLY as scalar 'mined' row
+     * payloads (SOCKETPAIR law). Live AST nodes — never serialize.
+     *
+     * @return list<array{stmts: list<Node\Stmt>, fragments: list<Block>, ownerKind: string, namespace: ?string, class: ?string}>
+     */
+    public function lastStatementLists(): array
+    {
+        return $this->lastStatementLists;
     }
 
     /**
@@ -153,11 +229,11 @@ final class BlockExtractor
             allowedKinds: $this->allowedKinds,
             sink: function (Block $b) use (&$blocks): void { $blocks[] = $b; },
             windowOversized: $this->windowOversized,
+            mineLists: in_array(self::FRAGMENT_KIND, $this->allowedKinds, true),
         );
         $traverser->addVisitor($visitor);
         $traverser->traverse($traversable);
         $oversized += $visitor->oversizedDrops;
-
         // Item 1.3: 'script' is opt-IN ONLY — the empty allow-list means
         // "all traversable kinds", never "also fold top-level statements".
         // Folded blocks therefore append after the visitor's blocks in a
@@ -233,8 +309,172 @@ final class BlockExtractor
             }
         }
 
+        // Item 2.1: the shared-miner leg (§5c). Demand-gated — with
+        // 'fragment' unnamed, NO list is walked and NO window minted, so
+        // default runs stay byte-identical to the pre-2.1 pipeline by
+        // construction. The visitor collected the executable statement
+        // lists during its (already-running) traversal — one walker, the
+        // 5c law — and top-level buckets reuse the exact groupTopLevel()
+        // map the script kind folds. Every contiguous run of
+        // FRAGMENT_MIN..MAX statements becomes a synthetic Stmt\Block
+        // wrapper Block of kind 'fragment', gated by the same minSize/
+        // maxSize floors as the script fold (a run above the cost ceiling
+        // dies; these ARE the cuts — nothing re-windows them). Maximality
+        // is a CORPUS fact and is NOT decided here: PreprocessStage's
+        // suppression pass drops runs whose equal-or-greater-support
+        // witnesses exist, from the list-relative fields the worker
+        // decorates — see that stage. A whole-list run whose complete
+        // content is already a minted block (the declaration's own body,
+        // or a top-level bucket the script fold minted) is flagged
+        // $fragmentWhole: the doc's "equals a whole block already
+        // clustered" suppression, expressed pre-cluster on extraction
+        // evidence.
+        $this->lastStatementLists = [];
+        if (in_array(self::FRAGMENT_KIND, $this->allowedKinds, true)) {
+            $listMeta = $visitor->stmtLists;
+            foreach (self::groupTopLevel($stmts) as $group) {
+                if ($group['stmts'] === []) {
+                    continue;
+                }
+                $listMeta[] = [
+                    'stmts' => $group['stmts'],
+                    'ownerKind' => '',
+                    'namespace' => $group['namespace'],
+                    'class' => null,
+                ];
+            }
+            $mintedDecls = [];
+            $mintedFolds = [];
+            foreach ($blocks as $b) {
+                if ($b->kind === 'script') {
+                    $mintedFolds[$b->range->start . ':' . $b->range->end] = true;
+                } elseif ($b->kind === 'function' || $b->kind === 'method' || $b->kind === 'closure') {
+                    $mintedDecls[] = [$b->range->start, $b->range->end];
+                }
+            }
+            foreach ($listMeta as $entry) {
+                $frags = $this->mintFragmentRuns(
+                    $file,
+                    $entry['stmts'],
+                    $entry['ownerKind'],
+                    $entry['namespace'],
+                    $entry['class'],
+                    $mintedDecls,
+                    $mintedFolds,
+                    $visitor,
+                );
+                $this->lastStatementLists[] = [
+                    'stmts' => $entry['stmts'],
+                    'fragments' => $frags,
+                    'ownerKind' => $entry['ownerKind'],
+                    'namespace' => $entry['namespace'],
+                    'class' => $entry['class'],
+                ];
+                foreach ($frags as $f) {
+                    $blocks[] = $f;
+                }
+            }
+        }
+
         $this->lastOversizedDrops = $oversized;
         return $blocks;
+    }
+
+    /**
+     * Every contiguous run of {@see self::FRAGMENT_MIN_STATEMENTS}..
+     * {@see self::FRAGMENT_MAX_STATEMENTS} statements of one list, as a
+     * minted 'fragment' Block (the whole list is NOT exempt: it is minted
+     * and flagged when its content already rides a minted block — the
+     * caller-side suppression needs the KEY of every run as its
+     * maximality witness, and whole flags travel with real Blocks).
+     * Node sizes come from the visitor's memoized per-statement counts
+     * via prefix sums: window cost = wrapper node (1) + member sum.
+     *
+     * @param list<Node\Stmt>                  $stmts
+     * @param list<array{0:int, 1:int}>        $mintedDecls  declaration blocks this file minted
+     * @param array<string, bool>              $mintedFolds  fold ranges the script leg minted
+     * @return list<Block>
+     */
+    private function mintFragmentRuns(
+        string $file,
+        array $stmts,
+        string $ownerKind,
+        ?string $namespace,
+        ?string $class,
+        array $mintedDecls,
+        array $mintedFolds,
+        BlockVisitor $visitor,
+    ): array {
+        $count = count($stmts);
+        $maxWindow = min(self::FRAGMENT_MAX_STATEMENTS, $count);
+        if ($maxWindow < self::FRAGMENT_MIN_STATEMENTS) {
+            return [];
+        }
+
+        $prefix = [0];
+        $firstLines = [];
+        $lastLines = [];
+        foreach ($stmts as $i => $s) {
+            $prefix[$i + 1] = $prefix[$i] + $visitor->countNodes($s);
+            $firstLines[$i] = $s->getStartLine();
+            $lastLines[$i] = $s->getEndLine();
+        }
+
+        $isDeclaration = in_array($ownerKind, ['function', 'method', 'closure'], true);
+        $coversList = false;
+        if ($isDeclaration) {
+            $listStart = $firstLines[0];
+            $listEnd = $lastLines[$count - 1];
+            foreach ($mintedDecls as [$s, $e]) {
+                if ($s <= $listStart && $e >= $listEnd) {
+                    $coversList = true;
+                    break;
+                }
+            }
+        }
+
+        $runs = [];
+        for ($size = self::FRAGMENT_MIN_STATEMENTS; $size <= $maxWindow; $size++) {
+            $wholePossible = $size === $count;
+            for ($pos = 0; $pos + $size <= $count; $pos++) {
+                $start = $firstLines[$pos];
+                $end = $lastLines[$pos + $size - 1];
+                if ($start <= 0 || $end <= 0 || $end < $start) {
+                    continue; // same line-guard the visitor and fold apply
+                }
+                $nodeSize = 1 + $prefix[$pos + $size] - $prefix[$pos];
+                if ($nodeSize < $this->minSize || $nodeSize > $this->maxSize) {
+                    continue;
+                }
+                $whole = false;
+                if ($wholePossible) {
+                    if ($isDeclaration && $coversList) {
+                        $whole = true;
+                    } elseif ($ownerKind === '' && isset($mintedFolds[$start . ':' . $end])) {
+                        $whole = true;
+                    }
+                }
+                $wrapper = new Stmt\Block(array_slice($stmts, $pos, $size), [
+                    'startLine' => $start,
+                    'endLine'   => $end,
+                ]);
+                $block = new Block(
+                    file: $file,
+                    range: new LineRange($start, $end),
+                    kind: self::FRAGMENT_KIND,
+                    namespace: $namespace,
+                    class: $class,
+                    name: null,
+                    ast: $wrapper,
+                );
+                $block->size = $nodeSize;
+                $block->fragmentPos = $pos;
+                $block->fragmentSize = $size;
+                $block->fragmentWhole = $whole;
+                $runs[] = $block;
+            }
+        }
+        return $runs;
     }
 
     /**
@@ -315,6 +555,18 @@ final class BlockVisitor extends NodeVisitorAbstract
     public int $oversizedDrops = 0;
 
     /**
+     * Item 2.1 §5c: executable statement lists collected while walking
+     * (only when $mineLists). One entry per list; the owner-kind tells
+     * PreprocessWorker/SequenceIndex consumers WHAT the list is ('function',
+     * 'method', 'closure', 'if-body', 'case-body', ..., '' for a top-level
+     * fold bucket). Namespaces/classes are captured at ENTER time, matching
+     * the block-mint context.
+     *
+     * @var list<array{stmts: list<Node\Stmt>, ownerKind: string, namespace: ?string, class: ?string}>
+     */
+    public array $stmtLists = [];
+
+    /**
      * @param list<string> $allowedKinds
      */
     public function __construct(
@@ -324,6 +576,7 @@ final class BlockVisitor extends NodeVisitorAbstract
         private readonly array $allowedKinds,
         \Closure $sink,
         private readonly bool $windowOversized = true,
+        private readonly bool $mineLists = false,
     ) {
         $this->sink = $sink;
         $this->nodeCounts = new SplObjectStorage();
@@ -337,6 +590,22 @@ final class BlockVisitor extends NodeVisitorAbstract
         }
         if ($node instanceof Stmt\Class_ || $node instanceof Stmt\Interface_ || $node instanceof Stmt\Trait_ || $node instanceof Stmt\Enum_) {
             $this->classStack[] = $node->name?->toString() ?? '<anonymous>';
+        }
+
+        // Item 2.1: list collection rides THIS traversal (the §5c one-
+        // walker law) — before the kind gate, since branch bodies (else/
+        // catch/finally/case) are not classified kinds themselves but ARE
+        // statement lists. Class-like bodies are deliberately NOT lists:
+        // their members are declarations, each its own unit.
+        if ($this->mineLists) {
+            foreach ($this->statementListsOf($node) as $listEntry) {
+                $this->stmtLists[] = [
+                    'stmts' => $listEntry['stmts'],
+                    'ownerKind' => $listEntry['ownerKind'],
+                    'namespace' => $this->namespace,
+                    'class' => end($this->classStack) ?: null,
+                ];
+            }
         }
 
         $kind = $this->classifyKind($node);
@@ -432,6 +701,73 @@ final class BlockVisitor extends NodeVisitorAbstract
             $this->namespace = null;
         }
         return null;
+    }
+
+    /**
+     * The statement lists a node OWNS for item 2.1 mining (doc: "function
+     * bodies, loop and branch bodies, top level" — top-level buckets are
+     * appended by BlockExtractor via the script fold map). Declaration
+     * bodies, every conditional/loop body, every catch/finally/case body;
+     * abstract/interface methods and empty bodies contribute nothing.
+     *
+     * @return list<array{stmts: list<Node\Stmt>, ownerKind: string}>
+     */
+    private function statementListsOf(Node $node): array
+    {
+        $out = [];
+        $add = static function (?array $stmts, string $ownerKind) use (&$out): void {
+            if ($stmts === null || $stmts === []) {
+                return;
+            }
+            $out[] = ['stmts' => $stmts, 'ownerKind' => $ownerKind];
+        };
+
+        if ($node instanceof Stmt\Function_) {
+            $add($node->getStmts(), 'function');
+        } elseif ($node instanceof Stmt\ClassMethod) {
+            $add($node->getStmts(), 'method');
+        } elseif ($node instanceof Node\Expr\Closure) {
+            $add($node->stmts, 'closure');
+        } elseif ($node instanceof Stmt\If_) {
+            $add($node->stmts, 'if-body');
+            foreach ($node->elseifs as $elseif) {
+                $add($elseif->stmts, 'elseif-body');
+            }
+            if ($node->else !== null) {
+                $add($node->else->stmts, 'else-body');
+            }
+        } elseif ($node instanceof Stmt\While_) {
+            $add($node->stmts, 'while-body');
+        } elseif ($node instanceof Stmt\Do_) {
+            $add($node->stmts, 'do-body');
+        } elseif ($node instanceof Stmt\For_) {
+            $add($node->stmts, 'for-body');
+        } elseif ($node instanceof Stmt\Foreach_) {
+            $add($node->stmts, 'foreach-body');
+            if ($node->else !== null) {
+                $add($node->else->stmts, 'foreach-else-body');
+            }
+        } elseif ($node instanceof Stmt\TryCatch) {
+            $add($node->stmts, 'try-body');
+            foreach ($node->catches as $catch) {
+                $add($catch->stmts, 'catch-body');
+            }
+            if ($node->finally !== null) {
+                $add($node->finally->stmts, 'finally-body');
+            }
+        } elseif ($node instanceof Stmt\Switch_) {
+            foreach ($node->cases as $case) {
+                $add($case->stmts, 'case-body');
+            }
+        }
+
+        return $out;
+    }
+
+    /** Memoized per-extraction node count (public seam for the fragment leg). */
+    public function countNodes(Node $node): int
+    {
+        return $this->nodeCount($node);
     }
 
     private function classifyKind(Node $node): ?string
