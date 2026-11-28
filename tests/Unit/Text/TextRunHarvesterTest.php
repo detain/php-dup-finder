@@ -133,6 +133,44 @@ final class TextRunHarvesterTest extends TestCase
         $this->assertSame(['2:32'], $map['c.js']);
     }
 
+    public function testTwoDisjointTwinRegionsBothEmit(): void
+    {
+        // r1 M-1 reproduction: one file pair, TWO separated clone regions
+        // (an identifier run and a number run) with per-file-unique gaps
+        // between them. Keeping only the longest run per pair silently
+        // loses the second region — every floor-clearing seed interval
+        // must reach the per-file merge (which dedupes on its own).
+        $mk = static function (string $gap): string {
+            $blanks = array_merge(
+                array_fill(0, 30, 'I'),
+                array_fill(0, 20, $gap),
+                array_fill(0, 30, 'N'),
+            );
+            $src = '';
+            $i   = 0;
+            foreach ($blanks as $want) {
+                $piece = match ($want) {
+                    'I' => 'w' . $i,
+                    'N' => (string) (100 + $i),
+                    default => $want,
+                };
+                $src .= $piece . (($i % 8 === 7) ? "\n" : ' ');
+                $i++;
+            }
+            return $src;
+        };
+        $a = $this->ft('a.js', $mk('*'));
+        $b = $this->ft('b.js', $mk('@'));
+
+        $runs = (new TextRunHarvester())->harvest([$a, $b]);
+        $map  = $this->runMap($runs);
+        $this->assertSame(
+            ['a.js' => ['0:30', '50:80'], 'b.js' => ['0:30', '50:80']],
+            $map,
+            'both twin regions are harvested — the second region is never silently dropped',
+        );
+    }
+
     public function testHarvestIsOrderIndependentAndRepeatable(): void
     {
         $src = "alpha one( 'x1' );\nbeta two( 'x2' );\ngamma three( 'x3' );\ndelta four( 'x4' );";

@@ -280,12 +280,6 @@ final class BlockAstLoader
         if ($block->kind === BlockExtractor::FRAGMENT_KIND) {
             throw FragmentApplyRefusal::forBlock($block, 'BlockAstLoader::resolve()');
         }
-        // Item 7.2b: html_script folds are synthetic TOO — but unlike the
-        // three refusals above they ARE re-derivable from raw bytes: the
-        // window scanner is a pure function of the file's statement
-        // sequences and Block::$fragmentLineage makes the positional match
-        // honest. lazyAst unloads this species exactly like script/window/
-        // fragment (the pipeline blacklist never heard of it), so this arm
         // Item 7.1: a 'text' block has no PHP origin to resolve — the file
         // behind it is not PHP at all, so there is nothing a (fresh) parse
         // could re-derive it from. The fold is minted complete by the
@@ -294,7 +288,12 @@ final class BlockAstLoader
         if ($block->kind === BlockExtractor::TEXT_KIND) {
             throw TextKindApplyRefusal::forBlock($block, 'BlockAstLoader::resolve()');
         }
-
+        // Item 7.2b: html_script folds are synthetic TOO — but unlike the
+        // four refusals above they ARE re-derivable from raw bytes: the
+        // window scanner is a pure function of the file's statement
+        // sequences and Block::$fragmentLineage makes the positional match
+        // honest. lazyAst unloads this species exactly like script/window/
+        // fragment (the pipeline blacklist never heard of it), so this arm
         // is the LIVE path, not a backstop. A fresh parse still carrying
         // the same (range, lineage, namespace, class) window serves a
         // byte-identical wrapper — and because raw text hashes as raw

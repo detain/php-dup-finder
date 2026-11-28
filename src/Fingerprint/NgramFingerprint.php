@@ -33,7 +33,8 @@ use Phpdup\Util\IdentifierIds;
  * The gram loop is a roll-window over one joined stream, and the stream
  * itself is shared with SubtreeHasher rather than re-walked — both legs
  * of php-dup-finder-engine-034, landed value-preserving in engine-S33;
- * see fingerprint() for the byte-algebra argument and the handoff law.
+ * see windows() for the byte-algebra argument and the handoff law
+ * (item 7.1 hoisted the roll mint out of fingerprint() verbatim).
  */
 final class NgramFingerprint
 {

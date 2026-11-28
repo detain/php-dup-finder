@@ -19,9 +19,9 @@ use Phpdup\Fingerprint\NgramFingerprint;
  *    boilerplate (doctype lines, `{`-runs) — it seeds nothing;
  *  - {@see MAX_PAIRS}: runaway pair guard for pathological corpora;
  *    the cap degrades harvest coverage honestly (a note is emitted);
- *  - {@see MAX_SEEDS_PER_PAIR}/{@see MAX_POSITION_MATCHES}: a clone family
- *    repeated many times needs ONE seed to extend to the maximal run, so
- *    pair work is evenly-sampled and bounded, never exhaustive;
+ *  - {@see MAX_SEEDS_PER_PAIR}/{@see MAX_POSITION_MATCHES}: each disjoint
+ *    region of a clone family needs ONE seed to extend to its maximal
+ *    run, so pair work is evenly-sampled and bounded, never exhaustive;
  *  - {@see MIN_RUN_TOKENS}/{@see MIN_RUN_LINES}: floors below which a run
  *    is punctuation noise, not a clone.
  *
@@ -163,8 +163,11 @@ final class TextRunHarvester
 
     /**
      * LCE extension for one candidate pair: every evenly-spaced seed key
-     * extends its shared window positions to a maximal agreement; the
-     * longest accepted run per pair is recorded on BOTH files.
+     * extends its shared window positions to a maximal agreement, and
+     * EVERY agreement that clears the token floor is recorded on BOTH
+     * files (r1 M-1: one pair can host several disjoint clone regions —
+     * keeping only the longest silently loses the others; the per-file
+     * interval merge dedupes overlapping and touching runs anyway).
      *
      * @param list<string> $ta
      * @param list<string> $tb
@@ -179,9 +182,6 @@ final class TextRunHarvester
         $seeds = $this->sample($sharedKeys, self::MAX_SEEDS_PER_PAIR);
         $ca    = count($ta);
         $cb    = count($tb);
-        $best  = 0;
-        $bestA = 0;
-        $bestB = 0;
         foreach ($seeds as $key) {
             $budget = self::MAX_POSITION_MATCHES;
             foreach ($pa[$key] as $i) {
@@ -215,20 +215,13 @@ final class TextRunHarvester
                         $r++;
                     }
                     $len = $l + $this->n + $r;
-                    if ($len > $best) {
-                        $best  = $len;
-                        $bestA = $i - $l;
-                        $bestB = $j - $l;
+                    if ($len >= self::MIN_RUN_TOKENS) {
+                        $intervals[$ia][] = [$i - $l, $i - $l + $len];
+                        $intervals[$ib][] = [$j - $l, $j - $l + $len];
                     }
                 }
             }
         }
-
-        if ($best < self::MIN_RUN_TOKENS) {
-            return;
-        }
-        $intervals[$ia][] = [$bestA, $bestA + $best];
-        $intervals[$ib][] = [$bestB, $bestB + $best];
     }
 
     /**
