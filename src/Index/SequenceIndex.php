@@ -187,4 +187,56 @@ final class SequenceIndex
         }
         $this->idiomCensus->recordFileJson($file, $payloadJson);
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Item 3.2 attach point — helper-adoption summary (armed, additive)
+    |--------------------------------------------------------------------------
+    | Same doctrine as the 3.1 block above: demand gating, nothing stored
+    | per file, no new wire flavor. Adoption is a MASTER-SIDE derivation
+    | over the two structures this index already holds (statement-list
+    | spans + the idiom census) once Blocks exist, so PreprocessWorker
+    | sends nothing extra — the §5c "ONE shared miner" law is honoured by
+    | re-asking the census, never by re-walking trees. Arm without
+    | idioms is a wiring bug (the summary reads the census): HelperAdoption
+    | refuses; the stage always arms both together.
+    */
+
+    private bool $helpersArmed = false;
+
+    private ?\Phpdup\Census\HelperAdoption $helperAdoption = null;
+
+    /** Opt the instance into the helper-adoption summary (idempotent). */
+    public function armHelpers(): void
+    {
+        $this->helpersArmed = true;
+    }
+
+    public function helpersArmed(): bool
+    {
+        return $this->helpersArmed;
+    }
+
+    /** The built summary, or null while unarmed / not yet built. */
+    public function helperAdoption(): ?\Phpdup\Census\HelperAdoption
+    {
+        return $this->helperAdoption;
+    }
+
+    /**
+     * Derive the summary from the pipeline's Block list. Refuses loudly
+     * when the flavor was never armed (Fail Fast law, same posture as
+     * recordIdiomFile()). Re-running overwrites with a byte-identical
+     * result for identical inputs (pure derivation).
+     *
+     * @param list<\Phpdup\Extraction\Block> $blocks
+     */
+    public function buildHelpers(array $blocks): \Phpdup\Census\HelperAdoption
+    {
+        if (!$this->helpersArmed) {
+            throw new \LogicException('SequenceIndex: helper adoption requested while unarmed — armHelpers() first');
+        }
+        $this->helperAdoption = \Phpdup\Census\HelperAdoption::analyze($this, $blocks);
+        return $this->helperAdoption;
+    }
 }

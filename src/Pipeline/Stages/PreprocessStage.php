@@ -125,6 +125,16 @@ final class PreprocessStage implements CooperativeStageInterface
         // The Config invariant has already guaranteed the fragment roster
         // an armed mining needs; the predicate is read off the knob.
         $idiomDemand = $config->idiomMining;
+        // Item 3.2 adoption (MINE-D-2): the summary re-queries the census
+        // 3.1 just mined — the Config invariant guarantees idiom_mining is
+        // on whenever this is, so the store-bypass posture above already
+        // covers it. Adoption mints NO mined rows and persists NOTHING:
+        // its derivation runs master-side once blocks exist (built at the
+        // tail below), which is why it deliberately does NOT join
+        // indexStoreConfigKey (pinned: the key is invariant across this
+        // flip — warm replays re-derive identical adoption from
+        // re-mined-complete corpora; an armed run never takes the store).
+        $helperDemand = $config->helperAdoption;
         // Warm asymmetry, obeyed as the substrate contract states it:
         // cache-reused files emit NO mined rows of ANY flavor, so an armed
         // run that replayed blocks from IndexStore would ingest a census
@@ -298,6 +308,12 @@ final class PreprocessStage implements CooperativeStageInterface
                             // refuses idiom payloads while unarmed — Fail
                             // Fast — so the arm must precede the record).
                             $index->armIdioms();
+                            // Item 3.2 (MINE-D-2): adoption rides the same
+                            // armed census — per-row idempotent arm, no new
+                            // row flavor, nothing extra over the wire.
+                            if ($helperDemand) {
+                                $index->armHelpers();
+                            }
                             $index->recordIdiomFile(
                                 (string) ($row['file'] ?? ''),
                                 (string) ($row['payload'] ?? ''),
@@ -406,6 +422,20 @@ final class PreprocessStage implements CooperativeStageInterface
         $state->debug($output, sprintf('preprocess: ID assignment complete, transitioning to next stage... [%s]', MemoryDebug::getMemoryUsage()));
 
         $state->blocks = $blocks;
+        // Item 3.2 adoption (MINE-D-2): master-side derivation over the
+        // shared substrate once the block set is final (census re-query +
+        // statement-list spans; §5c one-miner law satisfied by asking,
+        // never re-walking). Gated on the actual arm, not the raw knob:
+        // a corpus that mined no rows armed nothing, and buildHelpers()
+        // refuses over an unarmed index (Fail Fast doctrine shared with
+        // recordIdiomFile()). ReportStage/display routing of the result
+        // is a reported follow-on (ROLLUP's reporting train owns the
+        // surfaces); the ledger is reachable meanwhile via
+        // $state->sequenceIndex->helperAdoption().
+        $adoptIndex = $state->sequenceIndex;
+        if ($helperDemand && $adoptIndex !== null && $adoptIndex->helpersArmed()) {
+            $adoptIndex->buildHelpers($state->blocks);
+        }
         $state->timings['preprocess'] = microtime(true) - $tPre;
 
         // Counter labels are deliberate (0.6): 'files' is what the scanner

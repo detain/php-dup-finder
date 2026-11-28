@@ -28,10 +28,17 @@ use Symfony\Component\Console\Output\NullOutput;
  * EXPECTED-TO-FLIP-WAVE-3: wave items 1.1 / 1.3 / 2.1 / 2.3 / 3.2 / 3.3
  * each flip one pattern row below (and the signature). 1.1+1.3 (P1/P2,
  * item 2.1 fragment mint) and 2.3 (P6 class kind, item 2.3) have flipped
- * to FOUND 2026-11-28; 3.2/3.3 (P3/P4/P5) stay red-state pins. When a row's real
- * cure lands, THIS TEST SHOULD FAIL — update signature + pattern state to
- * the new truth and note the flip in the commit message. Never edit the
- * fixture files to preserve this pin.
+ * to FOUND 2026-11-28; 3.2 (P3) flipped the same day through the item
+ * 3.2 HELPER-ADOPTION layer — a CLUSTER-INDEPENDENT cure: the adoption
+ * ledger (idiom_mining + helper_adoption) now links the Env helpers to
+ * their inline copies, while RED_STATE_SIGNATURE deliberately stays as
+ * pinned — the knobs default OFF, so the unarmed run clusters exactly as
+ * before and Env.php still joins zero clusters there (pinned by the P3
+ * test's baseline arm; adoption must never leak into clusters). 3.3
+ * (P4/P5) stays a red-state pin. When a row's real cure lands, THIS TEST
+ * SHOULD FAIL — update signature + pattern state to the new truth and
+ * note the flip in the commit message. Never edit the fixture files to
+ * preserve this pin.
  *
  * f15's 5-file prototype recorded 3× 5-member if-clusters plus a 2-member
  * method cluster; on the full 14-file corpus with Appendix-A knobs the
@@ -217,7 +224,7 @@ final class MicroFixtureAuditTest extends TestCase
         ['P2', '1.3', 'the three top-level scripts as one sequence family (one table name apart)',
             'CURED 2026-11-28 (item 2.1): the exact fragment row scripts_*:8-17 carries the whole top-level run (statements 8-10 and 17, one table name folded apart); the inner while/foreach control-block rows persist as narrower views'],
         ['P3', '3.2 + 1.1', 'Env::isDev/baseUrl helper bodies linked to the 5 inline re-implementations (lines 16-17 of inline_*)',
-            'Env.php is in ZERO clusters (probe confirmed it only clusters with exact twins); inline copies visible only swallowed in the handle() method'],
+            'CURED 2026-11-28 (item 3.2, opt-in helper_adoption): the adoption ledger links MicroFixtureEnv::isDev (Identical subtree @ Env.php:12) and MicroFixtureEnv::baseUrl (Ternary subtree @ Env.php:17) to ALL five inline copies (inline_*.php:16 / :17 — five distinct files, one site each) through the idiom census wildcard (abstract-fold) keys at the helper-lookup layer; the linkage is deliberately cluster-independent (Env.php still sits in zero clusters unarmed — pinned by the P3 test baseline arm + the class docblock; the test method name keeps the old phrasing, same posture as the flipped P1/P2 method names)'],
         ['P4', '3.3', 'the duplicated $assetBase URL string literal (inline_*:12, 5 copies)',
             'zero members ever cover line 12 — string literals are not extractable blocks'],
         ['P5', '3.3', 'the duplicated STATUS_MAP constant literal (inline_*:11, 5 copies)',
@@ -324,6 +331,16 @@ final class MicroFixtureAuditTest extends TestCase
         $this->assertNotEmpty($scriptMembers, 'P2 baseline: control-block fragments must remain visible');
     }
 
+    /**
+     * FLIPPED 2026-11-28 (item 3.2): helper<->inline linkage is REAL via
+     * the opt-in HELPER-ADOPTION ledger (idiom_mining + helper_adoption).
+     * The cure is cluster-independent BY DESIGN — the doc's done-when ("the
+     * five inline_* copies link to their helper counterparts") is pinned on
+     * the adoption rows, NOT on clustering. The baseline arm therefore STAYS
+     * (knobs default OFF -> Env.php in zero clusters), and keeps FLIP_MARKER
+     * as the tripwire for the opposite failure: adoption leaking into the
+     * clustering lane would itself be the regression.
+     */
     public function testP3EnvHelpersAreOrphanedFromInlineCopies(): void
     {
         $rows = $this->canonicalRows($this->buildPayload());
@@ -335,7 +352,44 @@ final class MicroFixtureAuditTest extends TestCase
                 }
             }
         }
-        $this->assertSame(0, $envInClusters, self::FLIP_MARKER . ' (P3): Env.php helpers now cluster with something — helper↔inline linkage exists, flip P3');
+        $this->assertSame(
+            0,
+            $envInClusters,
+            self::FLIP_MARKER . ' (P3 cure posture): helper adoption is cluster-independent by design — Env.php must NOT join clusters even armed; if it does, the 3.2 surface leaked into the clustering lane'
+        );
+
+        $ledger = $this->buildAdoptionLedger();
+        $this->assertNotNull($ledger, self::FLIP_MARKER . ' (P3): helper_adoption armed but no adoption ledger — item 3.2 regressed');
+
+        $byHelper = [];
+        foreach ($ledger->rows() as $r) {
+            $byHelper[$r->helperLabel] = $r;
+        }
+        // Doc pair: isDev's Equal/Identical body copy sits at inline_*:16,
+        // baseUrl's Ternary copy at inline_*:17 (Appendix A; live-probed).
+        foreach (['MicroFixtureEnv::isDev' => 16, 'MicroFixtureEnv::baseUrl' => 17] as $label => $copyLine) {
+            $this->assertArrayHasKey($label, $byHelper, 'P3 cure: ' . $label . ' must link its inline re-implementations');
+            $r = $byHelper[$label];
+            $this->assertSame('Env.php', basename($r->defFile), 'P3 cure: ' . $label . ' definition seat is Env.php');
+            $this->assertSame(1, $r->defSites, 'P3 cure: ' . $label . ' body contributes exactly one census site');
+            $this->assertSame(6, $r->sitesTotal, 'P3 cure: ' . $label . ' pattern group = 1 def + 5 copies');
+            $this->assertSame(5, $r->inlineSites, 'P3 cure: ' . $label . ' links five inline re-implementations');
+            $this->assertCount(5, $r->inlineFiles, 'P3 cure: ' . $label . ' copies span five distinct files');
+            $copyFiles = [];
+            foreach ($r->inlineFiles as $file => $count) {
+                $base = basename($file);
+                $this->assertMatchesRegularExpression('#^inline_\d\.php$#', $base, 'P3 cure: ' . $label . ' copy file must be an inline_* page, got ' . $base);
+                $this->assertSame(1, $count, 'P3 cure: each inline page re-implements ' . $label . ' exactly once');
+                $copyFiles[] = $base;
+            }
+            $this->assertCount(5, array_unique($copyFiles), 'P3 cure: five DISTINCT inline pages for ' . $label);
+            $this->assertNotEmpty($r->copyLocations);
+            foreach ($r->copyLocations as $loc) {
+                $this->assertStringEndsWith(':' . $copyLine, $loc, 'P3 cure: ' . $label . ' copy sites all sit at inline_*:' . $copyLine);
+                $this->assertMatchesRegularExpression('#inline_\d\.php:' . $copyLine . '$#', $loc, 'P3 cure: ' . $label . ' copy location must name an inline page at line ' . $copyLine);
+            }
+            $this->assertNotContains(basename($r->defFile) . ':' . $copyLine, array_map(fn (string $l) => (string) preg_replace('#^.*/#', '', $l), $r->copyLocations), 'P3 cure: the definition site itself is never listed as its own copy');
+        }
     }
 
     public function testP4P5LiteralDuplicationIsInvisible(): void
@@ -475,6 +529,38 @@ final class MicroFixtureAuditTest extends TestCase
         $this->assertSame(0, $state->parseErrors, 'fixtures must parse cleanly');
 
         return $payload;
+    }
+
+    /**
+     * Same cold-cache posture as buildPayload(), but ONLY the first two
+     * stages with the 3.2 knob pair armed (idiom_mining + helper_adoption):
+     * the adoption ledger is minted at the end of Preprocess and the
+     * clustering lane is deliberately not involved — cluster-independence
+     * is the point of the surface (info doc §5c/§8.4 MINE-D doctrine).
+     */
+    private function buildAdoptionLedger(): ?\Phpdup\Census\HelperAdoption
+    {
+        $dir = realpath(__DIR__ . '/../Fixtures/micro-fixture');
+        $this->assertNotFalse($dir, 'micro-fixture directory missing');
+
+        $config = new Config(
+            paths: [$dir],
+            exclude: Config::defaults([])->exclude,
+            maxDocumentFrequency: 0.9,
+            minClusterImpact: 1,
+            workers: 1,
+            lazyAst: false,
+            allowedKinds: ['function', 'method', 'closure', 'arrow', 'if', 'for', 'foreach', 'while', 'do', 'try', 'switch', 'match', 'fragment', 'class'],
+            idiomMining: true,
+            helperAdoption: true,
+            cacheDir: sys_get_temp_dir() . '/phpdup-mine-d-2-micro-' . getmypid() . '-' . (string) getmyuid(),
+        );
+        $state = new PipelineState($config);
+        $out = new NullOutput();
+        (new ScanningStage())->run($state, $out);
+        (new PreprocessStage(useCache: false))->run($state, $out);
+
+        return $state->sequenceIndex?->helperAdoption();
     }
 
     /**

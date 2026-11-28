@@ -28,7 +28,11 @@ namespace Phpdup\Census;
  *    survivors are always the lowest `sampleCap` keys seen —
  *    invariant under the record/interleave order (forked worker-pool
  *    ingest included). Which hashes carry samples at all still
- *    follows the two-pass first-pairing rule above.
+ *    follows the two-pass first-pairing rule above;
+ *  - item 3.2 rides the same wire: per-(file,hash) occurrence counts
+ *    and the sealed sample-line arrays are retained (a per-file int +
+ *    a <= wire-cap list per distinct pair) for helper-span lookup —
+ *    rows()/maximalRows() output is untouched by it.
  *
  * The keyspace is the EXACT hash (the letter counts "each hash" — the
  * abstract key rides along on the row for the pseudo-cluster tier).
@@ -62,6 +66,16 @@ final class SubtreeCensus
 
     /** @var array<string, array<string, true>> exact => set of files */
     private array $filesByExact = [];
+
+    /** @var array<string, array<string, int>> exact => file => summed occurrences */
+    private array $fileSitesByExact = [];
+
+    /**
+     * @var array<string, array<string, list<int>>> exact => file => wire
+     *      sample lines (arrival order, at most {@see self::MAX_WIRE_LINES}
+     *      per site row — the miner's ROW_CAP sealing)
+     */
+    private array $fileLinesByExact = [];
 
     /** @var array<string, string|null> pending first location (file:line) */
     private array $pending = [];
@@ -142,11 +156,19 @@ final class SubtreeCensus
             $this->byExact[$exact]['rootTypes'][$rootType] =
                 ($this->byExact[$exact]['rootTypes'][$rootType] ?? 0) + $count;
             $this->filesByExact[$exact][$file] = true;
-
+            // Item 3.2 addition: retain the per-(file,hash) occurrence
+            // count and the wire's sample lines — the maximal-idiom rows
+            // need them for helper-span membership. Counters stay a
+            // per-file int (not a per-site list), so the footprint is
+            // bounded by distinct (exact, file) pairs already in
+            // $filesByExact plus <= MAX_WIRE_LINES ints per pair.
+            $this->fileSitesByExact[$exact][$file] =
+                ($this->fileSitesByExact[$exact][$file] ?? 0) + $count;
             foreach ($lines as $line) {
                 if (!is_int($line)) {
                     throw new \InvalidArgumentException('idiom sample lines must be ints in ' . $file);
                 }
+                $this->fileLinesByExact[$exact][$file][] = $line;
                 $this->noteLocation($exact, $file . ':' . $line);
             }
         }
@@ -186,6 +208,35 @@ final class SubtreeCensus
     public function filesOf(string $exact): int
     {
         return isset($this->byExact[$exact]) ? count($this->filesByExact[$exact]) : 0;
+    }
+
+    /**
+     * Occurrences of one hash per file (item 3.2 helper-span
+     * membership). Determinism: summed ints, order-independent; file
+     * keys sorted so renderings never depend on ingest order.
+     *
+     * @return array<string,int> file => occurrences
+     */
+    public function sitesPerFile(string $exact): array
+    {
+        $perFile = $this->fileSitesByExact[$exact] ?? [];
+        ksort($perFile);
+        return $perFile;
+    }
+
+    /**
+     * Wire sample lines of one hash per file. CAVEAT (pinned by
+     * HelperAdoption docs): the miner seals each site row's line list
+     * at ROW_CAP, so a file with more than that many same-hash
+     * occurrences may not list every line — a helper match via these
+     * lines is sufficient but the sampling may under-state how many of
+     * its occurrences land in-span.
+     *
+     * @return array<string,list<int>> file => sample lines (arrival order)
+     */
+    public function linesPerFile(string $exact): array
+    {
+        return $this->fileLinesByExact[$exact] ?? [];
     }
 
     /**
