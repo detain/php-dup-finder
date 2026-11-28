@@ -198,7 +198,25 @@ final class AuditCommand extends Command
         $pending = [];
         foreach ($packs as $i => $pack) {
             $findingId = (string) ($pack['finding_id'] ?? '');
-            $key = $cache !== null ? $cache->packKey($pack) : '';
+            $key = '';
+            if ($cache !== null) {
+                try {
+                    $key = $cache->packKey($pack);
+                } catch (\RuntimeException $e) {
+                    // m-2 (8.2 r1): the cache names an un-encodable pack a
+                    // programming-error class (belt above its own throw);
+                    // the audit posture is never-fatal, so the door that
+                    // catches it is THIS degrade arm — the finding ships
+                    // un-cached (empty pack_key in the document) with one
+                    // loud note, and the fresh verdict simply never lands
+                    // in a cache slot it has no key for.
+                    $notes[] = sprintf(
+                        'cache-key derivation for finding %s failed (%s) — served un-cached this run',
+                        $findingId,
+                        $e->getMessage(),
+                    );
+                }
+            }
             $rows[$findingId] = ['key' => $key, 'origin' => null, 'annotation' => null];
             if ($i >= $scopeCount || $client === null) {
                 continue;
@@ -240,7 +258,10 @@ final class AuditCommand extends Command
                     }
                     $rows[$findingId]['origin'] = 'llm';
                     $rows[$findingId]['annotation'] = $byFinding[$findingId];
-                    if ($cache !== null && !$cache->put($rows[$findingId]['key'], $byFinding[$findingId])) {
+                    // m-2 companion: a degraded pack (no cache key) has no
+                    // slot to write to — the verdict simply ships un-cached.
+                    if ($cache !== null && $rows[$findingId]['key'] !== ''
+                        && !$cache->put($rows[$findingId]['key'], $byFinding[$findingId])) {
                         $notes[] = sprintf('cache write for finding %s failed — the verdict still ships in this document', $findingId);
                     }
                 }
@@ -251,11 +272,19 @@ final class AuditCommand extends Command
         $themesBlock = null;
         $themeOrigin = null;
         $annotatedRows = [];
+        // n-4 (8.2 r1): the in-scope key set is collected BY ITERATION over
+        // the same positional pack loop the theme gate counts coverage from
+        // (builder guarantee: one pack per finding, content-derived unique
+        // finding_id, iteration order == report rank order) — no slice of
+        // $rows whose size depends on that uniqueness holding indirectly.
+        $inScopeKeys = [];
         foreach ($packs as $i => $pack) {
             if ($i >= $scopeCount) {
                 break;
             }
-            $annotation = $rows[(string) ($pack['finding_id'] ?? '')]['annotation'];
+            $row = $rows[(string) ($pack['finding_id'] ?? '')];
+            $inScopeKeys[] = $row['key'];
+            $annotation = $row['annotation'];
             if ($annotation === null) {
                 continue;
             }
@@ -265,10 +294,20 @@ final class AuditCommand extends Command
             // The lock-step construction above (:client and :cache are assigned
             // in the same branch) makes both non-null here; the explicit
             // conjunctive guard keeps the invariant at the call site.
-            $themeKey = $cache->themesKey(array_map(static fn (array $row): string => $row['key'], array_slice(array_values($rows), 0, $scopeCount)));
-            $cachedThemes = $cache->get($themeKey);
-            if (is_array($cachedThemes) && isset($cachedThemes['themes'], $cachedThemes['summary'], $cachedThemes['landing_order'])) {
-                $themesBlock = ['themes' => $cachedThemes['themes'], 'summary' => $cachedThemes['summary'], 'landing_order' => $cachedThemes['landing_order']];
+            $themeKey = $cache->themesKey($inScopeKeys);
+            $storedThemes = $cache->get($themeKey);
+            // m-1 (8.2 r1): symmetric discipline — a stored T- entry clears
+            // the SAME normalizeThemes contract a fresh wire response clears
+            // (operator-writable disk is never trusted on mere key
+            // existence; the old isset-trio let a tampered half-entry reach
+            // renderAuditSummary and crash the render on count()/string
+            // shapes). Invalid stored entry = miss + one loud note.
+            $normalizedThemes = is_array($storedThemes) ? LlmClient::normalizeThemes($storedThemes) : null;
+            if (is_array($storedThemes) && $normalizedThemes === null) {
+                $notes[] = 'cached theme verdict failed shape re-validation — re-running the merge pass (the rerun pays only for the theme call)';
+            }
+            if ($normalizedThemes !== null) {
+                $themesBlock = $normalizedThemes;
                 $themeOrigin = 'cached';
             } else {
                 $merged = $client->mergeThemes($annotatedRows);
@@ -310,24 +349,21 @@ final class AuditCommand extends Command
                 'llm_calls' => $llmCalls,
                 'theme_pass' => $themesBlock !== null,
             ],
-            'findings' => array_map(
-                static fn (array $row): array => $row,
-                array_values(array_map(
-                    static function (array $pack) use ($rows): array {
-                        $findingId = (string) ($pack['finding_id'] ?? '');
-                        $row = $rows[$findingId];
+            'findings' => array_values(array_map(
+                static function (array $pack) use ($rows): array {
+                    $findingId = (string) ($pack['finding_id'] ?? '');
+                    $row = $rows[$findingId];
 
-                        return [
-                            'rank' => $pack['rank'] ?? null,
-                            'finding_id' => $findingId,
-                            'pack_key' => $row['key'],
-                            'origin' => $row['origin'],
-                            'annotation' => $row['annotation'],
-                        ];
-                    },
-                    $packs,
-                )),
-            ),
+                    return [
+                        'rank' => $pack['rank'] ?? null,
+                        'finding_id' => $findingId,
+                        'pack_key' => $row['key'],
+                        'origin' => $row['origin'],
+                        'annotation' => $row['annotation'],
+                    ];
+                },
+                $packs,
+            )),
             'themes' => $themesBlock['themes'] ?? null,
             'summary' => $themesBlock['summary'] ?? null,
             'landing_order' => $themesBlock['landing_order'] ?? null,

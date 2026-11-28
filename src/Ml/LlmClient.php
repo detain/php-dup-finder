@@ -190,6 +190,23 @@ final class LlmClient
         if ($decoded === null) {
             return null;
         }
+
+        return self::normalizeThemes($decoded);
+    }
+
+    /**
+     * Shape gate + normalization for a themes payload, shared by the wire
+     * decode (mergeThemes) and the cache READ leg (m-1, item 8.2 r1): a
+     * stored T- entry is operator-writable disk and must clear the SAME
+     * contract a fresh response clears before it is trusted into the
+     * document — a hand-edited or half-migrated entry degrades to a miss,
+     * never to a render-time TypeError.
+     *
+     * @param array<mixed> $decoded
+     * @return array{themes: list<array{name: string, label: string, members: list<string>}>, summary: string, landing_order: list<string>}|null
+     */
+    public static function normalizeThemes(array $decoded): ?array
+    {
         if (!is_array($decoded['themes'] ?? null) || !is_string($decoded['summary'] ?? null)
             || !is_array($decoded['landing_order'] ?? null)) {
             return null;
@@ -308,9 +325,6 @@ final class LlmClient
         return $this->decision;
     }
 
-    /**
-     * @return array<string, mixed>|null
-     */
     /**
      * Public shape gate for cached verdict entries: the cache directory is
      * operator-writable disk, so a cached row is re-validated through the

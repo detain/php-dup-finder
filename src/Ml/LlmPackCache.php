@@ -19,6 +19,16 @@ namespace Phpdup\Ml;
  * space, not the detection caches: nothing on the analyze path reads it,
  * and no detection cache key binds any llm_* knob (CacheKeyKnobReplay-
  * law: themes/corpus_rollups precedent).
+ *
+ * Write-mode posture (n-3, item 8.2 r1): tmp files are created at the
+ * process umask and chmod'd 0600 BEFORE the rename, so the readable-
+ * mode micro-window is bounded by a directory that is itself 0700 —
+ * other users cannot traverse to the inode at all, and no entry ever
+ * lands under its umask mode. The audit DOCUMENT, by contrast, is an
+ * operator-named deliverable written at default mode exactly like
+ * --json/--html (intentional asymmetry: deliverables ride the operator
+ * umask; internal judgment stores do not). Neither file ever carries a
+ * credential — the bearer token lives only in the live request header.
  */
 final class LlmPackCache
 {
@@ -50,8 +60,11 @@ final class LlmPackCache
         );
         if ($canonical === false) {
             // Belt: pack docs are built from plain scalars; an encode
-            // failure is a programming error, not operator input — surface
-            // it at the door that catches it (AuditCommand's degrade arm).
+            // failure is a programming error, not operator input — it is
+            // caught at AuditCommand's per-pack degrade arm (the loop arm
+            // that derives the key), where the finding is disclosed with a
+            // loud note and served un-cached. The throw stays typed: no
+            // caller may launder it into a silent miss.
             throw new \RuntimeException('evidence pack is not JSON-encodable: ' . json_last_error_msg());
         }
 

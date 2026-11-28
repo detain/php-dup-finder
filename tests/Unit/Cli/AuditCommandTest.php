@@ -300,4 +300,80 @@ final class AuditCommandTest extends TestCase
             $this->assertStringContainsString('llm_max_findings', implode(' ', $res['doc']['notes']));
         }
     }
+
+    // ---- r1 fix-round pins (8.2 r1 m-1 / m-2) ------------------------------
+
+    /**
+     * m-1 (8.2 r1): a STORED theme verdict is operator-writable disk and
+     * must clear the SAME normalizeThemes contract a fresh wire response
+     * clears. Pre-cure, the isset-trio accepted {"themes":[{"name":"evil",
+     * "members":"not-a-list"}],"summary":17,...} into the document and the
+     * render crashed with a TypeError the analyze-family exit contract has
+     * no code for. Post-cure: the tampered entry degrades to a miss with
+     * one loud note, exactly one re-dial (the theme call — annotations
+     * stay cached), and the healed verdict ships.
+     */
+    public function testTamperedThemeCacheEntryFailsRevalidationAndHeals(): void
+    {
+        putenv('PHPDUP_LLM_TOKEN=sekrit');
+        $cfg = $this->config(['llm_url' => 'https://llm.example/v1', 'cache_dir' => $this->tmp . '/cache']);
+        $first = $this->drive(new AuditCommand(), ['--config' => $cfg], $this->goodTransport());
+        $this->assertTrue($first['doc']['totals']['theme_pass']);
+
+        $themeFiles = glob($this->tmp . '/cache/llm-annotations/T-*.json') ?: [];
+        $this->assertCount(1, $themeFiles, 'one theme verdict per annotation set');
+        file_put_contents($themeFiles[0], (string) json_encode([
+            'themes'        => [['name' => 'evil', 'members' => 'not-a-list']],
+            'summary'       => 17,
+            'landing_order' => [],
+        ]) . "\n");
+
+        $announced = 0;
+        $res = $this->drive(new AuditCommand(), ['--config' => $cfg], static function (string $url, string $body) use (&$announced): ?string {
+            if (str_ends_with($url, '/annotate')) {
+                $announced++;
+
+                return null; // an annotate re-dial would defeat the cache contract
+            }
+            $payload = json_decode($body, true);
+            $ids = array_column($payload['findings'], 'finding_id');
+
+            return json_encode([
+                'themes'        => [['name' => 'retry-cluster', 'label' => 'healed theme', 'members' => $ids]],
+                'summary'       => 'healed after tamper',
+                'landing_order' => ['retry-cluster'],
+            ]);
+        });
+
+        $this->assertSame(0, $announced, 'the annotation pass stays fully cache-served despite the tamper');
+        $this->assertSame(1, $res['calls'], 'only the tampered theme pass re-dials — the tamper heals at the theme leg alone');
+        $this->assertSame(0, $res['rc'], 'never a crash, never a new exit code — degrade-and-heal');
+        $this->assertStringContainsString('failed shape re-validation', implode(' ', $res['doc']['notes']));
+        $this->assertSame('healed theme', $res['doc']['themes'][0]['label']);
+        $this->assertGreaterThan(0, $res['doc']['totals']['cached_hits'], 'the annotation cache reads were untouched');
+    }
+
+    /**
+     * m-2 (8.2 r1): LlmPackCache::packKey throws on an unencodable pack and
+     * its belt names "AuditCommand's degrade arm" as the catcher — the
+     * claim must be TRUE at the call site, not fiction. Source belt (the
+     * ConfigSchemaParity deriveRouting precedent: greps pin doc-vs-code
+     * agreement where no operator input can reach the throw); the throw
+     * itself is pinned directly in LlmPackCacheTest.
+     */
+    public function testPackKeyCallSiteIsGuardedByTheDegradeArm(): void
+    {
+        $src = (string) file_get_contents((new \ReflectionClass(AuditCommand::class))->getFileName());
+        $this->assertNotSame('', $src);
+        $this->assertSame(
+            1,
+            preg_match('~try \{\s*\$key = \$cache->packKey\(\$pack\);\s*\} catch \(\\\\RuntimeException~', $src),
+            'the packKey derive arm must sit inside a RuntimeException-catching degrade arm — the cache docblock promises this exact door',
+        );
+        $this->assertStringContainsString(
+            'served un-cached this run',
+            $src,
+            'the degrade arm names its posture in the note it emits',
+        );
+    }
 }
