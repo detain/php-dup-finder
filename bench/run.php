@@ -5,12 +5,22 @@
  * results JSON plus a markdown summary at `bench/results/latest.md`.
  *
  * Tools (auto-skipped when missing):
- *   - phpdup   — this repo's bin/phpdup
- *   - phpcpd   — bench/tools/phpcpd.phar (auto-downloaded by run-all.sh)
- *                or the system `phpcpd` binary
- *   - pmd-cpd  — system `pmd cpd` (rare on dev hosts)
- *   - jscpd    — bench/tools/node_modules/.bin/jscpd or system `jscpd`
- *   - simian   — system `simian` (commercial, almost never present)
+ *   - phpdup       — this repo's bin/phpdup (PHP structural tier)
+ *   - phpdup-text  — bin/phpdup --kinds text; runs only on PHP-free text
+ *                    corpora (bench/corpora/text-twins) where the token
+ *                    tier is the native detector. Keyed-vs-jscpd
+ *                    acceptance for that tier lives in
+ *                    bench/text-tier-acceptance.php, not in this matrix.
+ *   - phpcpd       — bench/tools/phpcpd.phar (auto-downloaded by run-all.sh)
+ *                    or the system `phpcpd` binary
+ *   - pmd-cpd      — system `pmd cpd` (rare on dev hosts)
+ *   - jscpd        — bench/tools/node_modules/.bin/jscpd or system `jscpd`
+ *   - simian       — system `simian` (commercial, almost never present)
+ *
+ * PHP-only detectors (phpdup's structural tier, phpcpd/pmd-cpd/jscpd/
+ * simian) are skipped on corpora with zero .php files; phpdup-text is
+ * skipped on every corpus that contains .php files — so existing
+ * PHP-corpus rows are unchanged.
  *
  * Pair-grained competitors (phpcpd/pmd-cpd/jscpd emit one record per
  * clone PAIR) are normalized with
@@ -59,12 +69,22 @@ echo "[info] corpora: " . implode(', ', array_column($corpora, 'name')) . "\n";
 
 $rows = [];
 foreach ($corpora as $corpus) {
-    $files = countPhpFiles($corpus['path']);
+    $files     = countPhpFiles($corpus['path']);
+    $textFiles = countTextFiles($corpus['path']);
     foreach ($tools as $tool) {
-        echo "[run] {$tool['name']} on {$corpus['name']} ($files PHP files)\n";
+        $skipFor = $tool['skip_for'] ?? null;
+        if ($skipFor !== null && $skipFor($files, $textFiles)) {
+            echo "[skip] {$tool['name']} on {$corpus['name']} (corpus shape: {$files} PHP, {$textFiles} text files)\n";
+            continue;
+        }
+        $shape = $textFiles > 0 ? "{$files} PHP + {$textFiles} text files" : "{$files} PHP files";
+        echo "[run] {$tool['name']} on {$corpus['name']} ({$shape})\n";
         $row = runTool($tool, $corpus, $cap);
         $row['corpus'] = $corpus['name'];
         $row['files']  = $files;
+        if ($textFiles > 0) {
+            $row['text_files'] = $textFiles;
+        }
         $rows[] = $row;
         echo sprintf(
             "      wall=%s  rss=%s  clusters=%s\n",
@@ -148,15 +168,34 @@ function countPhpFiles(string $dir): int
     return (int)trim($out[0] ?? '0');
 }
 
+/**
+ * Files the 7.1 text tier could read (LangProfiles extensions),
+ * excluding the .ground-truth.json manifest itself.
+ */
+function countTextFiles(string $dir): int
+{
+    $exts = ['js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'json', 'tpl', 'twig',
+             'yaml', 'yml', 'sh', 'bash', 'zsh', 'css', 'scss', 'html', 'htm'];
+    $nameOr = "\\( " . implode(' -o ', array_map(
+        static fn(string $e): string => "-name '*.{$e}'",
+        $exts,
+    )) . " \\)";
+    $rc = 0;
+    $out = [];
+    @exec('find ' . escapeshellarg($dir) . " -type f -not -name '.ground-truth.json' {$nameOr} 2>/dev/null | wc -l", $out, $rc);
+    return (int)trim($out[0] ?? '0');
+}
+
 /** @return list<array{name:string, cmd:list<string>, post:callable}> */
 function discoverTools(string $root, string $toolsDir, string $nodeBin): array
 {
     $tools = [];
-    // phpdup — always present (this repo).
+    // phpdup — this repo's reference detector (PHP structural tier).
     $tools[] = [
-        'name'    => 'phpdup',
-        'present' => true,
-        'cmd_for' => static function (string $corpus, string $tmp) use ($root): array {
+        'name'     => 'phpdup',
+        'present'  => true,
+        'skip_for' => static fn(int $phpFiles, int $textFiles): bool => $phpFiles === 0,
+        'cmd_for'  => static function (string $corpus, string $tmp) use ($root): array {
             $jsonOut = $tmp . '/phpdup.json';
             return [
                 'argv'     => ['php', $root . '/bin/phpdup', 'analyze', $corpus,
@@ -191,6 +230,33 @@ function discoverTools(string $root, string $toolsDir, string $nodeBin): array
         },
     ];
 
+    // phpdup --kinds text: the 7.1 native token tier, as the reference
+    // detector on PHP-free text corpora (bench/corpora/text-twins).
+    $tools[] = [
+        'name'     => 'phpdup-text',
+        'present'  => true,
+        'skip_for' => static fn(int $phpFiles, int $textFiles): bool => $phpFiles > 0 || $textFiles === 0,
+        'cmd_for'  => static function (string $corpus, string $tmp) use ($root): array {
+            $jsonOut = $tmp . '/phpdup-text.json';
+            return [
+                'argv'     => ['php', $root . '/bin/phpdup', 'analyze', $corpus,
+                               '--kinds', 'text',
+                               '--json', $jsonOut, '--plain', '--min-impact', '0',
+                               '--max-df', '0.5', '--no-cache', '--no-incremental'],
+                'json_out' => $jsonOut,
+            ];
+        },
+        'parse'    => static function (string $stdout, ?string $jsonOut, array $extra): array {
+            if ($jsonOut === null || !is_file($jsonOut)) {
+                return ['clusters' => null, 'extra' => $extra];
+            }
+            $data = json_decode((string)file_get_contents($jsonOut), true);
+            $clusters = is_array($data) ? ($data['summary']['clusters'] ?? null) : null;
+            $extra['members'] = is_array($data) ? extractPhpdupMembers($data) : null;
+            return ['clusters' => is_int($clusters) ? $clusters : null, 'extra' => $extra];
+        },
+    ];
+
     // phpcpd via phar in bench/tools or on PATH.
     $phpcpdPhar = $toolsDir . '/phpcpd.phar';
     $phpcpdBin  = commandPath('phpcpd');
@@ -203,9 +269,10 @@ function discoverTools(string $root, string $toolsDir, string $nodeBin): array
     }
     if ($launch !== null) {
         $tools[] = [
-            'name'    => 'phpcpd',
-            'present' => true,
-            'cmd_for' => static function (string $corpus, string $tmp) use ($launch): array {
+            'name'     => 'phpcpd',
+            'present'  => true,
+            'skip_for' => static fn(int $phpFiles, int $textFiles): bool => $phpFiles === 0,
+            'cmd_for'  => static function (string $corpus, string $tmp) use ($launch): array {
                 $xml = $tmp . '/phpcpd.xml';
                 return [
                     'argv'     => array_merge($launch, [
@@ -254,9 +321,10 @@ function discoverTools(string $root, string $toolsDir, string $nodeBin): array
     $pmd = commandPath('pmd');
     if ($pmd !== null) {
         $tools[] = [
-            'name'    => 'pmd-cpd',
-            'present' => true,
-            'cmd_for' => static function (string $corpus, string $tmp) use ($pmd): array {
+            'name'     => 'pmd-cpd',
+            'present'  => true,
+            'skip_for' => static fn(int $phpFiles, int $textFiles): bool => $phpFiles === 0,
+            'cmd_for'  => static function (string $corpus, string $tmp) use ($pmd): array {
                 $xml = $tmp . '/pmd-cpd.xml';
                 return [
                     'argv'     => [$pmd, 'cpd', '--language', 'php',
@@ -303,9 +371,10 @@ function discoverTools(string $root, string $toolsDir, string $nodeBin): array
     $jscpd = is_executable($nodeBin . '/jscpd') ? $nodeBin . '/jscpd' : commandPath('jscpd');
     if ($jscpd !== null) {
         $tools[] = [
-            'name'    => 'jscpd',
-            'present' => true,
-            'cmd_for' => static function (string $corpus, string $tmp) use ($jscpd): array {
+            'name'     => 'jscpd',
+            'present'  => true,
+            'skip_for' => static fn(int $phpFiles, int $textFiles): bool => $phpFiles === 0,
+            'cmd_for'  => static function (string $corpus, string $tmp) use ($jscpd): array {
                 $jsonDir = $tmp . '/jscpd';
                 @mkdir($jsonDir, 0o775, true);
                 return [
@@ -356,9 +425,10 @@ function discoverTools(string $root, string $toolsDir, string $nodeBin): array
     $simian = commandPath('simian');
     if ($simian !== null) {
         $tools[] = [
-            'name'    => 'simian',
-            'present' => true,
-            'cmd_for' => static function (string $corpus, string $tmp) use ($simian): array {
+            'name'     => 'simian',
+            'present'  => true,
+            'skip_for' => static fn(int $phpFiles, int $textFiles): bool => $phpFiles === 0,
+            'cmd_for'  => static function (string $corpus, string $tmp) use ($simian): array {
                 $log = $tmp . '/simian.txt';
                 return [
                     'argv'     => [$simian, '-language=php', '-includes=' . $corpus . '/**/*.php', '-formatter=plain'],
