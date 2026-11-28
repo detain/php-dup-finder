@@ -8,5 +8,12 @@
         "cache/**",
         "logs/**",
         "**/.phpdup-cache/**"
-    ]
+    ],
+    "drift_flags": {
+        "_description": "item 4.1 DriftAnalyzer vocabulary: enabled predicates and the call/option names they classify. Shipped data only — the profile tier never maps it into Config; the analyzer consumes it through constructor injection (config plumbing: documented follow-on).",
+        "predicates": ["guard-drift", "sanitizer-divergence", "copy-paste-literal", "odd-one-out"],
+        "sanitizers": ["real_escape", "sanitize", "mysql_real_escape_string", "mysqli_real_escape_string", "intval", "filter_var", "htmlspecialchars", "strip_tags", "addslashes", "escapeshellarg", "escapeshellcmd"],
+        "auth": ["require_auth", "reauth", "check_admin", "is_admin", "authorize", "assert_admin"],
+        "options": ["CURLOPT_SSL_VERIFYPEER", "CURLOPT_SSL_VERIFYHOST"]
+    }
 }

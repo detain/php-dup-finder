@@ -629,6 +629,13 @@ inside their own subtree (the shell-S22 admission set — see the truth
 table below); the profile tier lives strictly in the root view and never
 reaches a subtree file.
 
+Two profiles (`generic`, `db-aware-myadmin`) additionally ship a
+`drift_flags` block — the guard/sanitizer/auth/options vocabulary for the
+item 4.1 `DriftAnalyzer`. It is shipped data, not a tier key: it never
+reaches `Config` (the tier above carries exactly the mapped keys, and only
+those), and the mounted analyzer is inert until a caller injects the block
+into its constructor — the config plumbing is a documented follow-on row.
+
 `src/Cli/OverrideResolver` applies the overrides → data → base rule for the numeric/flat keys
 that share the same precedence (the profile tier reaches the resolver inside
 the data tier, with config-file keys folded over profile values before it

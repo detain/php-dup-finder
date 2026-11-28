@@ -5,6 +5,7 @@ namespace Phpdup\Pipeline\Stages;
 
 use Phpdup\Architecture\Analyzers\AntiPatternAnalyzer;
 use Phpdup\Architecture\Analyzers\DesignPatternAnalyzer;
+use Phpdup\Architecture\Analyzers\DriftAnalyzer;
 use Phpdup\Architecture\Analyzers\SolidAnalyzer;
 use Phpdup\Cli\Pager;
 use Phpdup\Parallel\WorkerPool;
@@ -275,7 +276,12 @@ final class ReportStage implements CooperativeStageInterface
         // Architectural analysis: emit Finding[] per cluster covering
         // SOLID violations, design-pattern matches, and anti-patterns.
         $state->currentTask = 'analysing architecture';
-        $analyzers = [new SolidAnalyzer(), new DesignPatternAnalyzer(), new AntiPatternAnalyzer()];
+        // item 4.1: the drift analyzer mounts inert (empty vocabulary) —
+        // it produces zero findings until a drift_flags vocabulary is
+        // injected, so default and Golden runs are byte-unchanged by this
+        // line (ProfileRegistry ships the data; config plumbing is the
+        // documented follow-on row).
+        $analyzers = [new SolidAnalyzer(), new DesignPatternAnalyzer(), new AntiPatternAnalyzer(), new DriftAnalyzer()];
         foreach ($clusters as $c) {
             $findings = [];
             foreach ($analyzers as $a) {
