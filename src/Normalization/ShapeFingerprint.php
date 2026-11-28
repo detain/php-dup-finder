@@ -235,10 +235,16 @@ final class ShapeFingerprint
             default                                    => 'class',
         };
         $row = 'kind:' . $species;
-        if ($classLike->isFinal()) {
+        // php-parser 5: isFinal() exists only on Class_ — test the flag
+        // bit directly (legal final lands on Class_/Enum_, both carry
+        // ->flags; interfaces/traits cannot be final).
+        if (
+            ($classLike instanceof Node\Stmt\Class_ || $classLike instanceof Node\Stmt\Enum_)
+            && ($classLike->flags & Node\Stmt\Class_::MODIFIER_FINAL) !== 0
+        ) {
             $row .= ':final';
         }
-        if ($classLike->isAbstract() && !$classLike instanceof Node\Stmt\Interface_) {
+        if ($classLike instanceof Node\Stmt\Class_ && $classLike->isAbstract()) {
             $row .= ':abstract';
         }
         if ($classLike instanceof Node\Stmt\Enum_ && $classLike->scalarType !== null) {
