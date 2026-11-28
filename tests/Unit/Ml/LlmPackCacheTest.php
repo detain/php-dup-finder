@@ -55,6 +55,74 @@ final class LlmPackCacheTest extends TestCase
         $this->assertNotSame($base->packKey($pack), $otherModel->packKey($pack), 'model drift invalidates judgments');
     }
 
+    /**
+     * M-1 (8.2 r1): the test above varies host and model, but the stale-
+     * verdict doctrine names a THIRD binding — LlmPrompts::PROMPT_VERSION.
+     * A silent fold-removal would keep every difference-test green (the
+     * mutation study proved it: packKey without the version still passed
+     * the whole family) while a prompt-contract bump silently replayed the
+     * old judgments. So pin the DERIVATION, not just the difference: the
+     * golden digests below are the documented formula
+     *   'F-'|'T-' sha256 over llm-audit[|themes]|PROMPT_VERSION|host|model|<content>
+     * computed once at the intact source; any change to the digest input
+     * (fold order, separator, a dropped term) moves the literal and fails.
+     */
+    public function testKeyDerivationsEqualTheDocumentedGoldenDigests(): void
+    {
+        $cache = new LlmPackCache($this->dir, 'verdict.example', 'judge-7');
+        $pack  = ['finding_id' => 'F0-aaaabbbbccccdddd', 'rank' => 1, 'members' => [['class' => 'App\\Repo', 'file' => 'src/a.php']], 'similarity' => 0.91];
+
+        $this->assertSame(
+            'F-3e3a20cb55c1b6996bf87bafd912be88eb82b5d4fd8905c6a8d8c443950b03b2',
+            $cache->packKey($pack),
+            'the pack verdict key is the documented digest — folding LlmPrompts::PROMPT_VERSION is load-bearing',
+        );
+
+        $this->assertSame(
+            'T-2993e4daaa2a1a8fcc67283f92f5f3da6a85a447bf805870e15e68df58c61222',
+            $cache->themesKey(['F-' . str_repeat('b', 64), 'F-' . str_repeat('a', 64)]),
+            'the theme verdict key is the documented digest over the sorted pack-key set',
+        );
+    }
+
+    /**
+     * M-1 second arm (belt style precedent: ConfigSchemaParity's
+     * deriveRouting greps): the golden above catches a re-shaped digest,
+     * this one catches the literal drifting TOGETHER with the formula —
+     * both key methods must visibly fold LlmPrompts::PROMPT_VERSION into
+     * their hash input.
+     */
+    public function testKeyDerivationSourceFoldsThePromptVersion(): void
+    {
+        $src = (string) file_get_contents((new \ReflectionClass(LlmPackCache::class))->getFileName());
+        $this->assertNotSame('', $src, 'the cache source must be readable for the derivation belt');
+
+        foreach (['packKey', 'themesKey'] as $method) {
+            $matched = preg_match('~public function ' . $method . '\(.*?\n    \}~s', $src, $arm);
+            $this->assertSame(1, $matched, "key-derivation belt: {$method}'s body must be locatable");
+            $this->assertStringContainsString(
+                'LlmPrompts::PROMPT_VERSION',
+                $arm[0],
+                "a prompt-contract bump must invalidate {$method} verdicts: the version fold is load-bearing, not decorative",
+            );
+        }
+    }
+
+    /**
+     * m-2 (8.2 r1): the encode failure IS reachable-by-construction for a
+     * hand-serialized pack (invalid UTF-8 bytes) — AuditCommand's per-pack
+     * degrade arm catches exactly this throw (pinned there by a source
+     * belt); the cache side keeps it loud and typed.
+     */
+    public function testPackKeyRefusesUnencodablePacksWithALoudThrow(): void
+    {
+        $cache = new LlmPackCache($this->dir, 'llm.example', 'm1');
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('evidence pack is not JSON-encodable');
+        $cache->packKey(['finding_id' => "F\xB1\x31"]);
+    }
+
     public function testThemesKeyOrdersIndependentlyOverTheAnnotationSet(): void
     {
         $cache = new LlmPackCache($this->dir, 'llm.example', 'm1');
