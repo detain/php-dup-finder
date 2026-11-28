@@ -733,7 +733,7 @@ final class BlockVisitor extends NodeVisitorAbstract
         // identical convention (scopeCandidates matches the fields
         // verbatim).
         $stackDepth = count($this->classStack);
-        $classField = $kind === self::CLASS_KIND
+        $classField = $kind === BlockExtractor::CLASS_KIND
             ? ($stackDepth >= 2 ? $this->classStack[$stackDepth - 2] : null)
             : (end($this->classStack) ?: null);
 
