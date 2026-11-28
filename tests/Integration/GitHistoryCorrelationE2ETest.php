@@ -471,10 +471,104 @@ final class GitHistoryCorrelationE2ETest extends TestCase
             PHP . "\n";
     }
 
+    // ------------------------------------------------------------------ r1 fixes
+
+    /**
+     * r1-C1: armed run over a tree with ZERO candidate clusters (a lone
+     * function, nothing to pair) is the routine fail-open posture — the
+     * sidecar key must be present-but-empty, never a LogicException exit 1.
+     */
+    public function testZeroCandidatesArmedRunReportsNothingNotCrash(): void
+    {
+        $single = $this->tmp . '/single';
+        mkdir($single, 0o775, true);
+        file_put_contents($single . '/only.php', '<?php' . "\n" . 'function lone_helper($v) {' . "\n" . '    $x = 0;' . "\n" . '    foreach ([1,2,3] as $n) { $x = $x + $n; }' . "\n" . '    return $x + $v;' . "\n" . '}' . "\n");
+
+        $run = $this->cli(
+            ['analyze', $single, '--json', $this->tmp . '/zero.json'],
+            cfgExtra: ['history' => true],
+            cacheTag: 'zero',
+        );
+        self::assertSame(0, $run['exit'], 'armed zero-candidate run must never fatal: ' . $run['combined']);
+
+        $report = $this->reportOf($this->tmp . '/zero.json');
+        $block  = $report['summary']['cluster_history'] ?? null;
+        self::assertIsArray($block, 'armed run keeps its promise: the key exists even when nothing correlated');
+        self::assertSame(0, $block['clusters']);
+        self::assertSame(0, $block['omitted']);
+        self::assertSame([], $block['rows']);
+        foreach ($report['summary']['scan_notes'] ?? [] as $note) {
+            self::assertStringNotContainsString('fatal', (string) $note);
+        }
+    }
+
+    /**
+     * r1-M1: an inherited GIT_DIR/GIT_WORK_TREE pointing at ANOTHER repo
+     * (a decoy where the poisoned pair was co-committed recently, which
+     * would flip the verdict to in_sync) must not move a single answer —
+     * GitCli scrubs every GIT_* from the child environment. Live-proved
+     * against the pre-fix tip: the poison flip was real (verdict=in_sync).
+     */
+    public function testInheritedGitDirEnvCannotRetargetTheAnswers(): void
+    {
+        $decoy = $this->tmp . '/decoy';
+        mkdir($decoy, 0o775, true);
+        foreach (['a.php', 'b.php'] as $name) {
+            copy($this->repo . '/' . $name, $decoy . '/' . $name);
+        }
+        $this->gitIn($decoy, ['-c', 'init.defaultBranch=main', 'init', '-q']);
+        $this->gitIn($decoy, ['add', '-A'], daysAgo: 5);
+        $this->gitIn($decoy, ['commit', '-q', '-m', 'Decoy joint import'], daysAgo: 5);
+
+        putenv('GIT_DIR=' . $decoy . '/.git');
+        putenv('GIT_WORK_TREE=' . $decoy);
+        try {
+            $run = $this->cli(
+                ['analyze', $this->repo, '--json', $this->tmp . '/poison.json'],
+                cfgExtra: ['history' => true],
+                cacheTag: 'poison',
+            );
+        } finally {
+            putenv('GIT_DIR');
+            putenv('GIT_WORK_TREE');
+        }
+        self::assertSame(0, $run['exit'], 'poisoned-env armed run must still succeed: ' . $run['combined']);
+
+        $rows = $this->rowsByFiles($this->reportOf($this->tmp . '/poison.json')['summary']['cluster_history']['rows']);
+        $ab   = $rows['a.php+b.php'] ?? null;
+        self::assertIsArray($ab, 'the true-repo pair must still be correlated');
+        self::assertSame('recent_lone_fix', $ab['verdict'], 'GIT_* leakage may not retarget the verdict');
+        self::assertIsArray($ab['members'][1]['lone'] ?? null, 'the lone fix on b must still be named');
+        self::assertSame('Fix off-by-one in total threshold', $ab['members'][1]['lone']['subject']);
+    }
+
+    /**
+     * r1-m1: the CLI --validate-config surface must refuse a non-boolean
+     * `history` with exit 2 (the unit doors in ConfigHistoryRouteTest hold
+     * the same law at load(); this pins the bin-level voice).
+     */
+    public function testValidateConfigRefusesNonBooleanHistoryViaCli(): void
+    {
+        $run = $this->cli(['--validate-config'], cfgExtra: ['history' => 'yes'], cacheTag: 'vcfg');
+        self::assertSame(2, $run['exit'], '--validate-config must refuse "history":"yes"; got: ' . $run['combined']);
+        self::assertStringContainsString('history must be a boolean', $run['combined']);
+    }
+
     // ------------------------------------------------------------------ helpers
 
     /** @param list<string> $argv */
     private function git(array $argv, ?int $daysAgo = null): string
+    {
+        return $this->gitIn($this->repo, $argv, $daysAgo);
+    }
+
+    /**
+     * Same -C-anchored law for ANY directory (the poison decoy is a second
+     * repository; the fixture's git() must stay a single-purpose wrapper).
+     *
+     * @param list<string> $argv
+     */
+    private function gitIn(string $dir, array $argv, ?int $daysAgo = null): string
     {
         $env = getenv();
         if ($daysAgo !== null) {
@@ -487,7 +581,7 @@ final class GitHistoryCorrelationE2ETest extends TestCase
         // this helper once committed the lane's working tree under the
         // fixture's message; -C makes the target unmissable).
         $proc = proc_open(
-            array_merge(['git', '-C', $this->repo], $argv),
+            array_merge(['git', '-C', $dir], $argv),
             [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
             $pipes,
             $this->tmp,
