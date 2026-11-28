@@ -395,10 +395,12 @@ final class Config
         // True: ClusterStage builds a SymbolIndex over the final BlockIndex
         // and injects its forced pairs ahead of the natural candidate stream
         // (same-name / same-class-twin / same-basename pairs bypass the
-        // bag/df prefilters but ride normal scoring), and the JSON report
-        // gains the conditional trailing `summary.symbol_duplicates` block —
-        // every forced pair with its MEASURED similarities, linked/unlinked
-        // verdicts against the run's clusters. Works on the default kinds
+        // bag/df prefilters but ride normal scoring), and ReportStage mounts
+        // the SymbolDuplicationAnalyzer on the existing architectural-findings
+        // spine: each forced pair involving a cluster files a measured-evidence
+        // finding (symbol-pair-merged note / symbol-pair-shadow row with the
+        // measured Jaccard/containment/size ratio). The JSON payload gains no
+        // key at all. Works on the default kinds
         // roster: symbol identity (name/class/file) is resident on every
         // named-declaration block, so — unlike idiom_mining — there is no
         // fragment precondition to enforce. Root config only (refused

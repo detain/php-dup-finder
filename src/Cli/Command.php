@@ -192,8 +192,9 @@ final class Command extends SymfonyCommand
                 declarations regardless of the similarity heuristics. Pairs sharing a (case-folded) function/method
                 name across owners, twin short class names, and named blocks from files sharing a basename are fed
                 to scoring even when the ngram bags never meet; every forced pair still rides the normal scoring
-                pass, so a below-floor pair is reported as measured evidence, never merged into a cluster. The JSON
-                report gains a conditional symbol_duplicates summary block when armed. Magic "__" names pair only
+                pass, so a below-floor pair is reported as measured evidence, never merged into a cluster. Evidence
+                rides the existing architectural-findings surface (SymbolDuplication merged/shadow rows with the
+                measured similarities); the JSON summary shape is unchanged. Magic "__" names pair only
                 through the twin-class route. Off by default — the default report is untouched.')
             ->addOption('scorer', null, InputOption::VALUE_REQUIRED, 'Scoring tier set: default | ir. "ir" enables the IR-tier fallback — when AST
                 Jaccard / TED / containment all reject a pair, lift both blocks to the canonical IR
