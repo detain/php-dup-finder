@@ -528,3 +528,95 @@ jobs:
           }
           AWK
           awk -v SCAN=README.md -f "$RUNNER_TEMP/anchorcheck.awk" README.md
+
+  # JLEG (improve-exec-1128, queue slot-9): item 7.1's native text tier
+  # benchmarked against the INTERIM comparator, the jscpd 5.x Rust build,
+  # on the keyed bench/corpora/text-twins corpus. The GATE is native
+  # keyed recall (bench/text-tier-acceptance.php exits 1 on any miss or
+  # false positive); the jscpd columns are informational deltas only.
+  # Comparator materialization degrades to a green skip when the release
+  # download is unreachable — but a COMPLETE download with the wrong
+  # digest is a hard red (supply-chain law: never run unverified bytes).
+  text-tier-bench:
+    name: Text tier vs jscpd (interim comparator)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: hash, mbstring
+          tools: composer:v2
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Materialize text-twins corpus (pin-enforced)
+        # Planter drift vs bench/corpus-pins.txt [text-twins] fails here;
+        # host-only [reports]/[oss-*] pins read [absent] on a fresh
+        # runner and are tolerated by design.
+        run: php bench/corpora.php --text-twins-only
+
+      - name: Resolve jscpd Rust binary (arch-matched, sha-pinned)
+        id: jscpd
+        run: |
+          set -euo pipefail
+          pin() { ROOT="$PWD" php -r '
+              define("PHPDUP_CORPORA_LIB", true);
+              require_once getenv("ROOT") . "/bench/corpora.php";
+              $pins = readPins(getenv("ROOT") . "/bench/corpus-pins.txt");
+              $v = $pins[$argv[1]][$argv[2]] ?? null;
+              if ($v === null || $v === "") {
+                  fwrite(STDERR, "pin missing: [{$argv[1]}] {$argv[2]} in bench/corpus-pins.txt\n");
+                  exit(1);
+              }
+              echo $v;' "$1" "$2"; }
+          case "$(uname -m)" in
+            x86_64)  target=linux-x64-gnu ;;
+            aarch64) target=linux-arm64-gnu ;;
+            *)
+              echo "::notice::no pinned jscpd-rust asset for arch $(uname -m) — comparator leg skipped green"
+              echo "available=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          asset="$(pin jscpd-rust "asset-${target}")"
+          sha="$(pin jscpd-rust "sha256-${target}")"
+          url="$(pin jscpd-rust url-base)/${asset}"
+          if ! timeout 150 curl -fsSL --retry 2 --max-time 120 -o "${RUNNER_TEMP}/${asset}" "$url"; then
+            echo "::notice::jscpd release download unreachable ($url) — native gate runs alone, comparator columns skipped green"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          actual="$(sha256sum "${RUNNER_TEMP}/${asset}" | cut -d' ' -f1)"
+          if [ "${actual}" != "${sha}" ]; then
+            echo "::error::jscpd artifact digest ${actual} != pinned ${sha} — refusing to run unverified bytes"
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/jscpd-bin"
+          tar -xzf "${RUNNER_TEMP}/${asset}" -C "${RUNNER_TEMP}/jscpd-bin"
+          chmod +x "${RUNNER_TEMP}/jscpd-bin/jscpd"
+          "${RUNNER_TEMP}/jscpd-bin/jscpd" --version
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          echo "path=${RUNNER_TEMP}/jscpd-bin/jscpd" >> "$GITHUB_OUTPUT"
+
+      - name: Keyed text-tier acceptance (native gate)
+        run: |
+          if [ "${{ steps.jscpd.outputs.available }}" = "true" ]; then
+            php bench/text-tier-acceptance.php \
+              --jscpd="${{ steps.jscpd.outputs.path }}" \
+              --out=bench/results/text-tier-evidence.json
+          else
+            php bench/text-tier-acceptance.php \
+              --no-jscpd --out=bench/results/text-tier-evidence.json
+          fi
+
+      - name: Upload acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: text-tier-acceptance-evidence
+          path: bench/results/text-tier-evidence.json
+          if-no-files-found: ignore
