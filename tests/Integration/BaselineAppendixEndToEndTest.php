@@ -206,15 +206,19 @@ final class BaselineAppendixEndToEndTest extends TestCase
     public function testCorruptPriorFileIsHealedByReAccept(): void
     {
         // M-1 (E4 r1): the documented escape hatch — re-accepting with
-        // --baseline-out over a corrupt file must WORK: loud warning,
-        // exit 0, and the file healed to a valid baseline (no decisions
-        // this run, so the classic v3 shape).
+        // --baseline-out over a corrupt file must WORK: loud warning
+        // naming the repair, the file healed to a valid baseline (no
+        // decisions this run, so the classic v3 shape) — AND the run still
+        // refuses at exit 2: the corruption is reported, never laundered
+        // by the successful write (acceptance contract rc2+advice+file).
         $reap = $this->tmp . '/reaccept.json';
         file_put_contents($reap, '{"version"');
 
         $run = $this->cli(['analyze', $this->tree, '--baseline', $reap, '--baseline-out', $reap]);
-        $this->assertSame(0, $run['exit'], $run['combined']);
+        $this->assertSame(2, $run['exit'], $run['combined']);
         $this->assertStringContainsString('phpdup: warning:', $run['combined']);
+        $this->assertStringContainsString('not valid JSON', $run['combined']);
+        $this->assertStringContainsString('baseline written to', $run['combined']);
 
         $raw = json_decode((string)file_get_contents($reap), true);
         $this->assertIsArray($raw, 'the healed baseline must be valid JSON');

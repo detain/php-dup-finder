@@ -2055,6 +2055,7 @@ HELP;
             // refusal at exit 2.
             $priorPath = $config->baselineOutFile;
             $priorDispositions = [];
+            $priorRefused = false;
             if ($priorPath !== null) {
                 try {
                     $priorDispositions = $baselineStore->readDispositions($priorPath);
@@ -2069,6 +2070,7 @@ HELP;
                     }
                     $output->writeln('<comment>phpdup: warning: ' . self::escapeMarkup($e->getMessage())
                         . ' — writing a fresh baseline to ' . $priorPath . '</comment>');
+                    $priorRefused = true;
                 }
             }
             $mergedDispositions = BaselineStore::mergeDispositions(
@@ -2076,11 +2078,16 @@ HELP;
                 $incomingDispositions,
             );
 
-            // --baseline-out wins: always write baseline and exit 0
+            // --baseline-out wins: always write baseline (the documented
+            // escape hatch — the write leg overwrites by contract, so even
+            // a corrupt prior cannot close it). When the prior WAS corrupt
+            // the run still refuses at exit 2 with the repair advice
+            // rendered above: healing the file and reporting the corruption
+            // are both true (mission contract rc2 + advice + file written).
             if ($config->baselineOutFile !== null) {
                 $baselineStore->writeBaseline($state->clusters, $config->baselineOutFile, $mergedDispositions);
                 $output->writeln("<info>phpdup</info> baseline written to {$config->baselineOutFile}");
-                return 0;
+                return $priorRefused ? 2 : 0;
             }
 
             // --baseline: compare mode

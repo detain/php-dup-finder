@@ -310,6 +310,10 @@ write, `--baseline-out` refresh, clean compare, an empty or corrupt gate
 input refused with its repair named, and a compare that found new
 clusters — is classified in the single [Exit codes](#exit-codes) table of
 this document. No local table restates them here (once-S95 unification).
+One composite to name: a `--baseline-out` refresh aimed AT a corrupt file
+heals it — the write leg is precisely the documented escape hatch, so the
+file always lands — and the run still refuses at exit 2 with the repair
+advice: healing and reporting are both true.
 
 **Example CI pipeline:**
 

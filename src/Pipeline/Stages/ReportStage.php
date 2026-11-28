@@ -36,6 +36,7 @@ use Phpdup\Reporting\SarifReporter;
 use Phpdup\Reporting\ScanWindow;
 use Phpdup\Reporting\SourceTextStore;
 use Phpdup\Reporting\TimeseriesReporter;
+use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
@@ -367,10 +368,15 @@ final class ReportStage implements CooperativeStageInterface
                     // base 940efc8 shape), and must not kill a --baseline-out
                     // refresh that exists precisely to heal the file. Only
                     // the code-2 door arms are deferred; record-level
-                    // garbage still dies loudly right here.
+                    // garbage still dies loudly right here. The deferral is
+                    // never silent: registry suppressions genuinely do not
+                    // apply without the file, and the class law says an
+                    // un-applied decision must never pass unnoticed.
                     if ($e->getCode() !== 2) {
                         throw $e;
                     }
+                    $output->writeln('<comment>phpdup: warning: ' . OutputFormatter::escape($e->getMessage())
+                        . ' — registry dispositions not applied this run</comment>');
                 }
             }
             if ($registryDispositions !== [] || $config->accepted !== [] || $directiveRows !== []) {
