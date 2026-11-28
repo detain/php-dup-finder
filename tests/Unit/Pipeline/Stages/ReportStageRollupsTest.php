@@ -28,7 +28,7 @@ use Symfony\Component\Console\Output\NullOutput;
  *  2. armed carry — the FULL ranked cluster set feeds the analyzer, the
  *     payload rides the §5f trailing-param seam into the Report, and
  *     JsonReporter appends the conditional block after idiom_census in
- *     the declared spec order (summaryShape(false, true) /
+ *     the declared spec order (summaryShape(rollups: true) /
  *     rollupBlockShape());
  *  3. the f08 demotion exemption, measured end to end: a cluster of two
  *     HARD-demoted DTO serializers links nothing into the twin
@@ -148,7 +148,7 @@ final class ReportStageRollupsTest extends TestCase
             array_keys($summary),
             'armed summary = default key set + trailing rollups (census not armed here)',
         );
-        $this->assertSame(array_keys(JsonSchemaSpec::summaryShape(false, true)), array_keys($summary));
+        $this->assertSame(array_keys(JsonSchemaSpec::summaryShape(rollups: true)), array_keys($summary));
     }
 
     public function testDemotedDtoClusterIsExemptFromTheArmedTwinNumerator(): void
