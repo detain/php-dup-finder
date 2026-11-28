@@ -247,6 +247,11 @@ final class RefactorPatchReporter
                 if ($member->kind === \Phpdup\Extraction\BlockExtractor::FRAGMENT_KIND) {
                     throw \Phpdup\Refactor\FragmentApplyRefusal::forCluster($cluster, 'RefactorPatchReporter');
                 }
+                // Item 2.3: class-shape clusters likewise ride the whole-
+                // surface refusal (hierarchy rewrite, not extraction v1).
+                if ($member->kind === \Phpdup\Extraction\BlockExtractor::CLASS_KIND) {
+                    throw \Phpdup\Refactor\ClassKindApplyRefusal::forCluster($cluster, 'RefactorPatchReporter');
+                }
             }
         }
 

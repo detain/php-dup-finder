@@ -86,6 +86,21 @@ use SplObjectStorage;
  * row stream ('mined' rows from PreprocessWorker, flavor-keyed payloads —
  * v1 flavor stmtseq), ONE index (SequenceIndex). Items 3.1/3.2/3.5 add
  * flavors and consumers WITHOUT a second traversal.
+ *
+ * Item 2.3 adds a fifteenth kind, 'class': a NAMED class/interface/trait/
+ * enum declaration block whose whole-class identity is its SHAPE — the
+ * member-token skeleton minted by {@see \Phpdup\Normalization\ShapeFingerprint}
+ * (member names with arity and visibility, constant names, implemented
+ * interfaces, backing enums — over the name-blanked canonical tree).
+ * Declaration twins (same shape, different name: a pair of VOs or
+ * interfaces) hash byte-identically; skeleton families ride the regular
+ * ngram/TED tiers over the same skeleton. OPT-IN ONLY like the two rows
+ * above, and enforced at the MINT (classifyKind never returns 'class'
+ * unless the roster names it — the accept-all stance would otherwise
+ * move every golden floor). Unlike script/window/fragment the kind IS
+ * relocatable by the loader (a real parse-tree declaration); what it
+ * refuses is apply/patch — a whole-class extraction is out of v1 scope
+ * ({@see \Phpdup\Refactor\ClassKindApplyRefusal}).
  */
 final class BlockExtractor
 {
@@ -100,7 +115,28 @@ final class BlockExtractor
         // likewise never implicit (they change what clustering sees);
         // named explicitly like 'script'.
         'fragment',
+        // Item 2.3: opt-in class-declaration blocks fingerprinted by
+        // their SHAPE — never implicit for the same reason as the two
+        // rows above (they move the clustering floor of every existing
+        // species); the never-implicit law is enforced at the MINT
+        // (classifyKind), see CLASS_KIND.
+        'class',
     ];
+
+    /**
+     * Item 2.3: the class-declaration kind (named class/interface/trait/
+     * enum). It IS in ALL_KINDS (a user selects it with --kinds) and
+     * classifyKind DOES mint it — but ONLY when the roster explicitly
+     * names it: the visitor's accept-all stance (empty roster = every
+     * classified kind passes) must not silently start minting class
+     * blocks, or default runs would move the golden floor. Anonymous
+     * classes are never a declaration twin and stay out (no name).
+     * The kind's whole-class identity is the name-blanked SKELETON
+     * ({@see \Phpdup\Normalization\ShapeFingerprint::skeleton()});
+     * apply/patch refuse it in v1 ({@see \Phpdup\Refactor\ClassKindApplyRefusal}),
+     * the loader relocates it (it is a real parse-tree declaration).
+     */
+    public const CLASS_KIND = 'class';
 
     /**
      * Item 2.1: the synthetic kind of a mined statement-run fragment. It IS
@@ -622,7 +658,14 @@ final class BlockVisitor extends NodeVisitorAbstract
         // kind, and a small `fn` declaration is the same top-level
         // abstraction a closure is — it must not die on minSize while
         // its function/method/closure siblings pass.
-        $isTopLevel = in_array($kind, ['function', 'method', 'closure', 'arrow'], true);
+        // Item 2.3: 'class' joins on the declaration-shape argument —
+        // the doc's targets are often tiny (a VO or an interface is a
+        // handful of nodes; its BODY mass is irrelevant, its shape is
+        // the finding). Oversize: class is deliberately unwindowable
+        // (class-like bodies are member declarations, not lists — the
+        // item-1.2 window packer never sees it, so WindowPacker's
+        // body test returns null) and falls into the once-counted drop.
+        $isTopLevel = in_array($kind, ['function', 'method', 'closure', 'arrow', 'class'], true);
         if (!$isTopLevel && $size < $this->minSize) {
             return null;
         }
@@ -669,6 +712,11 @@ final class BlockVisitor extends NodeVisitorAbstract
         $name = null;
         if ($node instanceof Stmt\Function_ || $node instanceof Stmt\ClassMethod) {
             $name = $node->name->toString();
+        } elseif ($node instanceof Stmt\ClassLike) {
+            // Item 2.3: a class block is identified by its declaration
+            // name (anonyma never classify, so ->name is non-null here
+            // by the classifyKind contract).
+            $name = $node->name->toString();
         }
 
         $start = $node->getStartLine();
@@ -677,12 +725,24 @@ final class BlockVisitor extends NodeVisitorAbstract
             return null;
         }
 
+        // The block's class field is the ENCLOSING class. For a class
+        // block that is not the stack top (its own name was pushed at
+        // enterNode before this mint) — it is the next frame down, so a
+        // top-level declaration carries null and a nested one carries
+        // its enclosing class. BlockAstLoader's index entries adopt the
+        // identical convention (scopeCandidates matches the fields
+        // verbatim).
+        $stackDepth = count($this->classStack);
+        $classField = $kind === self::CLASS_KIND
+            ? ($stackDepth >= 2 ? $this->classStack[$stackDepth - 2] : null)
+            : (end($this->classStack) ?: null);
+
         $block = new Block(
             file: $this->file,
             range: new LineRange($start, $end),
             kind: $kind,
             namespace: $this->namespace,
-            class: end($this->classStack) ?: null,
+            class: $classField,
             name: $name,
             ast: $node,
         );
@@ -785,6 +845,17 @@ final class BlockVisitor extends NodeVisitorAbstract
         if ($node instanceof Stmt\TryCatch)     return 'try';
         if ($node instanceof Stmt\Switch_)      return 'switch';
         if ($node instanceof Node\Expr\Match_)  return 'match';
+        // Item 2.3: the class-declaration kind, minted ONLY under an
+        // explicit roster (CLASS_KIND's docblock states why the
+        // never-implicit law lives at the mint, not at the :615 gate —
+        // the empty-roster accept-all stance would leak class blocks
+        // into every default run). NAMED ClassLikes only: an anonymous
+        // class has no declaration identity to twin against.
+        if ($node instanceof Stmt\ClassLike && $node->name !== null
+            && in_array(self::CLASS_KIND, $this->allowedKinds, true)
+        ) {
+            return self::CLASS_KIND;
+        }
         return null;
     }
 

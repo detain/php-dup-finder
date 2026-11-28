@@ -61,16 +61,22 @@ final class BlockExtractorTest extends TestCase
         // the implicit accept-all set; the opt-in posture is pinned in
         // ScriptKindTest). Item 2.1 adds 'fragment' to that same never-
         // implicit, never-classifyKind roster (minted only by the miner
-        // leg; pinned in BlockExtractorFragmentTest). The equality below
+        // leg; pinned in BlockExtractorFragmentTest). Item 2.3's 'class'
+        // joins ALL_KINDS too, but as a MINTED species (classifyKind
+        // returns it for named ClassLikes under an explicit roster —
+        // never-implicitness lives at the mint, BlockExtractorClassTest);
+        // the empty-roster visitor below is exactly why classifyKind
+        // must still not leak it. The equality below
         // is the drift guard: if a future traversable kind joins
         // classifyKind without ALL_KINDS, or either fold kind leaks into
-        // classifyKind, this fails.
+        // classifyKind (the roster below is empty: a class leak would
+        // break the last assert too), this fails.
         $traversable = [
             'function', 'method', 'closure', 'arrow',
             'if', 'for', 'foreach', 'while', 'do',
             'try', 'switch', 'match',
         ];
-        $this->assertEqualsCanonicalizing([...$traversable, 'script', 'fragment'], BlockExtractor::ALL_KINDS);
+        $this->assertEqualsCanonicalizing([...$traversable, 'script', 'fragment', 'class'], BlockExtractor::ALL_KINDS);
 
         $visitor = new \Phpdup\Extraction\BlockVisitor('virtual.php', 1, 100, [], static function (): void {});
         $classify = new \ReflectionMethod($visitor, 'classifyKind');

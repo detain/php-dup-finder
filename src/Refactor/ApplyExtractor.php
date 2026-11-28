@@ -316,6 +316,14 @@ final class ApplyExtractor
             if ($member->kind === \Phpdup\Extraction\BlockExtractor::FRAGMENT_KIND) {
                 throw FragmentApplyRefusal::forCluster($cluster, 'ApplyExtractor::apply()');
             }
+            // Item 2.3 law (class-shape twin of the posture above): a
+            // class cluster's honest refactor is a hierarchy rewrite
+            // (pull-up / template-method), not single-function
+            // extraction — same zero-write pre-refusal, signatures and
+            // the class_shape table stay evidence.
+            if ($member->kind === \Phpdup\Extraction\BlockExtractor::CLASS_KIND) {
+                throw ClassKindApplyRefusal::forCluster($cluster, 'ApplyExtractor::apply()');
+            }
             // output-002 (S46): a Closure/arrow member has no declaration
             // to keep. The only node-local rewrite would replace the
             // callable ITSELF with an immediate call — running the

@@ -437,6 +437,13 @@ final class BlockAstLoader
     private const CANDIDATE_KINDS = [
         'function', 'method', 'closure', 'arrow', 'if', 'for',
         'foreach', 'while', 'do', 'try', 'switch', 'match',
+        // Item 2.3: 'class' RELOCATES — unlike the synthetic script/
+        // window/fragment species it is a real parse-tree declaration,
+        // so unloaded class blocks come back through the standard
+        // (kind, scope, name) machinery. indexFor indexes NAMED
+        // ClassLikes under this kind; anonymous classes never match a
+        // named block (the extractor never mints one).
+        'class',
     ];
 
     /**
@@ -1166,6 +1173,24 @@ final class BlockAstLoader
                 }
                 if ($node instanceof Node\Stmt\ClassLike) {
                     $this->classStack[] = $node->name?->toString() ?? '<anonymous>';
+                    // Item 2.3: named ClassLikes are themselves servable
+                    // 'class' entries. Scope convention mirrors the
+                    // extractor's mint (BlockExtractor.php: the class
+                    // field is the ENCLOSING class, not the stack top
+                    // the node just pushed); anonymous classes get no
+                    // entry — the extractor never mints them.
+                    if ($node->name !== null) {
+                        $depth = count($this->classStack);
+                        $this->entries[] = [
+                            'node'      => $node,
+                            'kind'      => 'class',
+                            'name'      => $node->name->toString(),
+                            'namespace' => $this->namespace,
+                            'class'     => $depth >= 2 ? $this->classStack[$depth - 2] : null,
+                            'start'     => $node->getStartLine(),
+                            'end'       => $node->getEndLine(),
+                        ];
+                    }
                     return null;
                 }
                 $kind = ($this->classify)($node);
@@ -1247,6 +1272,11 @@ final class BlockAstLoader
             'try'       => $node instanceof Node\Stmt\TryCatch,
             'switch'    => $node instanceof Node\Stmt\Switch_,
             'match'     => $node instanceof Node\Expr\Match_,
+            // Item 2.3: named ClassLikes serve the 'class' kind (the
+            // indexFor visitor emits them; the name!==null mirror of
+            // the extractor's anonymous exclusion keeps an anonymous
+            // class from ever being a candidate for a named block).
+            'class'     => $node instanceof Node\Stmt\ClassLike && $node->name !== null,
             // Item 1.3: deliberately NO 'script' arm. A synthetic fold
             // must never match a positional candidate — falling through
             // to `default => false` is the posture, and the typed

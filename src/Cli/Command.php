@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Phpdup\Cli;
 
 use Phpdup\Clustering\CandidateBudgetException;
+use Phpdup\Refactor\ClassKindApplyRefusal;
 use Phpdup\Refactor\FragmentApplyRefusal;
 use Phpdup\Refactor\FunctionNameRegistry;
 use Phpdup\Refactor\ScriptKindApplyRefusal;
@@ -146,11 +147,14 @@ final class Command extends SymfonyCommand
             ->addOption('min-impact', null, InputOption::VALUE_REQUIRED, 'Minimum cluster impact to report')
             ->addOption('exact-only', null, InputOption::VALUE_NONE, 'Skip near-duplicate detection (faster)')
             ->addOption('kinds', null, InputOption::VALUE_REQUIRED, 'Comma-separated block kinds to include (e.g. method,closure). Default: all of
-                method|function|closure|arrow|if|for|foreach|while|do|try|switch|match. The fold kind script
-                (top-level statements) and the item-2.1 miner kind fragment (statement runs mined across
-                declaration boundaries) are NOT in that default set — they must be named explicitly, and they
-                currently cannot combine with --apply/--refactor-patch (script and fragment clusters are refused
-                by the AST-addressing machinery, typed exit 1; text rendering via --patch/--diff stays allowed).')
+                method|function|closure|arrow|if|for|foreach|while|do|try|switch|match. The fold kind script,
+                the item-2.1 miner kind fragment (statement runs mined across declaration boundaries) and the
+                item-2.3 class-shape kind class (named class/interface/trait/enum declarations fingerprinted
+                by their member skeleton) are NOT in that default set — they must be named explicitly, and
+                they currently cannot combine with --apply/--refactor-patch (script, fragment and class
+                clusters are refused by the AST-addressing machinery, typed exit 1; class extraction is a
+                hierarchy rewrite out of v1 scope — read its clusters through the JSON class_shape table;
+                text rendering via --patch/--diff stays allowed).')
             ->addOption('auto-tune', null, InputOption::VALUE_NONE, 'Probe the corpus before analysis and pick min-block-size / max-df / min-impact based on size; --exact-only is forced on for very large trees. The probe counts the tree the run will actually scan (profile and --config excludes applied, exclude_reset honored). Suggestions fill gaps only: a knob explicitly set on the command line, by --profile, or in the --config file is never overwritten, and the printed rationale claims only what was applied.')
             ->addOption('profile', null, InputOption::VALUE_REQUIRED, 'Apply a project profile (' . implode('|', ProfileRegistry::bundled()->listAvailable()) . '|auto) to seed framework-aware excludes + tuning. db-aware-* profiles ship symbol-equivalence packs for various ORMs. "auto" sniffs the scan path for known markers. Explicit CLI flags + --config win over profile values.')
             ->addOption('min-safety', null, InputOption::VALUE_REQUIRED, 'Drop clusters whose refactor-safety score (0..1) is below this threshold. 0 = report all (default).')
@@ -1921,7 +1925,7 @@ HELP;
                     break;
                 }
             }
-        } catch (CandidateBudgetException | ScriptKindApplyRefusal | WindowApplyRefusal | FragmentApplyRefusal | ReportWriteException $e) {
+        } catch (CandidateBudgetException | ScriptKindApplyRefusal | WindowApplyRefusal | FragmentApplyRefusal | ClassKindApplyRefusal | ReportWriteException $e) {
             // ft-n2: the budget halt is a runtime stop, not an invalid
             // invocation — its message already names every remedy. Render
             // it as the clean `phpdup:` error line (the same posture the

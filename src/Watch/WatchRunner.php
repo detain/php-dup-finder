@@ -7,6 +7,7 @@ use Phpdup\Clustering\CandidateBudgetException;
 use Phpdup\Cli\SignalHandler;
 use Phpdup\Pipeline\Pipeline;
 use Phpdup\Pipeline\PipelineState;
+use Phpdup\Refactor\ClassKindApplyRefusal;
 use Phpdup\Refactor\FragmentApplyRefusal;
 use Phpdup\Refactor\ScriptKindApplyRefusal;
 use Phpdup\Refactor\WindowApplyRefusal;
@@ -347,7 +348,7 @@ final class WatchRunner
             $this->pipeline->run($state, $this->output);
             $this->consecutivePassFailures = 0;
             return true;
-        } catch (CandidateBudgetException | ScriptKindApplyRefusal | WindowApplyRefusal | FragmentApplyRefusal $e) {
+        } catch (CandidateBudgetException | ScriptKindApplyRefusal | WindowApplyRefusal | FragmentApplyRefusal | ClassKindApplyRefusal $e) {
             // shell-S34: a ScriptKindApplyRefusal::forBlock message embeds
             // the offending block's file path — raw filesystem bytes. The
             // window sibling (E2 r1 MAJOR-1) embeds the same material:
