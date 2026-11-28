@@ -623,7 +623,8 @@ defect php-dup-finder-once-031 names. The tier carries exactly the keys
 `Command::profileToOverrides()` maps — `min_block_size`, `max_block_size`,
 `normalization_mode`, `similarity_threshold`, `tree_threshold`,
 `min_cluster_impact`, `max_df`, `ngram_size`, `sort`, plus `kinds` (the
-`allowed_kinds` leg) and `db_symbols` (the symbol-pack legs) — and every
+`allowed_kinds` leg), `db_symbols` (the symbol-pack legs) and
+`drift_flags` (the item 4.1 vocabulary leg, deposited AS-IS) — and every
 one of them is consumed at that tier (never admitted-inert). `exclude`
 is not a replacement key at any tier: profile globs APPEND between the
 stock defaults and the config-file list (see the `exclude` row below).
@@ -637,10 +638,22 @@ reaches a subtree file.
 
 Two profiles (`generic`, `db-aware-myadmin`) additionally ship a
 `drift_flags` block — the guard/sanitizer/auth/options vocabulary for the
-item 4.1 `DriftAnalyzer`. It is shipped data, not a tier key: it never
-reaches `Config` (the tier above carries exactly the mapped keys, and only
-those), and the mounted analyzer is inert until a caller injects the block
-into its constructor — the config plumbing is a documented follow-on row.
+item 4.1 `DriftAnalyzer`. It is a real admitted stance, end to end:
+`profileToOverrides` deposits the block AS-IS on the tier above, the root
+`phpdup.json` may carry the same key, and `ConfigLoader::extractDrift-
+Vocabulary()` validates and canonicalizes whichever layer speaks (CLI
+dict > config file > profile — the db-symbol-pack precedence shape; a
+layer that names the block REPLACES it wholesale, never a per-key blend;
+malformed payloads and unknown sub-keys fail the load loudly). The
+canonical four-list vocabulary rides `Config::$driftVocabulary` into
+`ReportStage`, which constructs the mounted `DriftAnalyzer` with it — so
+`--profile generic` (or `auto`, or the root key) arms the four predicates
+through the real CLI. Empty/absent vocabulary keeps the analyzer inert: a
+no-profile run reports zero drift findings with byte-unchanged output (the
+Golden and CI legs never arm it). Root config only — per-directory
+`.phpdup.json` files carrying this key fail the load; no CLI flag
+(`accepted` sibling posture — a subtree choosing which drift findings
+exist is the same suppression-hazard family, item 4.4).
 
 `src/Cli/OverrideResolver` applies the overrides → data → base rule for the numeric/flat keys
 that share the same precedence (the profile tier reaches the resolver inside
@@ -852,9 +865,10 @@ with the offending field path on the first violation.
 | `report.html`                          | string           | —                | Equivalent to `--html DIR`.                                              |
 | `report.json`                          | string           | —                | Equivalent to `--json FILE`.                                             |
 | `accepted`                               | list of strings  | `[]`             | Baseline decisions held in config: finding ids the team has accepted. Suppressed from the main report into the baseline appendix with source `config`, excluded from the `--baseline` gate's new-cluster count, and fail-open resurfaced when the finding's code drifts (see "Accepted findings and the appendix" under CI / Baseline). Precedence: registry > directive > this list. Root config only — per-directory `.phpdup.json` files carrying this key fail the load; no CLI flag (`baseline` sibling posture). |
+| `drift_flags`                            | object           | —                | Item 4.1 `DriftAnalyzer` vocabulary: `predicates` (entries one of `guard-drift`, `sanitizer-divergence`, `copy-paste-literal`, `odd-one-out`) plus `sanitizers` and `auth` (lower-cased call names the arms classify) and `options` (security-relevant option CONSTANTS, verbatim spelling — the option-divergence arm claims only enumerated names); an optional `_description` note is admitted and stripped. A layer that names the block replaces it wholesale (CLI dict > config file > profile tier). Absent/empty = inert analyzer, byte-unchanged reports — arm via this key or `--profile generic\|auto`. Root config only — per-directory `.phpdup.json` files carrying this key fail the load; no CLI flag (`accepted` sibling posture — same suppression-hazard family). |
 
-Unknown top-level keys and unknown nested keys under `optional_blocks`
-or `report` are rejected with a clear error.
+Unknown top-level keys and unknown nested keys under `optional_blocks`,
+`report` or `drift_flags` are rejected with a clear error.
 
 ### What a per-directory `.phpdup.json` may carry — the admission truth table
 

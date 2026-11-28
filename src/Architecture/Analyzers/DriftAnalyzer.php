@@ -19,11 +19,16 @@ use Phpdup\Refactor\ObservationDescriptor;
  *
  * Four predicate codes ride the `predicates` vocabulary list; a cluster
  * with no enabled vocabulary produces zero findings, so the default
- * mount (`new DriftAnalyzer()` in ReportStage, empty vocab) is inert
- * for every run until a profile/config wires it — exactly the posture
- * the guard/sanitizer/auth vocab is data-driven by (profiles/*.json
- * ship a `drift_flags` block; config plumbing is the documented
- * follow-on row).
+ * mount is inert BY DESIGN (`ReportStage` passes the run's vocabulary;
+ * no profile and no root key ⇒ empty vocab ⇒ zero drift findings,
+ * byte-unchanged reports). Admission is live: the `generic` /
+ * `db-aware-myadmin` profile tier and a root `phpdup.json` `drift_flags`
+ * key canonicalize through `ConfigLoader::extractDriftVocabulary()` into
+ * `Config::$driftVocabulary`, and ReportStage constructs this analyzer
+ * with it — the vocab stays data-driven exactly as the guard/sanitizer/
+ * auth lists are (profiles/*.json ship a `drift_flags` block;
+ * per-directory files are refused it, the `accepted` suppression-hazard
+ * family).
  *
  * Predicates (doc §4.1 table):
  *   - guard-drift — optional_block holes whose template statement is a
