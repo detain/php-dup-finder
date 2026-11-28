@@ -345,14 +345,46 @@ final class BaselineStore
             return [];
         }
 
+        // Item 4.4 / M-1 (E4 r1): the door-level arms mirror
+        // {@see readBaseline()}'s once-055 contract exactly — corrupt or
+        // empty INPUT is a named repair at exception code 2 (the console
+        // surface's exit-2 door), never a bare code-0 death that steals the
+        // curated gate's advice and its exit code. Callers that are mid-
+        // REPAIR (a --baseline-out refresh) catch code 2, warn, and rewrite;
+        // record-level garbage below stays loud code 0 in every path.
         $content = file_get_contents($path);
         if ($content === false) {
-            throw new \RuntimeException("Failed to read baseline file: $path");
+            throw new \RuntimeException(
+                "Failed to read baseline file: $path — restore it from version control "
+                . "or re-accept one with --baseline-out $path",
+                2,
+            );
+        }
+
+        if (trim($content) === '') {
+            throw new \RuntimeException(
+                "Baseline file is empty: $path — delete it to take a first-run "
+                . "baseline from this run, or re-accept one with --baseline-out $path",
+                2,
+            );
         }
 
         $decoded = json_decode($content, true);
         if (!is_array($decoded)) {
-            throw new \RuntimeException("Baseline file is not valid JSON: $path");
+            throw new \RuntimeException(
+                "Baseline file is not valid JSON: $path — it is corrupt or truncated; "
+                . "restore it from version control or re-accept with --baseline-out $path",
+                2,
+            );
+        }
+
+        if ($decoded === []) {
+            throw new \RuntimeException(
+                "Baseline file is an empty JSON document ([] carries no baseline): $path — "
+                . "delete it to take a first-run baseline from this run, "
+                . "or re-accept one with --baseline-out $path",
+                2,
+            );
         }
 
         if (!isset($decoded['version']) || !is_int($decoded['version'])) {

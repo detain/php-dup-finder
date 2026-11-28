@@ -187,6 +187,41 @@ final class BaselineAppendixEndToEndTest extends TestCase
         $this->assertStringContainsString('no clusters above threshold — clean.', $compare['stdout']);
     }
 
+    public function testCorruptBaselineCompareKeepsExit2AdviceContract(): void
+    {
+        // M-1 (E4 r1): a corrupt --baseline file in compare mode must land
+        // on the SAME door the pre-4.4 gate used — exit 2 plus the named
+        // repair advice. The dispositions door defers its code-2 failures
+        // so the curated gate door below renders them after the report,
+        // exactly the base 940efc8 shape.
+        $baseline = $this->tmp . '/corrupt.json';
+        file_put_contents($baseline, '{"version": 4, "clu');
+
+        $run = $this->cli(['analyze', $this->tree, '--baseline', $baseline]);
+        $this->assertSame(2, $run['exit'], $run['combined']);
+        $this->assertStringContainsString('not valid JSON', $run['combined']);
+        $this->assertStringContainsString('re-accept with --baseline-out', $run['combined']);
+    }
+
+    public function testCorruptPriorFileIsHealedByReAccept(): void
+    {
+        // M-1 (E4 r1): the documented escape hatch — re-accepting with
+        // --baseline-out over a corrupt file must WORK: loud warning,
+        // exit 0, and the file healed to a valid baseline (no decisions
+        // this run, so the classic v3 shape).
+        $reap = $this->tmp . '/reaccept.json';
+        file_put_contents($reap, '{"version"');
+
+        $run = $this->cli(['analyze', $this->tree, '--baseline', $reap, '--baseline-out', $reap]);
+        $this->assertSame(0, $run['exit'], $run['combined']);
+        $this->assertStringContainsString('phpdup: warning:', $run['combined']);
+
+        $raw = json_decode((string)file_get_contents($reap), true);
+        $this->assertIsArray($raw, 'the healed baseline must be valid JSON');
+        $this->assertSame(3, $raw['version']);
+        $this->assertArrayNotHasKey('dispositions', $raw, 'no decisions -> byte-classic v3');
+    }
+
     public function testNoDecisionsKeepsTheReportByteShape(): void
     {
         // Guard for the default posture: a plain run with no flags and no

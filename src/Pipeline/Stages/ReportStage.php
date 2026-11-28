@@ -354,9 +354,24 @@ final class ReportStage implements CooperativeStageInterface
             static fn(array $row): bool => ($row['kind'] ?? null) === 'directive',
         ));
         if ($config->accepted !== [] || $directiveRows !== [] || $config->baselineFile !== null) {
-            $registryDispositions = $config->baselineFile !== null
-                ? (new BaselineStore(scanRoots: $config->paths))->readDispositions($config->baselineFile)
-                : [];
+            $registryDispositions = [];
+            if ($config->baselineFile !== null) {
+                try {
+                    $registryDispositions = (new BaselineStore(scanRoots: $config->paths))
+                        ->readDispositions($config->baselineFile);
+                } catch (\RuntimeException $e) {
+                    // M-1 (E4 r1): a door-level corrupt baseline must not
+                    // pre-empt the curated gate door below, which names the
+                    // same repair at exit 2 AFTER the report renders (the
+                    // base 940efc8 shape), and must not kill a --baseline-out
+                    // refresh that exists precisely to heal the file. Only
+                    // the code-2 door arms are deferred; record-level
+                    // garbage still dies loudly right here.
+                    if ($e->getCode() !== 2) {
+                        throw $e;
+                    }
+                }
+            }
             if ($registryDispositions !== [] || $config->accepted !== [] || $directiveRows !== []) {
                 $baselineFilter = new BaselineFilter(scanRoots: $config->paths);
                 $split = $baselineFilter->split($clusters, $registryDispositions, $config->accepted, $directiveRows);

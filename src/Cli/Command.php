@@ -2047,9 +2047,32 @@ HELP;
             foreach (BaselineFilter::persistableRows($appendixRows) as $row) {
                 $incomingDispositions[(string)$row['finding_id']] = BaselineDisposition::fromAppendixRow($row);
             }
-            $priorPath = $config->baselineOutFile ?? $config->baselineFile;
+            // The prior dispositions only ever feed a WRITE (the
+            // --baseline-out refresh or the first-run write, whose file
+            // by definition has no prior). A compare-only run therefore
+            // never reads the prior here — its corrupt-file fate belongs
+            // to the curated door below, preserving base's single loud
+            // refusal at exit 2.
+            $priorPath = $config->baselineOutFile;
+            $priorDispositions = [];
+            if ($priorPath !== null) {
+                try {
+                    $priorDispositions = $baselineStore->readDispositions($priorPath);
+                } catch (\RuntimeException $e) {
+                    // M-1 (E4 r1): the write legs overwrite by contract, so
+                    // a corrupt PRIOR file must not close its own escape
+                    // hatch — warn loudly, carry this run's decisions, and
+                    // heal the file. Record-level garbage (code 0) still
+                    // refuses to be laundered by a blind overwrite.
+                    if ($e->getCode() !== 2) {
+                        throw $e;
+                    }
+                    $output->writeln('<comment>phpdup: warning: ' . self::escapeMarkup($e->getMessage())
+                        . ' — writing a fresh baseline to ' . $priorPath . '</comment>');
+                }
+            }
             $mergedDispositions = BaselineStore::mergeDispositions(
-                $priorPath !== null ? $baselineStore->readDispositions($priorPath) : [],
+                $priorDispositions,
                 $incomingDispositions,
             );
 

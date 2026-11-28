@@ -154,6 +154,32 @@ final class BaselineAppendixTest extends TestCase
         $this->assertStringContainsString('Facc4444', $rendered);
     }
 
+    public function testCliScrubsControlBytesFromUntrustedFields(): void
+    {
+        // M-2 (E4 r1): directive reasons are verbatim source-comment text
+        // and paths/ids come from registry records — every one of them is
+        // attacker-influenced in a scanned repo. The CLI leg must apply the
+        // file's own ControlText scrub (the output-046 posture every other
+        // free-text placement follows), not print raw terminal-driving
+        // bytes: an ESC sequence in a note may never reach the operator.
+        $out = $this->buffered();
+        (new CliReporter())->render($this->report([], [
+            $this->row("Faaa\x00111", 'directive', [
+                'directive_file' => "src/\x1b[2Jevil.php",
+                'directive_line' => 7,
+                'note' => "cleared\x1b]0;title\x1b\\\nsecond line",
+                'files' => ["src/k\x00er.php", "src/ok.php"],
+                'accepted_at' => "2026-11-21T08:00:00\x1b+00:00",
+            ]),
+        ]), $out);
+        $rendered = $out->fetch();
+
+        $this->assertStringNotContainsString("\x1b", $rendered, 'no escape byte may reach the terminal');
+        $this->assertStringNotContainsString("\x00", $rendered);
+        $this->assertStringContainsString("\u{FFFD}", $rendered, 'forged bytes ride the substitute marker');
+        $this->assertStringContainsString('second line', $rendered, 'the note still reads, just defanged');
+    }
+
     // ------------------------------------------------------------------
     // HTML
     // ------------------------------------------------------------------

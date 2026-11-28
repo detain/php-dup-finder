@@ -186,17 +186,25 @@ final class CliReporter
         ), $theme));
 
         foreach ($rows as $row) {
-            $id = (string)($row['finding_id'] ?? '?');
+            // M-2 (E4 r1): note / paths / ids are attacker-influenced in a
+            // scanned repo (directive reason text is verbatim source-comment
+            // tail; registry files are editable records). Every one rides
+            // the file's own ControlText scrub — the same output-046
+            // posture the rationale and hole-name legs already follow. The
+            // HTML leg escapes; the CLI leg must not print raw.
+            $id = self::scrub((string)($row['finding_id'] ?? '?'));
             $status = (string)($row['status'] ?? BaselineDisposition::STATUS_ACCEPTED);
             $source = (string)($row['source'] ?? 'registry');
             $bits = ["  $id  $status ($source"];
             if ($source === 'directive' && isset($row['directive_file'])) {
-                $bits[0] .= ', ' . $row['directive_file'] . ':' . (int)($row['directive_line'] ?? 0);
+                $bits[0] .= ', ' . self::scrub((string)$row['directive_file'])
+                    . ':' . (int)($row['directive_line'] ?? 0);
             }
             $bits[0] .= ')';
 
             if (($row['resurfaced'] ?? false) === true) {
-                $bits[] = 'RESURFACED (was accepted as ' . (string)($row['accepted_id'] ?? '?') . ' — re-accept or remove the entry)';
+                $bits[] = 'RESURFACED (was accepted as ' . self::scrub((string)($row['accepted_id'] ?? '?'))
+                    . ' — re-accept or remove the entry)';
             } elseif (($row['absent'] ?? false) === true) {
                 $bits[] = 'not found this run';
             } elseif ($status === BaselineDisposition::STATUS_ACCEPTED) {
@@ -206,13 +214,14 @@ final class CliReporter
             $files = (array)($row['files'] ?? []);
             if ($files !== []) {
                 $shown = array_slice($files, 0, 3);
-                $bits[] = implode(', ', $shown) . (count($files) > 3 ? sprintf(' (+%d files)', count($files) - 3) : '');
+                $bits[] = implode(', ', array_map(self::scrub(...), array_map('strval', $shown)))
+                    . (count($files) > 3 ? sprintf(' (+%d files)', count($files) - 3) : '');
             }
             if (isset($row['note']) && is_string($row['note']) && $row['note'] !== '') {
-                $bits[] = '"' . $row['note'] . '"';
+                $bits[] = '"' . self::scrub($row['note']) . '"';
             }
             if (isset($row['accepted_at']) && is_string($row['accepted_at']) && $status === BaselineDisposition::STATUS_UNRESOLVED) {
-                $bits[] = 'since ' . $row['accepted_at'];
+                $bits[] = 'since ' . self::scrub($row['accepted_at']);
             }
 
             $out->writeln(implode('  ', $bits));

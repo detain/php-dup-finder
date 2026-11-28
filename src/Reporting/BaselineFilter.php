@@ -209,7 +209,7 @@ final class BaselineFilter
     {
         $rows = [];
         foreach ($appendix as $row) {
-            // Only directive (source 'live') and config acceptances persist —
+            // Only directive (source 'directive') and config acceptances persist —
             // registry rows already live in the file; unresolved and resurfaced
             // rows never re-accept a drifted finding.
             $source = $row['source'] ?? null;

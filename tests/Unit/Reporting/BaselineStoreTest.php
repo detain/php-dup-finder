@@ -928,6 +928,62 @@ final class BaselineStoreTest extends TestCase
         }
     }
 
+    /**
+     * M-1 (E4 r1): door-level corruption on the dispositions read must carry
+     * the SAME repair advice and exception code 2 as the curated
+     * readBaseline() once-055 arms — the console surface maps code 2 to the
+     * CLI's exit-2 door, and the message names the --baseline-out recovery.
+     * Record-level garbage (the test above) stays code 0 by contrast.
+     */
+    public function testReadDispositionsDoorCorruptionCarriesAdviceAndExitCode2(): void
+    {
+        $store = new BaselineStore();
+
+        $empty = $this->tmpDir . '/empty.json';
+        file_put_contents($empty, '');
+        try {
+            $store->readDispositions($empty);
+            $this->fail('an empty baseline must refuse with the repair advice');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(2, $e->getCode(), 'door corruption rides the exit-2 code contract');
+            $this->assertStringContainsString('Baseline file is empty', $e->getMessage());
+            $this->assertStringContainsString('--baseline-out', $e->getMessage());
+        }
+
+        $truncated = $this->tmpDir . '/truncated.json';
+        file_put_contents($truncated, '{"version": 4, "clu');
+        try {
+            $store->readDispositions($truncated);
+            $this->fail('truncated JSON must refuse with the repair advice');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(2, $e->getCode());
+            $this->assertStringContainsString('not valid JSON', $e->getMessage());
+            $this->assertStringContainsString('corrupt or truncated', $e->getMessage());
+        }
+
+        $emptyDoc = $this->tmpDir . '/empty-doc.json';
+        file_put_contents($emptyDoc, '[]');
+        try {
+            $store->readDispositions($emptyDoc);
+            $this->fail('an empty JSON document must refuse with the repair advice');
+        } catch (\RuntimeException $e) {
+            $this->assertSame(2, $e->getCode());
+            $this->assertStringContainsString('empty JSON document', $e->getMessage());
+        }
+
+        // Posture split: version-mismatch (a well-formed file on an old
+        // contract) keeps the curated bare code-0 voice, NOT the 2-door —
+        // the same arm readBaseline() takes (pinned in the version tests).
+        $v99 = $this->tmpDir . '/v99.json';
+        file_put_contents($v99, json_encode(['version' => 99, 'clusters' => []]));
+        try {
+            $store->readDispositions($v99);
+            $this->fail('an unsupported version must refuse loudly');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('expected 3 or 4', $e->getMessage());
+        }
+    }
+
     public function testDispositionsFromClustersCapturesProvenance(): void
     {
         // Members point at REAL temp files so mtimes are observed data.

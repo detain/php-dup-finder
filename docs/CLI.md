@@ -291,6 +291,8 @@ file), in-code directives (`// @phpdup-ignore <finding-id>` or
 `// @phpdup-ignore *`, optionally followed by a free-text reason, inside
 one of the finding's member files — a directive can only accept findings
 that touch its own file), and the root `accepted` list in `phpdup.json`.
+A directive whose token matches no finding id (and is not `*`) is inert —
+a bare reason text is never an acceptance.
 Persisting is NEVER the default (FunctionNameRegistry posture): decisions
 reach a file only through the explicit `--baseline-out` / first-run-write
 legs above. An accepted current finding leaves the main report — CLI,
