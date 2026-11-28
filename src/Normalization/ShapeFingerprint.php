@@ -254,8 +254,16 @@ final class ShapeFingerprint
             $row .= ':ext:' . $classLike->extends->toString();
         }
         $implements = [];
-        if ($classLike instanceof Node\Stmt\Class_ || $classLike instanceof Node\Stmt\Interface_ || $classLike instanceof Node\Stmt\Enum_) {
+        if ($classLike instanceof Node\Stmt\Class_ || $classLike instanceof Node\Stmt\Enum_) {
             foreach ($classLike->implements as $iface) {
+                $implements[] = $iface->toString();
+            }
+        } elseif ($classLike instanceof Node\Stmt\Interface_) {
+            // php-parser 5: an interface's parent interfaces live in
+            // ->extends (there is no $implements on Interface_). They are
+            // the doc's implemented-interfaces token for that species —
+            // merged into the same sorted bucket.
+            foreach ($classLike->extends as $iface) {
                 $implements[] = $iface->toString();
             }
         }

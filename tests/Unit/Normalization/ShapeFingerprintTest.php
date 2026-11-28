@@ -76,10 +76,10 @@ final class ShapeFingerprintTest extends TestCase
     public function testMemberSignaturesCoverInterfaceEnumAndTraitSpecies(): void
     {
         $iface = ShapeFingerprint::memberSignatures($this->classNode(
-            'interface I { public const OK = true; public function a(): void; public function b(int ...$xs): self; }'
+            'interface I extends Base { public const OK = true; public function a(): void; public function b(int ...$xs): self; }'
         ));
         $this->assertSame([
-            'kind:interface',
+            'kind:interface:impl:Base',
             'c:public:OK',
             'm:public:a/0:void',
             'm:public:b/1:self',
