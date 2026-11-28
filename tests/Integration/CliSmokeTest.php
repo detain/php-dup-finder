@@ -898,7 +898,13 @@ final class CliSmokeTest extends TestCase
         // adds 4 files (29 -> 33) and +1 cluster / +10 dup lines from the
         // member methods of the twin/template declaration pairs — the
         // class shapes themselves are never auto-extracted (opt-in only),
-        // so default-roster payloads and the goldens are untouched.
+        // so default-roster payloads and the goldens are untouched. Re-pin
+        // W2a era (+item 5.2 .gitignore corpus, unioned with 2.3 above):
+        // tests/Fixtures/gitignore ships 23 .php data files; 4 of them sit
+        // under 'build/'/'vendor/'-shaped names and stay swept by the
+        // DEFAULT excludes (gitignore honoring is opt-in, off here), so the
+        // corpus grows 33 -> 52 files, clusters 30 -> 31 and duplicated_lines
+        // 666 -> 685, all zero-parse-error, balance law intact.
         $fixtures = realpath(__DIR__ . '/../Fixtures');
         $this->assertIsString($fixtures);
 
@@ -912,10 +918,10 @@ final class CliSmokeTest extends TestCase
         $decoded = json_decode((string) file_get_contents($this->tmp . '/r.json'), true);
         $s = $decoded['summary'];
         $this->assertSame('1.8', $decoded['schema_version']);
-        $this->assertSame(33, $s['files_scanned']);
+        $this->assertSame(52, $s['files_scanned']);
         $this->assertSame(0, $s['parse_errors'], 'the fixture corpus must parse cleanly');
-        $this->assertSame(30, $s['clusters'], 'planted fixture clones must keep being found (re-pin only WITH fixture changes)');
-        $this->assertSame(666, $s['duplicated_lines']);
+        $this->assertSame(31, $s['clusters'], 'planted fixture clones must keep being found (re-pin only WITH fixture changes)');
+        $this->assertSame(685, $s['duplicated_lines']);
         $this->assertSame(
             $s['files_scanned'],
             $s['files_reused'] + $s['files_processed'] + $s['files_without_blocks'] + $s['parse_errors'],

@@ -1,0 +1,16 @@
+# comment line
+build/
+*.log
+!keep.log
+/rootonly.php
+mid/deep.php
+sub/deep/
+excluded/
+secret[0-9].php
+\.esc.php
+*.tmp
+!important.tmp
+trail.php  
+keepsp.php\ 
+revdir/
+!revdir/
