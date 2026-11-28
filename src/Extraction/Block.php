@@ -99,6 +99,25 @@ final class Block
     public bool $fragmentWhole = false;
 
     /**
+     * Item 7.2b (opt-in 'html_script' kind): the fragment LINEAGE of a
+     * synthetic fold — one class row per member of the block's wrapper
+     * statement list, in member order:
+     *   'markup' — a whole raw-HTML run (an uncut T_INLINE_HTML span),
+     *   'slice'  — a position-marked text-window piece cut out of a raw
+     *              run (the run's bytes the window begins or ends inside),
+     *   'stmt'   — a real PHP statement that lives inside the window.
+     * Empty for every other species (same doctrine as the fragment
+     * fields above). Plain scalar list, so the IndexStore blob
+     * round-trips it exactly — a warm replay re-derives the wrapper from
+     * the file and position-MATCHES it against these rows
+     * ({@see \Phpdup\Extraction\BlockAstLoader}'s html_script arm) —
+     * never from a re-walk the replay cannot perform.
+     *
+     * @var list<string>
+     */
+    public array $fragmentLineage = [];
+
+    /**
      * Item 2.3 (opt-in 'class' kind): the doc's shape tokens — one
      * readable row per member plus the leading declaration row (see
      * {@see \Phpdup\Normalization\ShapeFingerprint::memberSignatures()}).

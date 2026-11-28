@@ -101,6 +101,40 @@ use SplObjectStorage;
  * relocatable by the loader (a real parse-tree declaration); what it
  * refuses is apply/patch — a whole-class extraction is out of v1 scope
  * ({@see \Phpdup\Refactor\ClassKindApplyRefusal}).
+ *
+ * Item 7.2b adds a sixteenth kind, 'html_script': the CONTENT of inline
+ * <script> windows of a template. Before 7.2b an inline-HTML run was only
+ * ever seen OUTSIDE the &lt;?php bubbles — groupTopLevel() drops
+ * Stmt\InlineHTML as "structure, not logic" — so two .phtml files sharing
+ * a byte-identical JS block behind different HTML chrome were invisible to
+ * every species. The 7.2b leg scans the RAW-TEXT surface with the same
+ * one-walker discipline: every statement list the §5c miner collects (plus
+ * fragment-style top-level buckets that KEEP the InlineHTML runs as
+ * position-marked sentinels where the script fold drops them — see
+ * {@see self::groupTopLevelFragments}) is streamed through a window
+ * scanner ({@see self::scanScriptWindows}): an opener &lt;script ...&gt;
+ * without a src= attribute opens a window; the body up to the matching
+ * &lt;/script — possibly ACROSS ?&gt;/&lt;?php escapes, i.e. across
+ * several InlineHTML runs with real PHP statements in between — is the
+ * fold. The fold's wrapper carries the FULL fragment sequence: raw-text
+ * runs as markup/slice sentinel entries (slices capped at
+ * {@see self::SCRIPT_TEXT_WINDOW_BYTES} bytes, position-marked so line
+ * identity survives chunking), real statements in between as real Nodes,
+ * and the Block records the per-member lineage ({@see
+ * Block::$fragmentLineage}: 'markup' | 'slice' | 'stmt') so the loader can
+ * re-derive the wrapper positionally from a fresh parse
+ * ({@see \Phpdup\Extraction\BlockAstLoader}'s html_script arm) — raw text
+ * hashes AS raw text through the shared AstSerializer/SubtreeFold formula
+ * (identity across runs; the escaped form &amp;#104;&amp;#101;... never
+ * equals &lt;h1&gt; because the entity bytes ride the token stream
+ * verbatim). language='text/babel' (and type= variants) are ordinary
+ * windows: v1 folds the raw text it holds, no JS grammar. OPT-IN ONLY like
+ * the three rows above (never implicit — it adds blocks to every
+ * template-bearing corpus), oversized windows pack with WindowPacker like
+ * the script fold (the pieces carry kind 'window', existing refusal law),
+ * and mixed-language APPLY/patch is refused in v1
+ * ({@see \Phpdup\Refactor\HtmlFragmentApplyRefusal}) — extraction,
+ * clustering, signatures and reporting all work.
  */
 final class BlockExtractor
 {
@@ -121,6 +155,10 @@ final class BlockExtractor
         // species); the never-implicit law is enforced at the MINT
         // (classifyKind), see CLASS_KIND.
         'class',
+        // Item 7.2b: opt-in inline-<script> content windows of templates —
+        // never implicit like the three rows above; classifyKind never
+        // mints it, only extract()'s 7.2b leg does (see HTML_SCRIPT_KIND).
+        'html_script',
     ];
 
     /**
@@ -153,6 +191,36 @@ final class BlockExtractor
     public const FRAGMENT_MAX_STATEMENTS = 40;
 
     /**
+     * Item 7.2b: the synthetic kind of an inline-&lt;script&gt; content
+     * window of a template. It IS in ALL_KINDS (a user selects it with
+     * --kinds, like 'script' and 'fragment') but classifyKind never mints
+     * it — only the 7.2b leg of extract() does. The mint is a FULL
+     * fragment fold: raw-HTML runs ride as position-marked sentinel
+     * entries, real statements in between ride as real Nodes, and
+     * {@see Block::$fragmentLineage} records which member is which so the
+     * loader can re-derive the wrapper from a fresh parse. apply/patch
+     * refuse it in v1 ({@see \Phpdup\Refactor\HtmlFragmentApplyRefusal}).
+     */
+    public const HTML_SCRIPT_KIND = 'html_script';
+
+    /**
+     * Item 7.2b: largest raw-text sentinel slice the window scanner cuts
+     * out of an InlineHTML run when a window begins or ends mid-run (whole
+     * untouched interior runs are kept as the original node). The cap
+     * bounds what ONE member can contribute to a fold's node weight; it is
+     * a v1 constant, not a knob (the mission's zero-new-knobs ruling).
+     */
+    public const SCRIPT_TEXT_WINDOW_BYTES = 4096;
+
+    /**
+     * Item 7.2b: bytes of raw markup counted as ONE pseudo-node when
+     * weighting a fold (mirrors the ~avg AST node size so HTML runs and
+     * statements share one weight currency; the same formula feeds the
+     * minSize/maxSize gates and WindowPacker for this species).
+     */
+    public const SCRIPT_PSEUDO_NODE_BYTES = 32;
+
+    /**
      * Item 1.2: the synthetic kind of a scan window cut out of an
      * oversized block. Deliberately NOT in ALL_KINDS: a window is a
      * byproduct of the size ceiling, never something the user selects
@@ -177,9 +245,10 @@ final class BlockExtractor
 
     /**
      * @param list<string> $allowedKinds Empty list = accept all twelve
-     *        traversable kinds — the 1.3 'script' and 2.1 'fragment' fold
-     *        kinds are never implicit, they must be named (drift-pinned by
-     *        BlockExtractorTest and ScriptKindTest).
+     *        traversable kinds — the 1.3 'script', 2.1 'fragment', 2.3
+     *        'class' and 7.2b 'html_script' fold kinds are never implicit,
+     *        they must be named (drift-pinned by BlockExtractorTest and
+     *        ScriptKindTest).
      */
     public function __construct(
         private readonly int $minSize = 8,
@@ -257,6 +326,7 @@ final class BlockExtractor
 
         $blocks = [];
         $oversized = 0;
+        $htmlScript = in_array(self::HTML_SCRIPT_KIND, $this->allowedKinds, true);
         $traverser = new NodeTraverser();
         $visitor = new BlockVisitor(
             file: $file,
@@ -265,7 +335,12 @@ final class BlockExtractor
             allowedKinds: $this->allowedKinds,
             sink: function (Block $b) use (&$blocks): void { $blocks[] = $b; },
             windowOversized: $this->windowOversized,
-            mineLists: in_array(self::FRAGMENT_KIND, $this->allowedKinds, true),
+            // §5c one-walker law: the 7.2b leg REUSES the lists the
+            // fragment miner collects — the gate widens to "either species
+            // named", collection stays demand-gated, and the wire contract
+            // (lastStatementLists() = fragment product only, filled ONLY
+            // under 'fragment') is untouched for PreprocessWorker.
+            mineLists: in_array(self::FRAGMENT_KIND, $this->allowedKinds, true) || $htmlScript,
         );
         $traverser->addVisitor($visitor);
         $traverser->traverse($traversable);
@@ -412,6 +487,109 @@ final class BlockExtractor
             }
         }
 
+        // Item 7.2b: the inline-<script> window leg. With the kind unnamed
+        // it never runs; named, the sequences are the §5c lists the SAME
+        // visitor already collected (collection is gate-independent — one
+        // walker, the 5c law) plus the fragment-style top-level buckets
+        // that KEEP the InlineHTML sentinels the script fold drops. Each
+        // window mints as a FULL fragment fold: raw-text runs ride as
+        // 'markup'/'slice' sentinel members, real statements in between as
+        // real Nodes, Block::$fragmentLineage records the per-member
+        // classes so BlockAstLoader re-derives the wrapper positionally
+        // from a fresh parse. Weight currency: one pseudo-node per
+        // SCRIPT_PSEUDO_NODE_BYTES bytes of raw text (a class constant,
+        // not a knob) — the SAME gates as every other species decide
+        // emission; an oversized window packs via WindowPacker (pieces
+        // carry kind 'window', existing refusal law).
+        if ($htmlScript) {
+            $sequences = [];
+            foreach ($visitor->stmtLists as $list) {
+                $sequences[] = [
+                    'stmts' => $list['stmts'],
+                    'namespace' => $list['namespace'],
+                    'class' => $list['class'],
+                ];
+            }
+            foreach (self::groupTopLevelFragments($stmts) as $group) {
+                $sequences[] = [
+                    'stmts' => $group['stmts'],
+                    'namespace' => $group['namespace'],
+                    'class' => null,
+                ];
+            }
+            // Weight closure for this leg: markup runs in bytes, synthetic
+            // wrappers summed over their members (WindowPacker's count
+            // seam re-enters here for its wrappers), real statements via
+            // the visitor's memoized node seam.
+            $textAware = static function (Node $n) use ($visitor, &$textAware): int {
+                if ($n instanceof Stmt\InlineHTML) {
+                    return self::markupWeight($n->value);
+                }
+                if ($n instanceof Stmt\Block) {
+                    $w = 1;
+                    foreach ($n->stmts as $member) {
+                        $w += $textAware($member);
+                    }
+                    return $w;
+                }
+                return $visitor->countNodes($n);
+            };
+            foreach ($sequences as $seq) {
+                foreach (self::scanScriptWindows($seq['stmts']) as $win) {
+                    if ($win['startLine'] <= 0 || $win['endLine'] <= 0
+                        || $win['endLine'] < $win['startLine']) {
+                        continue; // same line-guard the folds apply
+                    }
+                    $size = self::sequenceWeight($win['members'], $textAware);
+                    if ($size < $this->minSize) {
+                        continue; // boilerplate posture: tiny windows are noise
+                    }
+                    if ($size > $this->maxSize) {
+                        $pack = $this->windowOversized
+                            ? WindowPacker::emitWindowRuns(
+                                file: $file,
+                                namespace: $seq['namespace'],
+                                class: $seq['class'],
+                                name: null,
+                                stmts: $win['members'],
+                                minSize: $this->minSize,
+                                maxSize: $this->maxSize,
+                                count: $textAware,
+                                sink: function (Block $b) use (&$blocks): void {
+                                    if ($b->ast instanceof Stmt\Block) {
+                                        $b->fragmentLineage = self::lineageClasses($b->ast->stmts);
+                                    }
+                                    $blocks[] = $b;
+                                },
+                            )
+                            : ['emitted' => 0, 'droppedStatements' => 0];
+                        if ($pack['emitted'] > 0) {
+                            $oversized += $pack['droppedStatements'];
+                        } else {
+                            $oversized++;
+                        }
+                        continue;
+                    }
+                    $wrapper = new Stmt\Block(array_values($win['members']), [
+                        'startLine' => $win['startLine'],
+                        'endLine' => $win['endLine'],
+                    ]);
+                    $block = new Block(
+                        file: $file,
+                        range: new LineRange($win['startLine'], $win['endLine']),
+                        kind: self::HTML_SCRIPT_KIND,
+                        namespace: $seq['namespace'],
+                        class: $seq['class'],
+                        name: null,
+                        ast: $wrapper,
+                    );
+                    $block->size = $size;
+                    $block->fragmentLineage = $win['classes'];
+                    $blocks[] = $block;
+                }
+            }
+        }
+
         $this->lastOversizedDrops = $oversized;
         return $blocks;
     }
@@ -531,17 +709,48 @@ final class BlockExtractor
      */
     public static function groupTopLevel(array $stmts): array
     {
+        return self::bucketGroups($stmts, false);
+    }
+
+    /**
+     * Item 7.2b: the script fold's bucket law WITH the InlineHTML
+     * restriction lifted — the html_script sequences need the raw-text
+     * surface the fold drops ("structure, not logic" is precisely the
+     * logic THIS species folds). Bucketing, bracketed-namespace scoping,
+     * root-bucket-first order and empty-drop are IDENTICAL to
+     * {@see self::groupTopLevel()}, so the two fold kinds walk the same
+     * PHP runs and differ only by the markup sentinels.
+     *
+     * @param list<Node\Stmt> $stmts
+     * @return list<array{namespace: ?string, stmts: list<Node\Stmt>}>
+     */
+    public static function groupTopLevelFragments(array $stmts): array
+    {
+        return self::bucketGroups($stmts, true);
+    }
+
+    /**
+     * Shared bucketing of {@see self::groupTopLevel()} /
+     * {@see self::groupTopLevelFragments()}; $keepHtml is the ONLY
+     * behavioural difference (the script fold has dropped inline HTML
+     * since item 1.3 — zero behavior change through this refactor).
+     *
+     * @param list<Node\Stmt> $stmts
+     * @return list<array{namespace: ?string, stmts: list<Node\Stmt>}>
+     */
+    private static function bucketGroups(array $stmts, bool $keepHtml): array
+    {
         $groups = [];
-        $foldable = static function (Node\Stmt $s): bool {
+        $foldable = static function (Node\Stmt $s) use ($keepHtml): bool {
             return !($s instanceof Stmt\ClassLike)      // class/interface/trait/enum
                 && !($s instanceof Stmt\Function_)
                 && !($s instanceof Stmt\Use_)           // covers GroupUse (extends Use_)
                 && !($s instanceof Stmt\Declare_)
-                && !($s instanceof Stmt\InlineHTML)
                 && !($s instanceof Stmt\Nop)
                 && !($s instanceof Stmt\Const_)
                 && !($s instanceof Stmt\Namespace_)     // folded via its own bucket
-                && !($s instanceof Stmt\HaltCompiler);
+                && !($s instanceof Stmt\HaltCompiler)
+                && ($keepHtml || !($s instanceof Stmt\InlineHTML));
         };
 
         $root = [];
@@ -566,6 +775,281 @@ final class BlockExtractor
         // Empty-scope buckets (bracketed namespace with only declarations)
         // carry nothing to fold — drop them.
         return array_values(array_filter($groups, static fn (array $g): bool => $g['stmts'] !== []));
+    }
+
+    /**
+     * Item 7.2b: attribute marking a synthetic raw-text SLICE (a piece cut
+     * out of an InlineHTML run where a window began or ended). Real parser
+     * output never carries it — the lineage classifier reads it back
+     * ('slice' vs 'markup') and the IndexStore blob round-trip preserves
+     * both the value bytes and the line attributes (scalars only).
+     */
+    private const HTML_SLICE_ATTR = 'phpdupHtmlSlice';
+
+    /**
+     * Item 7.2b: stream a statement sequence through the raw-text surface
+     * and return every inline-&lt;script&gt; window it carries. Law (v1,
+     * all disclosed postures):
+     *
+     *  - an opener {@script-tag-regex} with a src= attribute is an
+     *    EXTERNAL script: skipped whole (past its closer when one is in
+     *    the same text run) — the file's own bytes carry no content to
+     *    fold;
+     *  - otherwise the window runs from just past the opener to the next
+     *    {@script-close-regex} — POSSIBLY ACROSS ?&gt;/&lt;?php escapes,
+     *    i.e. across several runs with real statements in between (those
+     *    statements ride the fold as 'stmt' members: the mixed-language
+     *    crux of the item);
+     *  - a window unclosed at the end of the SEQUENCE is DISCARDED — a
+     *    template that never closes cannot define a bounded fold;
+     *  - a {@script-close-regex} appearing inside PHP string content
+     *    (not raw text) is NOT tracked — v1 scans the raw-text surface
+     *    only (documented residual; the same posture language parsers
+     *    take on unbalanced fences).
+     *
+     * Interior runs the window only touches at its edges are cut into
+     * ≤ SCRIPT_TEXT_WINDOW_BYTES slices; an untouched whole run is kept
+     * as the ORIGINAL node (class 'markup'), so no-chrome windows hash
+     * identically whether or not slicing occurred elsewhere.
+     *
+     * @param list<Node\Stmt> $members
+     * @return list<array{members: list<Node\Stmt>, classes: list<string>, startLine: int, endLine: int}>
+     */
+    public static function scanScriptWindows(array $members): array
+    {
+        $windows = [];
+        /** @var null|array{members: list<Node\Stmt>, classes: list<string>, startLine: int, endLine: int} $cur */
+        $cur = null;
+        foreach ($members as $stmt) {
+            if (!$stmt instanceof Stmt\InlineHTML) {
+                if ($cur !== null) {
+                    $cur['members'][] = $stmt;
+                    $cur['classes'][] = 'stmt';
+                    $end = $stmt->getEndLine();
+                    if ($end > $cur['endLine']) {
+                        $cur['endLine'] = $end;
+                    }
+                }
+                continue;
+            }
+            $text = $stmt->value;
+            $len = strlen($text);
+            if ($len === 0) {
+                continue;
+            }
+            $base = $stmt->getStartLine();
+            $pos = 0;
+            while ($pos < $len) {
+                if ($cur === null) {
+                    if (preg_match('/<script\b[^>]*>/i', $text, $m, PREG_OFFSET_CAPTURE, $pos) !== 1) {
+                        break; // no further opener in this run
+                    }
+                    $tag = $m[0][0];
+                    $bodyStart = $m[0][1] + strlen($tag);
+                    if (preg_match('/\bsrc\s*=/i', $tag) === 1) {
+                        // External script: no inline content — skip past
+                        // its closer (or the run end; the closer of a
+                        // src-bearing tag is conventionally adjacent).
+                        $pos = $bodyStart;
+                        if (preg_match('/<\/script\b[^>]*>/i', $text, $cm, PREG_OFFSET_CAPTURE, $pos) === 1) {
+                            $pos = $cm[0][1] + strlen($cm[0][0]);
+                        } else {
+                            $pos = $len;
+                        }
+                        continue;
+                    }
+                    $cur = [
+                        'members' => [],
+                        'classes' => [],
+                        'startLine' => $base + substr_count($text, "\n", 0, $bodyStart),
+                        'endLine' => $base + substr_count($text, "\n", 0, $bodyStart),
+                    ];
+                    $pos = $bodyStart;
+                }
+                if (preg_match('/<\/script\b/i', $text, $cm, PREG_OFFSET_CAPTURE, $pos) === 1) {
+                    $close = $cm[0][1];
+                    self::pushTextSpan($cur, $stmt, $pos, $close, $base);
+                    $endLine = $base + substr_count($text, "\n", 0, $close);
+                    if ($endLine > $cur['endLine']) {
+                        $cur['endLine'] = $endLine;
+                    }
+                    if ($cur['members'] !== []) {
+                        $windows[] = $cur;
+                    }
+                    $cur = null;
+                    $pos = $close + \strlen('</script');
+                    continue;
+                }
+                // No closer in this run: everything left of the run
+                // belongs to the window, which STAYS OPEN into the next
+                // member (the ?-escape spanning that is the whole point).
+                self::pushTextSpan($cur, $stmt, $pos, $len, $base);
+                $lastLine = $base + substr_count($text, "\n", $pos, $len - $pos);
+                if ($lastLine > $cur['endLine']) {
+                    $cur['endLine'] = $lastLine;
+                }
+                break;
+            }
+        }
+        // $cur !== null here means an unclosed window at sequence end:
+        // DISCARDED (v1 law above).
+        return $windows;
+    }
+
+    /**
+     * Append [from, to) of one raw run to the open window: whole-run fast
+     * path keeps the original node ('markup'); cut pieces become synthetic
+     * position-marked InlineHTML slices ('slice'), line numbers carried
+     * through substr_count so a warm re-parse recomputes them identically.
+     *
+     * @param array{members: list<Node\Stmt>, classes: list<string>, startLine: int, endLine: int} $cur
+     */
+    private static function pushTextSpan(array &$cur, Stmt\InlineHTML $run, int $from, int $to, int $base): void
+    {
+        if ($to <= $from) {
+            return;
+        }
+        $value = $run->value;
+        if ($from === 0 && $to === strlen($value)) {
+            $cur['members'][] = $run;
+            $cur['classes'][] = 'markup';
+            return;
+        }
+        $offset = $from;
+        while ($offset < $to) {
+            $end = min($offset + self::SCRIPT_TEXT_WINDOW_BYTES, $to);
+            $piece = substr($value, $offset, $end - $offset);
+            $startLine = $base + substr_count($value, "\n", 0, $offset);
+            $endLine = $base + substr_count($value, "\n", 0, $end);
+            $cur['members'][] = new Stmt\InlineHTML($piece, [
+                'startLine' => $startLine,
+                'endLine' => $endLine,
+                self::HTML_SLICE_ATTR => true,
+            ]);
+            $cur['classes'][] = 'slice';
+            $offset = $end;
+        }
+    }
+
+    /**
+     * Item 7.2b: per-member lineage classes of a fold ('markup' | 'slice'
+     * | 'stmt'), positionally parallel to the wrapper statement list. The
+     * loader re-derives these from a fresh parse to POSITION-MATCH a warm
+     * block ({@see Block::$fragmentLineage}).
+     *
+     * @param list<Node> $members
+     * @return list<string>
+     */
+    public static function lineageClasses(array $members): array
+    {
+        $classes = [];
+        foreach ($members as $m) {
+            if ($m instanceof Stmt\InlineHTML) {
+                $classes[] = $m->getAttribute(self::HTML_SLICE_ATTR, false) === true ? 'slice' : 'markup';
+            } else {
+                $classes[] = 'stmt';
+            }
+        }
+        return $classes;
+    }
+
+    /**
+     * Weight of a raw-text run: one pseudo-node per
+     * SCRIPT_PSEUDO_NODE_BYTES bytes (floor 1 — a non-empty run is never
+     * free), so HTML and statements share one weight currency for the
+     * min/maxSize gates and WindowPacker.
+     */
+    private static function markupWeight(string $value): int
+    {
+        $len = strlen($value);
+        if ($len <= 0) {
+            return 0;
+        }
+        return max(1, (int) ceil($len / self::SCRIPT_PSEUDO_NODE_BYTES));
+    }
+
+    /**
+     * Fold weight: 1 (the wrapper) plus every member under $stmtWeight —
+     * InlineHTML members by {@see self::markupWeight()}, the rest through
+     * the caller's seam (visitor memo at the mint, fresh nodeCount in
+     * {@see self::htmlScriptWindows()}; both equal the same number).
+     *
+     * @param list<Node\Stmt> $members
+     */
+    public static function sequenceWeight(array $members, \Closure $stmtWeight): int
+    {
+        $w = 1;
+        foreach ($members as $m) {
+            $w += $m instanceof Stmt\InlineHTML
+                ? self::markupWeight($m->value)
+                : $stmtWeight($m);
+        }
+        return $w;
+    }
+
+    /**
+     * Item 7.2b: the GATE-FREE window set of a file — every inline
+     * &lt;script&gt; window its statement sequences carry, independent of
+     * minSize/maxSize/allowedKinds. extract()'s mint leg and
+     * BlockAstLoader's html_script relocation both see this SAME assembly
+     * (visitor §5c lists + fragment buckets + scanScriptWindows), so a
+     * fresh parse re-derives byte-identical wrappers for the loader's
+     * positional match. One throwaway collection walker per relocation —
+     * the sentinel roster blocks all minting and every size seam (the
+     * kind-gate returns before the count line), keeping it pure
+     * collection at list-walk cost.
+     *
+     * @param list<Node\Stmt> $topStmts
+     * @return list<array{members: list<Node\Stmt>, classes: list<string>, startLine: int, endLine: int, namespace: ?string, class: ?string, weight: int}>
+     */
+    public static function htmlScriptWindows(string $file, array $topStmts): array
+    {
+        $traversable = [];
+        foreach ($topStmts as $stmt) {
+            if (CacheBlob::exceedsDepth([$stmt])) {
+                continue; // same depth-prune extract() applies
+            }
+            $traversable[] = $stmt;
+        }
+        $visitor = new BlockVisitor(
+            $file,
+            0,
+            PHP_INT_MAX,
+            ['@no-mint@'],
+            static function (Block $b): void {},
+            true,
+            true,
+        );
+        $traverser = new NodeTraverser();
+        $traverser->addVisitor($visitor);
+        $traverser->traverse($traversable);
+
+        $sequences = [];
+        foreach ($visitor->stmtLists as $list) {
+            $sequences[] = [
+                'stmts' => $list['stmts'],
+                'namespace' => $list['namespace'],
+                'class' => $list['class'],
+            ];
+        }
+        foreach (self::groupTopLevelFragments($topStmts) as $group) {
+            $sequences[] = [
+                'stmts' => $group['stmts'],
+                'namespace' => $group['namespace'],
+                'class' => null,
+            ];
+        }
+        $stmtW = static fn (Node $n): int => AstSerializer::nodeCount($n);
+        $out = [];
+        foreach ($sequences as $seq) {
+            foreach (self::scanScriptWindows($seq['stmts']) as $win) {
+                $win['namespace'] = $seq['namespace'];
+                $win['class'] = $seq['class'];
+                $win['weight'] = self::sequenceWeight($win['members'], $stmtW);
+                $out[] = $win;
+            }
+        }
+        return $out;
     }
 }
 
