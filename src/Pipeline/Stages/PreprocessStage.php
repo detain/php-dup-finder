@@ -579,10 +579,23 @@ final class PreprocessStage implements CooperativeStageInterface
         // default); the demotion it feeds is armed by --scope at the
         // report seam. Fail-open lock notes join the run's skip-notes
         // channel (FileScanner lineage), never a silent swallow.
+        // m-2 (W2b r1 cure): the per-file stamp rides the scope arm.
+        // The ONLY ->vendored consumer (VendoredSection) is armed by a
+        // non-'all' --scope; a default scope=all run would pay one
+        // bounded 4 KiB header peek per unique file for a mark with no
+        // reader. The law-bearing funnel is ReportStage's restamp (runs
+        // unconditionally, repairs cache-replay marks before its split
+        // reads one), so skipping the preprocess stamp when unarmed
+        // cannot leak a stale mark: nothing demotes on that path. Lock
+        // notes stay honest either way — ReportStage merges the
+        // marker's notes into scanNotes on every run.
         $vendorMarker = \Phpdup\Scanning\VendorMarker::forRoots($config->paths);
+        $vendorArmed  = $config->scope !== \Phpdup\Reporting\ClusterScope::FILTER_ALL;
         foreach ($blocks as $b) {
             RepoLabels::stamp($b, $config->paths);
-            $vendorMarker->stamp($b);
+            if ($vendorArmed) {
+                $vendorMarker->stamp($b);
+            }
         }
         foreach ($vendorMarker->notes() as $note) {
             $state->scanNotes[] = $note;

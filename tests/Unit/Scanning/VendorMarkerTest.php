@@ -194,6 +194,79 @@ final class VendorMarkerTest extends TestCase
         self::assertSame('', $marker->describe('/definitely/not/on/disk/x.php')['signal']);
     }
 
+    public function testUnreadableLockFailsOpenWithNote(): void
+    {
+        // m-1 (r1): the IO-error arm, pinned beside its parse-error twin.
+        // The suite runs as a non-root uid (setUp would skip otherwise:
+        // root reads 0o000 files), so the chmod gate genuinely bites.
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            self::markTestSkipped('chmod-000 is not a gate for root');
+        }
+        $root = $this->tmp . '/appLockIO';
+        mkdir($root, 0o775, true);
+        $lock = $root . '/composer.lock';
+        file_put_contents($lock, (string) json_encode([
+            'packages'     => [['name' => 'someone/mail', 'version' => '1.0.0']],
+            'packages-dev' => [],
+        ]));
+        chmod($lock, 0o000);
+        try {
+            $marker = new VendorMarker([$root]);
+            self::assertCount(1, $marker->notes());
+            self::assertStringContainsString('unreadable composer.lock', $marker->notes()[0]);
+            self::assertSame(
+                '',
+                $marker->describe($root . '/include/mail/x.php')['signal'],
+                'an unreadable lock disables the leg, it never guesses',
+            );
+        } finally {
+            chmod($lock, 0o644); // keep tearDown unlink happy
+        }
+    }
+
+    // ------------------------------------------------------- M-1 (r1): root-boundary law
+
+    public function testCheckoutDirectoryNameNeverSpellsAPackage(): void
+    {
+        // The vacuous-gate hazard: a project checked out INTO a dir
+        // named like a declared package short name (~/www/mail with a
+        // lock declaring someone/mail) must NOT be all-marked. Leg 2
+        // sees only segments BELOW the scan-root boundary.
+        $root = $this->tmp . '/www/mail';
+        $this->writeLock($root, ['someone/mail']);
+
+        $marker = new VendorMarker([$root]);
+
+        // Before the r1 cure these BOTH returned composer_lock_path.
+        self::assertSame('', $marker->describe($root . '/src/Mailer.php')['signal']);
+        self::assertSame('', $marker->describe($root . '/src/Order.php')['signal']);
+
+        // The doc archetype under the root still marks — the cure
+        // costs the leg zero real detections.
+        self::assertSame(
+            ['signal' => VendorMarker::SIGNAL_LOCK_PATH, 'detail' => 'someone/mail'],
+            $marker->describe($root . '/include/mail/nusoapish.php'),
+        );
+
+        // And a real nested vendor tree under a colliding root still
+        // marks via leg 1 (full-path law unchanged).
+        self::assertSame(
+            VendorMarker::SIGNAL_VENDOR_DIR,
+            $marker->describe($root . '/scripts/bot1/vendor/pkg/tool.php')['signal'],
+        );
+    }
+
+    public function testAncestorSegmentsOutsideAnyRootNeverMark(): void
+    {
+        // /home/user/cache with a 'doctrine/cache'-style declaration:
+        // the run's roots are disjoint from the collision path.
+        $root = $this->tmp . '/proj';
+        $this->writeLock($root, ['doctrine/cache']);
+
+        $marker = new VendorMarker([$root]);
+        self::assertSame('', $marker->describe('/home/user/cache/lib/Router.php')['signal']);
+    }
+
     // ------------------------------------------------------------- stamping law
 
     public function testStampOverwritesStaleBlobMarks(): void

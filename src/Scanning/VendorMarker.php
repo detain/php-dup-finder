@@ -232,20 +232,37 @@ final class VendorMarker
 
         // Leg 2: composer.lock package-name path map, per declaring root
         // (longest prefix wins — same root-selection law as RepoLabels).
+        //
+        // M-1 (r1 cure): the matchable segments are those BELOW the
+        // matched root boundary only. An ancestor segment of the
+        // absolute path — the checkout directory itself included
+        // ('~/www/mail' holding a lock that declares someone/mail) —
+        // is the operator's machine layout, not a package shape the
+        // project vendored; matching it would mark the WHOLE tree and
+        // empty an armed --scope report vacuously. The doc archetype
+        // (nusoap committed at include/nusoap/ UNDER the root) needs
+        // nothing above the boundary, so the cure costs the leg zero
+        // real detections.
+        $lowerFile = strtolower(str_replace('\\', '/', $file));
         $best = null;
         foreach ($this->rootLocks as $entry) {
-            if (str_starts_with(strtolower(str_replace('\\', '/', $file)), $entry['prefix'])) {
+            if (str_starts_with($lowerFile, $entry['prefix'])) {
                 if ($best === null || strlen($entry['prefix']) > strlen($best['prefix'])) {
                     $best = $entry;
                 }
             }
         }
         if ($best !== null) {
+            // $dir is the lower-cased normalized dirname; the prefix is
+            // '<root>/' so substr at strlen-1 keeps the leading '/' of
+            // the remainder — the root's own basename drops out.
+            $rel     = substr($dir, strlen($best['prefix']) - 1);
+            $relSegs = $rel === '' || $rel === '/' ? [] : array_values(array_filter(explode('/', $rel), static fn(string $s): bool => $s !== ''));
             foreach ($best['packages'] as $pkg) {
-                if ($pkg['ns'] !== null && self::hasAdjacentSegments($segments, [$pkg['ns'], $pkg['short']])) {
+                if ($pkg['ns'] !== null && self::hasAdjacentSegments($relSegs, [$pkg['ns'], $pkg['short']])) {
                     return ['signal' => self::SIGNAL_LOCK_PATH, 'detail' => $pkg['full']];
                 }
-                if (in_array($pkg['short'], $segments, true)) {
+                if (in_array($pkg['short'], $relSegs, true)) {
                     return ['signal' => self::SIGNAL_LOCK_PATH, 'detail' => $pkg['full']];
                 }
             }
