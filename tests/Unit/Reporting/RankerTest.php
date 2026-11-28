@@ -158,6 +158,60 @@ final class RankerTest extends TestCase
         $this->assertSame(1.0, (new Ranker(minImpact: 0))->spreadFactor($c));
     }
 
+    /**
+     * E3 r1 m-1: the spread ladder saturates per-leg and the total
+     * clamps exactly at SPREAD_MAX. Cases: [files, dirs, repos, expected].
+     *  - 11 distinct files = SPREAD_FILE_CAP steps exactly; more files
+     *    (20) must not pay another step — the cap row is saturation.
+     *  - 7 dirs: dirs−1 = 6 > SPREAD_DIR_CAP (5) -> leg stays 0.25 while
+     *    files (7) still contribute their 6 steps.
+     *  - 5 repos: repos−1 = 4 > SPREAD_REPO_CAP (3) -> leg stays 0.60.
+     *  - all three legs over-capped: raw 1 + 1.0 + 0.25 + 0.6 = 2.85
+     *    exceeds the ceiling -> clamped EXACTLY to Ranker::SPREAD_MAX.
+     */
+    public function testSpreadFactorSaturatesCapsAndClampsAtTheCeiling(): void
+    {
+        $cases = [
+            'files cap reached at 11'           => [11, 1, 0, 1.0 + 0.10 * Ranker::SPREAD_FILE_CAP],
+            'files cap saturates past 11'       => [20, 1, 0, 1.0 + 0.10 * Ranker::SPREAD_FILE_CAP],
+            'dirs cap saturates at 7 dirs'      => [7, 7, 0, 1.0 + 0.10 * 6 + 0.05 * Ranker::SPREAD_DIR_CAP],
+            'repos cap saturates at 5 repos'    => [5, 1, 5, 1.0 + 0.10 * 4 + 0.20 * Ranker::SPREAD_REPO_CAP],
+            'all caps exceed the SPREAD_MAX'    => [13, 8, 5, Ranker::SPREAD_MAX],
+        ];
+        $ranker = new Ranker(minImpact: 0);
+        foreach ($cases as $label => [$files, $dirs, $repos, $expected]) {
+            $members = [];
+            for ($i = 0; $i < $files; $i++) {
+                $block = $this->block(
+                    sprintf('d%d/f%d.php', min($i, $dirs - 1), $i),
+                    1 + $i * 5,
+                    5 + $i * 5,
+                    size: 20,
+                );
+                if ($i < $repos) {
+                    $block->repo = 'r' . $i;
+                }
+                $members[] = $block;
+            }
+            $cluster = new Cluster('Spread-' . $label, $members, 1.0, true);
+            $this->assertEqualsWithDelta(
+                $expected,
+                $ranker->spreadFactor($cluster),
+                1e-12,
+                $label,
+            );
+        }
+        // The ceiling row must be CLAMPED, not saturated arithmetic: the
+        // raw capped sum (2.85) is strictly above the pinned value.
+        $this->assertGreaterThan(
+            Ranker::SPREAD_MAX,
+            1.0 + 0.10 * Ranker::SPREAD_FILE_CAP
+                + 0.05 * Ranker::SPREAD_DIR_CAP
+                + 0.20 * Ranker::SPREAD_REPO_CAP,
+            'the clamp case is vacuous unless raw over-capped sum exceeds the ceiling',
+        );
+    }
+
     public function testScoreIsZeroWhenImpactIsZero(): void
     {
         $c = new Cluster('One', [$this->block('only/A.php', 1, 10, size: 20)], 1.0, true);
