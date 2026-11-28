@@ -304,7 +304,7 @@ final class TokenCacheTest extends TestCase
 
         $parts = explode('_', basename($this->onlyBlobIn($dir, 'tok'), '.tok'));
         $this->assertCount(4, $parts, 'cache key must keep the 4-part format/parser/php/sha shape');
-        $this->assertSame('tok-v2', $parts[0], 'the storage-format id stays the key head');
+        $this->assertSame('tok-v3', $parts[0], 'the storage-format id stays the key head (bumped by item 7.2b alongside the raw-text window folds)');
         $this->assertSame('pp' . self::liveParserLabel(), $parts[1], 'key must carry the real package label');
         $this->assertSame('php' . intdiv(PHP_VERSION_ID, 10000), $parts[2], 'key must bind the host PHP major');
         $this->assertMatchesRegularExpression('/^php\d$/', $parts[2], 'PHP_VERSION_ID majors are single-digit — a php80-style segment would smuggle minor confusion');
@@ -322,7 +322,7 @@ final class TokenCacheTest extends TestCase
         $writer->put($this->sourceFile, [new Token(\T_STRING, 'a', 1, 0)]);
         $blobs = glob($dir . '/*.tok') ?: [];
         $this->assertCount(1, $blobs);
-        $this->assertMatchesRegularExpression('/^tok-v2_pp5\.0_php\d+_[0-9a-f]{40}\.tok$/', basename((string) $blobs[0]));
+        $this->assertMatchesRegularExpression('/^tok-v3_pp5\.0_php\d+_[0-9a-f]{40}\.tok$/', basename((string) $blobs[0]));
 
         $alien = new TokenCache($dir, '5.9');
         $this->assertNull($alien->get($this->sourceFile), 'a bumped-parser run must not replay the old blob');

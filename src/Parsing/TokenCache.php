@@ -61,12 +61,19 @@ final class TokenCache
      * screening generation), not a parser-version claim: since
      * engine-S24 keys embed the live package version + PHP major, so
      * parser releases invalidate by themselves and this literal moves
-     * only when the on-disk format changes — unframed v1 files can
-     * never satisfy a v2 key, and fail closed even on a collision.
+     * when the on-disk format changes — or when what a blob may MEAN to
+     * its consumers changes, which is why item 7.2b bumped tok-v2 to
+     * tok-v3 in the same edit that made the tokenizer's raw-text
+     * (InlineHTML) runs feed the html_script window folds: cached token
+     * streams taken under 7.2a keys were never consumed as template
+     * window material, and the mission demands old caches invalidate on
+     * the bump rather than half-feed a new species. Unframed v1 files
+     * can never satisfy a v2 key, and tok-v2 blobs never satisfy a
+     * tok-v3 key — fail closed even on a collision.
      * Keep this one line trivially mergeable — engine-S25 gates the
      * AstCache read path, not this file again.
      */
-    private const VERSION = 'tok-v2';
+    private const VERSION = 'tok-v3';
 
     /** Composer package whose installed version keys cache invalidation. */
     private const PARSER_PACKAGE = 'nikic/php-parser';

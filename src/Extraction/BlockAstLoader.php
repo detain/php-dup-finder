@@ -15,6 +15,7 @@ use Phpdup\Normalization\PluginRegistry;
 use Phpdup\Parsing\AstCache;
 use Phpdup\Parsing\AstParser;
 use Phpdup\Refactor\FragmentApplyRefusal;
+use Phpdup\Refactor\HtmlFragmentApplyRefusal;
 use Phpdup\Refactor\ScriptKindApplyRefusal;
 use Phpdup\Refactor\WindowApplyRefusal;
 use Phpdup\Util\CanonicalNodePool;
@@ -278,6 +279,28 @@ final class BlockAstLoader
         if ($block->kind === BlockExtractor::FRAGMENT_KIND) {
             throw FragmentApplyRefusal::forBlock($block, 'BlockAstLoader::resolve()');
         }
+        // Item 7.2b: html_script folds are synthetic TOO — but unlike the
+        // three refusals above they ARE re-derivable from raw bytes: the
+        // window scanner is a pure function of the file's statement
+        // sequences and Block::$fragmentLineage makes the positional match
+        // honest. lazyAst unloads this species exactly like script/window/
+        // fragment (the pipeline blacklist never heard of it), so this arm
+        // is the LIVE path, not a backstop. A fresh parse still carrying
+        // the same (range, lineage, namespace, class) window serves a
+        // byte-identical wrapper — and because raw text hashes as raw
+        // text through the same fold formula, the served tree rehashes to
+        // the stored structuralHash under the [M-1] content gate. No
+        // match means the template moved: typed-loud refusal, never a
+        // positional guess. The claims ledger stays untouched (like the
+        // re-entry fast path): identity here IS the position.
+        if ($block->kind === BlockExtractor::HTML_SCRIPT_KIND) {
+            $derived = $this->deriveHtmlScript($block);
+            if ($derived !== null) {
+                $block->ast = $derived;
+                return $derived;
+            }
+            throw HtmlFragmentApplyRefusal::forBlock($block, 'BlockAstLoader::resolve()');
+        }
 
         $group   = self::groupKey($block);
         $foreign = $this->foreignClaims($group, $block);
@@ -348,6 +371,46 @@ final class BlockAstLoader
             'owner'    => spl_object_id($block),
         ];
         return $found;
+    }
+
+    /**
+     * Item 7.2b: re-derive an unloaded html_script fold from the CURRENT
+     * file bytes. The GATE-FREE window set of BlockExtractor::
+     * htmlScriptWindows() is the same pure scan the mint leg walked, so a
+     * window the file still carries appears with identical member content;
+     * we match position (range), per-member lineage, and namespace/class
+     * context, then let the [M-1] content gate have the last word when the
+     * loader is config-threaded. Null = the fold no longer exists (bytes
+     * moved): callers refuse typed, never guess. Two sequences minting
+     * byte-equal overlapping windows is content-identity, not ambiguity —
+     * the first positional match serves the same tree either way.
+     */
+    private function deriveHtmlScript(Block $block): ?Node
+    {
+        $stmts = $this->stmtsFor($block->file);
+        if ($stmts === []) {
+            return null;
+        }
+        foreach (BlockExtractor::htmlScriptWindows($block->file, $stmts) as $win) {
+            if ($win['startLine'] !== $block->range->start || $win['endLine'] !== $block->range->end) {
+                continue;
+            }
+            if ($win['classes'] !== $block->fragmentLineage) {
+                continue;
+            }
+            if ($win['namespace'] !== $block->namespace || $win['class'] !== $block->class) {
+                continue;
+            }
+            $wrapper = new \PhpParser\Node\Stmt\Block(array_values($win['members']), [
+                'startLine' => $win['startLine'],
+                'endLine'   => $win['endLine'],
+            ]);
+            if ($this->contentBound($block) && !$this->candidateMatches($block, $wrapper)) {
+                return null; // position held, content drifted: loud refusal
+            }
+            return $wrapper;
+        }
+        return null;
     }
 
     private static function groupKey(Block $block): string
@@ -821,6 +884,20 @@ final class BlockAstLoader
                 // the loud backstop).
                 if ($member->kind === BlockExtractor::FRAGMENT_KIND) {
                     throw FragmentApplyRefusal::forBlock($member, 'BlockAstLoader::rebaseClusters()');
+                }
+                // Item 7.2b: html_script folds RE-derive on warm replays
+                // (live path, lazyAst unloads them): same positional
+                // match as resolve(); loss of the fold is the typed
+                // refusal. Re-derived members never enter the content
+                // ledger below — their identity is the position, and the
+                // resolve-served tree is the truth from here.
+                if ($member->kind === BlockExtractor::HTML_SCRIPT_KIND) {
+                    $derived = $this->deriveHtmlScript($member);
+                    if ($derived === null) {
+                        throw HtmlFragmentApplyRefusal::forBlock($member, 'BlockAstLoader::rebaseClusters()');
+                    }
+                    $member->ast = $derived;
+                    continue;
                 }
                 if ($this->config === null || $member->structuralHash === '') {
                     continue; // nothing content-bound to rebase against
