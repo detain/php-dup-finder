@@ -281,6 +281,58 @@ final class EvidencePackBuilderTest extends TestCase
         $this->assertSame($builder->build($report), (new EvidencePackBuilder($this->quietStore()))->build($report), 'same report bytes in, same pack bytes out');
     }
 
+    public function testOneGenerationPerDirSweepsStaleOwnedNamesOnly(): void
+    {
+        // Reviewer 8.1.r1 M-1 pin: pack names embed the run-scoped rank, so
+        // a re-ranked/shrunken second run must leave ONE generation behind
+        // — the once-074 sweep the family carries (HtmlReporter precedent).
+        $genOne = $this->report([
+            $this->bareCluster('C1', [$this->bareBlock('a1.php', 1, 2), $this->bareBlock('b1.php', 1, 2)]),
+            $this->bareCluster('C2', [$this->bareBlock('a2.php', 1, 2), $this->bareBlock('b2.php', 1, 2)]),
+        ]);
+        $genTwo = $this->report([
+            $this->bareCluster('C1', [$this->bareBlock('a1.php', 1, 2), $this->bareBlock('b1.php', 1, 2)]),
+        ]);
+
+        $dir     = $this->tmp . '/packs';
+        $builder = new EvidencePackBuilder($this->quietStore());
+        $builder->writeTo($genOne, $dir);
+        @touch($dir . '/keep-me.txt');
+        $builder->writeTo($genTwo, $dir);
+
+        $landed = array_values(array_slice(scandir($dir) ?: [], 2));
+        $this->assertSame(
+            ['001-' . FindingId::for($genTwo->clusters[0], [$this->tmp]) . '.pack.json', 'keep-me.txt'],
+            $landed,
+            'stale rank-2 pack swept; foreign names survive; only the current generation remains',
+        );
+    }
+
+    public function testAdoptionCapIsFlaggedNotSilent(): void
+    {
+        $cluster = $this->pairCluster(); // BLK1 tmp/m1.php 2..2
+
+        $rows = [];
+        for ($i = 0; $i < 52; $i++) {
+            $rows[] = $this->helperCopy(
+                'H' . $i . '::x',
+                'z.php',
+                1,
+                9,
+                [$cluster->members[1]->file => 1],
+                [$cluster->members[1]->file . ':2'],
+            );
+        }
+        $doc = $this->firstDoc([$cluster], adoption: $rows);
+
+        $this->assertCount(50, $doc['adoption']['helpers'], 'the house count cap holds');
+        $this->assertTrue($doc['adoption']['helpers_truncated'], 'capped means said-so, never silent');
+
+        $under = $this->firstDoc([$cluster], adoption: [$rows[0], $rows[1]]);
+        $this->assertCount(2, $under['adoption']['helpers']);
+        $this->assertFalse($under['adoption']['helpers_truncated']);
+    }
+
     // ── fixtures ────────────────────────────────────────────────────────────
 
     private function quietStore(): SourceTextStore

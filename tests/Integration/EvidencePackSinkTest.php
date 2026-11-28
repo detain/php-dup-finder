@@ -36,6 +36,11 @@ final class EvidencePackSinkTest extends TestCase
     {
         $repo = dirname(__DIR__, 2);
         $out  = $this->tmp . '/packs';
+        mkdir($out, 0o775, true);
+        // Reviewer 8.1.r1 M-1 (sink leg): a stale owned name from a prior
+        // generation, and a foreign name the sweep must never touch.
+        file_put_contents($out . '/999-F0000000000000000.pack.json', '{"stale":true}');
+        file_put_contents($out . '/keep.txt', 'foreign');
         $cmd  = sprintf(
             '%s %s analyze %s --evidence-packs %s --min-impact 0 --workers 1 --no-cache 2>&1',
             escapeshellarg(PHP_BINARY),
@@ -51,6 +56,12 @@ final class EvidencePackSinkTest extends TestCase
 
         $files = glob($out . '/*.pack.json') ?: [];
         $this->assertNotEmpty($files, 'micro-fixture must emit at least one pack (vacuity crux)');
+        $this->assertFileDoesNotExist($out . '/999-F0000000000000000.pack.json', 'stale generation swept at the sink');
+        $this->assertFileExists($out . '/keep.txt', 'the sweep is owned-names-only');
+
+        exec($cmd, $lines2, $rc2); // second run into the same dir
+        $this->assertSame(0, $rc2);
+        $this->assertCount(count($files), glob($out . '/*.pack.json') ?: [], 'one generation per dir across runs');
 
         $rank0 = null;
         foreach ($files as $path) {

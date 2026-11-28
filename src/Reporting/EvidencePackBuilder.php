@@ -46,9 +46,11 @@ use SebastianBergmann\Diff\Output\UnifiedDiffOutputBuilder;
  *
  * Failure postures mirror the family: ControlText::reject BEFORE any store
  * read or directory creation (a forge-byte path is a named refusal, never
- * a partial artifact set), WritesReportFile fail-loud for every write, and
- * per-field truncation flags so a capped excerpt can never masquerade as a
- * complete one.
+ * a partial artifact set), the once-074 one-generation-per-dir sweep in
+ * writeTo (rank-embedded names must never mix generations), WritesReportFile
+ * fail-loud for every write, and per-field truncation flags (source,
+ * template, diff, holes, adoption helpers) so a capped surface can never
+ * masquerade as a complete one.
  */
 final class EvidencePackBuilder
 {
@@ -76,6 +78,13 @@ final class EvidencePackBuilder
     private const ADOPTION_MAX_ROWS = 50;
     private const HOLE_MAX_ROWS = 64;
 
+    /**
+     * Owned-name pattern for the once-074 one-generation-per-dir sweep:
+     * exactly the names {@see build()} mints (rank prefix + F-hex finding
+     * id); anything else in the directory is not this surface's business.
+     */
+    private const OWNED_PACK_PATTERN = '/^\d{3}-F[0-9a-f]{16}\.pack\.json$/';
+
     /** The printer-normalization disclosure carried with every template (§2 matrix letter). */
     private const TEMPLATE_FIDELITY = 'template text is printer-normalized AST output, not source bytes';
 
@@ -100,6 +109,12 @@ final class EvidencePackBuilder
     {
         $this->requireStreamSafe($report);
         $this->ensureDirectory($dir);
+        // once-074 law (reviewer 8.1.r1 M-1): one generation per dir. Pack
+        // names embed the run-scoped RANK, so a changed ranking leaves a
+        // stale sibling for the same finding_id with no way to tell which
+        // is current — sweep the previous run's owned names before this
+        // run lays its own (trait sweep scoped to OWNED_PACK_PATTERN).
+        $this->sweepOwnedNames($dir, self::OWNED_PACK_PATTERN, 'evidence pack');
         foreach ($this->build($report) as $name => $contents) {
             $this->writeFile($dir . DIRECTORY_SEPARATOR . $name, $contents);
         }
@@ -368,7 +383,9 @@ final class EvidencePackBuilder
      * PlacementAdvisor law kept honest: line-exact attribution only when
      * the row's copy samples are complete, the file-level ceiling
      * otherwise; the helper definition itself counts as a member when the
-     * range contains it. Null when the probe was unarmed.
+     * range contains it. Null when the probe was unarmed. At most
+     * ADOPTION_MAX_ROWS helpers ride a pack, disclosed by the honest
+     * helpers_truncated flag like every other capped surface here.
      *
      * @return array<string,mixed>|null
      */
@@ -378,6 +395,7 @@ final class EvidencePackBuilder
             return null;
         }
         $helpers = [];
+        $truncated = false;
         foreach ($this->adoptionRows as $row) {
             $samplesComplete = count($row->copyLocations) >= $row->inlineSites;
             $attach = [];
@@ -412,10 +430,11 @@ final class EvidencePackBuilder
                 'attach'         => $attach,
             ];
             if (count($helpers) >= self::ADOPTION_MAX_ROWS) {
+                $truncated = true;
                 break;
             }
         }
-        return ['helpers' => $helpers];
+        return ['helpers' => $helpers, 'helpers_truncated' => $truncated];
     }
 
     private static function hasCopyInside(Block $member, HelperCopy $row): bool
