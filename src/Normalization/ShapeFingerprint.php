@@ -6,7 +6,7 @@ namespace Phpdup\Normalization;
 use PhpParser\Identifier;
 use PhpParser\Node;
 use Phpdup\Extraction\Block;
-use Phpdup\Extraction\LineRange;
+use Phpdup\Util\LineRange;
 use Phpdup\Fingerprint\SubtreeHasher;
 
 /**

@@ -7,7 +7,7 @@ use PhpParser\Node;
 use PhpParser\NodeFinder;
 use PHPUnit\Framework\TestCase;
 use Phpdup\Extraction\Block;
-use Phpdup\Extraction\LineRange;
+use Phpdup\Util\LineRange;
 use Phpdup\Fingerprint\SubtreeHasher;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Normalization\ShapeFingerprint;
