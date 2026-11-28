@@ -159,6 +159,7 @@ final class ConfigLoader
             'honor_gitignore',
             'idiom_mining',
             'symbols_forced',
+            'helper_adoption',
             'ir_threshold', 'ml_pair_threshold', 'debug_log',
             'low_memory', 'fail_on_impact', 'max_clusters',
             'optional_blocks_containment',
@@ -222,6 +223,7 @@ final class ConfigLoader
             'honor_gitignore' => $base->honorGitignore,
             'idiom_mining' => $base->idiomMining,
             'symbols_forced' => $base->symbolsForced,
+            'helper_adoption' => $base->helperAdoption,
             'ir_threshold' => $base->irThreshold,
             'ml_pair_threshold' => $base->mlPairThreshold,
             'debug_log' => $base->debugLog,
@@ -447,6 +449,12 @@ final class ConfigLoader
             // The argv leg exists here (Command::configure's --symbols),
             // unlike the config-only idiom precedent.
             symbolsForced:                 $flat['symbols_forced'],
+            // Item 3.2 adoption (MINE-D-2): root-only phpdup.json key,
+            // no CLI leg (the census precondition chain — helper_adoption
+            // requires idiom_mining — is a Config construction invariant,
+            // so an armed load without it exits 2 before any file is
+            // parsed; the demand can never half-arm either).
+            helperAdoption:                $flat['helper_adoption'],
             // Item 4.4 APPLY half: root-only accepted-decision register.
             // No CLI override leg (deliberate: suppressions belong to the
             // committed config + baseline file, not ephemeral flags), so
@@ -1269,6 +1277,7 @@ final class ConfigLoader
         'honor_gitignore',
         'idiom_mining',
         'symbols_forced',
+        'helper_adoption',
         'baseline',
         'baseline_out',
         'diff_base', 'apply',
@@ -1278,12 +1287,12 @@ final class ConfigLoader
 
     /**
      * once-S67 (php-dup-finder-once-077): the admission-totality roster —
-     * the 29 KNOWN_KEYS members that per-directory `.phpdup.json` files may
+     * the 31 KNOWN_KEYS members that per-directory `.phpdup.json` files may
      * NOT carry, refused loudly by {@see discoverPerDirectoryOverrides()}.
-     * The equation the belt pins: KNOWN_KEYS (51) = the 11 parents
+     * The equation the belt pins: KNOWN_KEYS (52) = the 11 parents
      * shapeOverrides() admits (exclude, exclude_reset, min_block_size,
      * max_block_size, normalization_mode, ngram_size, kinds, db_symbols,
-     * db_aware, trinity_collapse, low_memory) + these 30 + the 10 with
+     * db_aware, trinity_collapse, low_memory) + these 31 + the 10 with
      * dedicated era arms above the roster check (fingerprint_id_mode, scope,
      * score_mode, max_ted_size, max_hole_coverage, ml_pair_allow_private,
      * baseline, baseline_out, diff_base, debug_log). A new KNOWN_KEYS member
@@ -1315,6 +1324,7 @@ final class ConfigLoader
         // directories, so a per-directory flip would arm the injection for
         // some subtrees only. Same refused family as idiom_mining.
         'symbols_forced',
+        'helper_adoption',
         'accepted',
         'drift_flags',
     ];
@@ -1553,6 +1563,13 @@ final class ConfigLoader
             // exist; flipping by typo trades a deterministic corpus for a
             // different one).
             throw new \RuntimeException("symbols_forced must be a boolean$where");
+        }
+        if (array_key_exists('helper_adoption', $data) && !is_bool($data['helper_adoption'])) {
+            // Item 3.2 adoption (MINE-D-2): same voice — a non-boolean must
+            // not silently flip whether the run re-queries the census for
+            // helper re-implementations (a typo trading a full adoption
+            // ledger for a quiet none is the misfeed this family refuses).
+            throw new \RuntimeException("helper_adoption must be a boolean$where");
         }
         if (array_key_exists('scorer', $data)) {
             $assertEnum($data['scorer'], 'scorer', ['default', 'ir']);

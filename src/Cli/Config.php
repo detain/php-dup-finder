@@ -408,6 +408,26 @@ final class Config
         // candidate_mass_filter/idiom_mining class) and bound into the
         // cluster cache key: flipping changes which clusters exist.
         public readonly bool $symbolsForced = false,
+        // Item 3.2 adoption (MINE-D-2): the helper re-implementation
+        // demand knob (config-file key `helper_adoption`, JSON bool;
+        // deliberately NO CLI flag — same staging posture as
+        // idiom_mining, the Command.php option roster is another lane's
+        // live file). True: after blocks exist, PreprocessStage derives
+        // the HelperAdoption summary over the SAME armed substrate 3.1
+        // built (census rows + statement-list spans re-queried, no
+        // second walker, no new worker wire flavor — §5c + SOCKETPAIR
+        // honoured by construction). Precondition, enforced HERE: the
+        // summary reads the idiom census, so `idiom_mining` must be on;
+        // arming adoption alone would be the same quiet-zero misfeed the
+        // idiom gate exists to prevent. Root config only (refused
+        // per-directory: one adoption ledger per run). DELIBERATELY not
+        // bound into the IndexStore config key — flipping this knob
+        // changes no mined row, no cached payload, nothing persisted
+        // (pure master-side derivation over blocks + census, pinned by
+        // PreprocessStageHelperAdoptTest); an armed warm run re-mines
+        // the identical census and the summary is rebuilt in-process
+        // every run.
+        public readonly bool $helperAdoption = false,
         // Item 4.4 APPLY half: root-only phpdup.json "accepted" list of
         // stable finding ids the team decided to keep. Suppressed from
         // the main report into the baseline appendix (BaselineFilter);
@@ -508,6 +528,18 @@ final class Config
                 'idiom_mining requires "kinds" to explicitly include "fragment": the idiom miner rides the '
                 . "fragment-gated statement-list capture, and the default (empty) kinds roster deliberately "
                 . 'excludes fragment. Add "fragment" to kinds, or leave idiom_mining off.'
+            );
+        }
+        if ($helperAdoption && !$idiomMining) {
+            // Item 3.2 substrate precondition: the adoption summary is a
+            // re-query of the 3.1 idiom census (one shared miner, §5c).
+            // Without idiom_mining there is no census to look up, and a
+            // silently empty adoption ledger is the quiet-zero misfeed
+            // the demand gates exist to refuse.
+            throw new \InvalidArgumentException(
+                'helper_adoption requires idiom_mining: helper re-implementation lookup rides the '
+                . 'mined idiom census (the §5c shared-substrate rule — no second miner is minted). '
+                . 'Turn idiom_mining on, or leave helper_adoption off.'
             );
         }
         if ($failOnImpact < 0) {
@@ -785,6 +817,10 @@ final class Config
             // Item 3.4: root-only, copied — pairs span directories, one
             // forced-symbol index per run (refused per-directory).
             symbolsForced:                   $this->symbolsForced,
+            // Item 3.2 adoption: root-only, copied — never replaced —
+            // per-directory (one adoption ledger per run; the knob is
+            // refused at discovery in ConfigLoader::REFUSED_PER_DIRECTORY).
+            helperAdoption:                  $this->helperAdoption,
         );
     }
 

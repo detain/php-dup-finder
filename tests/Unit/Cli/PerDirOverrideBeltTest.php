@@ -308,7 +308,7 @@ final class PerDirOverrideBeltTest extends TestCase
         self::assertIsArray($refused);
 
         $covered = array_merge(self::ADMITTED_PARENTS, $refused, self::LEGACY_REFUSED);
-        self::assertCount(51, $known, 'the root-config universe is 51 keys');
+        self::assertCount(52, $known, 'the root-config universe is 52 keys');
         self::assertCount(count($covered), $known, 'no key may be counted twice across the three sides');
         sort($known);
         sort($covered);
@@ -318,7 +318,7 @@ final class PerDirOverrideBeltTest extends TestCase
             'every KNOWN_KEYS member must be admitted-parent, refused, or legacy-refused (once-S67 totality)',
         );
 
-        self::assertCount(30, $refused, 'the once-S67 roster refuses exactly 30 new keys (27 + item 3.1 idiom_mining + item 4.1 drift_flags + item 3.4 symbols_forced)');
+        self::assertCount(31, $refused, 'the once-S67 roster refuses exactly 31 new keys (27 + item 3.1 idiom_mining + item 4.1 drift_flags + item 3.4 symbols_forced + item 3.2 helper_adoption)');
         self::assertEmpty(array_intersect(self::ADMITTED_PARENTS, $refused));
         self::assertEmpty(array_intersect(self::ADMITTED_PARENTS, self::LEGACY_REFUSED));
         self::assertEmpty(array_intersect($refused, self::LEGACY_REFUSED));
