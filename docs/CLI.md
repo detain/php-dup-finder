@@ -252,7 +252,9 @@ current schema with no version event (the `idiom_census`/corpus_rollups
 carve-out). It groups findings by shared callee vocabulary and directory —
 the doc's "outbound HTTP", "IP math", "error envelopes" archetype — and
 feeds NOTHING into clustering or into any other finding: the same findings
-are simply presented under themes.
+are simply presented under themes. The roll-up is JSON-summary-only: unlike
+the `corpus_rollups` precedent above there is NO CliReporter trailer line,
+and the TUI and server surfaces gain nothing from the arm.
 
 - `basis.call_census` — whether the vocabulary could read the item-3.5
   call-sequence census. `false` means `call_sequence` was unarmed for this
