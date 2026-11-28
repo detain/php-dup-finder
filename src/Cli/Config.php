@@ -504,6 +504,25 @@ final class Config
         // feature, phpdup.json tunes it). Must be >= 1: a zero/negative
         // window would gate every history verdict to nothing.
         public readonly int $historyWindowMonths = 12,
+        // Item 2.2 (ROLLUP): corpus-awareness demand knob (config-file key
+        // `corpus_rollups`, JSON bool; deliberately NO CLI flag — the
+        // Command.php option roster is another lane's live file, same
+        // staging posture as idiom_mining/ml_pair_allow_private). True:
+        // ReportStage runs RollupAnalyzer over the FULL ranked cluster set
+        // plus the retained blocks and scanned files, and the JSON report
+        // gains the conditional trailing `summary.rollups` block (per-file
+        // token tallies, both-direction twin file pairs, mirrored
+        // directory groups — JsonSchemaSpec::rollupBlockShape()). False
+        // (default): the analyzer never runs, the key is ABSENT, and every
+        // payload stays byte-identical to the historical report (the
+        // idiom_census/class_shape conditional-key carve-out: an opt-in
+        // key rides the current schema with no version event). Unlike
+        // idiom_mining this arms only a REPORT-STAGE recompute: nothing
+        // persists, no cache key binds it, and warm cluster-cache reuse is
+        // harmless — which is also why there is no armed construction
+        // precondition here. Root config only (refused per-directory: one
+        // rollup census per run, never one per subtree).
+        public readonly bool $corpusRollups = false,
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -938,6 +957,10 @@ final class Config
             // Item 3.3: root-only, copied — one literal census per run
             // (refused at discovery, same refused family).
             literalCensus:                   $this->literalCensus,
+            // Item 2.2: root-only, copied — never replaced — per-directory
+            // (one rollup census per run; refused at discovery in
+            // ConfigLoader::discoverPerDirectoryOverrides()).
+            corpusRollups:                   $this->corpusRollups,
         );
     }
 

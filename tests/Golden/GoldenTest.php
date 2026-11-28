@@ -12,7 +12,6 @@ use Phpdup\Pipeline\Stages\RefactorStage;
 use Phpdup\Pipeline\Stages\ScanningStage;
 use Phpdup\Reporting\JsonReporter;
 use Phpdup\Reporting\Ranker;
-use Phpdup\Reporting\RollupAnalyzer;
 use Phpdup\Reporting\Report;
 use Symfony\Component\Console\Output\NullOutput;
 
@@ -158,22 +157,11 @@ final class GoldenTest extends TestCase
         (new ClusterStage(exactOnly: $exactOnly, useClusterCache: false))->run($state, $out);
         (new RefactorStage(useCache: false))->run($state, $out);
 
-        $clusters = (new Ranker($config->minClusterImpact))->rank($state->clusters);
-        // Item 2.2 corpus-awareness rollups: the goldens pin the rollup
-        // block too, mirroring the ReportStage mount exactly (same analyzer,
-        // same ranked clusters / retained blocks / scanned files inputs).
-        // Regen disclosure: this ADDS summary.rollups to every snapshot;
-        // cluster membership is untouched (rollups never mutate clusters).
-        // Rollup paths are scan-root-relative by construction (root label =
-        // fixture basename, ids content-derived), so normalize() needs no
-        // rollup-specific stripping — snapshots stay portable as-is.
-        $rollups = (new RollupAnalyzer(relRoots: $config->paths))->analyze($clusters, $state->blocks, $state->files);
-
         $report = new Report(
             files: count($state->files),
             blocks: count($state->blocks),
             parseErrors: $state->parseErrors,
-            clusters: $clusters,
+            clusters: (new Ranker($config->minClusterImpact))->rank($state->clusters),
             config: $config,
             // 0.6 accounting flows into the snapshots too (useCache:false
             // → reused is a tracked 0, never null): the goldens pin the
@@ -193,7 +181,6 @@ final class GoldenTest extends TestCase
             parseFailures: $state->parseFailures,
             clustersReplayed: $state->clustersReplayed,
             mlStatus: $state->mlConnectionStatus,
-            rollups: $rollups,
         );
         return (new JsonReporter())->build($report);
     }

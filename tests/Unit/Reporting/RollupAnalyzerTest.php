@@ -555,10 +555,12 @@ final class RollupAnalyzerTest extends TestCase
         $payload = (new JsonReporter())->build(new Report(
             0, 0, 0, [], Config::defaults([]),
         ));
-        $this->assertNull($payload['summary']['rollups']);
-        // Trailing position: every 1.8 key keeps its place.
+        // Conditional-key posture (item 2.2 rework, idiom_census family):
+        // an unarmed producer's payload carries NO rollups key at all —
+        // default bytes are untouched and no version event rides it.
+        $this->assertArrayNotHasKey('rollups', $payload['summary']);
         $keys = array_keys($payload['summary']);
-        $this->assertSame('rollups', end($keys));
+        $this->assertSame('ml_status', end($keys));
     }
 
     public function testCliTrailerGatesOnRollupsPresence(): void

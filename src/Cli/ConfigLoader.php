@@ -162,6 +162,7 @@ final class ConfigLoader
             'helper_adoption',
             'call_sequence',
             'literal_census',
+            'corpus_rollups',
             'ir_threshold', 'ml_pair_threshold', 'debug_log',
             'low_memory', 'fail_on_impact', 'max_clusters',
             'optional_blocks_containment',
@@ -229,6 +230,7 @@ final class ConfigLoader
             'helper_adoption' => $base->helperAdoption,
             'call_sequence' => $base->callSequence,
             'literal_census' => $base->literalCensus,
+            'corpus_rollups' => $base->corpusRollups,
             'ir_threshold' => $base->irThreshold,
             'ml_pair_threshold' => $base->mlPairThreshold,
             'debug_log' => $base->debugLog,
@@ -479,6 +481,12 @@ final class ConfigLoader
             // No precondition door — the literal census reads the parsed
             // file tree, not the fragment-gated statement-list capture.
             literalCensus:                 $flat['literal_census'],
+            // Item 2.2 (ROLLUP): the corpus-awareness demand knob, same
+            // flat-resolver route (root-only, refused per-directory,
+            // default OFF). No argv leg at this tip (Command.php option
+            // roster staging precedent). Report-stage recompute only: no
+            // cache-key binding, no armed construction precondition.
+            corpusRollups:                 $flat['corpus_rollups'],
             // Item 4.4 APPLY half: root-only accepted-decision register.
             // No CLI override leg (deliberate: suppressions belong to the
             // committed config + baseline file, not ephemeral flags), so
@@ -1334,16 +1342,17 @@ final class ConfigLoader
         'drift_flags',
         'history',
         'history_window_months',
+        'corpus_rollups',
     ];
 
     /**
      * once-S67 (php-dup-finder-once-077): the admission-totality roster —
-     * the 35 KNOWN_KEYS members that per-directory `.phpdup.json` files may
+     * the 36 KNOWN_KEYS members that per-directory `.phpdup.json` files may
      * NOT carry, refused loudly by {@see discoverPerDirectoryOverrides()}.
-     * The equation the belt pins: KNOWN_KEYS (56) = the 11 parents
+     * The equation the belt pins: KNOWN_KEYS (57) = the 11 parents
      * shapeOverrides() admits (exclude, exclude_reset, min_block_size,
      * max_block_size, normalization_mode, ngram_size, kinds, db_symbols,
-     * db_aware, trinity_collapse, low_memory) + these 35 + the 10 with
+     * db_aware, trinity_collapse, low_memory) + these 36 + the 10 with
      * dedicated era arms above the roster check (fingerprint_id_mode, scope,
      * score_mode, max_ted_size, max_hole_coverage, ml_pair_allow_private,
      * baseline, baseline_out, diff_base, debug_log). A new KNOWN_KEYS member
@@ -1394,6 +1403,7 @@ final class ConfigLoader
         'drift_flags',
         'history',
         'history_window_months',
+        'corpus_rollups',
     ];
 
     /**
@@ -1660,6 +1670,12 @@ final class ConfigLoader
             // silently flip whether the literal/constant census is minted
             // and reported (the census-family typo class).
             throw new \RuntimeException("literal_census must be a boolean$where");
+        }
+        if (array_key_exists('corpus_rollups', $data) && !is_bool($data['corpus_rollups'])) {
+            // Item 2.2 (ROLLUP): same voice — a non-boolean must not
+            // silently flip whether the run pays the report-stage rollup
+            // pass and grows the summary.rollups block.
+            throw new \RuntimeException("corpus_rollups must be a boolean$where");
         }
         if (array_key_exists('scorer', $data)) {
             $assertEnum($data['scorer'], 'scorer', ['default', 'ir']);

@@ -201,18 +201,6 @@ final class JsonReporter
                 'parse_failures'       => $report->parseFailures,
                 'clusters_replayed'    => $report->clustersReplayed,
                 'ml_status'            => $report->mlStatus,
-                // 1.9 trailing (item 2.2 ROLLUP): the corpus-awareness
-                // rollups — per-file comparable/declaration/call/SQL
-                // facts, both-direction twin file pairs (with the f08
-                // seed-direct leg), mirrored directory pairs and the
-                // totals that bound them. null = a producer that never
-                // ran the pass (legacy library/server/hand-built
-                // Reports); a measured empty corpus is the zero-shaped
-                // object, never null. Cluster lists, ids, and every
-                // other key are byte-identical to 1.8 — the rollup is a
-                // separate read-only output (f08 §2 law: never mutate
-                // clusters from here).
-                'rollups'              => $report->rollups,
             ],
             // Echo of the run config — key set governed by
             // JsonSchemaSpec::configShape() (once-S55); the three knobs
@@ -274,7 +262,6 @@ final class JsonReporter
         if ($report->vendoredDuplicates !== null) {
             $payload['summary']['vendored_duplicates'] = $report->vendoredDuplicates;
         }
-
         // Items 3.5/3.3 (MINE-E): same conditional trailing-key law
         // (MINE-D r1 §4 ruling) — each key present ONLY when its
         // demand was armed and the census object exists; OFF runs emit
@@ -287,6 +274,17 @@ final class JsonReporter
         }
         if ($report->literalCensus !== null) {
             $payload['summary']['literal_census'] = self::literalPayload($report->literalCensus);
+        }
+        // Item 2.2 (ROLLUP): a further conditional trailing summary key,
+        // same idiom_census/class_shape carve-out voice. Present ONLY when
+        // the run armed corpus_rollups and the analyzer produced a payload
+        // — absent otherwise, which is what keeps every frozen payload
+        // byte-identical (no SCHEMA_VERSION move: no default run's bytes
+        // change). Declared by JsonSchemaSpec::summaryShape(rollups: true) /
+        // rollupBlockShape(). A measured empty corpus is the zero-shaped
+        // block, never null — null means the pass was not armed.
+        if ($report->rollups !== null) {
+            $payload['summary']['rollups'] = $report->rollups;
         }
         return $payload;
     }

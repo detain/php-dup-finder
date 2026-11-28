@@ -20,6 +20,20 @@ namespace Phpdup\Reporting;
  * Consumers should treat MAJOR mismatches as hard errors and MINOR
  * mismatches as warnings (existing fields still parse).
  *
+ *   - CONDITIONAL-KEY CARVE-OUT (codified 2026-11-29 on the merged
+ *     class_shape @7ae44a8 + idiom_census @56638a8 precedent — since
+ *     joined by cluster_history (item 4.2), vendored_duplicates (item
+ *     5.2, W2b) and corpus_rollups (item 2.2, ROLLUP); MINE-D r1 m-1):
+ *     a key that EMITS ONLY
+ *     under an opt-in demand knob and stays ABSENT from every default
+ *     payload is NOT a version event — the default bytes do not move, so
+ *     no consumer's parse changes. The armed spelling rides the
+ *     declaration methods (summaryShape()'s armed flags +
+ *     censusBlockShape()/rollupBlockShape()). A bump is still owed for
+ *     UNCONDITIONAL new keys or widened default emission (widening what
+ *     is EMITTED for an existing key remains a version event — §4's rule
+ *     unchanged).
+ *
  * GOVERNANCE (once-S55):
  *
  *   (a) Byte-governance. The rules above govern the EMITTED PAYLOAD —
@@ -67,25 +81,6 @@ namespace Phpdup\Reporting;
 final class JsonSchemaSpec
 {
     /**
-     * 1.9 (minor, additive — item 2.2 corpus-awareness rollups, filing
-     * f08): ONE TRAILING key in `summary`. Every 1.8 field keeps its
-     * name, type and position, so 1.8 consumers parse 1.9 payloads
-     * untouched.
-     *
-     *   summary: `rollups` (null|the RollupAnalyzer payload — totals of
-     *   per-file comparable lines / declarations by species /
-     *   expressions / call sites / SQL tables, a bounded top_files
-     *   table, both-direction twin file pairs with the f08 seed-direct
-     *   leg and declared-only rows, and mirrored directory pairs; null =
-     *   a producer that never ran the rollup pass, the legacy library /
-     *   server / hand-built Reports — a measured empty corpus is the
-     *   zero-shaped object, never null).
-     *
-     * The key set rides {@see JsonSchemaSpec::summaryShape()} and the
-     * emit is pure reporting addition: cluster lists, ids and every
-     * other key are byte-identical to 1.8 (the non-regression proof the
-     * item's default-ON posture is pinned by).
-     *
      * 1.8 (minor, additive — the owner-opened 1.7→1.8 emit window,
      * improve_logic items 0.6/1.2 + rulings row 3): five TRAILING keys
      * in `summary` and four in the `config` echo. Every 1.7 field keeps
@@ -185,7 +180,7 @@ final class JsonSchemaSpec
      * files_without_blocks). Every 1.1 field keeps its name and type, so
      * 1.1 consumers parse 1.2 payloads untouched.
      */
-    public const SCHEMA_VERSION = '1.9';
+    public const SCHEMA_VERSION = '1.8';
 
     /**
      * Top-level shape of {@see JsonReporter::build()} output. This is
@@ -277,10 +272,14 @@ final class JsonSchemaSpec
      *     (MINE-E): the trailing conditional `call_sequences` block
      *     (after vendored_duplicates when all arm), same demand-armed
      *     law; likewise $literalsArmed for the item-3.3
-     *     `literal_census` block trailing last. OFF payloads carry
-     *     neither, so no SCHEMA_VERSION bit moves. Callers should pass
-     *     named arguments — five positional booleans is exactly the
-     *     shape this family must not silently shuffle.
+     *     `literal_census` block. Callers should pass named arguments —
+     *     six positional booleans is exactly the shape this family must
+     *     not silently shuffle.
+     * @param bool $rollups true asks for the shape of a corpus_rollups-
+     *     ARMED run (item 2.2, ROLLUP): the base keys plus the
+     *     conditional trailing `rollups` block (last when all arm). Same
+     *     carve-out posture — an unarmed payload never grows the key, so
+     *     no version event rides it.
      *
      * @return array<string, string>
      */
@@ -290,6 +289,7 @@ final class JsonSchemaSpec
         bool $vendoredArmed = false,
         bool $callsArmed = false,
         bool $literalsArmed = false,
+        bool $rollups = false,
     ): array {
         $shape = [
             'files'                => 'int',   // = files scanned (historical key)
@@ -308,8 +308,6 @@ final class JsonSchemaSpec
             'parse_failures'       => 'list<object{file:string,message:string}>  // per-file parse errors (once-S37 carrier, emitted since 1.8)',
             'clusters_replayed'    => 'bool|null  // cluster-cache replay happened (once-S37 carrier); null = untracked',
             'ml_status'            => "string|null  // master-side ML pair client: 'off'|'idle'|'reachable'|'unreachable'; null = no client wired (fork-zone dials invisible — E2 disclose)",
-            // 1.9 trailing (item 2.2 ROLLUP — corpus-awareness rollups):
-            'rollups'              => "null|array{totals:array<string,int>, top_files:list<array<string,mixed>>, files_truncated:int, twin_pairs:list<array<string,mixed>>, pairs_truncated:int, mirrored_directories:list<array<string,mixed>>, dirs_truncated:int, declared_only_pairs:list<array<string,mixed>>, declared_only_truncated:int}  // per-file comparable/declaration/call/SQL facts, both-direction twin file pairs (f08 seed-direct + declared-only legs), mirrored directory pairs; null = producer never ran the rollup pass (legacy library/server/hand-built Reports)",
         ];
         if ($armed) {
             $shape['idiom_census'] = 'object  // item 3.1 ingestion: the census block (see censusBlockShape()); present ONLY on idiom_mining-armed runs — an unarmed payload never grows this key (frozen goldens, 2.3 class_shape posture)';
@@ -325,6 +323,9 @@ final class JsonSchemaSpec
         }
         if ($literalsArmed) {
             $shape['literal_census'] = 'object  // item 3.3 (MINE-E): the literal/constant census block (see literalBlockShape()); present ONLY on literal_census-armed runs';
+        }
+        if ($rollups) {
+            $shape['rollups'] = 'object  // item 2.2 (ROLLUP): the corpus-awareness block (see rollupBlockShape()); present ONLY on corpus_rollups-armed runs — an unarmed payload never grows this key (frozen goldens, same idiom_census/class_shape posture; no version event)';
         }
         return $shape;
     }
@@ -468,6 +469,34 @@ final class JsonSchemaSpec
             'rows'              => 'list<object{kind:string,hash:string,sample:string,roles:array<string,int>,sites:int,files:int,locations:list<string>}>',
             'families'          => 'list<object{members:list<string>,sites:int,files:int}>  // near-duplicate string families (drifted copies)',
             'families_computed' => 'bool  // false = family pass skipped by its cap (rows stay exact; families empty)',
+        ];
+    }
+
+    /**
+     * Shape of the conditional `summary.rollups` block (item 2.2,
+     * ROLLUP — corpus-awareness rollups, filing f08). Emitted ONLY on
+     * corpus_rollups-armed runs (see summaryShape()'s $rollups flag);
+     * every list is presentation-capped by RollupAnalyzer's TOP_*
+     * budgets with a sibling *_truncated counter, so the block is
+     * bounded while its totals stay corpus-complete. Ids are
+     * content-derived (path + sorted structural hashes, scan-root
+     * excluded) so line shifts and unrelated file additions do not
+     * churn them.
+     *
+     * @return array<string, string>
+     */
+    public static function rollupBlockShape(): array
+    {
+        return [
+            'totals'                 => 'array<string,int>  // functions/methods/classes/interfaces/traits/enums/expressions/call_sites/sql_refs/sql_tableless/file_lines/declarations/files/blocks/comparable_lines/distinct_calls/distinct_sql_tables/twin_file_pairs/mirrored_directories/declared_only_pairs/direct_comparisons/seed_candidates_dropped',
+            'top_files'              => 'list<object{id:string,root:string,path:string,blocks:int,comparable_lines:int,file_lines:int,declarations:array<string,int>,distinct_declarations:int,expressions:int,call_sites:int,distinct_calls:int,sql_refs:int,distinct_sql_tables:int}>',
+            'files_truncated'        => 'int  // files past the TOP_FILES row cap (totals still count them)',
+            'twin_pairs'             => 'list<object{a_root:string,a_path:string,b_root:string,b_path:string,a_to_b:float,b_to_a:float,seed_best:float|null,coverage:float,linked_cluster_ids:list<string>,seed_direct:bool}>',
+            'pairs_truncated'        => 'int  // pairs past the TOP_PAIRS row cap',
+            'mirrored_directories'   => 'list<object{dir_a:string,dir_b:string,pairs:int,coverage:float}>',
+            'dirs_truncated'         => 'int  // directory pairs past the TOP_DIRS row cap',
+            'declared_only_pairs'    => 'list<object{a_root:string,a_path:string,b_root:string,b_path:string,shared:string}>',
+            'declared_only_truncated'=> 'int  // declared-only rows past the TOP_DECLARED cap',
         ];
     }
 

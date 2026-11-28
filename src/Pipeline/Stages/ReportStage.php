@@ -507,25 +507,32 @@ final class ReportStage implements CooperativeStageInterface
         }
         // Item 2.2 (ROLLUP): corpus-awareness rollups — per-file token
         // facts, both-direction twin file pairs and mirrored directory
-        // pairs. Report-stage recompute (f08 §2): nothing persists, so no
-        // cache key moves and no Block field is added; the pass is
+        // pairs — ARMED ONLY (config->corpus_rollups, the idiom_census
+        // conditional-key family): an unarmed run never runs the analyzer
+        // and the summary key is absent, so every default payload stays
+        // byte-identical and the goldens stay frozen (no version event).
+        // Report-stage recompute (f08 §2): nothing persists, so no cache
+        // key binds the knob and no Block field is added; the pass is
         // read-only over clusters (the §5f payload-rides-trailing-param
         // seam below carries it). Synchronous like the twin analyzer
-        // mounted above — the whole-corpus AST sweep is the item's
+        // mounted above — the whole-corpus AST sweep is the armed run's
         // disclosed price (cooperative chunk-yield is a named follow-up).
         // The FULL ranked set feeds the analyzer (4.4's split suppresses
         // REPORTED findings; suppressed duplication still measures corpus
         // density, and $state->clusters keeps its full view likewise).
-        $state->currentTask = 'rolling up corpus awareness';
-        $rollups = (new RollupAnalyzer(relRoots: $config->paths))->analyze(
-            $clusters,
-            $state->blocks,
-            $state->files,
-        );
-        if ($pump() >= $pumpDue) {
-            $state->stageProgress = min(0.999, ++$unitsDone / $unitTotal);
-            yield Stage::Reporting;
-            $pumpDue = $pump() + self::YIELD_BUDGET_SECONDS;
+        $rollups = null;
+        if ($config->corpusRollups) {
+            $state->currentTask = 'rolling up corpus awareness';
+            $rollups = (new RollupAnalyzer(relRoots: $config->paths))->analyze(
+                $clusters,
+                $state->blocks,
+                $state->files,
+            );
+            if ($pump() >= $pumpDue) {
+                $state->stageProgress = min(0.999, ++$unitsDone / $unitTotal);
+                yield Stage::Reporting;
+                $pumpDue = $pump() + self::YIELD_BUDGET_SECONDS;
+            }
         }
 
         // once-S59: carry the run's real wall-clock window on the Report.
@@ -595,9 +602,11 @@ final class ReportStage implements CooperativeStageInterface
             // summary keys ride this carrier pair.
             callSequences: $state->sequenceIndex?->callCensus(),
             literalCensus: $state->sequenceIndex?->literalCensus(),
-            // E-ROLLUP schema 1.9: the corpus-awareness payload rides the
+            // E-ROLLUP (item 2.2): the corpus-awareness payload rides the
             // same state→Report seam (RollupAnalyzer's own read of
             // clusters/blocks/files — the stage holds no rollup state).
+            // null on every unarmed run — the reporter's conditional key
+            // is what keeps default payloads byte-identical.
             rollups: $rollups,
         );
         $state->report   = $report;

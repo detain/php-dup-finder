@@ -115,7 +115,7 @@ Naming posture for the generated-code surfaces (`--apply`, `--refactor-patch`, `
 
 `analyze` buckets **every scanned file into exactly one** category. The
 preprocess summary line, the CLI `files …` accounting line and the JSON
-`summary` object (schema 1.9; `JsonSchemaSpec::summaryShape()`) all label
+`summary` object (schema 1.8; `JsonSchemaSpec::summaryShape()`) all label
 these buckets identically:
 
 | Bucket    | Summary / accounting label | JSON key                          | Meaning                                                                                   |
@@ -193,13 +193,18 @@ replayed whole clusters from the cluster cache now says so at default
 verbosity (`phpdup: clusters replayed from the cluster cache — …`), because
 such a report's member line ranges came from the saving run's bytes.
 
-#### Corpus-awareness rollups (item 2.2, schema 1.9)
+#### Corpus-awareness rollups (item 2.2)
 
-`summary.rollups` is a report-stage, read-only census computed over every
-scanned file — it never mutates clusters and changes no detection, so the
-cluster list is byte-identical with or without it (membership is pinned by
-the goldens). It answers "how much of this corpus is even comparable, and
-where does it mirror?" independently of what clustered.
+`summary.rollups` is a report-stage, read-only census over the run's
+clusters, blocks and scanned files, emitted ONLY on `corpus_rollups`-armed
+runs (root `phpdup.json`, boolean; deliberately no CLI flag at this tip —
+the `idiom_mining` staging posture). Unarmed — the default — the key is
+ABSENT and every payload stays byte-identical to the frozen goldens: a
+conditional key rides the current schema with no version event (the
+`idiom_census`/class_shape carve-out). It never mutates clusters and
+changes no detection — cluster lists are identical armed or unarmed, and
+it answers "how much of this corpus is even comparable, and where does it
+mirror?" independently of what clustered.
 
 - `totals` — corpus-wide counts: declaration species (`functions`,
   `methods`, `classes`, `interfaces`, `traits`, `enums`), `expressions`,
@@ -228,12 +233,12 @@ where does it mirror?" independently of what clustered.
   (not silently dropped), with `declared_only_truncated`.
 
 The CLI prints one compact `rollups …` line (files, comparable lines,
-declarations, call sites, twin pairs, mirrored dirs) in the trailer, on
-clean zero-cluster runs included; legacy emitters that never ran the
-analyzer report `summary.rollups = null` and print no line. Rollups derive
-at report time from bytes already in memory plus one throwaway parse pass
-per file — nothing is persisted and no cache key takes them, so warm and
-cold runs always show the same census.
+declarations, call sites, twin pairs, mirrored dirs) in the trailer of an
+ARMED run, clean zero-cluster runs included; unarmed runs and legacy
+emitters carry no key and print no line. Rollups derive at report time
+from bytes the run already holds plus one throwaway parse pass per file —
+nothing is persisted and no cache key takes them, so warm and cold armed
+runs always show the same census.
 
 ### Runtime
 
