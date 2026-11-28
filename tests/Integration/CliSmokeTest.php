@@ -904,7 +904,18 @@ final class CliSmokeTest extends TestCase
         // under 'build/'/'vendor/'-shaped names and stay swept by the
         // DEFAULT excludes (gitignore honoring is opt-in, off here), so the
         // corpus grows 33 -> 52 files, clusters 30 -> 31 and duplicated_lines
-        // 666 -> 685, all zero-parse-error, balance law intact.
+        // 666 -> 685, all zero-parse-error, balance law intact. Re-pin P1
+        // era (+item 4.1 drift corpus): tests/Fixtures/drift ships 39 .php
+        // data files (guard/ pair/ trio/ five/ uniform + sanitizer/ auth/
+        // options/ literal/ odd-*/uniform mirrors — analyzer-fixture shapes,
+        // each intra-directory set token-aligned by design, the cross-dir
+        // shared guard bodies cluster into two 9-member exact buckets), so
+        // the corpus grows 52 -> 91 files, clusters 31 -> 43 and
+        // duplicated_lines 685 -> 1023, all zero-parse-error, balance law
+        // intact. The drift corpus also tipped a candidate-ranking marginal
+        // (micro-fixture preamble pair) into engine-054 riding emission —
+        // the EndToEndTest id-uniqueness pin was made tier-aware there,
+        // this contract keeps the global totals.
         $fixtures = realpath(__DIR__ . '/../Fixtures');
         $this->assertIsString($fixtures);
 
@@ -918,10 +929,10 @@ final class CliSmokeTest extends TestCase
         $decoded = json_decode((string) file_get_contents($this->tmp . '/r.json'), true);
         $s = $decoded['summary'];
         $this->assertSame('1.8', $decoded['schema_version']);
-        $this->assertSame(52, $s['files_scanned']);
+        $this->assertSame(91, $s['files_scanned']);
         $this->assertSame(0, $s['parse_errors'], 'the fixture corpus must parse cleanly');
-        $this->assertSame(31, $s['clusters'], 'planted fixture clones must keep being found (re-pin only WITH fixture changes)');
-        $this->assertSame(685, $s['duplicated_lines']);
+        $this->assertSame(43, $s['clusters'], 'planted fixture clones must keep being found (re-pin only WITH fixture changes)');
+        $this->assertSame(1023, $s['duplicated_lines']);
         $this->assertSame(
             $s['files_scanned'],
             $s['files_reused'] + $s['files_processed'] + $s['files_without_blocks'] + $s['parse_errors'],

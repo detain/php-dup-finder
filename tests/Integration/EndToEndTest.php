@@ -57,8 +57,24 @@ final class EndToEndTest extends TestCase
         // minted ids from append order, which could — and silently
         // would — diverge from the canonical-sort mint without any
         // assertion noticing).
+        //
+        // Uniqueness is pinned PER TIER, not globally, because engine-054
+        // (engine-S15) deliberately BREAKS global uniqueness: a byte-identical
+        // bucket that rides a near-dup component is emitted BOTH inside the
+        // weaker (exact=false) cluster — where the ride is the headline — AND
+        // as its own surviving exact=true bucket. That re-emission is the
+        // shipped contract ("the exact tier survives"), so the old
+        // "every id appears in exactly one cluster" pin was a latent landmine
+        // that could only stay green while no corpus produced a riding bucket.
+        // It went off when the item-4.1 drift corpus (P1) grew the fixture
+        // scan past the candidate-ranking tipping point for the micro-fixture
+        // preamble pair — a tier-legal riding emission, not a double mint.
+        // What MUST stay caught: the same id twice inside ONE cluster, and an
+        // id appearing in two exact clusters (real mint/replay bug classes).
+        /** @var array<string, list<bool>> id → exactness of every carrier cluster */
         $seenIds = [];
         foreach ($report->clusters as $c) {
+            $seenHere = [];
             foreach ($c->members as $m) {
                 $this->assertStringStartsWith(
                     substr($m->structuralHash, 0, 8) . '_',
@@ -66,9 +82,19 @@ final class EndToEndTest extends TestCase
                     'block ids must ride the canonical production mint (hash prefix + rank)'
                 );
                 $this->assertMatchesRegularExpression('/^[0-9a-f]{8}_\d+$/', $m->id);
-                $this->assertFalse(isset($seenIds[$m->id]), 'duplicate block id ' . $m->id);
-                $seenIds[$m->id] = true;
+                $this->assertFalse(isset($seenHere[$m->id]), 'duplicate block id ' . $m->id . ' within one cluster');
+                $seenHere[$m->id] = true;
+                $seenIds[$m->id][] = $c->exact;
             }
+        }
+        foreach ($seenIds as $id => $carriers) {
+            if (count($carriers) < 2) {
+                continue;
+            }
+            $exactCount = count(array_filter($carriers, static fn (bool $e): bool => $e));
+            $this->assertSame(1, $exactCount,
+                'block id ' . $id . ' appears in ' . count($carriers) . ' clusters with ' . $exactCount
+                . ' exact carriers — the only legal duplication is engine-054 riding (ONE exact bucket + near-dup carrier)');
         }
 
         // Notify cluster: 3 members, threshold + role holes
