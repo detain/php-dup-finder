@@ -335,7 +335,9 @@ final class JsonSchemaSpec
      * git-history correlation). `window_months` echoes the tuning bound;
      * `clusters` counts the rows presented (every cluster spanning >= 2
      * files); `omitted` is the MAX_ROWS presentation cap, never a
-     * counting bound. Each row answers the doc's four questions for one
+     * counting bound — and it is SUMMARY-ONLY: findings for clusters past
+     * the cap still surface on their clusters (annotation runs over every
+     * correlated fact), the cap trims only the printed rows. Each row answers the doc's four questions for one
      * cluster: per-member last committed touch (abbreviated sha +
      * UTC date; null = uncommitted member), the member's latest ALONE
      * commit inside the window with its fix|security|bug match, and the

@@ -35,6 +35,15 @@ final class GitCli
     /**
      * Run one git command by argv (no shell). argv[0] must be 'git'.
      *
+     * The child gets a SCRUBBED copy of the parent environment: every
+     * `GIT_*` variable is stripped (r1-M1). An inherited GIT_DIR /
+     * GIT_WORK_TREE / GIT_INDEX_FILE / GIT_OBJECT_DIRECTORY would silently
+     * retarget blame and log at some other repository — the whole sidecar
+     * would then answer with another repo's history while naming ours.
+     * Nothing in a correct phpdup run needs a GIT_* in the environment
+     * (we always pass -C explicitly); if the environment itself cannot be
+     * enumerated, we fail open to plain inheritance — the legacy posture.
+     *
      * @param list<string> $argv
      * @return array{0: string, 1: string, 2: int} [stdout, stderr, exit code]
      */
@@ -45,12 +54,24 @@ final class GitCli
             return ['', 'could not create a scratch file for git stderr', self::CODE_NO_LAUNCH];
         }
 
+        /** @var array<string,string>|null $env */
+        $env = getenv();
+        if (is_array($env)) {
+            foreach (array_keys($env) as $key) {
+                if (is_string($key) && str_starts_with($key, 'GIT_')) {
+                    unset($env[$key]);
+                }
+            }
+        } else {
+            $env = null;
+        }
+
         $pipes = [];
         $proc  = proc_open($argv, [
             0 => ['file', '/dev/null', 'r'],
             1 => ['pipe', 'w'],
             2 => ['file', $errPath, 'w'],
-        ], $pipes);
+        ], $pipes, null, $env);
         if (!is_resource($proc)) {
             $stderr = 'could not launch ' . $argv[0];
             @unlink($errPath);

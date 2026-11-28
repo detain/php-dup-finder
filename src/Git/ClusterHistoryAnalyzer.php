@@ -81,6 +81,9 @@ final class ClusterHistoryAnalyzer
     /** @var array<string, array{verdict: string, reason: string|null, members: list<array{file: string, last: array{sha: string, time: int, msg: string}|null, lone: array{sha: string, time: int, subject: string, fix: bool}|null}>, coChange: list<array{a: string, b: string, times: int}>, activity: bool}> cluster id -> facts */
     private array $clusterFacts = [];
 
+    /** r1-C1 latch: correlate() ran at all (even over zero candidates). */
+    private bool $correlated = false;
+
     public function __construct(Config $config)
     {
         $this->cache         = new HistoryCache($config->cacheDir);
@@ -99,6 +102,7 @@ final class ClusterHistoryAnalyzer
      */
     public function correlate(array $clusters): ClusterHistory
     {
+        $this->correlated = true;
         $candidates = [];
         foreach ($clusters as $cluster) {
             if (count($this->distinctFiles($cluster)) >= 2) {
@@ -136,11 +140,17 @@ final class ClusterHistoryAnalyzer
      * fixed alone or diverged. DeclaredTwin precedent: findings append to
      * the cluster's architectural list and flow through every renderer.
      *
+     * r1-C1: a run with ZERO candidate clusters (no cross-file pair survived
+     * clustering) is the routine posture — correlate() legitimately stores no
+     * facts there, so the armed report still emits its 'rows: []' sidecar key
+     * instead of dying. The guard therefore rides the correlated LATCH, not
+     * emptiness: annotate before correlate remains a loud misuse.
+     *
      * @param list<Cluster> $clusters
      */
     public function annotateClusters(array $clusters): void
     {
-        if ($this->clusterFacts === []) {
+        if (!$this->correlated) {
             throw new \LogicException('annotateClusters() called before correlate() — no verdicts exist yet');
         }
         foreach ($clusters as $cluster) {
