@@ -211,11 +211,13 @@ final class PerDirOverrideBeltTest extends TestCase
      * under one voice).
      * (The 26th entry — 'accepted' — joined with item 4.4: a per-directory
      * suppression register is the attacker-controlled-suppression door.
-     * The 28th — 'symbols_forced' — joined with item 3.4 (S4); note that
-     * two REFUSED-constant members have no row here: 'idiom_mining' (item
-     * 3.1, MINE-D) and 'drift_flags' (item 4.1) — matrix gaps born with
-     * their own items, carried by the totality equation; disclosed in the
-     * S4 lane report, adding foreign rows is not this lane's edit.)
+     * 'symbols_forced' joined with item 3.4 (S4); the item 4.2 batch added
+     * the 'idiom_mining' row that the S4-era note flagged missing, plus
+     * 'history'/'history_window_months'. 'drift_flags' and 'helper_adoption'
+     * still have no row here — carried by the totality equation; the former
+     * validates its shape in a dedicated per-directory arm before the
+     * generic name-refusal can speak, the latter is a foreign MINE-D-2
+     * gap, disclosed, not this lane's edit to make.)
      *
      * @return array<string,array<int,mixed>|string|int|float|bool>
      */
@@ -249,12 +251,14 @@ final class PerDirOverrideBeltTest extends TestCase
             'window_oversized'      => true,
             'honor_gitignore'       => true,
             // Item 3.4 (S4): refused-per-directory, root-valid bool value.
-            // (Note: MINE-D's idiom_mining has no row here — the matrix
-            // test iterates refusedKeyValues(), so that key's refusal is
-            // carried only by the totality equation below. Disclosed in
-            // the S4 lane report; adding a foreign row is not this lane's
-            // edit to make.)
             'symbols_forced'        => true,
+            'idiom_mining'          => true,
+            // drift_flags deliberately NOT in the voice matrix: it has a
+            // dedicated per-directory arm that validates its shape before
+            // the generic name-refusal can speak (roster coverage rides
+            // the totality test below).
+            'history'               => true,
+            'history_window_months' => 6,
             'accepted'              => ['Faaa1111222233334'],
             // legacy family (dedicated arms; same voice pinned here)
             'fingerprint_id_mode'   => 'numbered',
@@ -308,7 +312,7 @@ final class PerDirOverrideBeltTest extends TestCase
         self::assertIsArray($refused);
 
         $covered = array_merge(self::ADMITTED_PARENTS, $refused, self::LEGACY_REFUSED);
-        self::assertCount(52, $known, 'the root-config universe is 52 keys');
+        self::assertCount(54, $known, 'the root-config universe is 54 keys');
         self::assertCount(count($covered), $known, 'no key may be counted twice across the three sides');
         sort($known);
         sort($covered);
@@ -318,7 +322,7 @@ final class PerDirOverrideBeltTest extends TestCase
             'every KNOWN_KEYS member must be admitted-parent, refused, or legacy-refused (once-S67 totality)',
         );
 
-        self::assertCount(31, $refused, 'the once-S67 roster refuses exactly 31 new keys (27 + item 3.1 idiom_mining + item 4.1 drift_flags + item 3.4 symbols_forced + item 3.2 helper_adoption)');
+        self::assertCount(33, $refused, 'the once-S67 roster refuses exactly 33 new keys (27 + item 3.1 idiom_mining + item 4.1 drift_flags + item 3.4 symbols_forced + item 3.2 helper_adoption + item 4.2 history, history_window_months)');
         self::assertEmpty(array_intersect(self::ADMITTED_PARENTS, $refused));
         self::assertEmpty(array_intersect(self::ADMITTED_PARENTS, self::LEGACY_REFUSED));
         self::assertEmpty(array_intersect($refused, self::LEGACY_REFUSED));
