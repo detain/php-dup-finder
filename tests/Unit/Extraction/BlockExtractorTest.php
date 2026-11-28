@@ -68,7 +68,10 @@ final class BlockExtractorTest extends TestCase
         // the empty-roster visitor below is exactly why classifyKind
         // must still not leak it. Item 7.2b's 'html_script' is a THIRD
         // never-classifyKind fold species (minted only by extract()'s
-        // window leg, like 'script' and 'fragment'). The equality below
+        // window leg, like 'script' and 'fragment'). Item 7.1's 'text' is
+        // a FOURTH never-classifyKind species with NO leg in this extractor
+        // at all — its files are not PHP, so the demand-gated cross-file
+        // harvester in PreprocessStage is its only mint. The equality below
         // is the drift guard: if a future traversable kind joins
         // classifyKind without ALL_KINDS, or any fold kind leaks into
         // classifyKind (the roster below is empty: a class leak would
@@ -79,7 +82,7 @@ final class BlockExtractorTest extends TestCase
             'try', 'switch', 'match',
         ];
         $this->assertEqualsCanonicalizing(
-            [...$traversable, 'script', 'fragment', 'class', 'html_script'],
+            [...$traversable, 'script', 'fragment', 'class', 'html_script', 'text'],
             BlockExtractor::ALL_KINDS
         );
 
@@ -93,6 +96,7 @@ final class BlockExtractorTest extends TestCase
             }
             $this->assertNotSame('script', $kind, 'classifyKind must never produce the fold kind');
             $this->assertNotSame('fragment', $kind, 'classifyKind must never produce the miner kind');
+            $this->assertNotSame('text', $kind, 'classifyKind must never produce the token-tier kind');
         }
         $this->assertEqualsCanonicalizing($traversable, array_keys($emitted));
     }

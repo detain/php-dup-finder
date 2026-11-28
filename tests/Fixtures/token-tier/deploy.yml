@@ -1,0 +1,19 @@
+name: Release pipeline
+on:
+  push:
+    tags:
+      - "v*"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile assets
+        run: npm ci && npm run build
+        env:
+          NODE_ENV: production
+      - name: Publish package
+        uses: some-org/publish-action@v2.1.0
+        with:
+          registry: https://npm.internal.example
+          token: ${{ secrets.NPM_TOKEN }}
