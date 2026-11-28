@@ -133,6 +133,12 @@ final class ClusterStage implements CooperativeStageInterface
             // precedent); one-time invalidation of existing .cluster
             // snapshots, disclosed in the lane report.
             $config->honorGitignore,
+            // Item 3.4 (S4): --symbols changes WHICH pairs enter scoring,
+            // so armed runs mint different cluster sets — the key must move
+            // with it (prophylactic binding, key-namespace change only, no
+            // PARSER_VERSION bump; flipping invalidates warm .cluster
+            // stores once).
+            $config->symbolsForced,
         ]));
     }
 
@@ -258,7 +264,16 @@ final class ClusterStage implements CooperativeStageInterface
         }
 
         $tCluster = microtime(true);
-        $clusterer = $this->buildClusterer($config);
+        // Item 3.4 (--symbols): build the forced-symbol index over the FINAL
+        // BlockIndex — after cohort expansion, master-side (the residency
+        // point the idiom/mining passes share; SOCKETPAIR law satisfied at
+        // construction: nothing crosses the worker wire).
+        $symbols = null;
+        if ($config->symbolsForced) {
+            $symbols = new \Phpdup\Index\SymbolIndex();
+            $symbols->build($index);
+        }
+        $clusterer = $this->buildClusterer($config, $symbols);
 
         if (!$this->exactOnly) {
             // Generate candidate pairs with progress reporting
@@ -337,7 +352,7 @@ final class ClusterStage implements CooperativeStageInterface
         }
     }
 
-    private function buildClusterer(\Phpdup\Cli\Config $config): Clusterer
+    private function buildClusterer(\Phpdup\Cli\Config $config, ?\Phpdup\Index\SymbolIndex $symbols = null): Clusterer
     {
         // once-S70 design (surface at 1.8): the client is hoisted to a
         // property so run() can read connectionStatus() after clustering —
@@ -383,6 +398,9 @@ final class ClusterStage implements CooperativeStageInterface
             // only scores dispatched pairs), so this stance cannot fork
             // verdicts — the twin law holds by placement.
             candidateMassFilter:      $config->candidateMassFilter,
+            // Item 3.4 (S4): forced-symbol injection (null = stream
+            // unchanged; ClusterStage builds it when symbols_forced arms).
+            forcedSymbols:            $symbols,
         );
     }
 

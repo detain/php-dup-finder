@@ -7,6 +7,7 @@ use Phpdup\Clustering\MatchTier;
 use Phpdup\Extraction\Block;
 use Phpdup\Index\BlockIndex;
 use Phpdup\Index\NgramInvertedIndex;
+use Phpdup\Index\SymbolIndex;
 use Phpdup\Ml\PairScorer;
 use Phpdup\Reporting\FindingId;
 use Phpdup\Similarity\ContainmentSimilarity;
@@ -150,6 +151,19 @@ final class Clusterer
         // twin is not resurrected — outcome-equal, the scorer judges live
         // bags in both modes and would reject that pair anyway).
         private readonly bool $candidateMassFilter = true,
+        // Item 3.4 (--symbols): a built SymbolIndex whose forced pairs are
+        // INJECTED into the candidate stream ahead of the natural one. The
+        // doc's letter (improve_logic.md:260-261) is "feed these pairs to
+        // the comparison regardless of similarity... report the measured
+        // similarity": forced pairs bypass the bag/df PREFILTERS (inverted
+        // index, maxDocumentFrequency, the F3 mass bound, the fragment
+        // suppression rules — none of which they enter through) but NOT the
+        // scoring — every forced pair is compared downstream at its real
+        // similarity, and a below-floor pair contributes evidence, never an
+        // edge. Null (default) = the stream is byte-identical to today's;
+        // the parameter is trailing so every existing construction is
+        // untouched (§5f trailing-param posture).
+        private readonly ?SymbolIndex $forcedSymbols = null,
     ) {
         if ($this->minSplitSize < 2) {
             throw new \InvalidArgumentException(sprintf(
@@ -398,6 +412,37 @@ final class Clusterer
         $seen = [];
         $yieldCount = 0;
         $blockNum = 0;
+
+        // Item 3.4 (--symbols): forced pairs ride the stream, not the
+        // heuristics. They bypass every prefilter below (that is the whole
+        // point — same-name pairs the bag/df doors never open for) but join
+        // the SAME scored lane: each yields exactly like a natural pair and
+        // is judged by the regular scoring pass at its real similarity.
+        // Yielded FIRST so the ON-stream has a deterministic sorted prefix;
+        // they share the base $seen map, so a pair the natural stream would
+        // also propose is consumed once at its forced slot (outcome-equal,
+        // budget counts each pair once). Forced pairs are named-declaration
+        // pairs only — the fragment suppression rules can never apply to
+        // them — and they are not touched by the F3 bound (a bound kill is
+        // a prefilter, which the doc explicitly overrides for this lane).
+        if ($this->forcedSymbols !== null) {
+            $forcedRows = $this->forcedSymbols->forcedPairs();
+            if ($output !== null && $output->getVerbosity() >= OutputInterface::VERBOSITY_DEBUG && $forcedRows !== []) {
+                $output->writeln(sprintf('symbols: injecting %d forced candidate pairs', count($forcedRows)));
+            }
+            foreach ($forcedRows as [$lo, $hi]) {
+                $key = $lo . '|' . $hi;
+                if (isset($seen[$key])) {
+                    continue;
+                }
+                $seen[$key] = true;
+                $yieldCount++;
+                if ($yieldCount > $candidateBudget) {
+                    throw CandidateBudgetException::exceeded($candidateBudget, $blockNum, $totalBlocks);
+                }
+                yield [$lo, $hi];
+            }
+        }
 
         // Item 2.1 (R-4-analogous fragment discipline): same-file fragment
         // runs whose line ranges OVERLAP are nested/adjacent windows of one
