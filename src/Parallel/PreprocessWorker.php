@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Phpdup\Parallel;
 
 use PhpParser\Node\Stmt;
+use Phpdup\Census\SubtreeMiner;
 use Phpdup\Cli\Config;
 use Phpdup\Extraction\Block;
 use Phpdup\Extraction\BlockExtractor;
@@ -55,12 +56,29 @@ final class PreprocessWorker
      *        to its disabled ''-dir no-op form so the run neither writes
      *        parser blobs nor serves pre-planted ones. Defaults to true so
      *        every array-API caller keeps the historic behaviour.
+     * @param bool $idiomMining Item 3.1 substrate demand gate: when false
+     *        (the default — every current caller) the stmtseq leg is the
+     *        ONLY mining done and the row stream is byte-identical to the
+     *        historic one (pinned). When true, the SAME single traversal's
+     *        statement lists additionally feed SubtreeMiner, emitting one
+     *        extra scalar 'mined' row per file with flavor 'idiom' —
+     *        §5c's "attach flavors without a second pass" promise. The
+     *        Config-to-stage demand surface is a later lane; until then
+     *        only tests and future armed paths set this true.
      */
     public function __construct(
         private readonly Config $config,
         private readonly bool $astDiskCache = true,
+        private readonly bool $idiomMining = false,
     ) {
     }
+
+    /**
+     * Lazily built when the idiom flavor is armed (item 3.1); one miner
+     * instance per worker process, reused across files — it holds no
+     * per-file state (mineFile() is pure over its input lists).
+     */
+    private ?SubtreeMiner $idiomMiner = null;
 
     /**
      * Order-stable serialisation of a string→string map for use in
@@ -399,6 +417,7 @@ final class PreprocessWorker
                 // never a second row type) — objects never ride the wire,
                 // the SOCKETPAIR law the row-shape union documents.
                 $minedLists = [];
+                $idiomLists = [];
                 foreach ($tools['extractor']->lastStatementLists() as $listEntry) {
                     $lstmts = $listEntry['stmts'];
                     if ($lstmts === []) {
@@ -440,6 +459,14 @@ final class PreprocessWorker
                         'lastLine'  => $last,
                         'ownerKind' => $listEntry['ownerKind'],
                     ];
+                    if ($this->idiomMining) {
+                        // Same entry, same live AST, no second traversal:
+                        // the lists that survived the stmtseq line-guard
+                        // are exactly the ones fit to feed the census
+                        // (garbage-line lists are skipped for both
+                        // flavors — one guard, one truth).
+                        $idiomLists[] = $listEntry;
+                    }
                 }
                 if ($minedLists !== []) {
                     $fileRows[] = [
@@ -448,6 +475,17 @@ final class PreprocessWorker
                         'flavor'  => 'stmtseq',
                         'payload' => json_encode($minedLists, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
                     ];
+                }
+                if ($this->idiomMining) {
+                    $idiomPayload = ($this->idiomMiner ??= new SubtreeMiner())->mineFile($idiomLists);
+                    if ($idiomPayload['sites'] !== []) {
+                        $fileRows[] = [
+                            'type'    => 'mined',
+                            'file'    => $path,
+                            'flavor'  => 'idiom',
+                            'payload' => json_encode($idiomPayload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+                        ];
+                    }
                 }
                 $oversizedDrops = $tools['extractor']->oversizedDrops();
                 if ($debug) {

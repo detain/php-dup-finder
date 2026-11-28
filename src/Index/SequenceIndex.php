@@ -24,6 +24,14 @@ namespace Phpdup\Index;
  * occurrence map (fold key -> positions across the corpus) is the substrate
  * 3.1/3.5 read; v1 builds it lazily.
  *
+ * Item 3.1 attaches its flavor WITHOUT touching any leg above: an
+ * explicitly armed {@see \Phpdup\Census\SubtreeCensus} hung off this
+ * instance (armIdioms()/idiomCensus()/recordIdiomFile()). Unarmed — the
+ * default for every existing caller — these methods are inert or loudly
+ * refusing, byFile/occurrences keep byte-identical behaviour, and no
+ * subtree work is reachable. Demand gating, not lazy guessing: the
+ * census only exists because a consumer armed it.
+ *
  * Deliberately not part of any persisted cache: the index is rebuilt from
  * the row stream each run, so warm cache-reuse of per-file Block lists
  * never desynchronises it from suppression logic (which reads Block fields
@@ -132,5 +140,51 @@ final class SequenceIndex
         }
         /** @var array<string, list<array{file: string, listId: string, pos: int}>> $map */
         $this->occurrences = $map;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Item 3.1 attach point — idiom-subtree census (armed, additive)
+    |--------------------------------------------------------------------------
+    | The flavors() contract above promised: later legs attach to the same
+    | walker and the same row stream. The idiom flavor's master-side store
+    | is a SubtreeCensus, hosted HERE so the §5c "ONE shared substrate"
+    | stays one: a consumer holding a SequenceIndex reaches statement
+    | sequences AND the subtree census from the same object, and the later
+    | census-output lane routes PreprocessStage's 'idiom' rows through
+    | recordIdiomFile() beside the existing 'hashes' dispatch.
+    */
+
+    private ?\Phpdup\Census\SubtreeCensus $idiomCensus = null;
+
+    /** Opt the instance into the idiom flavor (idempotent). */
+    public function armIdioms(int $sampleCap = \Phpdup\Census\SubtreeCensus::DEFAULT_SAMPLE_CAP): void
+    {
+        $this->idiomCensus ??= new \Phpdup\Census\SubtreeCensus($sampleCap);
+    }
+
+    public function idiomsArmed(): bool
+    {
+        return $this->idiomCensus !== null;
+    }
+
+    /** The armed census, or null while the flavor is unarmed. */
+    public function idiomCensus(): ?\Phpdup\Census\SubtreeCensus
+    {
+        return $this->idiomCensus;
+    }
+
+    /**
+     * Ingest one file's decoded-subtree payload (the 'idiom' mined-row
+     * JSON produced by SubtreeMiner::mineFile()). Refuses loudly when
+     * the flavor was never armed — an unarmed index receiving idiom
+     * rows is a wiring bug, not a demand signal (Fail Fast law).
+     */
+    public function recordIdiomFile(string $file, string $payloadJson): void
+    {
+        if ($this->idiomCensus === null) {
+            throw new \LogicException('SequenceIndex: idiom payload for ' . $file . ' while idioms unarmed — arm() the flavor first');
+        }
+        $this->idiomCensus->recordFileJson($file, $payloadJson);
     }
 }
