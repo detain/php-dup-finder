@@ -234,13 +234,21 @@ final class PlacementAdvisorArmedTest extends TestCase
 
     public function testFileLevelJoinWhenSampleIsCapped(): void
     {
-        // 18 inline sites vs 10 canonical samples: the sample cannot
-        // prove every member's line, so file-level attribution is the
-        // honest ceiling — and it names here.
-        $locs = [];
-        for ($i = 0; $i < 10; $i++) {
-            $locs[] = '/r/src/A.php:' . (30 + $i);
-        }
+        // 19 total sites vs 10 sampled copies: the row is capped, so
+        // file-level attribution is the honest ceiling — and it names.
+        // The asymmetry is the pin: A.php's range CONTAINS a sampled
+        // line (:16 sits inside 14-20) while B.php joins on file-count
+        // ALONE (every sampled B line sits outside 14-20). Flip the
+        // join to line-exact regardless of capping and B can no longer
+        // be accounted for — this test fails on the B member, not the
+        // A one. The line-exact-when-complete sibling test pins the
+        // other direction, so together the pair proves the arms are
+        // distinct and the gate is the sample-count, not the member.
+        $locs = [
+            '/r/src/A.php:16', '/r/src/B.php:31', '/r/src/B.php:32', '/r/src/A.php:33',
+            '/r/src/B.php:34', '/r/src/B.php:35', '/r/src/A.php:36', '/r/src/A.php:37',
+            '/r/src/B.php:38', '/r/src/B.php:39',
+        ];
         PlacementAdvisor::armAdoptionProbe([
             $this->row('Acme\\Env::isDev', '/r/src/Env.php', 10, 13, 19, 1, ['/r/src/A.php' => 10, '/r/src/B.php' => 8], $locs),
         ]);
@@ -252,7 +260,13 @@ final class PlacementAdvisorArmedTest extends TestCase
 
         $advice = (new PlacementAdvisor([]))->advise($cluster);
 
-        $this->assertSame('Acme\\Env::isDev', $advice['canonical']['label']);
+        $this->assertSame([
+            'label'         => 'Acme\\Env::isDev',
+            'file'          => '/r/src/Env.php',
+            'line'          => 10,
+            'inline_copies' => 18,
+            'is_member'     => false,
+        ], $advice['canonical']);
     }
 
     public function testStrongestRowWinsDeterministically(): void
@@ -273,6 +287,93 @@ final class PlacementAdvisorArmedTest extends TestCase
         // independent of row input order.
         $this->assertSame('Acme\\Deep::isDev', $advice['canonical']['label']);
         $this->assertSame(8, $advice['canonical']['inline_copies']);
+    }
+
+    public function testEqualStrengthRowsTieBreakByAscendingLabelUnderPermutedOrders(): void
+    {
+        // The reviewer probe's committed twin: two rows with IDENTICAL
+        // evidence (same inline count, both cover every member
+        // line-exactly) decide on the comparator's next key legs —
+        // [-inlineSites, label, defFile, defStart] — so the ascending
+        // label wins regardless of the ledger's input order.
+        $abe = $this->row('Acme\\Abe::isDev', '/r/src/Abe.php', 4, 7, 5, 1,
+            ['/r/src/A.php' => 2, '/r/src/B.php' => 2],
+            ['/r/src/A.php:16', '/r/src/A.php:18', '/r/src/B.php:17', '/r/src/B.php:19']);
+        $zed = $this->row('Acme\\Zed::isDev', '/r/src/Zed.php', 9, 12, 5, 1,
+            ['/r/src/A.php' => 2, '/r/src/B.php' => 2],
+            ['/r/src/A.php:16', '/r/src/A.php:18', '/r/src/B.php:17', '/r/src/B.php:19']);
+
+        $winner = function (array $rows): array {
+            PlacementAdvisor::armAdoptionProbe($rows);
+            $cluster = $this->cluster(
+                $this->member('/r/src/A.php', 'Acme\\X', 'Alpha', 'run', 14, 20),
+                $this->member('/r/src/B.php', 'Acme\\X', 'Beta', 'run', 14, 20),
+            );
+            $cluster->holes[] = new Hole('__P0', 'identifier', ['$u', '$v']);
+            return (new PlacementAdvisor([]))->advise($cluster)['canonical'];
+        };
+
+        $expected = [
+            'label'         => 'Acme\\Abe::isDev',
+            'file'          => '/r/src/Abe.php',
+            'line'          => 4,
+            'inline_copies' => 4,
+            'is_member'     => false,
+        ];
+        $this->assertSame($expected, $winner([$zed, $abe]));
+        $this->assertSame($expected, $winner([$abe, $zed]));
+    }
+
+    public function testTieBreakDescendsToDefFileThenLineWhenLabelsMatch(): void
+    {
+        // Same label on every row: the file leg decides first (Aar.php
+        // sorts before Abe.php, even at a LATER def line — file outranks
+        // line in the key), and with one file left standing the line
+        // leg decides (4 before 9). All four input permutations of each
+        // lineup must agree — order never sways the winner.
+        $abe9 = $this->row('Acme\\Abe::isDev', '/r/src/Abe.php', 9, 12, 5, 1,
+            ['/r/src/A.php' => 2, '/r/src/B.php' => 2],
+            ['/r/src/A.php:16', '/r/src/A.php:18', '/r/src/B.php:17', '/r/src/B.php:19']);
+        $abe4 = $this->row('Acme\\Abe::isDev', '/r/src/Abe.php', 4, 7, 5, 1,
+            ['/r/src/A.php' => 2, '/r/src/B.php' => 2],
+            ['/r/src/A.php:16', '/r/src/A.php:18', '/r/src/B.php:17', '/r/src/B.php:19']);
+        $aar9 = $this->row('Acme\\Abe::isDev', '/r/src/Aar.php', 9, 12, 5, 1,
+            ['/r/src/A.php' => 2, '/r/src/B.php' => 2],
+            ['/r/src/A.php:16', '/r/src/A.php:18', '/r/src/B.php:17', '/r/src/B.php:19']);
+
+        $winner = function (array $rows): array {
+            PlacementAdvisor::armAdoptionProbe($rows);
+            $cluster = $this->cluster(
+                $this->member('/r/src/A.php', 'Acme\\X', 'Alpha', 'run', 14, 20),
+                $this->member('/r/src/B.php', 'Acme\\X', 'Beta', 'run', 14, 20),
+            );
+            $cluster->holes[] = new Hole('__P0', 'identifier', ['$u', '$v']);
+            return (new PlacementAdvisor([]))->advise($cluster)['canonical'];
+        };
+
+        // File leg beats line leg: the :9 row in the earlier file wins
+        // over the :4 row in the later one.
+        $byFile = [
+            'label'         => 'Acme\\Abe::isDev',
+            'file'          => '/r/src/Aar.php',
+            'line'          => 9,
+            'inline_copies' => 4,
+            'is_member'     => false,
+        ];
+        $this->assertSame($byFile, $winner([$abe9, $abe4, $aar9]));
+        $this->assertSame($byFile, $winner([$aar9, $abe9, $abe4]));
+        $this->assertSame($byFile, $winner([$abe4, $aar9, $abe9]));
+
+        // Line leg decides within one file.
+        $byLine = [
+            'label'         => 'Acme\\Abe::isDev',
+            'file'          => '/r/src/Abe.php',
+            'line'          => 4,
+            'inline_copies' => 4,
+            'is_member'     => false,
+        ];
+        $this->assertSame($byLine, $winner([$abe9, $abe4]));
+        $this->assertSame($byLine, $winner([$abe4, $abe9]));
     }
 
     public function testCanonicalProbeNeedsInlineCopiesNotJustADefinition(): void
