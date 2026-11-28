@@ -132,14 +132,19 @@ final class Report
         // SCHEMA_VERSION bit as long as the armed shape is declared in
         // JsonSchemaSpec and OFF bytes never change).
         public readonly ?\Phpdup\Census\LiteralCensus $literalCensus = null,
-        // Item 2.2 (ROLLUP), EMITTED at schema 1.9: the corpus-awareness
-        // rollups (see {@see RollupAnalyzer::analyze()} for the shape and
-        // the f08 design law behind every field). Recomputed at report
-        // time — nothing here is persisted, so no cache key moves and no
-        // Block field is added. null = the producer never ran the pass
-        // (legacy library/server/hand-built reports), distinct from an
-        // empty corpus that was measured — same tracked-not-fabricated
-        // law as the counters above.
+        // Item 2.2 (ROLLUP): the corpus-awareness rollups (see
+        // {@see RollupAnalyzer::analyze()} for the shape and the f08
+        // design law behind every field). EMITTED at schema 1.8 as the
+        // demand-armed conditional key `summary.rollups` — JsonReporter
+        // opens the block ONLY when this is non-null (armed shape
+        // declared by summaryShape(rollups: true)/rollupBlockShape();
+        // no SCHEMA_VERSION event, the MINE-D §4 carve-out), so unarmed
+        // payloads stay byte-identical and the goldens hold. Recomputed
+        // at report time — nothing here is persisted, so no cache key
+        // moves and no Block field is added. null = the producer never
+        // ran the pass (legacy library/server/hand-built reports),
+        // distinct from an empty corpus that was measured — same
+        // tracked-not-fabricated law as the counters above.
         public readonly ?array $rollups = null,
     ) {
     }
