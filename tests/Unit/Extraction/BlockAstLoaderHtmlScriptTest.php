@@ -14,6 +14,7 @@ use Phpdup\Fingerprint\SubtreeHasher;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Parsing\AstCache;
 use Phpdup\Parsing\AstParser;
+use Phpdup\Persistence\IndexStore;
 use Phpdup\Refactor\HtmlFragmentApplyRefusal;
 use Phpdup\Util\AstSerializer;
 use PHPUnit\Framework\TestCase;
@@ -181,5 +182,107 @@ final class BlockAstLoaderHtmlScriptTest extends TestCase
         $cluster2 = new \Phpdup\Clustering\Cluster('t1a-e2', [$block2], 1.0, true);
         $this->expectException(HtmlFragmentApplyRefusal::class);
         $this->loader()->rebaseClusters([$cluster2], []);
+    }
+
+    // ── r1 m-2: the WARM BLOB hop — coverage parity with the fragment
+    //    species' FragmentCacheKeyReplayTest. The serve/refusal pins above
+    //    exercise in-memory unloaded blocks; these cross an actual
+    //    IndexStore file so the Block::$fragmentLineage hop itself is
+    //    proven: serialize carries it, load hands it back verbatim, and
+    //    the derive arm serves the post-hop block (or refuses a lineage
+    //    the hop never carried) exactly as it does the in-memory ones.
+
+    public function testIndexStoreKeyBindsTheHtmlScriptRoster(): void
+    {
+        // Layer-1 mirror of the fragment template: naming html_script
+        // reshapes the block set, so the persisted blob must never serve
+        // a default-roster run (or vice versa) — the key alone fences it.
+        $stage = new \Phpdup\Pipeline\Stages\PreprocessStage(useCache: true);
+        $keyOf = new \ReflectionMethod(\Phpdup\Pipeline\Stages\PreprocessStage::class, 'indexStoreConfigKey');
+
+        $on  = new Config(paths: ['/x'], exclude: [], allowedKinds: ['html_script']);
+        $off = new Config(paths: ['/x'], exclude: [], allowedKinds: []);
+
+        self::assertNotSame($keyOf->invoke($stage, $on), $keyOf->invoke($stage, $off),
+            'html_script minting reshapes the block set — the IndexStore key must bind the roster');
+        self::assertSame($keyOf->invoke($stage, $on), $keyOf->invoke($stage, $on),
+            'non-vacuity: the key is a pure function of the config');
+    }
+
+    public function testWarmBlobRoundTripServesTheDerivedFold(): void
+    {
+        $path = $this->writeTemplate('f.phtml', self::TEMPLATE);
+        [$block] = $this->mint($path);
+        $before = AstSerializer::tokens($block->ast);
+        $lineage = $block->fragmentLineage;
+        self::assertNotSame([], $lineage, 'premise: a real fold carries its lineage');
+        $block->unloadAst();
+
+        $dir = $this->dir . '/idx';
+        mkdir($dir, 0o700, true);
+        (new IndexStore($dir, 't1a-html-script'))->save($path, [$block]);
+
+        $reloaded = (new IndexStore($dir, 't1a-html-script'))->load($path);
+        self::assertIsArray($reloaded);
+        self::assertCount(1, $reloaded);
+        $hop = $reloaded[0];
+        self::assertSame($lineage, $hop->fragmentLineage, 'the lineage must ride serialize verbatim');
+        self::assertSame($block->range->start, $hop->range->start);
+        self::assertSame($block->range->end, $hop->range->end);
+        self::assertTrue($hop->isAstUnloaded());
+
+        $served = $this->loader()->resolve($hop);
+        self::assertInstanceOf(Stmt\Block::class, $served);
+        self::assertSame($before, AstSerializer::tokens($served),
+            'post-hop re-derivation serves the pre-hop fold byte-identically');
+    }
+
+    public function testWarmBlobCarriesLoadedFoldMembers(): void
+    {
+        // The lazyAst=false leg: the fold wrapper itself rides the blob.
+        // Sliced InlineHTML members (incl. the phpdupHtmlSlice marker
+        // attribute) are Node subclasses / scalar attributes, so the
+        // allow-list carries them — an allow-list gap would surface here
+        // as a corrupt-blob refusal, not a silent degradation.
+        $path = $this->writeTemplate('g.phtml', self::TEMPLATE);
+        [$block] = $this->mint($path);
+        $before = AstSerializer::tokens($block->ast);
+
+        $dir = $this->dir . '/idx-loaded';
+        mkdir($dir, 0o700, true);
+        (new IndexStore($dir, 't1a-html-script'))->save($path, [$block]);
+
+        $reloaded = (new IndexStore($dir, 't1a-html-script'))->load($path);
+        self::assertIsArray($reloaded);
+        $hop = $reloaded[0];
+        self::assertFalse($hop->isAstUnloaded(), 'the loaded fold survives the hop as a loaded fold');
+        self::assertInstanceOf(Stmt\Block::class, $hop->ast);
+        self::assertSame($before, AstSerializer::tokens($hop->ast));
+        self::assertSame($block->fragmentLineage, $hop->fragmentLineage);
+    }
+
+    public function testLineagelessLegacyFoldRefusesFailClosed(): void
+    {
+        // Pre-hop warm shape: a blob whose html_script block arrives with
+        // NO lineage (a field the writer never emitted restores as the
+        // class default []). Position may match the file perfectly — the
+        // derive arm still demands exact lineage, so the block is refused
+        // typed rather than blind-served (the TokenCacheTest
+        // legacy-never-satisfies-the-reader precedent shape, :117/:328).
+        $path = $this->writeTemplate('h.phtml', self::TEMPLATE);
+        [$block] = $this->mint($path);
+        $block->unloadAst();
+        $block->fragmentLineage = [];
+
+        $dir = $this->dir . '/idx-legacy';
+        mkdir($dir, 0o700, true);
+        (new IndexStore($dir, 't1a-legacy'))->save($path, [$block]);
+        $reloaded = (new IndexStore($dir, 't1a-legacy'))->load($path);
+        self::assertIsArray($reloaded);
+        $hop = $reloaded[0];
+        self::assertSame([], $hop->fragmentLineage);
+
+        $this->expectException(HtmlFragmentApplyRefusal::class);
+        $this->loader()->resolve($hop);
     }
 }

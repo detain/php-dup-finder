@@ -85,9 +85,18 @@ final class HtmlScriptFoldIdentityTest extends TestCase
     {
         $a = "<x>\n<script language='text/babel'>\n" . self::JS . "</script>\n</x>\n<y>extra</y>\n";
         $b = "<z>\n<script type=\"text/babel\" data-presets=\"react\">\n" . self::JS . "</script>\n</z>\n";
-        $ha = $this->structuralHashes($this->windows($a));
-        $hb = $this->structuralHashes($this->windows($b));
-        self::assertSame($ha, $hb);
+        $wa = $this->windows($a);
+        $wb = $this->windows($b);
+        // r1 n-1: guard the premise and pin the SPECIES — a comparison of
+        // empty hash lists would pass vacuously if the mint ever died.
+        self::assertCount(1, $wa, 'the babel window must actually be minted (language= arm)');
+        self::assertCount(1, $wb, 'the babel window must actually be minted (type= arm)');
+        self::assertSame(BlockExtractor::HTML_SCRIPT_KIND, $wa[0]->kind);
+        self::assertSame(BlockExtractor::HTML_SCRIPT_KIND, $wb[0]->kind);
+        self::assertSame(['slice'], $wa[0]->fragmentLineage, 'species pin: the interior is one cut run');
+        self::assertSame(['slice'], $wb[0]->fragmentLineage, 'species pin: same lineage, different chrome');
+        self::assertSame($this->structuralHashes($wa), $this->structuralHashes($wb),
+            'identical babel interior behind different chrome shares the fold key — species pinned above');
     }
 
     public function testEscapeFormNeverEqualsRealMarkup(): void
@@ -102,7 +111,13 @@ final class HtmlScriptFoldIdentityTest extends TestCase
     public function testIdentityAcrossRuns(): void
     {
         $code = "<i>\n<script>\n" . self::JS . "</script>\n</i>\n";
-        $first = $this->structuralHashes($this->windows($code));
+        $blocks1 = $this->windows($code);
+        // r1 n-1: premise guard — empty-vs-empty would pass vacuously if
+        // the mint ever died; pin the species first, then the identity.
+        self::assertCount(1, $blocks1, 'the window must actually be minted');
+        self::assertSame(BlockExtractor::HTML_SCRIPT_KIND, $blocks1[0]->kind);
+        self::assertSame(['slice'], $blocks1[0]->fragmentLineage, 'species pin: cut-run interior');
+        $first = $this->structuralHashes($blocks1);
         // Fresh parse, fresh extractor, fresh hasher — no shared state:
         $stmts = (new ParserFactory())->createForNewestSupportedVersion()->parse($code);
         self::assertIsArray($stmts);
@@ -110,6 +125,8 @@ final class HtmlScriptFoldIdentityTest extends TestCase
             (new BlockExtractor(1, 100000, [BlockExtractor::HTML_SCRIPT_KIND]))->extract('t.phtml', $stmts),
             static fn (Block $b): bool => $b->kind === BlockExtractor::HTML_SCRIPT_KIND
         ));
+        self::assertCount(1, $blocks2, 'the second run must mint the same species, not nothing');
+        self::assertSame($blocks1[0]->fragmentLineage, $blocks2[0]->fragmentLineage);
         $second = $this->structuralHashes($blocks2);
         self::assertSame($first, $second);
     }
