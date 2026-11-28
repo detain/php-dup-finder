@@ -2249,6 +2249,16 @@ HELP;
                 $out['db_symbols_functions'] = $data['db_symbols']['functions'];
             }
         }
+        // Item 4.1 (r1 M-1): profiles may ship a `drift_flags` analysis
+        // vocabulary arming the DriftAnalyzer predicates. Deposited AS-IS
+        // (the documented profile-tier law); ConfigLoader::extractDrift-
+        // Vocabulary() canonicalizes it and refuses malformed payloads,
+        // and the analyzer itself is defensively inert on any shape it
+        // does not recognize — a run without a drift_flags-carrying
+        // profile keeps the empty (inert) vocabulary.
+        if (isset($data['drift_flags']) && is_array($data['drift_flags'])) {
+            $out['drift_flags'] = $data['drift_flags'];
+        }
         return $out;
     }
 

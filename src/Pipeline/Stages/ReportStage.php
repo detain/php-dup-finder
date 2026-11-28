@@ -276,12 +276,13 @@ final class ReportStage implements CooperativeStageInterface
         // Architectural analysis: emit Finding[] per cluster covering
         // SOLID violations, design-pattern matches, and anti-patterns.
         $state->currentTask = 'analysing architecture';
-        // item 4.1: the drift analyzer mounts inert (empty vocabulary) —
-        // it produces zero findings until a drift_flags vocabulary is
-        // injected, so default and Golden runs are byte-unchanged by this
-        // line (ProfileRegistry ships the data; config plumbing is the
-        // documented follow-on row).
-        $analyzers = [new SolidAnalyzer(), new DesignPatternAnalyzer(), new AntiPatternAnalyzer(), new DriftAnalyzer()];
+        // item 4.1 (r1 M-1): the drift analyzer consumes the config-carried
+        // drift_flags vocabulary (root phpdup.json key or the --profile
+        // tier). Empty vocab — every run without either, incl. Golden and
+        // the CI/smoke legs — keeps it inert and reports byte-identical;
+        // --profile generic (or auto, which falls back to generic) arms
+        // the four shipped predicates.
+        $analyzers = [new SolidAnalyzer(), new DesignPatternAnalyzer(), new AntiPatternAnalyzer(), new DriftAnalyzer($config->driftVocabulary)];
         foreach ($clusters as $c) {
             $findings = [];
             foreach ($analyzers as $a) {

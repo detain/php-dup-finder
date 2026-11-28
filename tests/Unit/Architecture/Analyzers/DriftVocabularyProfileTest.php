@@ -8,6 +8,7 @@ use PhpParser\NodeFinder;
 use PHPUnit\Framework\TestCase;
 use Phpdup\Architecture\Analyzers\DriftAnalyzer;
 use Phpdup\Clustering\Cluster;
+use Phpdup\Cli\ConfigLoader;
 use Phpdup\Cli\ProfileRegistry;
 use Phpdup\Extraction\Block;
 use Phpdup\Parsing\AstParser;
@@ -19,13 +20,13 @@ use Phpdup\Util\LineRange;
  * Item 4.1: the shipped profile vocabularies are live analyzer input.
  *
  * profiles/generic.json and profiles/db-aware-myadmin.json carry a
- * drift_flags block (predicates + sanitizer/auth/option names). The
- * profile TIER does not consume it — Command::profileToOverrides() maps
- * exactly its documented keys and drops the rest — so this test feeds
- * the decoded block straight into DriftAnalyzer and pins the data
- * end-to-end: a guard-drift cluster fires on the shipped vocabulary,
- * and the vocabulary the analyzer understands is exactly the shape the
- * profiles ship.
+ * drift_flags block (predicates + sanitizer/auth/option names). Since
+ * r1 M-1 the profile TIER admits it: Command::profileToOverrides()
+ * deposits the block and ConfigLoader::extractDriftVocabulary()
+ * canonicalizes it into Config::$driftVocabulary, which ReportStage
+ * injects into the DriftAnalyzer. This test pins the shipped data
+ * shapes, the canonicalization/validation doors, and the analyzer
+ * firing on exactly the vocabulary the profiles ship.
  */
 final class DriftVocabularyProfileTest extends TestCase
 {
@@ -78,16 +79,46 @@ final class DriftVocabularyProfileTest extends TestCase
         self::assertStringContainsString('GuardMissing::handle', $findings[0]->message);
     }
 
-    public function testTheBlockIsInertForTheConfigTier(): void
+    public function testTheTierCarriesTheBlockIntoTheAdmissionRoster(): void
     {
-        // Honest disclosure of the shipped-data posture: ProfileRegistry
-        // hands the block to consumers, but the profile->Config mapping
-        // (profileToOverrides) admits only its documented keys — a phpdup
-        // run with --profile generic still analyses with zero drift
-        // findings until the injection plumbing lands (follow-on row).
+        // r1 M-1: drift_flags is now config-admitted (root key + profile
+        // tier), refused per-directory — the belt + schema-parity tests
+        // pin the rosters; this asserts the shipped profile payload itself
+        // still survives ProfileRegistry's load untouched.
         $loaded = ProfileRegistry::bundled()->load('generic');
         self::assertArrayHasKey('drift_flags', $loaded);
         self::assertArrayHasKey('exclude', $loaded, 'the tier-consumed keys ride along unchanged');
+    }
+
+    public function testValidateAcceptsTheShippedBlockShape(): void
+    {
+        // The root phpdup.json door must admit exactly what the profiles
+        // ship (the nested _description included — profiles bypass
+        // validate(), so this is the first door the shape meets).
+        (new ConfigLoader())->validate(['drift_flags' => $this->genericFlags()]);
+        (new ConfigLoader())->validate(['drift_flags' => ['predicates' => ['guard-drift']]]);
+        self::assertIsArray($this->genericFlags(), 'reached the end: the shipped shape validates');
+    }
+
+    public function testValidateRefusesMalformedBlocks(): void
+    {
+        $loader = new ConfigLoader();
+
+        foreach ([
+            'scalar block'            => ['drift_flags' => 'yes'],
+            'string predicates'       => ['drift_flags' => ['predicates' => 'guard-drift']],
+            'keyed predicates'        => ['drift_flags' => ['predicates' => ['a' => 'guard-drift']]],
+            'non-string entry'        => ['drift_flags' => ['sanitizers' => ['real_escape', 7]]],
+            'unknown predicate'       => ['drift_flags' => ['predicates' => ['bogus-code']]],
+            'unknown subkey'          => ['drift_flags' => ['drift' => ['guard-drift']]],
+        ] as $label => $config) {
+            try {
+                $loader->validate($config);
+                self::fail("drift_flags {$label} must be refused");
+            } catch (\RuntimeException $e) {
+                self::assertStringContainsString('drift_flags', $e->getMessage(), $label);
+            }
+        }
     }
 
     /** @return array<string,mixed> */

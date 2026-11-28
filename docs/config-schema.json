@@ -317,6 +317,40 @@
                 }
             }
         },
+        "drift_flags": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Item 4.1: vocabulary arming the DriftAnalyzer's drift predicates over a cluster's members (guard/sanitizer/auth/literal/option divergence between clones). Precedence: CLI dict > this file > the --profile tier (profiles generic and db-aware-myadmin ship a block); a layer that names the block replaces it wholesale. Empty/absent = the analyzer is INERT and reports are byte-unchanged — no-profile runs (incl. Golden and the CI legs) never arm it. ROOT CONFIG ONLY: a per-directory .phpdup.json carrying this key fails the load — a subtree choosing which drift findings exist is the same suppression-hazard family as 'accepted' (item 4.4). Arming without the key: --profile generic|auto.",
+            "properties": {
+                "_description": {
+                    "type": "string",
+                    "description": "Profiles ship a nested human note; the loader accepts and strips it."
+                },
+                "predicates": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["guard-drift", "sanitizer-divergence", "copy-paste-literal", "odd-one-out"]
+                    },
+                    "description": "Enabled predicate codes (DriftAnalyzer::PREDICATE_*). Any other entry is refused with the allowed list. The block arms only what is enumerated; omit for an inert vocabulary."
+                },
+                "sanitizers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Lower-cased call names classified as sanitizing (the sanitizer-divergence arm compares descriptors' callNames lower-cased). Entry names must be non-empty strings."
+                },
+                "auth": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Lower-cased call names classified as auth checks (guards an auth-missing drift; snake_case convention — matching is case-folded)."
+                },
+                "options": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Security-relevant option CONSTANTS, verbatim spelling (e.g. CURLOPT_SSL_VERIFYPEER). SCOPES the option-divergence arm: it fires only when the divergent argument position's resolved name is enumerated here (§4.1 letter; r1 m-2). Unresolvable or off-list names earn no claim."
+                }
+            }
+        },
         "low_memory": {
             "type": "boolean",
             "default": false,

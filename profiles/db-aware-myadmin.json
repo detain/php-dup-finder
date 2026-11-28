@@ -19,7 +19,7 @@
         }
     },
     "drift_flags": {
-        "_description": "item 4.1 DriftAnalyzer vocabulary for MyAdmin-shaped code: the db_abstraction escape (real_escape) is the sanitizer of record. Shipped data only — the profile tier never maps it into Config; the analyzer consumes it through constructor injection (config plumbing: documented follow-on).",
+        "_description": "item 4.1 DriftAnalyzer vocabulary for MyAdmin-shaped code: the db_abstraction escape (real_escape) is the sanitizer of record. Admitted by the config tier (--profile db-aware-myadmin, root phpdup.json key, or generic/auto fallback); runs without either keep the empty vocabulary and stay inert.",
         "predicates": ["guard-drift", "sanitizer-divergence", "copy-paste-literal", "odd-one-out"],
         "sanitizers": ["real_escape", "sanitize", "intval", "filter_var", "escapeshellarg", "escapeshellcmd"],
         "auth": ["require_auth", "reauth", "check_admin", "is_admin"],

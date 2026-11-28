@@ -45,6 +45,7 @@ final class Config
      * @param list<string> $exclude
      * @param list<string> $allowedKinds Empty list = accept all kinds.
      * @param list<string> $accepted Item 4.4: root-only phpdup.json accepted finding ids.
+     * @param array{predicates?:list<string>,sanitizers?:list<string>,auth?:list<string>,options?:list<string>} $driftVocabulary Item 4.1 (r1 M-1): canonical drift_flags vocabulary; empty = DriftAnalyzer inert.
      */
     public function __construct(
         public readonly array $paths,
@@ -395,6 +396,12 @@ final class Config
         // never honored from per-directory configs (attacker-controlled
         // suppression was the exact hazard of the per-dir gate keys).
         public readonly array $accepted = [],
+        // Item 4.1 (r1 M-1): canonical drift_flags vocabulary — root-only
+        // (phpdup.json key or the --profile tier; refused per-directory,
+        // same suppression/stance hazard family as 'accepted'). Empty is
+        // the inert default: DriftAnalyzer produces zero findings without
+        // a non-empty 'predicates' list, so no-profile runs are unchanged.
+        public readonly array $driftVocabulary = [],
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -753,6 +760,10 @@ final class Config
             // for some files and silently skip others; refused at discovery
             // in ConfigLoader::discoverPerDirectoryOverrides()).
             idiomMining:                     $this->idiomMining,
+            // item 4.1: root-only vocabulary — copied, never replaced,
+            // per-directory (refused at discovery; the report-level stance
+            // family, same posture as scope/score_mode/accepted).
+            driftVocabulary:                 $this->driftVocabulary,
         );
     }
 

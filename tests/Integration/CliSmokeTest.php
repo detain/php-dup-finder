@@ -915,7 +915,15 @@ final class CliSmokeTest extends TestCase
         // intact. The drift corpus also tipped a candidate-ranking marginal
         // (micro-fixture preamble pair) into engine-054 riding emission —
         // the EndToEndTest id-uniqueness pin was made tier-aware there,
-        // this contract keeps the global totals.
+        // this contract keeps the global totals. Re-pin P1-inject era
+        // (+r1 M-1 end-to-end pin corpus):
+        // tests/Fixtures/drift/e2e ships 4 .php files — 3 byte-identical
+        // guarded members + 1 guardless rider sized for DEFAULT extraction
+        // and wide-df candidacy (guarded 17-call chain with the reject
+        // block; the CLI-level fire/inert/refusal pins target this dir,
+        // see CliDriftVocabularyTest), so the corpus grows 91 -> 95 files,
+        // clusters 43 -> 45 and duplicated_lines 1023 -> 1122, all
+        // zero-parse-error, balance law intact.
         $fixtures = realpath(__DIR__ . '/../Fixtures');
         $this->assertIsString($fixtures);
 
@@ -929,10 +937,10 @@ final class CliSmokeTest extends TestCase
         $decoded = json_decode((string) file_get_contents($this->tmp . '/r.json'), true);
         $s = $decoded['summary'];
         $this->assertSame('1.8', $decoded['schema_version']);
-        $this->assertSame(91, $s['files_scanned']);
+        $this->assertSame(95, $s['files_scanned']);
         $this->assertSame(0, $s['parse_errors'], 'the fixture corpus must parse cleanly');
-        $this->assertSame(43, $s['clusters'], 'planted fixture clones must keep being found (re-pin only WITH fixture changes)');
-        $this->assertSame(1023, $s['duplicated_lines']);
+        $this->assertSame(45, $s['clusters'], 'planted fixture clones must keep being found (re-pin only WITH fixture changes)');
+        $this->assertSame(1122, $s['duplicated_lines']);
         $this->assertSame(
             $s['files_scanned'],
             $s['files_reused'] + $s['files_processed'] + $s['files_without_blocks'] + $s['parse_errors'],

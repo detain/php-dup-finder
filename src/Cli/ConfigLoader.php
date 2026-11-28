@@ -394,6 +394,7 @@ final class ConfigLoader
             trinityCollapse: (bool)($overrides['trinity_collapse'] ?? $data['trinity_collapse'] ?? $base->trinityCollapse),
             dbSymbolsMethods: $this->extractDbSymbols($data, $overrides, $profileOverrides, 'methods'),
             dbSymbolsFunctions: $this->extractDbSymbols($data, $overrides, $profileOverrides, 'functions'),
+            driftVocabulary: $this->extractDriftVocabulary($data, $overrides, $profileOverrides),
             scorer:                         $flat['scorer'],
             irThreshold:                    $flat['ir_threshold'],
             mlPairUrl: (string)($overrides['ml_pair_url'] ?? $data['ml_pair_url'] ?? $base->mlPairUrl),
@@ -674,6 +675,101 @@ final class ConfigLoader
                 continue;
             }
             $out[strtolower($name)] = $op;
+        }
+        return $out;
+    }
+
+    /**
+     * Item 4.1 (r1 M-1): the drift_flags analysis vocabulary. Tier order
+     * mirrors the db-symbol packs: CLI dict -> config file -> profile ->
+     * inert default. A layer that names the block REPLACES it wholesale
+     * (the block is one analysis stance, not a per-key blend). Canonical
+     * shape: four list<string> keys; the profiles' nested `_description`
+     * annotation is accepted and stripped here. Malformed payloads refuse
+     * loudly — the analyzer is only ever fed a validated vocabulary.
+     *
+     * @param array<string,mixed> $data
+     * @param array<string,mixed> $overrides
+     * @param array<string,mixed> $profileOverrides
+     * @return array{predicates:list<string>,sanitizers:list<string>,auth:list<string>,options:list<string>}
+     */
+    private function extractDriftVocabulary(array $data, array $overrides, array $profileOverrides): array
+    {
+        $block  = $overrides['drift_flags'] ?? $data['drift_flags'] ?? $profileOverrides['drift_flags'] ?? null;
+        $source = array_key_exists('drift_flags', $overrides) ? ' (from overrides)'
+            : (array_key_exists('drift_flags', $data) ? ' (from config file)'
+                : (array_key_exists('drift_flags', $profileOverrides) ? ' (from profile)' : ''));
+        if ($block === null) {
+            return self::canonicalizeDriftVocabulary([], '');
+        }
+        return self::canonicalizeDriftVocabulary($block, $source);
+    }
+
+    /**
+     * Validate + canonicalize one drift_flags block. Public-facing errors
+     * carry the layer provenance in $where (same voice as validate()).
+     *
+     * @return array{predicates:list<string>,sanitizers:list<string>,auth:list<string>,options:list<string>}
+     */
+    private static function canonicalizeDriftVocabulary(mixed $block, string $where): array
+    {
+        if (!is_array($block)) {
+            throw new \RuntimeException("drift_flags must be an object{$where}");
+        }
+        $assertList = static function (mixed $v, string $path) use ($where): void {
+            if (!is_array($v)) {
+                throw new \RuntimeException("$path must be an array{$where}");
+            }
+            $i = 0;
+            foreach ($v as $key => $item) {
+                if ($key !== $i++) {
+                    throw new \RuntimeException("$path must be a list (no string keys){$where}");
+                }
+                if (!is_string($item) || $item === '') {
+                    throw new \RuntimeException("$path must contain non-empty strings{$where}");
+                }
+            }
+        };
+
+        $allowedKeys = ['predicates', 'sanitizers', 'auth', 'options', '_description'];
+        foreach (array_keys($block) as $key) {
+            if (!in_array($key, $allowedKeys, true)) {
+                throw new \RuntimeException(
+                    "Unknown config key 'drift_flags.{$key}' (allowed: " . implode('|', $allowedKeys) . "){$where}",
+                );
+            }
+        }
+        // The profiles' nested note is admitted and stripped — but it is
+        // still a STRING door (the schema-parity belt probes validate with
+        // off-kind values for every documented sub-property, so the loader
+        // must refuse a non-string _description, never silently ignore it).
+        if (array_key_exists('_description', $block)) {
+            if (!is_string($block['_description']) || trim($block['_description']) === '') {
+                throw new \RuntimeException("drift_flags._description must be a non-empty string{$where}");
+            }
+        }
+
+        $out = ['predicates' => [], 'sanitizers' => [], 'auth' => [], 'options' => []];
+        foreach ($out as $key => $_) {
+            $value = $block[$key] ?? [];
+            $assertList($value, "drift_flags.{$key}");
+            /** @var list<string> $value */
+            $out[$key] = $value;
+        }
+
+        $allowedPredicates = [
+            \Phpdup\Architecture\Analyzers\DriftAnalyzer::PREDICATE_GUARD,
+            \Phpdup\Architecture\Analyzers\DriftAnalyzer::PREDICATE_SANITIZER,
+            \Phpdup\Architecture\Analyzers\DriftAnalyzer::PREDICATE_LITERAL,
+            \Phpdup\Architecture\Analyzers\DriftAnalyzer::PREDICATE_ODD_ONE_OUT,
+        ];
+        foreach ($out['predicates'] as $predicate) {
+            if (!in_array($predicate, $allowedPredicates, true)) {
+                throw new \RuntimeException(
+                    'drift_flags.predicates entry ' . "'$predicate' must be one of "
+                    . implode('|', $allowedPredicates) . $where,
+                );
+            }
         }
         return $out;
     }
@@ -1169,21 +1265,28 @@ final class ConfigLoader
         'baseline_out',
         'diff_base', 'apply',
         'accepted',
+        'drift_flags',
     ];
 
     /**
      * once-S67 (php-dup-finder-once-077): the admission-totality roster —
-     * the 28 KNOWN_KEYS members that per-directory `.phpdup.json` files may
+     * the 29 KNOWN_KEYS members that per-directory `.phpdup.json` files may
      * NOT carry, refused loudly by {@see discoverPerDirectoryOverrides()}.
-     * The equation the belt pins: KNOWN_KEYS (49) = the 11 parents
+     * The equation the belt pins: KNOWN_KEYS (50) = the 11 parents
      * shapeOverrides() admits (exclude, exclude_reset, min_block_size,
      * max_block_size, normalization_mode, ngram_size, kinds, db_symbols,
-     * db_aware, trinity_collapse, low_memory) + these 28 + the 10 with
+     * db_aware, trinity_collapse, low_memory) + these 29 + the 10 with
      * dedicated era arms above the roster check (fingerprint_id_mode, scope,
      * score_mode, max_ted_size, max_hole_coverage, ml_pair_allow_private,
      * baseline, baseline_out, diff_base, debug_log). A new KNOWN_KEYS member
      * that is neither admitted nor refused fails the belt in BOTH
      * directions.
+     *
+     * Item 4.1 (r1 M-1) adds 'drift_flags' to the refused set: it is the
+     * root-only analysis vocabulary arming the DriftAnalyzer predicates —
+     * a per-directory subtree choosing which drift findings exist would
+     * make the same report carry member-dependent analysis stances (the
+     * same suppression-hazard family as 'accepted' below).
      *
      * Item 4.4 adds 'accepted' to the refused set: the suppression list is
      * a decision register, and per-directory discovery walks the scanned
@@ -1201,6 +1304,7 @@ final class ConfigLoader
         'honor_gitignore',
         'idiom_mining',
         'accepted',
+        'drift_flags',
     ];
 
     /**
@@ -1505,6 +1609,13 @@ final class ConfigLoader
             // gate mirrors the list-of-strings family; content matching
             // is exact id equality in BaselineFilter, never patterned.
             $assertListOfStrings($data['accepted'], 'accepted');
+        }
+        if (array_key_exists('drift_flags', $data)) {
+            // Item 4.1 (r1 M-1): the DriftAnalyzer vocabulary. Full block
+            // shape + predicate-roster membership validated through the
+            // same canonicalizer the load path uses, so --validate-config
+            // and a live load refuse identically.
+            self::canonicalizeDriftVocabulary($data['drift_flags'], $where);
         }
         if (array_key_exists('db_symbols', $data)) {
             if (!is_array($data['db_symbols'])) {

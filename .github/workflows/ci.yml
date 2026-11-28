@@ -151,7 +151,7 @@ jobs:
         # Genuinely strict (0.4): exit code alone was false confidence —
         # the old step passed even if the pipeline silently dropped files.
         # Pins now: schema major stays 1, every file-accounting key exists,
-        # the fixture corpus parses clean, the 91-file scan is fully
+        # the fixture corpus parses clean, the 95-file scan is fully
         # accounted for by the balance law, and the planted clones are
         # still found. A cold throwaway cache_dir keeps the run hermetic
         # (--no-cache never suppressed the on-disk AST cache).
@@ -170,7 +170,7 @@ jobs:
               if (!array_key_exists($k, $s)) { fwrite(STDERR, "smoke: summary.$k missing\n"); exit(1); }
             }
             if ($s["parse_errors"] !== 0) { fwrite(STDERR, "smoke: fixtures corpus must parse clean (parse_errors={$s["parse_errors"]})\n"); exit(1); }
-            if ($s["files_scanned"] !== 91) { fwrite(STDERR, "smoke: expected 91 scanned fixture files, got {$s["files_scanned"]}\n"); exit(1); }
+            if ($s["files_scanned"] !== 95) { fwrite(STDERR, "smoke: expected 95 scanned fixture files, got {$s["files_scanned"]}\n"); exit(1); }
             $b = $s["files_reused"] + $s["files_processed"] + $s["files_without_blocks"] + $s["parse_errors"];
             if ($b !== $s["files_scanned"]) { fwrite(STDERR, "smoke: balance law violated: scanned={$s["files_scanned"]} buckets_sum={$b}\n"); exit(1); }
             if ($s["clusters"] < 1) { fwrite(STDERR, "smoke: planted fixture clones disappeared (clusters=0)\n"); exit(1); }
