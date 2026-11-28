@@ -56,7 +56,14 @@ final class ClassKindApplyRefusal extends \RuntimeException
         ));
     }
 
-    /** The block-addressing surface (mirrors the synthetic species' backstop shape). */
+    /**
+     * The block-addressing surface (mirrors the synthetic species' backstop shape).
+     *
+     * Intentionally uncalled: unlike script/window/fragment (synthetic spans the
+     * loader must refuse), a class RELOCATES — BlockAstLoader resolves class
+     * blocks and the loader-refuse arms do not apply. The anatomy is kept for
+     * shape parity with the other refusal classes.
+     */
     public static function forBlock(Block $block, string $surface): self
     {
         return new self(sprintf(

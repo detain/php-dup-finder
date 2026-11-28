@@ -399,7 +399,6 @@ final class JsonReporter
                 $methodSeen[$method][spl_object_id($m)] = true;
             }
         }
-        $memberCount = count($c->members);
         $shared = [];
         foreach ($methodSeen as $method => $owners) {
             $with = count($owners);
