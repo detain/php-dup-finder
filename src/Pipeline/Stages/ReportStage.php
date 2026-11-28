@@ -410,6 +410,14 @@ final class ReportStage implements CooperativeStageInterface
             // only when rows exist; JsonReporter's top-level 'baseline'
             // section is this carrier's schema-1.8 consumer leg).
             baselineAppendix: $baselineAppendix,
+            // Item 3.1 ingestion (MINE-D): the idiom census crosses the
+            // same state→Report seam as the carriers above, straight from
+            // the SequenceIndex attach point. null whenever no census was
+            // armed (idiomCensus() is null on an unarmed index, and the
+            // index itself is null when neither demand ever fired) — the
+            // reporter's conditional key is what keeps default payloads
+            // byte-identical.
+            idiomCensus: $state->sequenceIndex?->idiomCensus(),
         );
         $state->report   = $report;
         $state->clusters = $clusters;

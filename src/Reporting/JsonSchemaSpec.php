@@ -233,11 +233,21 @@ final class JsonSchemaSpec
      * scan-signal carriers, and summary.ml_status (see the 1.8 changelog
      * on SCHEMA_VERSION).
      *
+     * @param bool $armed true asks for the shape of an ARMED run
+     *     (idiom_mining on): the unconditional keys above plus the
+     *     conditional trailing `idiom_census` block. The default false
+     *     states the key set of every ordinary payload — the belts
+     *     (JsonReporterTest, CliSmokeTest) pin THAT set against real
+     *     bytes, and the conditional key rides only the armed spelling
+     *     so an unarmed payload carrying it stays the pin-failure it is
+     *     (item 3.1 ingestion, MINE-D; the 2.3 class_shape precedent one
+     *     level down).
+     *
      * @return array<string, string>
      */
-    public static function summaryShape(): array
+    public static function summaryShape(bool $armed = false): array
     {
-        return [
+        $shape = [
             'files'                => 'int',   // = files scanned (historical key)
             'blocks'               => 'int',
             'parse_errors'         => 'int',
@@ -254,6 +264,32 @@ final class JsonSchemaSpec
             'parse_failures'       => 'list<object{file:string,message:string}>  // per-file parse errors (once-S37 carrier, emitted since 1.8)',
             'clusters_replayed'    => 'bool|null  // cluster-cache replay happened (once-S37 carrier); null = untracked',
             'ml_status'            => "string|null  // master-side ML pair client: 'off'|'idle'|'reachable'|'unreachable'; null = no client wired (fork-zone dials invisible — E2 disclose)",
+        ];
+        if ($armed) {
+            $shape['idiom_census'] = 'object  // item 3.1 ingestion: the census block (see censusBlockShape()); present ONLY on idiom_mining-armed runs — an unarmed payload never grows this key (frozen goldens, 2.3 class_shape posture)';
+        }
+        return $shape;
+    }
+
+    /**
+     * Shape of the conditional `summary.idiom_census` block (item 3.1
+     * ingestion, MINE-D). `hashes`/`sites` are the corpus-complete census
+     * counters (two-pass memory policy lives inside the substrate);
+     * `rows` is the top-ranked list of MAXIMAL idiom rows — §5c nested-
+     * family suppression applied, order sites desc / files desc / hash
+     * asc — capped at JsonReporter::CENSUS_TOP_ROWS (presentation bound,
+     * never a counting bound). Row locations follow the substrate's
+     * >=2-sites materialisation rule: a hash seen at one site carries an
+     * empty list by design, and multi-site samples are capped per hash.
+     *
+     * @return array<string, string>
+     */
+    public static function censusBlockShape(): array
+    {
+        return [
+            'hashes' => 'int  // distinct exact-key hashes counted across the corpus',
+            'sites'  => 'int  // total occurrences counted (pre-suppression)',
+            'rows'   => 'list<object{hash:string,abstract:string,nodes:int,root:string,sites:int,files:int,locations:list<string>}>',
         ];
     }
 

@@ -365,6 +365,30 @@ final class Config
         // (0.0.0.0/8, 192.0.0.0/24, 198.18.0.0/15, multicast) stay
         // refused either way; see MlPairClient::pairUrlAdmissionError().
         public readonly bool $mlPairAllowPrivate = false,
+        // Item 3.1 ingestion (MINE-D): the idiom-census demand knob
+        // (config-file key `idiom_mining`, JSON bool; deliberately NO CLI
+        // flag — the Command.php option roster is another lane's live file,
+        // same staging posture as ml_pair_allow_private's argv leg). True:
+        // PreprocessStage arms the census — the worker mines every parsed
+        // file's statement lists through SubtreeMiner (riding the SAME
+        // one-walker capture as the 2.1 fragment leg, no second traversal,
+        // §5c), the 'idiom' mined-row flavor ingests into the run's
+        // SequenceIndex (armIdioms + recordIdiomFile), and the JSON report
+        // gains the trailing conditional `summary.idiom_census` block.
+        // Precondition, enforced HERE as a construction invariant: the
+        // kinds roster must explicitly admit 'fragment' — statement-list
+        // capture is fragment-gated in the extractor (the substrate's
+        // documented precondition), and the EMPTY roster means "all the
+        // default kinds", which excludes fragment by the 2.1 opt-in
+        // posture. Arming without it would mine nothing while reporting a
+        // quiet empty census — the exact silent-misfeed this family
+        // refuses. Root config only (refused per-directory: one census per
+        // run, never one per subtree) and bound into the IndexStore config
+        // key: flipping the demand invalidates warm caches once — an armed
+        // run must cold-reprocess every file, because cache-reused files
+        // emit NO mined rows (the warm asymmetry law) and a partial census
+        // served as complete would lie.
+        public readonly bool $idiomMining = false,
         // Item 4.4 APPLY half: root-only phpdup.json "accepted" list of
         // stable finding ids the team decided to keep. Suppressed from
         // the main report into the baseline appendix (BaselineFilter);
@@ -445,6 +469,21 @@ final class Config
             if ($mlPairRefusal !== null) {
                 throw new \InvalidArgumentException("$mlPairRefusal (url: $mlPairUrl)");
             }
+        }
+        if ($idiomMining && !\in_array(\Phpdup\Extraction\BlockExtractor::FRAGMENT_KIND, $allowedKinds, true)) {
+            // Item 3.1 substrate precondition, stated once HERE so every
+            // route (CLI, config file, library, serve) fails the same way:
+            // the miner enumerates the statement lists the extractor
+            // captures, and that capture is gated on the explicit
+            // 'fragment' kind (the empty all-default roster does not mine).
+            // An armed census over a non-mining roster is a quiet zero,
+            // and a quiet zero is exactly what the demand gate exists to
+            // prevent.
+            throw new \InvalidArgumentException(
+                'idiom_mining requires "kinds" to explicitly include "fragment": the idiom miner rides the '
+                . "fragment-gated statement-list capture, and the default (empty) kinds roster deliberately "
+                . 'excludes fragment. Add "fragment" to kinds, or leave idiom_mining off.'
+            );
         }
         if ($failOnImpact < 0) {
             throw new \InvalidArgumentException("fail_on_impact must be >= 0");
@@ -709,6 +748,11 @@ final class Config
             // (same class as max_ted_size / candidate_budget; refused at
             // discovery). The one enumeration stream must carry one stance.
             candidateMassFilter:             $this->candidateMassFilter,
+            // Item 3.1 ingestion: root-only, copied — never replaced — per-
+            // directory (one census per run: a subtree flip would mint rows
+            // for some files and silently skip others; refused at discovery
+            // in ConfigLoader::discoverPerDirectoryOverrides()).
+            idiomMining:                     $this->idiomMining,
         );
     }
 

@@ -84,6 +84,19 @@ final class Report
         // next schema-1.8 train (JsonReporter is another lane's live
         // file; it reads this property).
         public readonly array $baselineAppendix = [],
+        // Item 3.1 ingestion (MINE-D): the run's idiom-subtree census —
+        // the SubtreeCensus the armed PreprocessStage ingests through the
+        // SequenceIndex attach point, handed over at the state→Report
+        // seam like the once-S37/S70/E2 carriers before it (§5f trailing-
+        // param law). Null = "no census was taken" (unarmed demand, or a
+        // producer that never ran the armed stage — library API, server
+        // workers, hand-built reports); JsonReporter emits the conditional
+        // `summary.idiom_census` block ONLY when this is non-null, so the
+        // default payload stays byte-identical and the goldens hold. The
+        // census object is the substrate's own accumulator — the reporter
+        // reads its deterministic views (rows()/maximalRows()/hashCount()/
+        // sitesTotal()), never its internals.
+        public readonly ?\Phpdup\Census\SubtreeCensus $idiomCensus = null,
     ) {
     }
 

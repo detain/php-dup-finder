@@ -81,6 +81,13 @@ final class JsonReporter
     private const DIFF_MAX_BYTES     = 6000;
     private const FRAGMENT_MAX_LINES = 80;
     private const FRAGMENT_MAX_BYTES = 4000;
+    /**
+     * Item 3.1 ingestion (MINE-D): row cap of the conditional
+     * `summary.idiom_census` block — the doc's "top-50 ranked census"
+     * frame; presentation bound, not counting bound (hashes/sites
+     * totals above it are corpus-complete).
+     */
+    private const CENSUS_TOP_ROWS = 50;
 
     /**
      * output-S41 (php-dup-finder-output-044): per-side line budget handed
@@ -150,7 +157,7 @@ final class JsonReporter
     {
         $advisor = new PlacementAdvisor($report->config->paths);
         $store   = $this->sourceText ?? new SourceTextStore($report->config->paths);
-        return [
+        $payload = [
             'phpdup_version' => Version::STRING,
             'schema_version' => JsonSchemaSpec::SCHEMA_VERSION,
             'summary' => [
@@ -220,6 +227,53 @@ final class JsonReporter
             // without the analyzer pass emit [] (the key is always
             // present so consumers can bind on it).
             'declared_twins' => $report->declaredTwins,
+        ];
+        // Item 3.1 ingestion (MINE-D): the conditional trailing summary
+        // key. Present ONLY when the run armed idiom_mining and a census
+        // exists — absent otherwise, which is what keeps every frozen
+        // payload byte-identical (the 2.3 class_shape conditional-key
+        // precedent one level down; no SCHEMA_VERSION move, since no
+        // default run's bytes change). Declared by
+        // JsonSchemaSpec::summaryShape(true) / censusBlockShape().
+        if ($report->idiomCensus !== null) {
+            $payload['summary']['idiom_census'] = self::censusPayload($report->idiomCensus);
+        }
+        return $payload;
+    }
+
+    /**
+     * The armed census's report block (item 3.1's "ranked census"
+     * surface): corpus totals plus the top-ranked maximal idiom rows in
+     * the census's own deterministic order (sites desc, files desc,
+     * hash asc). Locations follow the substrate's two-pass memory policy
+     * — hashes seen at a single site carry none by design — and the row
+     * list is capped (CENSUS_TOP_ROWS) so an armed run on a huge corpus
+     * still emits a bounded block; the cap truncates presentation, never
+     * counting.
+     *
+     * @return array<string, mixed>
+     */
+    private static function censusPayload(\Phpdup\Census\SubtreeCensus $census): array
+    {
+        $rows = [];
+        foreach ($census->maximalRows() as $row) {
+            if (count($rows) >= self::CENSUS_TOP_ROWS) {
+                break;
+            }
+            $rows[] = [
+                'hash'       => $row->exactHash,
+                'abstract'   => $row->abstractHash,
+                'nodes'      => $row->nodes,
+                'root'       => $row->rootType,
+                'sites'      => $row->sites,
+                'files'      => $row->files,
+                'locations'  => $row->locations,
+            ];
+        }
+        return [
+            'hashes' => $census->hashCount(),
+            'sites'  => $census->sitesTotal(),
+            'rows'   => $rows,
         ];
     }
 

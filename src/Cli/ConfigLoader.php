@@ -157,6 +157,7 @@ final class ConfigLoader
             'max_hole_coverage',
             'window_oversized',
             'honor_gitignore',
+            'idiom_mining',
             'ir_threshold', 'ml_pair_threshold', 'debug_log',
             'low_memory', 'fail_on_impact', 'max_clusters',
             'optional_blocks_containment',
@@ -218,6 +219,7 @@ final class ConfigLoader
             'max_hole_coverage' => $base->maxHoleCoverage,
             'window_oversized' => $base->windowOversized,
             'honor_gitignore' => $base->honorGitignore,
+            'idiom_mining' => $base->idiomMining,
             'ir_threshold' => $base->irThreshold,
             'ml_pair_threshold' => $base->mlPairThreshold,
             'debug_log' => $base->debugLog,
@@ -427,6 +429,16 @@ final class ConfigLoader
             // per-directory discovery, default OFF until the operator
             // asks); validated by the door below.
             honorGitignore:                $flat['honor_gitignore'],
+            // Item 3.1 ingestion (MINE-D): the idiom-census demand knob,
+            // same flat-resolver route (root-only, refused per-directory,
+            // default OFF). No argv leg at this tip: the Command.php option
+            // roster is another lane's live file (ml_pair_allow_private
+            // staging precedent) — the knob speaks through phpdup.json
+            // today. The roster precondition ('fragment' explicitly in
+            // kinds) is a Config CONSTRUCTION invariant, so an armed load
+            // without it exits 2 with the Config message before any file
+            // is parsed — the demand can never half-arm.
+            idiomMining:                   $flat['idiom_mining'],
             // Item 4.4 APPLY half: root-only accepted-decision register.
             // No CLI override leg (deliberate: suppressions belong to the
             // committed config + baseline file, not ephemeral flags), so
@@ -1152,6 +1164,7 @@ final class ConfigLoader
         'max_hole_coverage',
         'window_oversized',
         'honor_gitignore',
+        'idiom_mining',
         'baseline',
         'baseline_out',
         'diff_base', 'apply',
@@ -1160,12 +1173,12 @@ final class ConfigLoader
 
     /**
      * once-S67 (php-dup-finder-once-077): the admission-totality roster —
-     * the 27 KNOWN_KEYS members that per-directory `.phpdup.json` files may
+     * the 28 KNOWN_KEYS members that per-directory `.phpdup.json` files may
      * NOT carry, refused loudly by {@see discoverPerDirectoryOverrides()}.
-     * The equation the belt pins: KNOWN_KEYS (48) = the 11 parents
+     * The equation the belt pins: KNOWN_KEYS (49) = the 11 parents
      * shapeOverrides() admits (exclude, exclude_reset, min_block_size,
      * max_block_size, normalization_mode, ngram_size, kinds, db_symbols,
-     * db_aware, trinity_collapse, low_memory) + these 27 + the 10 with
+     * db_aware, trinity_collapse, low_memory) + these 28 + the 10 with
      * dedicated era arms above the roster check (fingerprint_id_mode, scope,
      * score_mode, max_ted_size, max_hole_coverage, ml_pair_allow_private,
      * baseline, baseline_out, diff_base, debug_log). A new KNOWN_KEYS member
@@ -1186,6 +1199,7 @@ final class ConfigLoader
         'ml_pair_threshold', 'apply', 'fail_on_impact', 'max_clusters',
         'candidate_budget', 'candidate_mass_filter', 'window_oversized',
         'honor_gitignore',
+        'idiom_mining',
         'accepted',
     ];
 
@@ -1408,6 +1422,13 @@ final class ConfigLoader
             // must not silently flip which files the analyzer is allowed to
             // see at all.
             throw new \RuntimeException("honor_gitignore must be a boolean$where");
+        }
+        if (array_key_exists('idiom_mining', $data) && !is_bool($data['idiom_mining'])) {
+            // Item 3.1 ingestion (MINE-D): same voice — a non-boolean must
+            // not silently flip whether the run mines and ingests the idiom
+            // census (an armed run reprocesses every file; flipping by
+            // typo would trade a full census for a warm-replay zero).
+            throw new \RuntimeException("idiom_mining must be a boolean$where");
         }
         if (array_key_exists('scorer', $data)) {
             $assertEnum($data['scorer'], 'scorer', ['default', 'ir']);

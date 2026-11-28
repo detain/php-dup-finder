@@ -119,7 +119,28 @@ final class PreprocessStage implements CooperativeStageInterface
         // their own demand predicates here; they must NOT get a second
         // walker or a second row type.)
         $sequenceDemand = in_array(BlockExtractor::FRAGMENT_KIND, $config->allowedKinds, true);
-        $store = ($this->useCache && $config->incremental)
+        // Item 3.1 ingestion (MINE-D): the census demand rides the SAME
+        // walker and the SAME row stream — a second predicate on the
+        // worker constructor, never a second pass (§5c one-walker law).
+        // The Config invariant has already guaranteed the fragment roster
+        // an armed mining needs; the predicate is read off the knob.
+        $idiomDemand = $config->idiomMining;
+        // Warm asymmetry, obeyed as the substrate contract states it:
+        // cache-reused files emit NO mined rows of ANY flavor, so an armed
+        // run that replayed blocks from IndexStore would ingest a census
+        // missing every reused file while presenting it as complete — the
+        // exact silent-misfeed the 2.1 suppression pass designed its
+        // block-relative fields to avoid, and the census has no such
+        // persisted carrier (the miner's truth lives in no Block field;
+        // AstSerializer/BlockExtractor are other lanes' zones to change).
+        // The armed run therefore takes NO store: every file passes the
+        // worker (the disk AST blob-cache under astDiskCache still saves
+        // the parse cost — rows are emitted from cached blobs too), the
+        // census is corpus-complete, and nothing is written or read under
+        // any key this flip could stale-serve. The idiomMining leg in
+        // indexStoreConfigKey is the second belt: were the bypass ever
+        // relaxed, an armed snapshot could never be served unarmed.
+        $store = ($this->useCache && $config->incremental && !$idiomDemand)
             ? new IndexStore($config->cacheDir, $configKey)
             : null;
 
@@ -187,7 +208,7 @@ final class PreprocessStage implements CooperativeStageInterface
             // the cache dir byte-untouched (no blob writes, no serving of
             // planted blobs); cache-enabled runs keep the historic warm
             // parser cache exactly as before.
-            $worker = new PreprocessWorker($config, astDiskCache: $this->useCache);
+            $worker = new PreprocessWorker($config, astDiskCache: $this->useCache, idiomMining: $idiomDemand);
             $workerCount = $config->workers > 0 ? $config->workers : WorkerPool::detectCpuCount();
             $pool = new WorkerPool(workers: $workerCount);
             $task = static function (array $batch) use ($worker, $output): \Generator {
@@ -260,7 +281,29 @@ final class PreprocessStage implements CooperativeStageInterface
                     // today — the walker is demand-gated — but the row
                     // stream is deliberately dumb so 3.x flavors never
                     // touch this dispatch again).
-                    if ($sequenceDemand) {
+                    //
+                    // Item 3.1 ingestion (MINE-D): the 'idiom' flavor is
+                    // the first 3.x rider of that promise — it lands HERE,
+                    // in the same 'mined' dispatch, keyed by flavor. The
+                    // stmtseq arm below is unchanged; the idiom rows were
+                    // already inert against it (payload entries carry
+                    // sites/edges, never 'hashes'), and the explicit
+                    // flavor key keeps each arm honest even with both
+                    // demands armed on one run.
+                    if (($row['flavor'] ?? '') === 'idiom') {
+                        if ($idiomDemand) {
+                            $index = $state->sequenceIndex ??= new SequenceIndex();
+                            // armIdioms is idempotent; calling it per row
+                            // keeps the ingest one line (the SequenceIndex
+                            // refuses idiom payloads while unarmed — Fail
+                            // Fast — so the arm must precede the record).
+                            $index->armIdioms();
+                            $index->recordIdiomFile(
+                                (string) ($row['file'] ?? ''),
+                                (string) ($row['payload'] ?? ''),
+                            );
+                        }
+                    } elseif ($sequenceDemand) {
                         $entries = json_decode((string) ($row['payload'] ?? ''), true);
                         if (is_array($entries)) {
                             $index = $state->sequenceIndex ??= new SequenceIndex();
@@ -476,6 +519,18 @@ final class PreprocessStage implements CooperativeStageInterface
             // gate: clean miss into a fresh save), disclosed in the lane
             // report.
             $config->honorGitignore,
+            // Item 3.1 ingestion (MINE-D): idiom_mining never alters stored
+            // block CONTENT (the mined rows live beside blocks, not inside
+            // them), but an armed run's WHOLE census depends on every file
+            // passing the worker — cache-reused files emit no mined rows
+            // (the warm asymmetry law). iter()'s store bypass for armed
+            // runs is the correctness belt for that; this binding is the
+            // prophylactic second one in the honorGitignore doctrine:
+            // armed and unarmed snapshots must never masquerade as each
+            // other's output, so flipping the demand invalidates warm
+            // caches once. Key-namespace change only, no PARSER_VERSION
+            // bump (fingerprintIdMode precedent).
+            $config->idiomMining,
             // shell-027: --low-memory rewrites every stored n-gram bag
             // into CompactNgramBag's int-keyed 63-bit form (and folds the
             // canonical AST through the shared node pool). A low-memory
