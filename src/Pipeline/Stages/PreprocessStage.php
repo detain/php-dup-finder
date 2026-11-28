@@ -591,10 +591,14 @@ final class PreprocessStage implements CooperativeStageInterface
      *       variable numbering shifts with the list prefix).
      *   S-max:   a one-statement EXTENSION of the run exists in the same
      *       file — an enumerated (pos±1, size+1) window — whose support
-     *       is >= this run's. The chain argument makes ONE-step
-     *       lookahead exact: any site of an s+2 window is a site of its
-     *       s+1 prefix, so non-maximality always shows a one-step
-     *       witness. Cross-file asymmetric containment (the longer run
+     *       is >= this run's. The chain argument makes ONE-step lookahead
+     *       exact AMONG MINTED WINDOWS: any site of an s+2 window is a
+     *       site of its s+1 prefix, so non-maximality always shows a
+     *       one-step witness whenever that s+1 intermediate was itself
+     *       minted — a window below the node-size mint floor leaves no
+     *       witness slot and a non-maximal run can survive (narrow,
+     *       disclosed v1 hole; it bites only tiny-statement runs).
+     *       Cross-file asymmetric containment (the longer run
      *       appears only inside ANOTHER file's body) is not suppressed
      *       in v1 — that is the §5c nested-family law shared with
      *       3.1/6.3/7.2, whose SequenceIndex substrate this pass feeds.
