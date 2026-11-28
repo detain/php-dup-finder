@@ -239,4 +239,89 @@ final class SequenceIndex
         $this->helperAdoption = \Phpdup\Census\HelperAdoption::analyze($this, $blocks);
         return $this->helperAdoption;
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Item 3.5 attach point — call-protocol census (armed, additive flavor)
+    |--------------------------------------------------------------------------
+    | Same doctrine as 3.1/3.2: demand gating, refusal while unarmed, the
+    | 2.1 legs byte-identical when dark. The 'calls' flavor rides the ONE
+    | walker's statement lists (the same $listEntry the stmtseq and idiom
+    | legs consume — CallSequenceMiner adds ordering, not a traversal),
+    | and PreprocessStage dispatches the payload into the armed census
+    | via recordCallFile(), mirroring the 'idiom' branch beside it.
+    */
+
+    private ?\Phpdup\Census\CallSequenceCensus $callCensus = null;
+
+    /** Opt the instance into the call-sequence census (idempotent). */
+    public function armCalls(int $sampleCap = \Phpdup\Census\CallSequenceCensus::DEFAULT_SAMPLE_CAP): void
+    {
+        $this->callCensus ??= new \Phpdup\Census\CallSequenceCensus($sampleCap);
+    }
+
+    public function callsArmed(): bool
+    {
+        return $this->callCensus !== null;
+    }
+
+    /** The census, or null while unarmed. */
+    public function callCensus(): ?\Phpdup\Census\CallSequenceCensus
+    {
+        return $this->callCensus;
+    }
+
+    /**
+     * Ingest one file's 'calls' wire payload. Refuses loudly when the
+     * flavor was never armed (Fail Fast law, same posture as
+     * recordIdiomFile()).
+     */
+    public function recordCallFile(string $file, string $payloadJson): void
+    {
+        if ($this->callCensus === null) {
+            throw new \LogicException('SequenceIndex: calls payload arrived while census unarmed — armCalls() first');
+        }
+        $this->callCensus->recordFileJson($file, $payloadJson);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Item 3.3 attach point — literal/constant census (armed, additive flavor)
+    |--------------------------------------------------------------------------
+    | Same doctrine again. The 'literal' flavor is the one row type that
+    | must read the WHOLE raw parsed tree (normalization erases literals
+    | everywhere else) — still no extra traversal: the miner walks the
+    | $stmts the extractor already holds in memory for the file.
+    */
+
+    private ?\Phpdup\Census\LiteralCensus $literalCensus = null;
+
+    /** Opt the instance into the literal census (idempotent). */
+    public function armLiterals(int $sampleCap = \Phpdup\Census\LiteralCensus::DEFAULT_SAMPLE_CAP): void
+    {
+        $this->literalCensus ??= new \Phpdup\Census\LiteralCensus($sampleCap);
+    }
+
+    public function literalsArmed(): bool
+    {
+        return $this->literalCensus !== null;
+    }
+
+    /** The census, or null while unarmed. */
+    public function literalCensus(): ?\Phpdup\Census\LiteralCensus
+    {
+        return $this->literalCensus;
+    }
+
+    /**
+     * Ingest one file's 'literal' wire payload. Refuses loudly when the
+     * flavor was never armed (Fail Fast law).
+     */
+    public function recordLiteralFile(string $file, string $payloadJson): void
+    {
+        if ($this->literalCensus === null) {
+            throw new \LogicException('SequenceIndex: literal payload arrived while census unarmed — armLiterals() first');
+        }
+        $this->literalCensus->recordFileJson($file, $payloadJson);
+    }
 }

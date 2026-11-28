@@ -428,6 +428,54 @@ final class Config
         // the identical census and the summary is rebuilt in-process
         // every run.
         public readonly bool $helperAdoption = false,
+        // Item 3.5 call-sequence (MINE-E): the ordered-callee demand knob
+        // (config-file key `call_sequence`, JSON bool; deliberately NO CLI
+        // flag — same staging posture as idiom_mining/helper_adoption, the
+        // Command.php option roster is another lane's live file). True:
+        // PreprocessWorker's ONE mining loop additionally carries the
+        // ordered callee-name lists of every captured statement list
+        // (flavor 'calls', scalar payload — CallGraph's receiver-blind
+        // nameOf semantics extended with program order and constant
+        // argument tokens), the stage ingests them into the run's
+        // SequenceIndex, and the JSON report gains the trailing
+        // conditional `summary.call_sequences` block (shared ordered
+        // subsequences with sites + the differing-constant-argument
+        // table). Helper adoption (3.2) joins caller counts from the same
+        // rows when both demands are armed. Precondition, enforced HERE:
+        // `idiom_mining` must be on — the calls flavor rides the SAME
+        // fragment-gated statement-list capture as the census (arming
+        // alone would mine nothing while reporting a quiet zero ledger),
+        // and an armed run never takes the extraction store (the warm
+        // asymmetry law already covers it). Root config only (refused
+        // per-directory: one sequence ledger per run) and bound into the
+        // IndexStore config key as the prophylactic second belt — this
+        // knob MINTS worker rows (unlike helper_adoption), so flipping it
+        // must invalidate warm caches once.
+        public readonly bool $callSequence = false,
+        // Item 3.3 literal+constant census (MINE-E): the demand knob
+        // (config-file key `literal_census`, JSON bool; deliberately NO
+        // CLI flag — same staging posture as the census family). True:
+        // PreprocessWorker walks the ALREADY-PARSED file tree once more
+        // inside the same file loop (no second parse, no extractor pass
+        // — the §5c walker still produces the block stream; the census
+        // miner reads the raw AST the same way SubtreeMiner reads the
+        // captured lists, and it must read RAW because canonicalisation
+        // erases the literals this census counts) and carries per-file
+        // scalar buckets (flavor 'census'): repeated string literals over
+        // the length threshold, ≥3-entry array literals hashed
+        // order-insensitively, near-duplicate string families by edit
+        // distance, interpolated-string SQL skeletons (AstSerializer
+        // literal-parts + SqlTableExtractor grouping) and numeric
+        // constants repeated in comparable positions, plus class-constant
+        // / enum-case declarations and uses. Reported as the trailing
+        // conditional `summary.literal_census` block. Unlike idiom_mining
+        // there is NO fragment precondition — the census reads the whole
+        // parsed tree, not the captured statement lists — but it MINTS
+        // worker rows, so armed runs take NO extraction store at all (the
+        // warm asymmetry law) and the key is bound into the IndexStore
+        // config key prophylactically. Root config only (one census per
+        // run).
+        public readonly bool $literalCensus = false,
         // Item 4.4 APPLY half: root-only phpdup.json "accepted" list of
         // stable finding ids the team decided to keep. Suppressed from
         // the main report into the baseline appendix (BaselineFilter);
@@ -556,6 +604,21 @@ final class Config
                 'helper_adoption requires idiom_mining: helper re-implementation lookup rides the '
                 . 'mined idiom census (the §5c shared-substrate rule — no second miner is minted). '
                 . 'Turn idiom_mining on, or leave helper_adoption off.'
+            );
+        }
+        if ($callSequence && !$idiomMining) {
+            // Item 3.5 substrate precondition, mirroring the 3.2 door:
+            // the 'calls' flavor rides the SAME fragment-gated statement-
+            // list capture the idiom census mines (the worker's one
+            // mining loop; §5c forbids a second walker). Arming call
+            // sequences without idiom_mining would emit rows for no
+            // consumer to ingest through the armed store-bypass posture —
+            // the same quiet-zero misfeed the census gates refuse.
+            throw new \InvalidArgumentException(
+                'call_sequence requires idiom_mining: ordered call-sequence mining rides the same '
+                . 'fragment-gated statement-list capture and the same armed-run store posture as the '
+                . 'idiom census (§5c one-walker law — no second miner is minted). '
+                . 'Turn idiom_mining on, or leave call_sequence off.'
             );
         }
         if ($failOnImpact < 0) {
@@ -869,6 +932,12 @@ final class Config
             // refused at discovery, same posture as idiom_mining/scope).
             history:                         $this->history,
             historyWindowMonths:             $this->historyWindowMonths,
+            // Item 3.5: root-only, copied — one call-sequence ledger per
+            // run (refused at discovery in ConfigLoader::REFUSED_PER_DIRECTORY).
+            callSequence:                    $this->callSequence,
+            // Item 3.3: root-only, copied — one literal census per run
+            // (refused at discovery, same refused family).
+            literalCensus:                   $this->literalCensus,
         );
     }
 

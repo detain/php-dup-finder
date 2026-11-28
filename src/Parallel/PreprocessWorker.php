@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace Phpdup\Parallel;
 
 use PhpParser\Node\Stmt;
+use Phpdup\Census\CallSequenceMiner;
+use Phpdup\Census\LiteralMiner;
 use Phpdup\Census\SubtreeMiner;
 use Phpdup\Cli\Config;
 use Phpdup\Extraction\Block;
@@ -65,11 +67,26 @@ final class PreprocessWorker
      *        §5c's "attach flavors without a second pass" promise. The
      *        Config-to-stage demand surface is a later lane; until then
      *        only tests and future armed paths set this true.
+     * @param bool $callSequence Item 3.5 demand gate (MINE-E): when true the
+     *        SAME single traversal's statement lists additionally feed
+     *        CallSequenceMiner, emitting one extra scalar 'mined' row per
+     *        file with flavor 'calls'. Default false = the row stream is
+     *        byte-identical to the historic one (pinned by tests). Rides
+     *        the idiom armed-posture: Config requires idiom_mining for it.
+     * @param bool $literalCensus Item 3.3 demand gate (MINE-E): when true
+     *        the file's already-parsed raw statements additionally feed
+     *        LiteralMiner (a whole-file walk of the SAME in-memory tree —
+     *        no second parse, no second file read), emitting one extra
+     *        scalar 'mined' row per file with flavor 'literal'. Default
+     *        false = byte-identical historic stream (pinned). Reads RAW
+     *        literals, which no other leg preserves.
      */
     public function __construct(
         private readonly Config $config,
         private readonly bool $astDiskCache = true,
         private readonly bool $idiomMining = false,
+        private readonly bool $callSequence = false,
+        private readonly bool $literalCensus = false,
     ) {
     }
 
@@ -79,6 +96,19 @@ final class PreprocessWorker
      * per-file state (mineFile() is pure over its input lists).
      */
     private ?SubtreeMiner $idiomMiner = null;
+
+    /**
+     * Item 3.5 'calls' miner — same reuse posture as the idiom miner
+     * (mineFile() is pure over its input lists; no per-file state).
+     */
+    private ?CallSequenceMiner $callMiner = null;
+
+    /**
+     * Item 3.3 'literal' miner — pure over the file's raw statements
+     * (no per-file state; the walk reads the tree the cache/parse step
+     * already produced, never re-parsing).
+     */
+    private ?LiteralMiner $literalMiner = null;
 
     /**
      * Order-stable serialisation of a string→string map for use in
@@ -418,6 +448,7 @@ final class PreprocessWorker
                 // the SOCKETPAIR law the row-shape union documents.
                 $minedLists = [];
                 $idiomLists = [];
+                $callLists  = [];
                 foreach ($tools['extractor']->lastStatementLists() as $listEntry) {
                     $lstmts = $listEntry['stmts'];
                     if ($lstmts === []) {
@@ -467,6 +498,12 @@ final class PreprocessWorker
                         // flavors — one guard, one truth).
                         $idiomLists[] = $listEntry;
                     }
+                    if ($this->callSequence) {
+                        // Item 3.5: same entry, same guard, same truth —
+                        // the ordered callee capture rides the lists the
+                        // stmtseq leg already validated.
+                        $callLists[] = $listEntry;
+                    }
                 }
                 if ($minedLists !== []) {
                     $fileRows[] = [
@@ -484,6 +521,33 @@ final class PreprocessWorker
                             'file'    => $path,
                             'flavor'  => 'idiom',
                             'payload' => json_encode($idiomPayload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+                        ];
+                    }
+                }
+                if ($this->callSequence) {
+                    $callPayload = ($this->callMiner ??= new CallSequenceMiner())->mineFile($callLists);
+                    if ($callPayload !== []) {
+                        $fileRows[] = [
+                            'type'    => 'mined',
+                            'file'    => $path,
+                            'flavor'  => 'calls',
+                            'payload' => json_encode($callPayload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+                        ];
+                    }
+                }
+                if ($this->literalCensus) {
+                    // Whole-file walk of the tree THIS iteration already
+                    // holds ($stmts from cache or parse): item 3.3 sees
+                    // class members and top-level statements the block
+                    // extractor's lists deliberately skip — still the one
+                    // parsed artifact, never a re-read or re-parse.
+                    $literalPayload = ($this->literalMiner ??= new LiteralMiner())->mineFile($stmts);
+                    if ($literalPayload !== []) {
+                        $fileRows[] = [
+                            'type'    => 'mined',
+                            'file'    => $path,
+                            'flavor'  => 'literal',
+                            'payload' => json_encode($literalPayload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
                         ];
                     }
                 }

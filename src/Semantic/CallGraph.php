@@ -14,13 +14,16 @@ use Phpdup\Extraction\Block;
  * MethodCall / StaticCall / FuncCall it contains, plus a frequency
  * count per name.
  *
- * Status: NOT WIRED (engine-S31a catalog ledger, row 1). The live
- * pipeline has no consumer for this class: the formerly documented
- * `Similarity\CallGraphSimilarity` never existed, and
- * \Phpdup\Architecture\Analyzers\SolidAnalyzer does its own inline
- * call walk rather than consolidating on this class. Kept as a tested
- * building block for a possible future call-graph similarity tier;
- * do not re-add consumer claims until a consumer exists.
+ * Status: WIRED (item 3.5, MINE-E). {@see \Phpdup\Census\CallSequenceMiner}
+ * reuses {@see self::nameOf()} verbatim as the callee-name semantics of
+ * the ordered 'calls' flavor — the doc's "CallGraph already collects the
+ * set" letter, with program ORDER added (the set half stays this class's
+ * own per-block build()). Former history: the live pipeline had no
+ * consumer (the documented `Similarity\CallGraphSimilarity` never existed,
+ * and \Phpdup\Architecture\Analyzers\SolidAnalyzer does its own inline
+ * call walk rather than consolidating on this class); do not re-add
+ * scoring-tier consumer claims here — the 3.5 ledger is a census surface,
+ * not a MatchTier.
  *
  * The graph (block-id → callee → count) is built in one pass over the
  * blocks a caller hands to {@see build()}; small heap footprint
@@ -59,7 +62,14 @@ final class CallGraph
         return $this->signatures[$blockId] ?? null;
     }
 
-    private static function nameOf(Node $call): ?string
+    /**
+     * Callee-name semantics shared by this class's set capture and the
+     * item-3.5 ordered miner: MethodCall → bare method name (receiver-
+     * blind), StaticCall → `Class::method` ('?' when the class is not a
+     * plain Name), FuncCall → qualified function name. Null for dynamic
+     * shapes ($fn(), $o->$m(), first-class callables) — never guessed.
+     */
+    public static function nameOf(Node $call): ?string
     {
         if ($call instanceof Node\Expr\MethodCall && $call->name instanceof Node\Identifier) {
             return $call->name->name;

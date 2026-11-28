@@ -160,6 +160,8 @@ final class ConfigLoader
             'idiom_mining',
             'symbols_forced',
             'helper_adoption',
+            'call_sequence',
+            'literal_census',
             'ir_threshold', 'ml_pair_threshold', 'debug_log',
             'low_memory', 'fail_on_impact', 'max_clusters',
             'optional_blocks_containment',
@@ -225,6 +227,8 @@ final class ConfigLoader
             'idiom_mining' => $base->idiomMining,
             'symbols_forced' => $base->symbolsForced,
             'helper_adoption' => $base->helperAdoption,
+            'call_sequence' => $base->callSequence,
+            'literal_census' => $base->literalCensus,
             'ir_threshold' => $base->irThreshold,
             'ml_pair_threshold' => $base->mlPairThreshold,
             'debug_log' => $base->debugLog,
@@ -466,6 +470,15 @@ final class ConfigLoader
             // and mirrored in NUMERIC_KEYS coercion.
             history:                       (bool)$flat['history'],
             historyWindowMonths:           (int)$flat['history_window_months'],
+            // Item 3.5 (MINE-E): root-only phpdup.json key, no CLI leg
+            // (same staging posture). The precondition chain (call_sequence
+            // requires idiom_mining) is a Config construction invariant, so
+            // an armed load without it exits 2 before any file is parsed.
+            callSequence:                  $flat['call_sequence'],
+            // Item 3.3 (MINE-E): root-only phpdup.json key, no CLI leg.
+            // No precondition door — the literal census reads the parsed
+            // file tree, not the fragment-gated statement-list capture.
+            literalCensus:                 $flat['literal_census'],
             // Item 4.4 APPLY half: root-only accepted-decision register.
             // No CLI override leg (deliberate: suppressions belong to the
             // committed config + baseline file, not ephemeral flags), so
@@ -1311,6 +1324,9 @@ final class ConfigLoader
         'idiom_mining',
         'symbols_forced',
         'helper_adoption',
+        // Item 3.5/3.3 (MINE-E): census-class demand knobs.
+        'call_sequence',
+        'literal_census',
         'baseline',
         'baseline_out',
         'diff_base', 'apply',
@@ -1367,6 +1383,13 @@ final class ConfigLoader
         // some subtrees only. Same refused family as idiom_mining.
         'symbols_forced',
         'helper_adoption',
+        // Item 3.5 (MINE-E): one call-sequence ledger per run — sequences
+        // span directories, so a per-directory flip would mint rows for
+        // some subtrees only. Same refused family as idiom_mining.
+        'call_sequence',
+        // Item 3.3 (MINE-E): one literal census per run — same class; the
+        // census is corpus-wide counting, never a per-subtree stance.
+        'literal_census',
         'accepted',
         'drift_flags',
         'history',
@@ -1625,6 +1648,18 @@ final class ConfigLoader
             // The 'last N months' bound; >= 1 because a zero/negative
             // window would gate every history verdict to nothing.
             $assertInt($data['history_window_months'], 'history_window_months', 1);
+        }
+        if (array_key_exists('call_sequence', $data) && !is_bool($data['call_sequence'])) {
+            // Item 3.5 (MINE-E): same voice — a non-boolean must not
+            // silently flip whether ordered callee sequences are mined
+            // and reported (the census-family typo class).
+            throw new \RuntimeException("call_sequence must be a boolean$where");
+        }
+        if (array_key_exists('literal_census', $data) && !is_bool($data['literal_census'])) {
+            // Item 3.3 (MINE-E): same voice — a non-boolean must not
+            // silently flip whether the literal/constant census is minted
+            // and reported (the census-family typo class).
+            throw new \RuntimeException("literal_census must be a boolean$where");
         }
         if (array_key_exists('scorer', $data)) {
             $assertEnum($data['scorer'], 'scorer', ['default', 'ir']);

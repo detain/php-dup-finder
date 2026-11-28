@@ -166,6 +166,25 @@ final class PreprocessStage implements CooperativeStageInterface
         // flip — warm replays re-derive identical adoption from
         // re-mined-complete corpora; an armed run never takes the store).
         $helperDemand = $config->helperAdoption;
+        // Item 3.5 call sequences (MINE-E): rides the SAME walker and the
+        // SAME row stream (the 'calls' flavor is a third predicate on the
+        // worker constructor, never a second pass). The Config invariant
+        // has already paired it with idiom_mining, so the store-bypass
+        // posture below (armed idiom => no store) covers it transitively
+        // — and the flavor mints rows, so it DOES join
+        // indexStoreConfigKey (unlike adoption): were the bypass ever
+        // relaxed, an armed-calls snapshot must never be served to an
+        // unarmed run. Second belt, same doctrine.
+        $callDemand = $config->callSequence;
+        // Item 3.3 literal census (MINE-E): the one flavor that reads the
+        // file's WHOLE raw parsed tree (class members and top-level
+        // statements the block lists skip) — still from the same
+        // in-memory artifact the extractor consumed: no second parse, no
+        // second file read, §5c honoured. It carries NO fragment or idiom
+        // precondition (literals are visible without the roster), so it
+        // needs its OWN store-bypass term below; like 'calls' it mints
+        // rows and joins indexStoreConfigKey.
+        $literalDemand = $config->literalCensus;
         // Warm asymmetry, obeyed as the substrate contract states it:
         // cache-reused files emit NO mined rows of ANY flavor, so an armed
         // run that replayed blocks from IndexStore would ingest a census
@@ -181,7 +200,7 @@ final class PreprocessStage implements CooperativeStageInterface
         // any key this flip could stale-serve. The idiomMining leg in
         // indexStoreConfigKey is the second belt: were the bypass ever
         // relaxed, an armed snapshot could never be served unarmed.
-        $store = ($this->useCache && $config->incremental && !$idiomDemand)
+        $store = ($this->useCache && $config->incremental && !$idiomDemand && !$literalDemand)
             ? new IndexStore($config->cacheDir, $configKey)
             : null;
 
@@ -249,7 +268,7 @@ final class PreprocessStage implements CooperativeStageInterface
             // the cache dir byte-untouched (no blob writes, no serving of
             // planted blobs); cache-enabled runs keep the historic warm
             // parser cache exactly as before.
-            $worker = new PreprocessWorker($config, astDiskCache: $this->useCache, idiomMining: $idiomDemand);
+            $worker = new PreprocessWorker($config, astDiskCache: $this->useCache, idiomMining: $idiomDemand, callSequence: $callDemand, literalCensus: $literalDemand);
             $workerCount = $config->workers > 0 ? $config->workers : WorkerPool::detectCpuCount();
             $pool = new WorkerPool(workers: $workerCount);
             $task = static function (array $batch) use ($worker, $output): \Generator {
@@ -346,6 +365,38 @@ final class PreprocessStage implements CooperativeStageInterface
                                 $index->armHelpers();
                             }
                             $index->recordIdiomFile(
+                                (string) ($row['file'] ?? ''),
+                                (string) ($row['payload'] ?? ''),
+                            );
+                        }
+                    } elseif (($row['flavor'] ?? '') === 'calls') {
+                        // Item 3.5 ingestion (MINE-E): the 'calls' flavor
+                        // is the third rider of the 2.1 promise, keyed by
+                        // flavor exactly like the idiom arm above. Its
+                        // payload entries carry names/lines/args and never
+                        // 'hashes', so an explicit branch is MANDATORY:
+                        // without one the tolerate-unknown continue in the
+                        // stmtseq arm below would silently swallow every
+                        // calls row.
+                        if ($callDemand) {
+                            $index = $state->sequenceIndex ??= new SequenceIndex();
+                            // armCalls is idempotent; refusing-while-
+                            // unarmed lives in recordCallFile (Fail Fast).
+                            $index->armCalls();
+                            $index->recordCallFile(
+                                (string) ($row['file'] ?? ''),
+                                (string) ($row['payload'] ?? ''),
+                            );
+                        }
+                    } elseif (($row['flavor'] ?? '') === 'literal') {
+                        // Item 3.3 ingestion (MINE-E): same doctrine, own
+                        // flavor key; the 6-arity literal rows carry no
+                        // 'hashes' key either, so they too need the
+                        // explicit branch ahead of the stmtseq arm.
+                        if ($literalDemand) {
+                            $index = $state->sequenceIndex ??= new SequenceIndex();
+                            $index->armLiterals();
+                            $index->recordLiteralFile(
                                 (string) ($row['file'] ?? ''),
                                 (string) ($row['payload'] ?? ''),
                             );
@@ -678,6 +729,16 @@ final class PreprocessStage implements CooperativeStageInterface
             // caches once. Key-namespace change only, no PARSER_VERSION
             // bump (fingerprintIdMode precedent).
             $config->idiomMining,
+            // Items 3.5/3.3 (MINE-E): same doctrine as the idiom binding
+            // above, one row per new flavor. Both mint mined rows beside
+            // the stored blocks (never altering block CONTENT), both are
+            // store-bypassed in iter() when armed (call transitively via
+            // its idiom_mining Config invariant; literal by its own gate
+            // term), and both flips invalidate warm .idx trees exactly
+            // once. Key-namespace change only: no PARSER_VERSION bump
+            // (fingerprintIdMode precedent).
+            $config->callSequence,
+            $config->literalCensus,
             // shell-027: --low-memory rewrites every stored n-gram bag
             // into CompactNgramBag's int-keyed 63-bit form (and folds the
             // canonical AST through the shared node pool). A low-memory
