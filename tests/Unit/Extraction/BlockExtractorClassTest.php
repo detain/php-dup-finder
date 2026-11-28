@@ -122,7 +122,7 @@ final class BlockExtractorClassTest extends TestCase
         // shape semantics (and B1's law: class-like bodies are NOT
         // lists) — the drop counter fires once, zero windows emerge.
         $code = "<?php class Big { public function a(): void { \$x = 1; \$y = 2; } public function b(): void { \$z = 3; } }\n";
-        $extractor = new BlockExtractor(1, 20, ['class']);
+        $extractor = new BlockExtractor(1, 8, ['class']);
         $blocks = $extractor->extract('t.php', (new AstParser())->parseCode($code));
         $this->assertSame([], $this->classes($blocks));
         $this->assertSame(1, $extractor->oversizedDrops());
