@@ -191,11 +191,27 @@ final class TextRunHarvester
                     }
                     // window equality: [i, i+n) of A and [j, j+n) of B share the digest key.
                     $l = 0;
-                    while ($i - 1 - $l >= 0 && $j - 1 - $l >= 0 && $ta[$i - 1 - $l] === $tb[$j - 1 - $l]) {
+                    while (true) {
+                        $la = $i - 1 - $l;
+                        $lb = $j - 1 - $l;
+                        if ($la < 0 || $lb < 0) {
+                            break;
+                        }
+                        if ($ta[$la] !== $tb[$lb]) {
+                            break;
+                        }
                         $l++;
                     }
                     $r = 0;
-                    while ($i + $this->n + $r < $ca && $j + $this->n + $r < $cb && $ta[$i + $this->n + $r] === $tb[$j + $this->n + $r]) {
+                    while (true) {
+                        $ra = $i + $this->n + $r;
+                        $rb = $j + $this->n + $r;
+                        if ($ra < 0 || $rb < 0 || $ra >= $ca || $rb >= $cb) {
+                            break;
+                        }
+                        if ($ta[$ra] !== $tb[$rb]) {
+                            break;
+                        }
                         $r++;
                     }
                     $len = $l + $this->n + $r;
@@ -226,6 +242,9 @@ final class TextRunHarvester
     private function sample(array $keys, int $cap): array
     {
         $c = count($keys);
+        if ($c === 0) {
+            return [];
+        }
         if ($c <= $cap) {
             return $keys;
         }

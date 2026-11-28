@@ -36,7 +36,11 @@ final class LangProfile
     /** @var array<string,true>|null lower-cased keyword lookup, minted lazily */
     private ?array $keywordSet = null;
 
-    /** Lookup form of {@see $keywords} (lower-cased word => present). */
+    /**
+     * Lookup form of {@see $keywords} (lower-cased word => present).
+     *
+     * @return array<string,true>
+     */
     public function keywordSet(): array
     {
         return $this->keywordSet ??= array_fill_keys($this->keywords, true);

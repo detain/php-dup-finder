@@ -686,6 +686,10 @@ final class FileScanner
      *                                 root and gitignoreSkippedCount() carry
      *                                 the honest accounting. Off by default:
      *                                 the historical walk is untouched.
+     * @param list<string> $textExtensions item 7.1 second gate: extensions
+     *                                 the armed run admits as tier files
+     *                                 (LangProfiles::extensions()); empty
+     *                                 keeps the walk byte-identical.
      */
     public function __construct(
         array $excludeGlobs,
