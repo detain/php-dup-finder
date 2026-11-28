@@ -88,7 +88,9 @@ final class BlockExtractorClassTest extends TestCase
 
     public function testNestedClassesCarryTheEnclosingClassConvention(): void
     {
-        $code = "<?php class Outer { class Inner { } } class Flat { }\n";
+        // A class body cannot declare a nested class (illegal PHP); the
+        // legal nesting site is a method body (conditional declaration).
+        $code = "<?php class Outer { public function mk(): void { class Inner {} } } class Flat { }\n";
         $classes = $this->classes($this->extract($code, ['class']));
         $byName = [];
         foreach ($classes as $block) {

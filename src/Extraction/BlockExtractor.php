@@ -852,9 +852,9 @@ final class BlockVisitor extends NodeVisitorAbstract
         // into every default run). NAMED ClassLikes only: an anonymous
         // class has no declaration identity to twin against.
         if ($node instanceof Stmt\ClassLike && $node->name !== null
-            && in_array(self::CLASS_KIND, $this->allowedKinds, true)
+            && in_array(BlockExtractor::CLASS_KIND, $this->allowedKinds, true)
         ) {
-            return self::CLASS_KIND;
+            return BlockExtractor::CLASS_KIND;
         }
         return null;
     }
