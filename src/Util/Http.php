@@ -76,9 +76,14 @@ final class Http
      * @param \CurlHandle|null    $curlHandle reused keep-alive handle (pair tier, engine-S21); null = fresh handle for this call
      * @param int                 $timeoutSec total-transfer deadline, enforced in-call by CURLOPT_TIMEOUT on this leg (the stream leg converts the same value at streamPost's documented granularities — once-115, once-S92); <= 0 keeps libcurl's own no-total-bound behavior
      *
+     * @param list<string>        $headers   extra request headers APPENDED to the
+     *                                       default Content-Type line (Item 8.2's
+     *                                       audit bearer); the empty default keeps
+     *                                       every pre-8.2 caller byte-identical
+     *
      * @return string|null raw response body, or null on refusal/transport error/non-2xx/over-cap
      */
-    public static function curlPost(string $url, string $body, ?array $pins, ?\CurlHandle $curlHandle, int $timeoutSec, int $maxResponseBytes): ?string
+    public static function curlPost(string $url, string $body, ?array $pins, ?\CurlHandle $curlHandle, int $timeoutSec, int $maxResponseBytes, array $headers = []): ?string
     {
         if ($pins === null) {
             return null;
@@ -98,7 +103,9 @@ final class Http
             CURLOPT_URL            => $url,
             CURLOPT_POST           => true,
             CURLOPT_POSTFIELDS     => $body,
-            CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+            CURLOPT_HTTPHEADER     => $headers === []
+                ? ['Content-Type: application/json']
+                : array_merge(['Content-Type: application/json'], $headers), // Item 8.2 bearer
             CURLOPT_TIMEOUT        => $timeoutSec,
             CURLOPT_CONNECTTIMEOUT => $timeoutSec,
             // Refuse silly redirects to file:// / gopher:// / ftp://
@@ -181,7 +188,7 @@ final class Http
      *
      * @return string|null raw response body, or null on refusal/transport error/non-2xx/over-cap/late, or short against a declared Content-Length; a cut-short body that declares NO length is handed up unchanged for the caller's decode fence to refuse (see {@see self::declaredLengthMismatch()}'s absent-CL note)
      */
-    public static function streamPost(?array $pin, string $body, int $timeoutSec, int $maxResponseBytes): ?string
+    public static function streamPost(?array $pin, string $body, int $timeoutSec, int $maxResponseBytes, array $headers = []): ?string
     {
         if ($pin === null) {
             return null;
@@ -196,7 +203,12 @@ final class Http
         $ctxOpts = [
             'http' => [
                 'method'          => 'POST',
-                'header'          => $pin['header'],
+                // Item 8.2: extra request headers (audit bearer) append
+                // after the pin's Content-Type/Host block; empty default
+                // keeps every pre-8.2 caller byte-identical.
+                'header'          => $headers === []
+                    ? $pin['header']
+                    : $pin['header'] . implode("\r\n", $headers) . "\r\n",
                 'content'         => $body,
                 'timeout'         => $timeoutSec,
                 'ignore_errors'   => true,

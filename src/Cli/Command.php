@@ -461,8 +461,31 @@ HELP;
     #[\Override]
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
+        $admitted = $this->admitAnalysis($input, $output);
+        if (isset($admitted['code'])) {
+            return $admitted['code'];
+        }
+
+        return $this->dispatch($input, $output, $admitted['config'], $admitted['buildPipeline'], $admitted['runtimeOptions'], $admitted['diffCohort']);
+    }
+
+    /**
+     * Item 8.2 extraction (behavior-preserving, 1:1 from the old execute()
+     * head): every admission door — config parsing, profile/auto-tune,
+     * missing roots, diff-base cohort, runtime options, plugin screening,
+     * the apply safety gates and the cache-trust arming — decided BEFORE
+     * the pipeline is built. `phpdup audit` rides the very same doors so
+     * its analysis behaves exactly like analyze's.
+     *
+     * @return array<string, mixed> ['code' => int] when a door refused the
+     *                              invocation (the door already emitted
+     *                              its line), else the drive bundle
+     *                              config/buildPipeline/runtimeOptions/diffCohort
+     */
+    protected function admitAnalysis(InputInterface $input, OutputInterface $output): array
+    {
         if ($input->getOption('validate-config')) {
-            return $this->validateConfigOnly($input, $output);
+            return ['code' => $this->validateConfigOnly($input, $output)];
         }
 
         $paths = $input->getArgument('paths');
@@ -470,7 +493,7 @@ HELP;
             $output->writeln('<error>phpdup: at least one path is required</error>');
             $output->writeln('Run <info>phpdup --help</info> for usage and a grouped option reference.');
             $output->writeln('Example: <info>phpdup src/ --html=build/dup-report</info>');
-            return 2;
+            return ['code' => 2];
         }
 
         // shell-S28 (once-S31-r1 F-2, routed through shell-S27-r1 §(b)):
@@ -483,7 +506,7 @@ HELP;
 
         $overrides = $this->parseCliOverrides($input, $output);
         if ($overrides === null) {
-            return 2; // parseCliOverrides emitted the specific error and rejected the input
+            return ['code' => 2]; // parseCliOverrides emitted the specific error and rejected the input
         }
 
         // shell-S25 (php-dup-finder-shell-012): profile admission now shares
@@ -527,7 +550,7 @@ HELP;
             // translating the class loses no debuggability: the friendly
             // line still carries PHP's full ctor message verbatim.
             $output->writeln('<error>phpdup: ' . $e->getMessage() . '</error>');
-            return 2;
+            return ['code' => 2];
         }
 
         // once-S69 (php-dup-finder-once-079): admit an unwritable --debug-log
@@ -540,7 +563,7 @@ HELP;
             if ($debugLogError !== null) {
                 $output->writeln('<error>phpdup: --debug-log path is not writable: '
                     . $config->debugLog . ' (' . $debugLogError . ')</error>');
-                return 2;
+                return ['code' => 2];
             }
         }
 
@@ -565,7 +588,7 @@ HELP;
                 static fn (string $root): string => self::escapeMarkup($root),
                 $missingRoots,
             )) . '</error>');
-            return 2;
+            return ['code' => 2];
         }
 
         // once-S34 (php-dup-finder-once-038): resolve the --diff-base cohort
@@ -601,7 +624,7 @@ HELP;
                 // untrusted bytes, markup-escaped before they touch the
                 // <error> line.
                 $output->writeln('<error>' . self::escapeMarkup($cohort['error']) . '</error>');
-                return 2;
+                return ['code' => 2];
             }
             if ($cohort['paths'] === []) {
                 $output->writeln(sprintf(
@@ -612,7 +635,7 @@ HELP;
                         ? ''
                         : ' — ' . count($cohort['unmatched']) . ' changed path(s) in range are not on disk under the roots',
                 ));
-                return 2;
+                return ['code' => 2];
             }
             $diffCohort = $cohort['paths'];
             // shell-S34: the count echo carries the raw ref twice.
@@ -653,7 +676,7 @@ HELP;
                 // newly fail here — the inputs differ only in the key this
                 // block just consumed.
                 $output->writeln('<error>phpdup: ' . $e->getMessage() . '</error>');
-                return 2;
+                return ['code' => 2];
             }
         }
 
@@ -675,7 +698,7 @@ HELP;
             // ends here, before the pipeline is ever built. The old posture
             // printed the error line and carried on to a FULL analysis with
             // exit 0, so option mistakes were un-runnable-to and un-CI-able.
-            return 2;
+            return ['code' => 2];
         }
 
         // buildPipelineFactory only needs a subset of runtimeOptions
@@ -724,7 +747,7 @@ HELP;
             // load above). ConfigLoader::assertListOfStrings already bounds
             // every supported path here; belt discipline keeps the arm.
             $output->writeln('<error>phpdup: ' . self::escapeMarkup($e->getMessage()) . '</error>');
-            return 2;
+            return ['code' => 2];
         }
         $pluginNotes = [];
         if ($pluginFailures !== []) {
@@ -797,7 +820,7 @@ HELP;
             $output->writeln('<comment>phpdup: remove the link (or run from a tree where '
                 . self::escapeMarkup($applyRoot) . ' is a plain directory) and re-run. '
                 . 'No analysis was run and no file was written.</comment>');
-            return 3;
+            return ['code' => 3];
         }
 
         // once-S88 (php-dup-finder-once-111): CROSS-RUN APPLY COLLISION
@@ -839,7 +862,7 @@ HELP;
                 $output->writeln('<comment>phpdup: move the earlier generation aside — its backup/ holds the '
                     . 'originals it replaced — or re-run from a tree whose ./refactored is free. '
                     . 'No analysis was run and no file was written.</comment>');
-                return 3;
+                return ['code' => 3];
             }
         }
 
@@ -877,7 +900,7 @@ HELP;
                 $output->writeln('<comment>phpdup: commit or restore the changes above, or '
                     . 'drop --dry-run=false to keep the preview posture. '
                     . 'No analysis was run and no file was written.</comment>');
-                return 3;
+                return ['code' => 3];
             }
             $output->writeln('<comment>phpdup: real apply armed (--dry-run=false) — '
                 . 'member files will be rewritten; originals back up under '
@@ -918,7 +941,12 @@ HELP;
             ));
         }
 
-        return $this->dispatch($input, $output, $pipelineConfig, $buildPipeline, $runtimeOptions, $diffCohort);
+        return [
+            'config'         => $pipelineConfig,
+            'buildPipeline'  => $buildPipeline,
+            'runtimeOptions' => $runtimeOptions,
+            'diffCohort'     => $diffCohort,
+        ];
     }
 
     /**
@@ -1968,6 +1996,27 @@ HELP;
             return (new WatchRunner($pipeline, $rebuild, $output, $logger, $scanRoot))->run();
         }
 
+
+        return $this->runAnalysis($config, $buildPipeline, $diffCohort, $output)['exit'];
+    }
+
+    /**
+     * Item 8.2 extraction (behavior-preserving, 1:1 from dispatch()'s
+     * default arm): drive the cooperative pipeline headless to its
+     * settled exit code and hand back the terminal PipelineState — the
+     * shape `phpdup audit` needs to reach the report behind the same
+     * 0/1/2/3/4/130 contract. dispatch() itself keeps only the tui/watch
+     * branches plus this call.
+     *
+     * @param list<string>|null $diffCohort once-S34: the authoritative --diff-base
+     *                                      cohort resolved at admission (realpaths),
+     *                                      pre-set on every PipelineState this
+     *                                      driver creates; null without --diff-base
+     *
+     * @return array{exit: int, state: PipelineState}
+     */
+    protected function runAnalysis(Config $config, \Closure $buildPipeline, ?array $diffCohort, OutputInterface $output): array
+    {
         $state    = new PipelineState($config);
         if ($diffCohort !== null) {
             // once-S34: the admission-resolved cohort rides the state from
@@ -2016,7 +2065,7 @@ HELP;
             // halt, never a Symfony throwable dump, and never a laundered
             // success: it reaches this render, exit 1, no summary claim.
             $output->writeln('<error>phpdup: ' . self::escapeMarkup($e->getMessage()) . '</error>');
-            return 1;
+            return ['exit' => 1, 'state' => $state];
         } finally {
             $restoreSignals();
         }
@@ -2028,12 +2077,12 @@ HELP;
             // render; the composed string itself (and its substring pins)
             // stays untouched.
             $output->writeln('<error>' . self::escapeMarkup($state->scanError) . '</error>');
-            return 2;
+            return ['exit' => 2, 'state' => $state];
         }
 
         if ($state->cancelled) {
             $output->writeln('<comment>phpdup: cancelled by user — partial report rendered</comment>');
-            return 130; // canonical SIGINT exit code
+            return ['exit' => 130, 'state' => $state]; // canonical SIGINT exit code
         }
 
         // once-S37 (php-dup-finder-once-081): $state->clustersReplayed was
@@ -2067,12 +2116,12 @@ HELP;
             }
             if ($maxImpact >= $config->failOnImpact) {
                 $output->writeln('<error>phpdup: --fail-on-impact gate tripped — max cluster impact ' . $maxImpact . ' >= ' . $config->failOnImpact . '.</error>');
-                return 3;
+                return ['exit' => 3, 'state' => $state];
             }
         }
         if ($config->maxClusters > 0 && count($state->clusters) > $config->maxClusters) {
             $output->writeln('<error>phpdup: --max-clusters gate tripped — ' . count($state->clusters) . ' clusters > ' . $config->maxClusters . '.</error>');
-            return 3;
+            return ['exit' => 3, 'state' => $state];
         }
 
         // Baseline gating: --baseline-out (write) and --baseline (compare / first-run)
@@ -2146,7 +2195,7 @@ HELP;
             if ($config->baselineOutFile !== null) {
                 $baselineStore->writeBaseline($state->clusters, $config->baselineOutFile, $mergedDispositions);
                 $output->writeln("<info>phpdup</info> baseline written to {$config->baselineOutFile}");
-                return $priorRefused ? 2 : 0;
+                return ['exit' => $priorRefused ? 2 : 0, 'state' => $state];
             }
 
             // --baseline: compare mode
@@ -2155,7 +2204,7 @@ HELP;
                     // First run: write baseline and exit 0
                     $baselineStore->writeBaseline($state->clusters, $config->baselineFile, $mergedDispositions);
                     $output->writeln("<info>phpdup</info> baseline created at {$config->baselineFile}");
-                    return 0;
+                    return ['exit' => 0, 'state' => $state];
                 }
 
                 // Compare against existing baseline
@@ -2191,7 +2240,7 @@ HELP;
                         ? " ($excludedAccepted accepted finding(s) not counted)"
                         : '';
                     $output->writeln("<error>phpdup</error> {$count} new duplicate cluster(s) found since baseline{$note} — exit 4");
-                    return 4;
+                    return ['exit' => 4, 'state' => $state];
                 }
                 if ($excludedAccepted > 0) {
                     $output->writeln("<info>phpdup</info> baseline gate passed — {$excludedAccepted} accepted finding(s) excluded from the new-cluster count");
@@ -2199,8 +2248,10 @@ HELP;
             }
         }
 
-        return 0;
+        return ['exit' => 0, 'state' => $state];
+
     }
+
 
     /**
      * Run the live SugarCraft dashboard with a 1.5 s poll loop that
