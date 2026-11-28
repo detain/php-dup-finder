@@ -165,7 +165,7 @@ final class ConfigLoader
             'corpus_rollups',
             'themes',
             'scope_labels',
-            'ir_threshold', 'ml_pair_threshold', 'debug_log',
+            'ir_threshold', 'ml_pair_threshold', 'llm_max_findings', 'debug_log',
             'low_memory', 'fail_on_impact', 'max_clusters',
             'optional_blocks_containment',
             'baseline', 'baseline_out', 'diff_base', 'apply',
@@ -237,6 +237,7 @@ final class ConfigLoader
             'scope_labels' => $base->scopeLabels,
             'ir_threshold' => $base->irThreshold,
             'ml_pair_threshold' => $base->mlPairThreshold,
+            'llm_max_findings' => $base->llmMaxFindings,
             'debug_log' => $base->debugLog,
             'low_memory' => $base->lowMemory,
             'fail_on_impact' => $base->failOnImpact,
@@ -417,6 +418,15 @@ final class ConfigLoader
             mlPairUrl: (string)($overrides['ml_pair_url'] ?? $data['ml_pair_url'] ?? $base->mlPairUrl),
             mlPairAllowPrivate: (bool)($overrides['ml_pair_allow_private'] ?? $data['ml_pair_allow_private'] ?? $base->mlPairAllowPrivate),
             mlPairThreshold:               $flat['ml_pair_threshold'],
+            // Item 8.2: the audit judgment-layer family. url/model/allow_private
+            // ride the ml_pair_url direct-leg shape (root-only keys, never
+            // per-directory planted); llm_max_findings rides the flat numeric
+            // coercion boundary like ml_pair_threshold (CLI-free, but the
+            // config-file layer must coerce identically).
+            llmUrl: (string)($overrides['llm_url'] ?? $data['llm_url'] ?? $base->llmUrl),
+            llmModel: (string)($overrides['llm_model'] ?? $data['llm_model'] ?? $base->llmModel),
+            llmMaxFindings:                $flat['llm_max_findings'],
+            llmAllowPrivate: (bool)($overrides['llm_allow_private'] ?? $data['llm_allow_private'] ?? $base->llmAllowPrivate),
             debugLog:                      $flat['debug_log'],
             lowMemory:                     $flat['low_memory'],
             failOnImpact:                  $flat['fail_on_impact'],
@@ -540,6 +550,10 @@ final class ConfigLoader
         'max_df'               => ['float', 0.0,  1.0],
         'ir_threshold'         => ['float', 0.0,  1.0],
         'ml_pair_threshold'    => ['float', 0.0,  1.0],
+        // Item 8.2: the audit cost cap rides the same coercion boundary
+        // (config-file JSON ints arrive native; the table bounds the
+        // domain at the shared door, validate() re-pins it for messages).
+        'llm_max_findings'     => ['int',   1,    1000],
         // shell-S24 (shell-014): the type-3 containment knob rides the same
         // [0,1] domain validate() pins for optional_blocks.containment.
         'optional_blocks_containment' => ['float', 0.0, 1.0],
@@ -1335,6 +1349,14 @@ final class ConfigLoader
         'ml_pair_url',
         'ml_pair_threshold',
         'ml_pair_allow_private',
+        // Item 8.2 (`phpdup audit`): the judgment-layer endpoint family.
+        // Consumed ONLY by the audit command (analyze never reads them);
+        // the token is env-only (PHPDUP_LLM_TOKEN) and deliberately not a
+        // key — reports embed the config section.
+        'llm_url',
+        'llm_model',
+        'llm_max_findings',
+        'llm_allow_private',
         'debug_log',
         'low_memory',
         'fail_on_impact',
@@ -1441,6 +1463,11 @@ final class ConfigLoader
         // run-wide, so a per-directory flip would count some clusters
         // only. Same refused family as corpus_rollups/themes.
         'scope_labels',
+        // Item 8.2: the audit endpoint family is a run posture, not a
+        // subtree stance — a per-directory flip would arm (or disarm) the
+        // transport for some subtrees only, the same quiet-misfeed family
+        // as ml_pair_*; all four keys are refused in subtree configs.
+        'llm_url', 'llm_model', 'llm_max_findings', 'llm_allow_private',
     ];
 
     /**
@@ -1782,6 +1809,37 @@ final class ConfigLoader
         }
         if (array_key_exists('ml_pair_threshold', $data)) {
             $assertFloat01($data['ml_pair_threshold'], 'ml_pair_threshold');
+        }
+        // Item 8.2: the audit endpoint family. allow_private is asserted
+        // BEFORE the URL leg (same once-S54 door order: the key consulted
+        // for the address policy must already be known boolean), and the
+        // URL admission is shape-only with zero resolver calls — every
+        // message already speaks the llm_* names via LlmClient's relabel.
+        if (array_key_exists('llm_allow_private', $data) && !is_bool($data['llm_allow_private'])) {
+            throw new \RuntimeException("llm_allow_private must be a boolean$where");
+        }
+        if (array_key_exists('llm_url', $data)) {
+            if (!is_string($data['llm_url'])) {
+                throw new \RuntimeException("llm_url must be a string$where");
+            }
+            if ($data['llm_url'] !== '') {
+                $llmRefusal = \Phpdup\Ml\LlmClient::urlAdmissionError(
+                    $data['llm_url'],
+                    (bool)($data['llm_allow_private'] ?? false),
+                );
+                if ($llmRefusal !== null) {
+                    throw new \RuntimeException("$llmRefusal$where");
+                }
+            }
+        }
+        if (array_key_exists('llm_model', $data) && !is_string($data['llm_model'])) {
+            throw new \RuntimeException("llm_model must be a string$where");
+        }
+        if (array_key_exists('llm_max_findings', $data)) {
+            // The cost cap must be a real bound: 0 would silently ship a
+            // whole audit with zero verdicts (the quiet-inert family),
+            // so the domain starts at 1, capped at 1000 per the schema.
+            $assertInt($data['llm_max_findings'], 'llm_max_findings', 1, 1000);
         }
         if (array_key_exists('fail_on_impact', $data)) {
             $assertInt($data['fail_on_impact'], 'fail_on_impact', 0);

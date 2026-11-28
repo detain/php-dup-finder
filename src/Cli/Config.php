@@ -366,6 +366,29 @@ final class Config
         // (0.0.0.0/8, 192.0.0.0/24, 198.18.0.0/15, multicast) stay
         // refused either way; see MlPairClient::pairUrlAdmissionError().
         public readonly bool $mlPairAllowPrivate = false,
+        // Item 8.2 (`phpdup audit` judgment layer) — a four-key root-only
+        // config family consumed ONLY by the audit command; analyze never
+        // reads them and no argv spelling exists for any of them (the
+        // ml_pair_allow_private config-file-key precedent). llm_url is the
+        // endpoint BASE ('/annotate' + '/themes' are appended at the
+        // transport); the empty default keeps the whole LLM pass OFF and
+        // hermetic. The bearer token rides ONLY the PHPDUP_LLM_TOKEN env
+        // var — never a config key, because JsonReporter embeds the
+        // config section into shipped reports (secrets-in-artifact law).
+        public readonly string $llmUrl = '',
+        // Model name echoed to the endpoint and folded into the
+        // annotation cache key. '' = use the endpoint's default model.
+        public readonly string $llmModel = '',
+        // Cost cap: the top-N ranked evidence packs the audit command
+        // asks the endpoint to judge; packs beyond it stay un-annotated
+        // in the audit doc. Domain [1, 1000]; default matches the
+        // EvidencePackBuilder::TOP_K ceiling the pack build already applies.
+        public readonly int $llmMaxFindings = 100,
+        // SSRF opt-in mirror of ml_pair_allow_private for llm_url: admits
+        // the PRIVATE address families for the endpoint; the reserved
+        // non-private spaces (0.0.0.0/8, 192.0.0.0/24, 198.18.0.0/15,
+        // multicast) stay refused either way — same matrix, re-labelled.
+        public readonly bool $llmAllowPrivate = false,
         // Item 3.1 ingestion (MINE-D): the idiom-census demand knob
         // (config-file key `idiom_mining`, JSON bool; deliberately NO CLI
         // flag — the Command.php option roster is another lane's live file,
@@ -640,6 +663,19 @@ final class Config
             if ($mlPairRefusal !== null) {
                 throw new \InvalidArgumentException("$mlPairRefusal (url: $mlPairUrl)");
             }
+        }
+        if ($llmUrl !== '') {
+            // Item 8.2: the same shape-only admission door as ml_pair_url
+            // (zero resolver calls at config time), reached through
+            // LlmClient::urlAdmissionError so every message speaks the
+            // llm_* key names. Refusals name the space + the opt-in.
+            $llmRefusal = \Phpdup\Ml\LlmClient::urlAdmissionError($llmUrl, $llmAllowPrivate);
+            if ($llmRefusal !== null) {
+                throw new \InvalidArgumentException("$llmRefusal (url: $llmUrl)");
+            }
+        }
+        if ($llmMaxFindings < 1 || $llmMaxFindings > 1000) {
+            throw new \InvalidArgumentException("llm_max_findings must be within 1..1000 (got $llmMaxFindings)");
         }
         if ($idiomMining && !\in_array(\Phpdup\Extraction\BlockExtractor::FRAGMENT_KIND, $allowedKinds, true)) {
             // Item 3.1 substrate precondition, stated once HERE so every
@@ -926,6 +962,13 @@ final class Config
             // once-S54: root-level opt-in; hand-built callers (pipeline /
             // serve) thread it here, per-directory routes never admit it.
             mlPairAllowPrivate:             isset($overrides['ml_pair_allow_private']) ? (bool)$overrides['ml_pair_allow_private'] : $this->mlPairAllowPrivate,
+            // Item 8.2: the llm_* family rides the same root-level thread —
+            // discovery refuses all four keys per-directory, so these legs
+            // only ever move a ROOT posture across a programmatic fold.
+            llmUrl:                         isset($overrides['llm_url']) ? (string)$overrides['llm_url'] : $this->llmUrl,
+            llmModel:                       isset($overrides['llm_model']) ? (string)$overrides['llm_model'] : $this->llmModel,
+            llmMaxFindings:                 isset($overrides['llm_max_findings']) ? (int)$overrides['llm_max_findings'] : $this->llmMaxFindings,
+            llmAllowPrivate:                isset($overrides['llm_allow_private']) ? (bool)$overrides['llm_allow_private'] : $this->llmAllowPrivate,
             // shell-S22 (shell-026): debug_log, baseline, baseline_out and
             // diff_base are ROOT-ONLY on the per-directory route — discovery
             // refuses them in any .phpdup.json and shapeOverrides() no longer

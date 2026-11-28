@@ -184,6 +184,10 @@ final class Http
      *   once-S91's length/partial refusal on the update transport).
      *
      * @param null|array{url: string, header: string, peer_name: string|null} $pin pinnedStreamRequest() shape; null = refusal, dial nothing
+     * @param list<string>        $headers   extra request headers APPENDED to the
+     *                                      pin's own header block (Item 8.2 audit
+     *                                      bearer); the empty default keeps the
+     *                                      pre-8.2 request bytes identical
      * @param int $timeoutSec total-transfer deadline per this method's docblock; <= 0 disables the total bound and keeps the wrapper's per-operation behavior
      *
      * @return string|null raw response body, or null on refusal/transport error/non-2xx/over-cap/late, or short against a declared Content-Length; a cut-short body that declares NO length is handed up unchanged for the caller's decode fence to refuse (see {@see self::declaredLengthMismatch()}'s absent-CL note)

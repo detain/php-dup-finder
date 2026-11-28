@@ -50,6 +50,7 @@ final class LlmClient
     /** @var (callable(string, string, list<string>): ?string)|null */
     private $transport;
 
+    /** @var null|array{host: string, port: int, addresses: list<string>} */
     private ?array $decision = null;
     private bool $decisionResolved = false;
 
