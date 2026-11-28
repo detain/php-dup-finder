@@ -35,7 +35,13 @@ use Symfony\Component\Console\Output\NullOutput;
  * pinned — the knobs default OFF, so the unarmed run clusters exactly as
  * before and Env.php still joins zero clusters there (pinned by the P3
  * test's baseline arm; adoption must never leak into clusters). 3.3
- * (P4/P5) stays a red-state pin. When a row's real cure lands, THIS TEST
+ * (P4/P5) flipped the same day through the item 3.3 LITERAL-CENSUS layer
+ * — likewise cluster-INDEPENDENT: the armed run (literal_census) links
+ * the $assetBase URL family (P4, line 12) and the STATUS_MAP table +
+ * constant uses (P5, lines 11/18) as census data, while the unarmed run
+ * clusters exactly as before (the P4/P5 test's tripwire arm now guards
+ * the OPPOSITE leak). 3.5 (call sequences) rides the same armed layer as
+ * its own block. When a row's real cure lands, THIS TEST
  * SHOULD FAIL — update signature + pattern state to the new truth and
  * note the flip in the commit message. Never edit the fixture files to
  * preserve this pin.
@@ -226,9 +232,9 @@ final class MicroFixtureAuditTest extends TestCase
         ['P3', '3.2 + 1.1', 'Env::isDev/baseUrl helper bodies linked to the 5 inline re-implementations (lines 16-17 of inline_*)',
             'CURED 2026-11-28 (item 3.2, opt-in helper_adoption): the adoption ledger links MicroFixtureEnv::isDev (Identical subtree @ Env.php:12) and MicroFixtureEnv::baseUrl (Ternary subtree @ Env.php:17) to ALL five inline copies (inline_*.php:16 / :17 — five distinct files, one site each) through the idiom census wildcard (abstract-fold) keys at the helper-lookup layer; the linkage is deliberately cluster-independent (Env.php still sits in zero clusters unarmed — pinned by the P3 test baseline arm + the class docblock; the test method name keeps the old phrasing, same posture as the flipped P1/P2 method names)'],
         ['P4', '3.3', 'the duplicated $assetBase URL string literal (inline_*:12, 5 copies)',
-            'zero members ever cover line 12 — string literals are not extractable blocks'],
+            'CURED 2026-11-28 (item 3.3, opt-in literal_census): the census family view links the five $assetBase literals at inline_*:12 — the copies are page-drifted (checkout/orders/carts/invoices/tickets URL spellings, not byte-equal), so the honest ledger is one 5-member near-duplicate family at sites=5 files=5 (members ≤10 cap, value-sorted) beside the exact-copy string rows (http://localhost ×6 at :17 with Env.php); the FLIP_MARKER text said "5 copies", the disk truth says five DRIFTED copies; linkage is cluster-independent (the P4/P5 test tripwire arm guards the opposite leak)'],
         ['P5', '3.3', 'the duplicated STATUS_MAP constant literal (inline_*:11, 5 copies)',
-            'zero members ever cover line 11 — class consts are not extractable blocks'],
+            'CURED 2026-11-28 (item 3.3, opt-in literal_census): the array bucket hashes the 3-entry STATUS_MAP table ORDER-INSENSITIVELY as one row at inline_*:11 sites=5 files=5, and the const bucket groups by NAME across classes into one STATUS_MAP row at sites=15 files=5 with role counters decl=5 (line 11) / use=10 (the two self:: fetches on line 18 per page) — both views sit in the armed summary literal_census block, never in clusters'],
         ['P6', '2.3', 'Env.php whole-class shape as a duplicate-architecture signal',
             'FOUND 2026-11-28 (item 2.3, opt-in class kind): the five inline_* declarations cluster shape-EXACT at sim 1.0 (same-shape-different-name, handle() verdict parameterizable across the family) and the preamble services surface as the 0.9051 class-family view; Env.php STILL appears in zero clusters — its shape has no twin in this fixture, so the helper↔declaration linkage half of the original P6 phrasing remains 3.2 domain, disclosed honestly rather than overclaimed'],
         ['P6b', '2.3', 'class_shape verdict vocabulary (identical-in-all / parameterizable / divergent) present in payload',
@@ -392,6 +398,13 @@ final class MicroFixtureAuditTest extends TestCase
         }
     }
 
+    /**
+     * FLIPPED 2026-11-28 (item 3.3): the literal/constant census links
+     * the fixture's repeated literals and STATUS_MAP uses when armed —
+     * as CENSUS data, never as clusters. The method name keeps the old
+     * phrasing (P1/P2/P3 precedent); the loop is now a tripwire for the
+     * OPPOSITE leak, and the cure arm below asserts the armed ledger.
+     */
     public function testP4P5LiteralDuplicationIsInvisible(): void
     {
         $rows = $this->canonicalRows($this->buildPayload());
@@ -401,17 +414,116 @@ final class MicroFixtureAuditTest extends TestCase
                     continue;
                 }
                 [$start, $end] = [(int) $x[1], (int) $x[2]];
-                // Item 2.3 posture: a class declaration SPANS its
-                // member lines (inline_*:9-24 covers 11-12 because the
-                // declarations live inside it) — that is whole-class
-                // shape visibility, NOT literal extraction. The true
-                // P4/P5 blind spot stays open until a member covers the
-                // literal lines WITHOUT being the enclosing declaration
-                // (i.e. a range inside 11-12, the 3.3 mint).
+                // Posture since 2.3: a class declaration SPANS its
+                // member lines (inline_*:9-24 covers 11-12) — that is
+                // whole-class shape, not literal extraction. The 3.3
+                // cure is likewise CLUSTER-independent (census block,
+                // knobs default OFF); a member covering 11-12 without
+                // being the declaration would mean the census leaked
+                // into clustering — the opposite leak, still forbidden.
                 $isDeclarationSpan = $start <= 9 && $end >= 24;
-                $this->assertTrue($start > 12 || $isDeclarationSpan, self::FLIP_MARKER . " (P4/P5): member {$member} now covers the STATUS_MAP/assetBase literal lines 11-12 as a non-declaration block — literals became extractable, flip P4+P5");
+                $this->assertTrue($start > 12 || $isDeclarationSpan, self::FLIP_MARKER . " (P4/P5 opposite-leak tripwire): member {$member} covers the STATUS_MAP/assetBase literal lines 11-12 as a non-declaration block — the literal census must never mint clustering members");
             }
         }
+
+        // Cure arm: the armed literal census (3.3) over the same fixture.
+        $census = $this->buildLiteralLedger();
+        $this->assertNotNull($census, self::FLIP_MARKER . ' (P4/P5 cure): literal_census armed but no ledger — item 3.3 regressed');
+        $byKey = [];
+        foreach ($census->rows() as $entry) {
+            $byKey[$entry->kind . '|' . $entry->sample] = $entry;
+        }
+
+        // P5: the STATUS_MAP table as an order-insensitive array row.
+        $arrayRow = $byKey['array|"paid"=>1, "pending"=>0, "refunded"=>2'] ?? null;
+        $this->assertNotNull($arrayRow, 'P5 cure: the STATUS_MAP table literal is not an array-bucket row');
+        $this->assertStringStartsWith('91c4edde1e16', $arrayRow->hash);
+        $this->assertSame(5, $arrayRow->sites);
+        $this->assertSame(5, $arrayRow->files);
+        $this->assertCount(5, $arrayRow->locations);
+        foreach ($arrayRow->locations as $loc) {
+            $this->assertMatchesRegularExpression('#inline_\d\.php:11$#', $loc, 'P5 cure: table sightings are the five :11 declarations');
+        }
+
+        // P5: the const NAME row across classes, role-counted.
+        $constRow = $byKey['const|STATUS_MAP'] ?? null;
+        $this->assertNotNull($constRow, 'P5 cure: STATUS_MAP is not a const-bucket row');
+        $this->assertStringStartsWith('80d23e87ac38', $constRow->hash);
+        $this->assertSame(15, $constRow->sites);
+        $this->assertSame(5, $constRow->files);
+        $this->assertSame(['decl' => 5, 'use' => 10], $constRow->roles, 'five declarations + ten self:: fetches');
+        $this->assertCount(10, $constRow->locations, 'two-pass sample cap');
+        foreach ($constRow->locations as $loc) {
+            $this->assertMatchesRegularExpression('#inline_\d\.php:(11|18)$#', $loc);
+        }
+
+        // P4: the five DRIFTED $assetBase URLs as one edit-distance family.
+        $this->assertTrue($census->familiesComputed());
+        $urlFamily = null;
+        foreach ($census->families() as $family) {
+            if (in_array('https://cdn.example.com/assets/v42/checkout.js', $family['members'], true)) {
+                $urlFamily = $family;
+            }
+        }
+        $this->assertNotNull($urlFamily, 'P4 cure: the inline_*:12 asset URLs are not linked as a near-duplicate family');
+        $this->assertSame([
+            'https://cdn.example.com/assets/v42/carts.js',
+            'https://cdn.example.com/assets/v42/checkout.js',
+            'https://cdn.example.com/assets/v42/invoices.js',
+            'https://cdn.example.com/assets/v42/orders.js',
+            'https://cdn.example.com/assets/v42/tickets.js',
+        ], $urlFamily['members']);
+        $this->assertSame(5, $urlFamily['sites']);
+        $this->assertSame(5, $urlFamily['files']);
+
+        // Exact-copy strings ride the plain rows: the localhost fallback
+        // (Env + all five inline pages, line 17) is a full row, not a family.
+        $local = $byKey['string|http://localhost'] ?? null;
+        $this->assertNotNull($local, 'P4 companion: http://localhost must surface as a string row');
+        $this->assertSame(6, $local->sites);
+        $this->assertSame(6, $local->files);
+        foreach ($local->locations as $loc) {
+            $this->assertMatchesRegularExpression('#(Env|inline_\d)\.php:17$#', $loc);
+        }
+
+        // Whole-fixture bucket totals (fresh-probe disk truth, 2026-11-28):
+        // every item-3.3 line reports, skeleton honestly empty (the
+        // fixture's SQL is concatenation, not interpolation).
+        $this->assertSame([
+            'string'   => ['entries' => 19, 'sites' => 32],
+            'array'    => ['entries' => 6, 'sites' => 10],
+            'number'   => ['entries' => 2, 'sites' => 10],
+            'skeleton' => ['entries' => 0, 'sites' => 0],
+            'const'    => ['entries' => 1, 'sites' => 15],
+        ], $census->bucketTotals());
+        $this->assertCount(4, $census->families(), 'URL, two SQL-table and order-notes families (measured)');
+    }
+
+    /**
+     * Same cold-cache posture as buildAdoptionLedger(), but the single
+     * 3.3 knob: the literal census is minted at the Preprocess seam from
+     * the raw parsed trees; the clustering lane is not involved (cluster-
+     * independence is the point of the surface).
+     */
+    private function buildLiteralLedger(): ?\Phpdup\Census\LiteralCensus
+    {
+        $dir = realpath(__DIR__ . '/../Fixtures/micro-fixture');
+        $this->assertNotFalse($dir, 'micro-fixture directory missing');
+        $config = new Config(
+            paths: [$dir],
+            exclude: Config::defaults([])->exclude,
+            maxDocumentFrequency: 0.9,
+            minClusterImpact: 1,
+            workers: 1,
+            lazyAst: false,
+            literalCensus: true,
+            cacheDir: sys_get_temp_dir() . '/phpdup-mine-e-micro-' . getmypid() . '-' . (string) getmyuid(),
+        );
+        $state = new PipelineState($config);
+        $out = new NullOutput();
+        (new ScanningStage())->run($state, $out);
+        (new PreprocessStage(useCache: false))->run($state, $out);
+        return $state->sequenceIndex?->literalCensus();
     }
 
     /**

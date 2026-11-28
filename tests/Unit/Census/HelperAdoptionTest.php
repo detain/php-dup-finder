@@ -87,6 +87,88 @@ final class HelperAdoptionTest extends TestCase
         self::assertSame(3, $adoption->inlineSitesTotal());
     }
 
+    /*
+     | Caller leg (MINE-E, item 3.2 follow-on riding 3.5): callers is
+     | null while call_sequence is unarmed, an honest 0 when armed with
+     | no hits, and receiver-blind counted when the census carries the
+     | helper's name being called — outside the helper's own span.
+     */
+
+    public function testCallersNullWhenCallCensusUnarmed(): void
+    {
+        $index = self::armedIndex([
+            'a.php' => self::payload([['K', 'A', 8, 'Expr_Cond', 1, [11]]]),
+            'b.php' => self::payload([['K', 'A', 8, 'Expr_Cond', 1, [7]]]),
+        ]);
+        $index->recordList('a.php', ['h1'], 11, 11, 'method');
+
+        $rows = HelperAdoption::analyze($index, [
+            self::block('a.php', 10, 12, 'method', 'Helper', 'flag'),
+        ])->rows();
+        self::assertCount(1, $rows);
+        self::assertNull($rows[0]->callers, 'absence is honest-null, never a 0-lie');
+        self::assertSame([], $rows[0]->callerLocations);
+    }
+
+    public function testCallersCountedReceiverBlindOutsideOwnSpan(): void
+    {
+        $index = self::armedIndex([
+            'a.php' => self::payload([['K', 'A', 8, 'Expr_Cond', 1, [11]]]),
+            'b.php' => self::payload([['K', 'A', 8, 'Expr_Cond', 1, [7]]]),
+        ]);
+        $index->recordList('a.php', ['h1'], 11, 11, 'method');
+
+        // Call witnesses: 'Helper::flag' (static form), 'flag' (method/
+        // function form), 'Logger::flag' (receiver-blind over-count, the
+        // disclosed v1 posture), 'flagged'/'otherFlag' must never match;
+        // a.php:11 sits INSIDE the helper span (excluded), a.php:20 outside.
+        $index->armCalls();
+        $index->recordCallFile('b.php', json_encode([[
+            'names' => ['Helper::flag', 'log'], 'lines' => [5, 6], 'args' => [[], []],
+            'firstLine' => 5, 'lastLine' => 6,
+        ]]));
+        $index->recordCallFile('c.php', json_encode([[
+            'names' => ['flag'], 'lines' => [4], 'args' => [[]],
+            'firstLine' => 4, 'lastLine' => 4,
+        ]]));
+        $index->recordCallFile('d.php', json_encode([[
+            'names' => ['Logger::flag', 'flagged', 'otherFlag'], 'lines' => [9, 9, 9],
+            'args' => [[], [], []], 'firstLine' => 9, 'lastLine' => 9,
+        ]]));
+        $index->recordCallFile('a.php', json_encode([[
+            'names' => ['Helper::flag', 'flag'], 'lines' => [11, 20], 'args' => [[], []],
+            'firstLine' => 11, 'lastLine' => 20,
+        ]]));
+
+        $rows = HelperAdoption::analyze($index, [
+            self::block('a.php', 10, 12, 'method', 'Helper', 'flag'),
+        ])->rows();
+        self::assertCount(1, $rows);
+        self::assertSame(4, $rows[0]->callers, 'b:5 + c:4 + d:9 + a:20; in-span a:11 excluded');
+        self::assertSame(['a.php:20', 'b.php:5', 'c.php:4', 'd.php:9'], $rows[0]->callerLocations);
+    }
+
+    public function testCallersZeroWhenArmedButUnseen(): void
+    {
+        $index = self::armedIndex([
+            'a.php' => self::payload([['K', 'A', 8, 'Expr_Cond', 1, [11]]]),
+            'b.php' => self::payload([['K', 'A', 8, 'Expr_Cond', 1, [7]]]),
+        ]);
+        $index->recordList('a.php', ['h1'], 11, 11, 'method');
+        $index->armCalls();
+        $index->recordCallFile('b.php', json_encode([[
+            'names' => ['log'], 'lines' => [3], 'args' => [[]],
+            'firstLine' => 3, 'lastLine' => 3,
+        ]]));
+
+        $rows = HelperAdoption::analyze($index, [
+            self::block('a.php', 10, 12, 'method', 'Helper', 'flag'),
+        ])->rows();
+        self::assertCount(1, $rows);
+        self::assertSame(0, $rows[0]->callers, 'armed census with no witness is an honest 0');
+        self::assertSame([], $rows[0]->callerLocations);
+    }
+
     public function testLiteralDriftGroupsUnderTheWildcardKey(): void
     {
         // Two exact spellings share abstract A: K1 (helper's own line +
