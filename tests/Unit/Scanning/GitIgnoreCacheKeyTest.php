@@ -20,9 +20,12 @@ use Phpdup\Pipeline\Stages\PreprocessStage;
  * knob into both stores regardless — and the one-time key-namespace shift
  * invalidating existing snapshots is the disclosed, accepted cost.
  *
- * Key layer only: the store/replay layers are owned by
- * tests/Unit/Cli/CacheKeyKnobReplayTest.php and the persistence suites;
- * this file pins that the honor_gitignore leg EXISTS in both rosters.
+ * Key layer pinned HERE: the honor_gitignore leg EXISTS in both rosters
+ * and the ON/OFF keys are distinct, which is exactly why a store opened
+ * under one posture arithmetically misses on the other — no separate
+ * replay legs are minted for this knob (the window_oversized precedent
+ * at tests/Unit/Cli/CacheKeyKnobReplayTest.php is a reference, not an
+ * ownership pointer).
  */
 final class GitIgnoreCacheKeyTest extends TestCase
 {
