@@ -8,6 +8,7 @@ use Phpdup\Cli\SignalHandler;
 use Phpdup\Pipeline\Pipeline;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Refactor\ScriptKindApplyRefusal;
+use Phpdup\Refactor\WindowApplyRefusal;
 use Phpdup\Util\CountPhrase;
 use Psr\Log\LoggerInterface;
 use React\EventLoop\Loop;
@@ -53,9 +54,9 @@ final class WatchRunner
     /**
      * Consecutive crashing passes tolerated before the watch loop stops
      * re-running on file changes (skip-note posture, pinned by tests).
-     * Typed halts (budget, script-kind refusal) are neutral: they neither
-     * extend nor reset the streak — they are expected user-input states,
-     * not symptoms of a broken tree.
+     * Typed halts (budget, script-kind refusal, window refusal) are
+     * neutral: they neither extend nor reset the streak — they are
+     * expected user-input states, not symptoms of a broken tree.
      */
     public const MAX_CONSECUTIVE_PASS_FAILURES = 3;
 
@@ -314,10 +315,16 @@ final class WatchRunner
      * Run one pipeline pass defensively (php-dup-finder-shell-023).
      *
      * Three postures, all keeping the loop alive:
-     *  - CandidateBudgetException / ScriptKindApplyRefusal: typed runtime
-     *    halts, rendered as the clean `phpdup:` line in the same posture
-     *    as the plain path's ft-n2 catch in Command::execute(). Neutral
-     *    for the failure streak.
+     *  - CandidateBudgetException / ScriptKindApplyRefusal /
+     *    WindowApplyRefusal: typed runtime halts, rendered as the clean
+     *    `phpdup:` line in the same posture as the plain path's ft-n2
+     *    catch in Command::execute(). Neutral for the failure streak.
+     *    The window refusal rides the same family as the script one: a
+     *    warm-replay rebaseClusters hit on a window member (default-ON
+     *    windowing guarantees window species in the caches) throws
+     *    through pipeline->run() right here, and the designed posture is
+     *    a neutral typed halt — never a crash counting toward the
+     *    watch-mode pause.
      *  - any other Throwable (poisoned cache row, parse fatal, a stage
      *    crash): rendered as a watch-pass failure — NOT via Symfony's
      *    throwable renderer, whose usage dump would have to end the
@@ -339,9 +346,12 @@ final class WatchRunner
             $this->pipeline->run($state, $this->output);
             $this->consecutivePassFailures = 0;
             return true;
-        } catch (CandidateBudgetException | ScriptKindApplyRefusal $e) {
+        } catch (CandidateBudgetException | ScriptKindApplyRefusal | WindowApplyRefusal $e) {
             // shell-S34: a ScriptKindApplyRefusal::forBlock message embeds
-            // the offending block's file path — raw filesystem bytes.
+            // the offending block's file path — raw filesystem bytes. The
+            // window sibling (E2 r1 MAJOR-1) embeds the same material:
+            // both refusals carry the block path and line range, so the
+            // markup escape stays on every typed-halt render.
             $this->output->writeln('<error>phpdup: ' . self::escapeMarkup($e->getMessage()) . '</error>');
             return true;
         } catch (\Throwable $e) {

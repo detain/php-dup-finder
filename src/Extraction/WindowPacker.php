@@ -70,20 +70,33 @@ final class WindowPacker
      * source order while the Σ subtree count fits under (maxSize − 1),
      * reserving the wrapper's own node; each run is then wrapped in a
      * synthetic Stmt\Block and its REAL nodeCount re-checked (shared-node
-     * artifacts can inflate a wrapper beyond Σ), popping the tail
-     * statement until it fits or the run empties. Windows obey the
-     * minSize floor unconditionally: a fragment is not a declaration
-     * (that exemption belongs to whole constructs, not cuts of them). A
-     * single statement already larger than the cap cannot start or join
-     * any window — its mass stays invisible to v1 windowing (disclosed
-     * residual, sibling of the pre-1.2 drop).
+     * artifacts can inflate a wrapper beyond Σ): the tail is peeled off
+     * into the NEXT window, not discarded on the floor of a trim.
+     * Windows obey the minSize floor unconditionally: a fragment is not a
+     * declaration (that exemption belongs to whole constructs, not cuts
+     * of them). A single statement already larger than the cap cannot
+     * start or join any window — its mass stays invisible to v1 windowing
+     * (disclosed residual, sibling of the pre-1.2 drop).
+     *
+     * Nothing ELSE that stays invisible escapes the 0.6 ledger (E2 r1
+     * MINOR-1): every statement this packer ends up giving up on — an
+     * endpoint whose line geometry is invalid (skipped; the rest of the
+     * run continues and the statement is counted), a run whose remainder
+     * lands under the minSize floor, and a carried tail that could not
+     * clear the floor in its own window — is returned in
+     * droppedStatements, which BlockExtractor folds into oversizedDrops()
+     * at statement granularity for salvaged parents (a parent that
+     * salvaged nothing still counts ONCE at parent granularity; its
+     * individual discards are subsumed into that one).
      *
      * Deterministic: pure source-order walk, fixed order.
      *
      * @param list<Node\Stmt>       $stmts
      * @param \Closure(Node):int    $count
      * @param \Closure(Block):void  $sink
-     * @return int number of window blocks emitted (0 = nothing salvaged)
+     * @return array{emitted: int, droppedStatements: int} number of window
+     *         blocks emitted (0 = nothing salvaged) and of statements
+     *         silently given up on while SOMETHING was salvaged
      */
     public static function emitWindowRuns(
         string $file,
@@ -95,7 +108,7 @@ final class WindowPacker
         int $maxSize,
         \Closure $count,
         \Closure $sink,
-    ): int {
+    ): array {
         /** @var list<list<Node\Stmt>> $runs */
         $runs = [];
         $run = [];
@@ -118,14 +131,31 @@ final class WindowPacker
         }
 
         $emitted = 0;
+        $droppedStatements = 0;
         foreach ($runs as $run) {
-            while ($run !== []) {
+            /** @var list<Node\Stmt> $carry tail statements peeled by the wrapper re-check */
+            $carry = [];
+            while ($run !== [] || $carry !== []) {
+                if ($run === []) {
+                    $run = $carry;
+                    $carry = [];
+                }
+                if ($run === []) {
+                    break; // both empty — the loop guard makes this unreachable
+                }
                 $first = $run[0];
                 $last  = $run[count($run) - 1];
                 $start = $first->getStartLine();
                 $end   = $last->getEndLine();
-                if ($start <= 0 || $end <= 0) {
-                    break; // same line guard the visitor applies
+                if ($start <= 0) {
+                    array_shift($run);
+                    $droppedStatements++; // invalid head: skip it, the run continues
+                    continue;
+                }
+                if ($end <= 0) {
+                    array_pop($run);
+                    $droppedStatements++; // invalid tail: the statement can never anchor a window
+                    continue;
                 }
                 $wrapper = new Stmt\Block(array_values($run), [
                     'startLine' => $start,
@@ -133,11 +163,18 @@ final class WindowPacker
                 ]);
                 $size = $count($wrapper);
                 if ($size > $maxSize) {
-                    array_pop($run);
-                    continue; // shared-node inflation: trim, then re-check
+                    $tail = array_pop($run); // shared-node inflation
+                    if ($tail !== null) {
+                        $carry[] = $tail; // trim, then re-check; tail seeds the next window
+                    }
+                    continue;
                 }
                 if ($size < $minSize) {
-                    break; // sub-floor fragment: dropped by the boilerplate rule
+                    // sub-floor fragment: dropped by the boilerplate rule,
+                    // but no longer silently — the remainder AND any
+                    // carried tails count toward the 0.6 ledger.
+                    $droppedStatements += count($run) + count($carry);
+                    break;
                 }
                 $window = new Block(
                     file: $file,
@@ -151,9 +188,10 @@ final class WindowPacker
                 $window->size = $size;
                 $sink($window);
                 $emitted++;
-                break;
+                $run = $carry; // E2 r1 MINOR-1: peeled tails seed the next window
+                $carry = [];
             }
         }
-        return $emitted;
+        return ['emitted' => $emitted, 'droppedStatements' => $droppedStatements];
     }
 }

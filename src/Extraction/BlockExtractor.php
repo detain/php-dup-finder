@@ -36,9 +36,13 @@ use SplObjectStorage;
  *     loader relocation) refuses it — see WindowApplyRefusal.
  *     Unwindowable oversized nodes (arrow/switch/match: no plain
  *     statement list) and everything dropped while windowing is off are
- *     counted by oversizedDrops(): the 0.6 counter that feeds the
- *     "N blocks exceeded the max block size and were dropped" line and
- *     summary.blocks_oversized.
+ *     counted by oversizedDrops() at parent granularity (a fully dropped
+ *     parent counts once); from a SALVAGED parent, the statements the
+ *     window packing silently gave up on (invalid geometry, sub-floor
+ *     remainders) count individually — the disclosed lone-giant residual
+ *     aside. Either way oversizedDrops() feeds the
+ *     "N blocks/statements exceeded the max block size and were dropped"
+ *     line and summary.blocks_oversized.
  *
  * Declaration-shape kinds — function, method, closure and arrow — always
  * pass the minSize filter: those are top-level abstractions worth
@@ -96,11 +100,13 @@ final class BlockExtractor
     }
 
     /**
-     * Oversized blocks the MOST RECENT extract() gave up on (item 0.6):
-     * nodes above maxSize from which no window survived the minSize
-     * floor — with windowing off, every oversized node. Salvaged
-     * parents are NOT counted (their content reached the stream as
-     * windows); a fully dropped parent counts once. Fresh-extraction
+     * Oversized mass the MOST RECENT extract() gave up on (item 0.6), at
+     * the granularity that escaped: nodes above maxSize from which no
+     * window survived the minSize floor count ONCE each (with windowing
+     * off, every oversized node); a SALVAGED parent is itself not counted,
+     * but statements its window packing silently gave up on (invalid
+     * line-geometry, sub-floor remainders — see WindowPacker) each add one
+     * to the same ledger. Fresh-extraction
      * semantics only: cache-reused files never re-extract, so their
      * historical drops are not recounted (same run-scope honesty as the
      * skipped-files counter).
@@ -182,13 +188,15 @@ final class BlockExtractor
                 // maxSize ceiling (a whole-file fold must not smuggle past
                 // the cost ceiling the traversable kinds obey). Item 1.2:
                 // an oversized fold windows like any statement-list owner
-                // (the twin of the visitor's oversized leg); only a fold
-                // from which nothing is salvaged reaches the 0.6 counter.
+                // (the twin of the visitor's oversized leg); a fold from
+                // which nothing is salvaged counts once at the 0.6 counter,
+                // a salvaged fold contributes its individually dropped
+                // statements (WindowPacker's droppedStatements).
                 if ($size < $this->minSize) {
                     continue;
                 }
                 if ($size > $this->maxSize) {
-                    $salvaged = $this->windowOversized
+                    $pack = $this->windowOversized
                         ? WindowPacker::emitWindowRuns(
                             file: $file,
                             namespace: $group['namespace'],
@@ -200,8 +208,13 @@ final class BlockExtractor
                             count: static fn (Node $n): int => AstSerializer::nodeCount($n),
                             sink: function (Block $b) use (&$blocks): void { $blocks[] = $b; },
                         )
-                        : 0;
-                    if ($salvaged === 0) {
+                        : ['emitted' => 0, 'droppedStatements' => 0];
+                    if ($pack['emitted'] > 0) {
+                        // E2 r1 MINOR-1: a salvaged fold is not itself a
+                        // drop, but statements its packing gave up on
+                        // count individually — nothing invisible escapes.
+                        $oversized += $pack['droppedStatements'];
+                    } else {
                         $oversized++;
                     }
                     continue;
@@ -291,9 +304,12 @@ final class BlockVisitor extends NodeVisitorAbstract
     /** @var SplObjectStorage<Node, int> */
     private SplObjectStorage $nodeCounts;
     /**
-     * Oversized parents this visitor fully dropped (item 0.6): unwindowable
-     * kinds, windowing off, or windowing with nothing above the minSize
-     * floor salvaged. Read once by BlockExtractor::extract() after the
+     * Oversized mass this visitor dropped (item 0.6): fully dropped
+     * parents count once (unwindowable kinds, windowing off, or windowing
+     * with nothing above the minSize floor salvaged), plus one per
+     * statement a SALVAGED parent's window packing silently gave up on
+     * (WindowPacker's droppedStatements). Read once by
+     * BlockExtractor::extract() after the
      * traversal; a fresh visitor per file makes this a per-file count.
      */
     public int $oversizedDrops = 0;
@@ -346,8 +362,10 @@ final class BlockVisitor extends NodeVisitorAbstract
             // With windowing on, the node's statement body is cut into
             // ≤ maxSize windows (the emitWindowRuns docblock states the
             // packer law); a parent from which nothing is salvaged —
-            // unwindowable kinds included — joins the drop counter that
-            // feeds summary.blocks_oversized.
+            // unwindowable kinds included — joins the drop counter ONCE,
+            // and a salvaged parent adds one entry per statement its
+            // packing silently gave up on — everything feeding
+            // summary.blocks_oversized either way.
             if ($this->windowOversized) {
                 $body = WindowPacker::windowableBody($node);
                 if ($body !== null) {
@@ -355,7 +373,7 @@ final class BlockVisitor extends NodeVisitorAbstract
                     if ($node instanceof Stmt\Function_ || $node instanceof Stmt\ClassMethod) {
                         $name = $node->name->toString();
                     }
-                    $salvaged = WindowPacker::emitWindowRuns(
+                    $pack = WindowPacker::emitWindowRuns(
                         file: $this->file,
                         namespace: $this->namespace,
                         class: end($this->classStack) ?: null,
@@ -366,7 +384,11 @@ final class BlockVisitor extends NodeVisitorAbstract
                         count: fn (Node $n): int => $this->nodeCount($n),
                         sink: $this->sink,
                     );
-                    if ($salvaged > 0) {
+                    if ($pack['emitted'] > 0) {
+                        // E2 r1 MINOR-1: the salvaged parent is not a drop,
+                        // but statements its packing silently gave up on
+                        // count individually — nothing invisible escapes.
+                        $this->oversizedDrops += $pack['droppedStatements'];
                         return null;
                     }
                 }

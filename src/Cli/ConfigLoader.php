@@ -413,7 +413,12 @@ final class ConfigLoader
             candidateMassFilter:           $flat['candidate_mass_filter'],
             // Items 1.2 + 0.6: window posture (bool validated by the door
             // below; root-only, refused at per-directory discovery like the
-            // max_ted_size family it pairs with).
+            // max_ted_size family it pairs with). The default-true posture
+            // is owner-ratified (exec order 2026-11-28, "do all remaining
+            // items"); improve_logic_info.md §8.4's default-off re-run line
+            // predates the window mechanism — it priced the max_ted_size-
+            // only v1 cure, not this knob — so it does not prescribe a
+            // default here.
             windowOversized:               $flat['window_oversized'],
         );
     }

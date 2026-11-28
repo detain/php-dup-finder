@@ -130,11 +130,16 @@ the three new counter keys means the producer does not track the bucket
 
 **Block-level honesty (item 0.6, schema 1.8):** one counter beside the
 buckets is block-level and deliberately NOT part of the file balance law:
-`summary.blocks_oversized` — fresh-extracted blocks above `max_block_size`
-the ceiling left fully invisible (with `window_oversized` on: oversized
-bodies from which no statement window survived; with it off: every
-oversized drop, the historical posture). When it is nonzero the warn note
-`N blocks exceeded the max block size and were dropped` rides the final
+`summary.blocks_oversized` — what the size ceiling left invisible, at the
+granularity that escaped: with `window_oversized` on, oversized bodies
+from which no statement window survived count ONCE, and statements a
+salvaged body's window packing silently gave up on (invalid line-geometry,
+sub-floor remainders) count individually; with it off, every oversized
+drop counts (the historical posture). The default-ON window posture itself
+is an owner-ratified behavior change (exec order 2026-11-28): corpora that
+contain oversized declarations report differently than before item 1.2.
+When it is nonzero the warn note
+`N blocks/statements exceeded the max block size and were dropped` rides the final
 accounting line; a tracked `0` prints nothing, and `null` again means the
 producer never ran extraction accounting. Fresh-extraction semantics: a
 cache-reused file was never re-extracted in this run, so warm runs count
@@ -774,7 +779,7 @@ with the offending field path on the first violation.
 | `ngram_size`                           | integer          | `5`              | `2 ≤ n ≤ 10`.                                                            |
 | `fingerprint_id_mode`                  | string           | `"numbered"`     | One of `numbered`, `un-numbered`. Root config only — per-directory `.phpdup.json` files carrying this key fail the load; no CLI flag in v1. `un-numbered` strips the `__V`/`__CALL`/`__PROP`/`__CLASS` occurrence counters from the n-gram bag AND the tree-edit labels together; Jaccard/containment/TED are monotone under the coarsening (no today-accepted edge is lost). |
 | `max_ted_size`                         | integer          | `800`            | `>= 1`. Node-count cap for APTED judgment: a pair whose LARGER member exceeds it skips the TED call — accepted on Jaccard alone with edge tier `jaccard-unverified` (weight = Jaccard score), else falls through to containment/IR/ML unchanged. Default equals the `max_block_size` extraction ceiling, so the gate is inert out of the box and every golden stays byte-identical. Root config only — per-directory `.phpdup.json` files carrying this key fail the load (a pair spans two directories); no CLI flag in v1. |
-| `window_oversized`                     | boolean          | `true`           | Item 1.2 extraction posture. `true`: an oversized body (over `max_block_size` nodes) is never silently invisible — the extractor cuts maximal contiguous statement windows (each capped at `max_block_size`) that fingerprint and cluster like any block; the synthetic `window` kind is refused by AST-addressing surfaces (`--apply`, refactor patches), and blocks left FULLY invisible are counted in `summary.blocks_oversized`. `false` = the historical posture: oversized blocks are dropped, only the counter prints. Corpora without oversized blocks report byte-identically either way; flipping the posture invalidates existing caches once (bound into the extraction and cluster cache keys). Root config only — per-directory `.phpdup.json` files carrying this key fail the load; no CLI flag (config-file-only stance, `max_ted_size` precedent). |
+| `window_oversized`                     | boolean          | `true`           | Item 1.2 extraction posture. `true`: an oversized body (over `max_block_size` nodes) is never silently invisible — the extractor cuts maximal contiguous statement windows (each capped at `max_block_size`) that fingerprint and cluster like any block; the synthetic `window` kind is refused by AST-addressing surfaces (`--apply`, refactor patches), and what still stays invisible is counted in `summary.blocks_oversized` (a zero-window parent counts once; statements a salvaged body's packing silently gave up on count individually). This default-ON posture is an owner-ratified behavior change (exec order 2026-11-28), NOT a doc-prescribed default: corpora containing oversized declarations report differently than before item 1.2 (new window species mean new clusters); the info-doc's §8.4 default-off re-run rule predates the window mechanism (it priced the max_ted_size-only v1 cure). `false` = the historical posture: oversized blocks are dropped, only the counter prints. Corpora without oversized blocks report byte-identically either way; flipping the posture invalidates existing caches once (bound into the extraction and cluster cache keys). Root config only — per-directory `.phpdup.json` files carrying this key fail the load; no CLI flag (config-file-only stance, `max_ted_size` precedent). |
 | `max_hole_coverage`                    | number           | `1.0`            | `0..1`. Hole-coverage ceiling for extraction honesty: a cluster whose generalized template is MORE than this fraction hole is marked `re_expressed` in reports and gets its longest hole-free statement run surfaced as `hole_fragment`. Default `1.0` = rule never fires (byte-identical reports). CLI `--max-hole-coverage`. Root config only — per-directory `.phpdup.json` files carrying this key fail the load (a cluster spans directories). |
 | `cache_dir`                            | string           | `".phpdup-cache"`| Any path; created on first use.                                          |
 | `parallelism`                          | string           | `"auto"`         | One of `auto`, `off`, `manual`.                                          |

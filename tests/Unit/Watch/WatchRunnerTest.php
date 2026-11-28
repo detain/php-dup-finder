@@ -3,9 +3,12 @@ declare(strict_types=1);
 
 namespace Phpdup\Tests\Unit\Watch;
 
+use PhpParser\Node\Stmt;
 use PHPUnit\Framework\TestCase;
 use Phpdup\Cli\Config;
 use Phpdup\Clustering\CandidateBudgetException;
+use Phpdup\Extraction\Block;
+use Phpdup\Extraction\BlockExtractor;
 use Phpdup\Pipeline\Pipeline;
 use Phpdup\Pipeline\PipelineState;
 use Phpdup\Pipeline\Stage;
@@ -13,6 +16,9 @@ use Phpdup\Pipeline\StageInterface;
 use Phpdup\Pipeline\Stages\ClusterStage;
 use Phpdup\Pipeline\Stages\PreprocessStage;
 use Phpdup\Pipeline\Stages\ScanningStage;
+use Phpdup\Refactor\ScriptKindApplyRefusal;
+use Phpdup\Refactor\WindowApplyRefusal;
+use Phpdup\Util\LineRange;
 use Phpdup\Watch\FileChangeType;
 use Phpdup\Watch\FileWatcher;
 use Phpdup\Watch\WatchRunner;
@@ -126,6 +132,86 @@ final class WatchRunnerTest extends TestCase
 
         $rendered = $output->fetch();
         $this->assertStringContainsString('phpdup: Candidate generation exceeded', $rendered);
+        $this->assertStringNotContainsString('Usage:', $rendered);
+        $this->assertStringNotContainsString('Stack trace:', $rendered);
+    }
+
+    /**
+     * E2 fix-1 (r1 MAJOR-1): the window apply refusal is a typed halt of the
+     * same family — a warm-replay rebaseClusters throw on a window member
+     * (default-ON windowing puts window species in every cache, and the CLI
+     * seam Command::execute lists all three refusals) must render as the
+     * clean `phpdup:` line at the watch seam too. Before the fix the union
+     * arm missed it: the throw rode the generic Throwable arm, counted as a
+     * pass FAILURE and could arm the watch-mode pause. runGuarded returning
+     * true (not-crashed) with no failure render is the pin; the script-kind
+     * arm gets the same direct pin, which r1 established was missing
+     * (it had been covered only by the union listing).
+     */
+    public function testWindowHaltKeepsWatchSurfaceClean(): void
+    {
+        $output = new BufferedOutput();
+        $pipeline = new Pipeline([new class implements StageInterface {
+            public function name(): Stage
+            {
+                return Stage::Clustering;
+            }
+
+            public function run(PipelineState $state, OutputInterface $output): void
+            {
+                throw WindowApplyRefusal::forBlock(
+                    new Block('w.php', new LineRange(3, 900), BlockExtractor::WINDOW_KIND, null, null, 'giant', new Stmt\Nop()),
+                    'loader rebase',
+                );
+            }
+        }]);
+
+        $runner = new WatchRunner(
+            $pipeline,
+            static fn(): PipelineState => new PipelineState(Config::defaults([sys_get_temp_dir()])),
+            $output,
+            new NullLogger(),
+            sys_get_temp_dir(),
+        );
+        $this->assertTrue($runner->runGuarded(new PipelineState(Config::defaults([sys_get_temp_dir()]))));
+
+        $rendered = $output->fetch();
+        $this->assertStringContainsString("'window'-kind blocks are synthetic", $rendered);
+        $this->assertStringNotContainsString('watch pass failed', $rendered, 'a typed refusal must not count as a crash');
+        $this->assertStringNotContainsString('Usage:', $rendered);
+        $this->assertStringNotContainsString('Stack trace:', $rendered);
+    }
+
+    public function testScriptHaltKeepsWatchSurfaceClean(): void
+    {
+        $output = new BufferedOutput();
+        $pipeline = new Pipeline([new class implements StageInterface {
+            public function name(): Stage
+            {
+                return Stage::Clustering;
+            }
+
+            public function run(PipelineState $state, OutputInterface $output): void
+            {
+                throw ScriptKindApplyRefusal::forBlock(
+                    new Block('s.php', new LineRange(1, 40), 'script', null, null, null, new Stmt\Nop()),
+                    'loader rebase',
+                );
+            }
+        }]);
+
+        $runner = new WatchRunner(
+            $pipeline,
+            static fn(): PipelineState => new PipelineState(Config::defaults([sys_get_temp_dir()])),
+            $output,
+            new NullLogger(),
+            sys_get_temp_dir(),
+        );
+        $this->assertTrue($runner->runGuarded(new PipelineState(Config::defaults([sys_get_temp_dir()]))));
+
+        $rendered = $output->fetch();
+        $this->assertStringContainsString("'script'-kind blocks are synthetic", $rendered);
+        $this->assertStringNotContainsString('watch pass failed', $rendered, 'a typed refusal must not count as a crash');
         $this->assertStringNotContainsString('Usage:', $rendered);
         $this->assertStringNotContainsString('Stack trace:', $rendered);
     }

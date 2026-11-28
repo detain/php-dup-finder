@@ -13,11 +13,14 @@ use Phpdup\Extraction\BlockExtractor;
  * Item 1.2 (E2) — scan windows replace silent drops, and item 0.6's
  * counter states what stayed invisible anyway.
  *
- * Posture under test (Config::$windowOversized default = true):
- * a block above max_block_size is cut into maximal contiguous statement
- * windows (each ≤ maxSize nodes, ≥ minSize, kind 'window'); a parent from
- * which NOTHING survives counts exactly once in oversizedDrops(); and a
- * corpus with no oversized declaration changes not one byte of output.
+ * Posture under test (Config::$windowOversized default = true, an
+ * owner-ratified behavior change — exec order 2026-11-28, see the
+ * Config.php property docblock): a block above max_block_size is cut into
+ * maximal contiguous statement windows (each ≤ maxSize nodes, ≥ minSize,
+ * kind 'window'); a parent from which NOTHING survives counts exactly once
+ * in oversizedDrops(), while statements a SALVAGED parent's packing gave up
+ * on count individually (E2 fix-1, r1 MINOR-1); and a corpus with no
+ * oversized declaration changes not one byte of output.
  *
  * The windows ride the same fingerprint/cluster stream as real blocks —
  * that clustering leg is pinned in WindowClusteringTest; this file owns
@@ -162,6 +165,60 @@ final class BlockExtractorWindowTest extends TestCase
         $blocks = $ex->extract('virtual.php', $parser->parse($this->giantFunction(400)) ?? []);
         $this->assertNotEmpty($this->windowsOf($blocks));
         $this->assertSame(0, $ex->oversizedDrops(), 'windows survived — nothing was dropped');
+    }
+
+    // ── E2 fix-1 (r1 MINOR-1): statement-granularity accounting ────────
+
+    public function testSalvagedParentCountsStatementGranularDrops(): void
+    {
+        // Each `$x = N;` weighs 4 AST nodes, so runs pack 199 deep (796 ≤
+        // the 799 budget; wrapper 797 ≤ 800). 399 assignments split into
+        // 199 + 199 + 1: the tail statement is a 5-node wrapper, a
+        // sub-floor fragment the packer gives up on. Pre-fix the parent
+        // salvaged windows and that statement vanished with NO ledger
+        // entry; the honesty law says what stays invisible gets counted.
+        $parser = (new ParserFactory())->createForNewestSupportedVersion();
+        $ex = new BlockExtractor(self::MIN, self::MAX, [], true);
+        $blocks = $ex->extract('virtual.php', $parser->parse($this->giantFunction(399)) ?? []);
+        $this->assertCount(2, $this->windowsOf($blocks), 'the two full runs still salvage');
+        $this->assertSame(1, $ex->oversizedDrops(), 'the sub-floor remainder counts at statement granularity');
+    }
+
+    public function testGeometryInvalidStatementIsCountedAndRunContinues(): void
+    {
+        // First body statement stripped to invalid line geometry: pre-fix
+        // the endpoint guard broke the WHOLE run (266 statements lost,
+        // silently); now the bad head is skipped and counted, and the rest
+        // of its run windows normally.
+        $parser = (new ParserFactory())->createForNewestSupportedVersion();
+        $ast = $parser->parse($this->giantFunction(270)) ?? [];
+        /** @var Stmt\Function_ $fn */
+        $fn = $ast[0];
+        $fn->stmts[0]->setAttributes(['startLine' => 0, 'endLine' => 0]);
+
+        $ex = new BlockExtractor(self::MIN, self::MAX, [], true);
+        $blocks = $ex->extract('virtual.php', $ast);
+        $windows = $this->windowsOf($blocks);
+        $this->assertCount(2, $windows, 'the run sheds the bad head and keeps windowing');
+        $this->assertSame(
+            4, (int) $windows[0]->range->start,
+            'the emitted window starts at the FIRST VALID statement, not at the poisoned head',
+        );
+        $this->assertSame(1, $ex->oversizedDrops(), 'the skipped statement is counted, not evaporated');
+    }
+
+    public function testSalvagedScriptFoldCountsStatementGranularDrops(): void
+    {
+        // The fold twin: 399 bare top-level assignments window symmetrically
+        // and carry the same 1-statement sub-floor remainder.
+        $code = "<?php\n" . str_repeat("\$x = 1;\n", 399);
+        $parser = (new ParserFactory())->createForNewestSupportedVersion();
+        $ast = $parser->parse($code) ?? [];
+
+        $ex = new BlockExtractor(self::MIN, self::MAX, ['script'], true);
+        $blocks = $ex->extract('virtual.php', $ast);
+        $this->assertCount(2, $this->windowsOf($blocks));
+        $this->assertSame(1, $ex->oversizedDrops(), 'fold leg and visitor leg share the ledger law');
     }
 
     public function testUnwindowableOversizedKindIsCounted(): void

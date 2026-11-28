@@ -60,8 +60,10 @@ final class Report
         public readonly array $scanNotes = [],
         public readonly array $parseFailures = [],
         public readonly ?bool $clustersReplayed = null,
-        // Item 0.6 (oversized leg): blocks the max_block_size ceiling was
-        // fully given up on during this run's FRESH extractions. null =
+        // Item 0.6 (oversized leg): the mass the max_block_size ceiling
+        // gave up on during this run's FRESH extractions — fully dropped
+        // parents counted once, plus one per statement a salvaged parent's
+        // window packing silently dropped (E2 r1 MINOR-1). null =
         // "this producer does not track the bucket" (legacy library/
         // worker/hand-built reports), a tracked zero is 0 — the same
         // honesty law as reusedFiles/skippedFiles above.

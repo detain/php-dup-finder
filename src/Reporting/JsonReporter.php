@@ -175,9 +175,12 @@ final class JsonReporter
                 'files_without_blocks' => $report->skippedFiles,
                 // 1.8 trailing (E2: items 0.6/1.2 + the once-S37 carrier
                 // emit + once-S70 ml_status). blocks_oversized is the
-                // item-0.6 honesty counter — blocks the size ceiling left
-                // FULLY invisible (windowing on: parents from which no
-                // statement window survived; off: every oversized drop),
+                // item-0.6 honesty counter — the mass the size ceiling
+                // left invisible, at the granularity that escaped: fully
+                // dropped parents once each (windowing on: parents from
+                // which no statement window survived; off: every oversized
+                // drop) plus one per statement a SALVAGED parent's window
+                // packing silently gave up on (E2 r1 MINOR-1),
                 // fresh-extraction only (cache-reused files never
                 // recount — IndexStore carries blocks, not drops). The
                 // next three are the once-S37 scan-signal carriers, the

@@ -161,8 +161,11 @@ final class CliReporter
         if ($skipped > 0) {
             $notes[] = CountPhrase::files($skipped) . ' produced no comparable blocks';
         }
-        // E2 item 0.6: the blocks the size ceiling took silently —
-        // printed loud now. Fresh-extraction semantics (cache-reused
+        // E2 item 0.6: the mass the size ceiling took silently — printed
+        // loud now, at the granularity that escaped (fully dropped parents
+        // count once; statements a salvaged parent's window packing gave
+        // up on count individually, hence the compound unit noun).
+        // Fresh-extraction semantics (cache-reused
         // files do not re-run extraction, so a warm run's count covers
         // what it actually processed); null = untracked producer, an
         // honest nothing-to-say, same posture as the buckets above.
@@ -171,7 +174,7 @@ final class CliReporter
             $notes[] = sprintf(
                 '%d %s exceeded the max block size and %s dropped',
                 $oversized,
-                $oversized === 1 ? 'block' : 'blocks',
+                $oversized === 1 ? 'block/statement' : 'blocks/statements',
                 $oversized === 1 ? 'was' : 'were',
             );
         }

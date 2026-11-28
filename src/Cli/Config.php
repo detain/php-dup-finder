@@ -308,16 +308,27 @@ final class Config
         // the synthetic 'window' kind that every AST-addressing surface
         // refuses (WindowApplyRefusal) — so a 1500-statement function is no
         // longer invisible: its fragments fingerprint, pair, and cluster
-        // like anything else (the doc letter: above max_block_size "still
-        // fingerprintable and comparable"). False restores the historic
+        // like anything else. The default-ON posture is an owner-ratified
+        // behavior change (owner exec order 2026-11-28, "do all remaining
+        // items"): it CHANGES reports on corpora containing any oversized
+        // declaration (new window species means new clusters). It is not
+        // prescribed by improve_logic_info.md §2-1.2 — its §8.4 "1.2/1.3:
+        // default-off" re-run line predates the window mechanism (it
+        // described the max_ted_size-only v1 cure of §5 ruling (g)), so it
+        // does not govern this default. False restores the historic
         // drop-everything posture. Corpora with nothing oversized are
         // byte-identical under either setting — the window path only fires
         // on nodes the ceiling was about to reject. The bound is
         // unconditional on the extraction path: the three-key law
         // (PreprocessWorker $toolFor, PreprocessStage::indexStoreConfigKey,
         // ClusterStage::cacheConfigKey) invalidates warm caches when the
-        // posture flips. Fully-dropped blocks (unwindowable kinds, or
-        // windowing off) feed the 0.6 counter: summary.blocks_oversized.
+        // posture flips. What stays invisible feeds the 0.6 counter at the
+        // honest granularity: fully-dropped parents (unwindowable kinds,
+        // windowing off, or zero surviving windows) count ONCE, statements
+        // a SALVAGED parent's window packing silently gave up on (invalid
+        // line-geometry, sub-floor remainders) count individually; the
+        // disclosed lone-giant residual stays invisible to v1 windowing:
+        // summary.blocks_oversized.
         public readonly bool $windowOversized = true,
         // Item 5.4: coverage ceiling above which a cluster's signature is
         // marked `re_expressed` and a hole-free `hole_fragment` is surfaced
