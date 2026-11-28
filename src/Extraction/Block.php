@@ -98,6 +98,29 @@ final class Block
     public int $fragmentSize = 0;
     public bool $fragmentWhole = false;
 
+    /**
+     * Item 2.3 (opt-in 'class' kind): the doc's shape tokens — one
+     * readable row per member plus the leading declaration row (see
+     * {@see \Phpdup\Normalization\ShapeFingerprint::memberSignatures()}).
+     * Filled ONLY by the PreprocessWorker fold's class arm; empty for
+     * every other species. Plain scalar arrays, so the IndexStore blob
+     * (whole-object serialize) round-trips them exactly like the
+     * fragment fields above — cold/warm equal by construction.
+     *
+     * @var list<string>
+     */
+    public array $shapeMembers = [];
+
+    /**
+     * Item 2.3: per RAW method name, the two structural hashes driving
+     * the skeleton-family verdict table ('s' strict lane, 'd' run fold —
+     * see {@see \Phpdup\Normalization\ShapeFingerprint::methodHashes()}).
+     * Same persistence law as $shapeMembers.
+     *
+     * @var array<string, array{s:string, d:string}>
+     */
+    public array $shapeMethods = [];
+
     public function __construct(
         public string $file,
         public LineRange $range,
