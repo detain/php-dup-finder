@@ -584,6 +584,57 @@ $md[] = sprintf('| line-evidence relevance@top%d | %s (%d/%d) |', $topN, $fmtPct
 if ($llmAnchored > 0) {
     $md[] = '| detections whose matched members are all/many llm-origin | ' . $llmAnchored . ' (see provenance col llm) |';
 }
+
+// Item 8.2 wiring — the per-class recall ROLLUP (info-doc §6 item 3:
+// "Report recall per class and overall"). Ranged obligations only (the
+// population that carries a recall duty); missed = class-locality gaps
+// the parallel-implementations story lives on. Deterministic order:
+// obligations DESC, class ASC.
+$classRoll = [];
+foreach ($findings as $fi => $f) {
+    if ($f['population'] !== 'ranged') {
+        continue;
+    }
+    $c = $f['class'];
+    $classRoll[$c] ??= ['obligations' => 0, 'matched' => 0];
+    $classRoll[$c]['obligations']++;
+    if (isset($detected[$fi])) {
+        $classRoll[$c]['matched']++;
+    }
+}
+// obligations DESC, then class ASC for determinism: pre-sort keys ASC —
+// PHP 8's uasort is stable, so equal-obligation classes keep that order.
+ksort($classRoll);
+uasort(
+    $classRoll,
+    static fn (array $a, array $b): int => $b['obligations'] <=> $a['obligations']
+);
+$md[] = '';
+$md[] = '## Per-class recall rollup';
+$md[] = '';
+$md[] = '| class | obligations (ranged) | matched | missed | recall |';
+$md[] = '|---|---|---|---|---|';
+if ($classRoll === []) {
+    $md[] = '| (none — window holds no ranged obligations) | 0 | 0 | 0 | — |';
+}
+foreach ($classRoll as $class => $roll) {
+    $classRecall = $roll['obligations'] > 0 ? $roll['matched'] / $roll['obligations'] : null;
+    $md[] = sprintf(
+        '| %s | %d | %d | %d | %s |',
+        $class,
+        $roll['obligations'],
+        $roll['matched'],
+        $roll['obligations'] - $roll['matched'],
+        $classRecall === null ? '—' : $fmtPct($classRecall),
+    );
+}
+$md[] = sprintf(
+    '| **overall** | **%d** | **%d** | **%d** | **%s** |',
+    $rangedTotal,
+    $rangedDetected,
+    $rangedTotal - $rangedDetected,
+    $fmtPct($recall),
+);
 $md[] = '';
 $md[] = '## Per-finding provenance (rule + evidence + anchors)';
 $md[] = '';

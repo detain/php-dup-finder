@@ -61,11 +61,16 @@ unbalanced brace cross-products and prose-only findings are surfaced via
 `needs_llm_pass` / zero-member, never guessed away. `verified: false` means the
 cite named a file absent at the scan pin (renamed/shortened after the scan).
 
-## Wiring into the nightly loop (documented, deliberately NOT auto-wired)
+## Wiring into the nightly loop (WIRED by item 8.2 — still env-gated)
 
-`bench/run-all.sh` and `bench/corpora.php` predate this program and are hot
-files for other lanes (f15 §8) — this lane does not edit them. The intended
-integration for whoever owns those files:
+The hot-file objection below is historical: the reason this leg was "documented,
+deliberately NOT auto-wired" was that `bench/run-all.sh` was owned by other
+lanes. Item 8.2 landed the leg: `run-all.sh` step 6 runs `score-audit.php`
+(per-finding provenance + the new per-class recall rollup) **only when** an
+operator supplies `AUDIT_TRUTH_JSON` + `AUDIT_TRUTH_REPORT` (+ optional
+`AUDIT_TRUTH_PREFIX`) — the privacy ruling that derived payloads are never
+vendored is unchanged, and an absent env set skips loudly instead of silently.
+The manual shape of the same invocation, for one-off runs:
 
 ```bash
 # after the per-corpus analyze rows of run-all.sh (pinned trees via

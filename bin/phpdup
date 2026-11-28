@@ -20,6 +20,7 @@ if (!$loaded) {
 }
 
 use Symfony\Component\Console\Application;
+use Phpdup\Cli\AuditCommand;
 use Phpdup\Cli\Command;
 use Phpdup\Cli\CompletionCommand;
 use Phpdup\Cli\InitCommand;
@@ -46,6 +47,10 @@ $app->add(new UpdateCommand());
 $app->add(new CompletionCommand());
 // `phpdup serve` — minimal HTTP analysis server.
 $app->add(new ServeCommand());
+// Item 8.2 — `phpdup audit`: headless drive + LLM judgment layer over the
+// evidence packs (the pre-dispatch guard in this launcher already routes
+// the registered 'audit' token here instead of the analyze fallback).
+$app->add(new AuditCommand());
 $app->setDefaultCommand($cmd->getName(), false);
 
 // once-S19 (php-dup-finder-once-022): make the documented default-command

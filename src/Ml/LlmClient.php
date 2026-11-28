@@ -130,9 +130,13 @@ final class LlmClient
         return $this->model;
     }
 
+    /**
+     * The bearer exists only when it carries bytes: `''` is treated as
+     * unset so no request can ever ship an empty Authorization header.
+     */
     public function hasToken(): bool
     {
-        return $this->token !== null;
+        return $this->token !== null && $this->token !== '';
     }
 
     /**
@@ -246,7 +250,7 @@ final class LlmClient
     private function headerLines(): array
     {
         $headers = [];
-        if ($this->token !== null) {
+        if ($this->token !== null && $this->token !== '') {
             $headers[] = 'Authorization: Bearer ' . $this->token;
         }
 
@@ -306,6 +310,23 @@ final class LlmClient
 
     /**
      * @return array<string, mixed>|null
+     */
+    /**
+     * Public shape gate for cached verdict entries: the cache directory is
+     * operator-writable disk, so a cached row is re-validated through the
+     * SAME normalizeAnnotation contract before it is trusted into a
+     * document — a corrupted or hand-edited entry degrades to a miss.
+     *
+     * @param array<mixed> $row
+     */
+    public static function annotationRowValid(array $row): bool
+    {
+        return self::normalizeAnnotation($row) !== null;
+    }
+
+    /**
+     * @param array<mixed> $row
+     * @return array{finding_id:string,title:string,proposal:string,risk:string,effort:string,intentional:bool}|null
      */
     private static function normalizeAnnotation(mixed $row): ?array
     {

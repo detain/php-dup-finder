@@ -10,6 +10,15 @@ for current numbers. Result is a new truth JSON, same schema
 `derived_by` suffixed `+ llm-pass <YYYY-MM-DD> <operator>` (bump to
 `audit-truth/1.1` only if the reserved `scope` field is materialized).
 
+> **Operational path (item 8.2 shipped):** `phpdup audit` is now the product
+> surface for this pass — it batches the 8.1 evidence packs to a configured
+> endpoint and fills title / proposal / risk / effort / "intentional?" per
+> finding, plus the theme-merge with semantic labels, cached by pack hash so
+> reruns only pay for changed findings (`docs/CLI.md` → `audit`; token via
+> `PHPDUP_LLM_TOKEN`). The work orders below stay the authority on WHAT a
+> complete truth record looks like; the command is how you get there without
+> hand-rolling calls.
+
 Work orders (packet records carry exactly these `reasons`):
 
 1. **`claim-gap` (my corpus)** — the report claims *N copies* but the

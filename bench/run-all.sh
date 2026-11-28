@@ -20,6 +20,16 @@
 #      (digest mismatch = hard fail of this script via set -e)
 #   4. run all tools across all corpora
 #   5. score the synthetic corpus
+#   6. audit-truth leg — OPTIONAL and ENV-GATED by design: the derived
+#      truth payloads and scan reports of private corpora are never
+#      vendored (owner privacy ruling, bench/audit-truth/). An operator
+#      holding the payloads runs them explicitly:
+#        AUDIT_TRUTH_JSON=/path/truth.json AUDIT_TRUTH_REPORT=/path/report.json \
+#        [AUDIT_TRUTH_PREFIX=include/Api/Vps] bench/run-all.sh
+#      The truth JSON's LLM columns (title/class/intentional) are
+#      produced by `phpdup audit` (item 8.2 — its evidence-pack batches
+#      fill exactly these fields, cached by pack hash). Absent env vars =
+#      honest skip echo, never a silent omission and never a failure.
 #
 # Idempotent. Safe to run repeatedly.
 set -euo pipefail
@@ -119,6 +129,24 @@ php "${ROOT}/bench/run.php" --label="${LABEL}"
 # 5. score
 echo "[bench] scoring synthetic corpus"
 php "${ROOT}/bench/score.php" "${ROOT}/bench/results/${LABEL}.json"
+
+# 6. audit-truth leg (env-gated; payloads never vendored — see header)
+if [ -n "${AUDIT_TRUTH_JSON:-}" ] && [ -n "${AUDIT_TRUTH_REPORT:-}" ]; then
+	if [ ! -f "${AUDIT_TRUTH_JSON}" ] || [ ! -f "${AUDIT_TRUTH_REPORT}" ]; then
+		echo "[bench] FATAL: AUDIT_TRUTH_JSON/AUDIT_TRUTH_REPORT are set but not readable files — refusing to pretend the leg ran" >&2
+		exit 1
+	fi
+	echo "[bench] audit-truth scoring (per-class recall rollup + line-evidence relevance)"
+	audit_score="${ROOT}/bench/results/${LABEL}-audit-truth.md"
+	audit_args=(--truth="${AUDIT_TRUTH_JSON}" --report="${AUDIT_TRUTH_REPORT}" --out="${audit_score}")
+	if [ -n "${AUDIT_TRUTH_PREFIX:-}" ]; then
+		audit_args+=(--prefix="${AUDIT_TRUTH_PREFIX}")
+	fi
+	php "${ROOT}/bench/score-audit.php" "${audit_args[@]}"
+	echo "    ${audit_score}"
+else
+	echo "[bench] audit-truth leg SKIPPED (no AUDIT_TRUTH_JSON/AUDIT_TRUTH_REPORT env — private-corpora payloads are deliberately never vendored; truth columns come from \`phpdup audit\`)"
+fi
 
 echo
 echo "[bench] done — see:"

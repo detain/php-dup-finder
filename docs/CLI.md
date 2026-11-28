@@ -23,6 +23,7 @@ Usage:
 | Command       | Description                                                                  |
 |---------------|------------------------------------------------------------------------------|
 | `analyze`     | Scan paths for duplicate logic. The default command — `bin/phpdup src` runs it. A first non-flag token that is not a registered sub-command name or alias is routed to `analyze`, so `phpdup src/` and `phpdup analyze src/` are the same invocation (this is also the form the exit-2 missing-path hint teaches). A directory literally named like a sub-command is addressed with path separation: `./init`, `init/`. |
+| `audit`       | Run the pipeline, then have a configured LLM annotate the evidence packs (title / proposal / risk / effort / "intentional?") and merge findings into themes with a summary and landing order. Headless: `--tui`, `--watch` and `--apply` are refused. |
 | `completion`  | Dump a bash / fish / zsh completion script with commented-out install instructions inline. |
 | `help`        | Symfony Console's built-in help. `bin/phpdup help analyze` lists every flag. |
 | `init`        | Scaffold a `phpdup.json` in the current directory. |
@@ -488,6 +489,47 @@ in a normal commit — never with `cp`.
 | `-n, --no-interaction`| Don't prompt for input.                                                           |
 | `--ansi` / `--no-ansi`| Force or disable ANSI output.                                                     |
 
+## `audit` — options
+
+`phpdup audit` IS `analyze` for the drive (same admission doors, same
+pipeline, same report body on stdout, same exit-code contract) plus a
+judgment layer: it builds the item-8.1 evidence packs in memory, sends
+them to a configured LLM in batches to fill in **title, proposal, risk,
+effort and "intentional?"** per finding, then runs one theme-merge pass
+that groups findings into themes — with **semantic labels** (an English
+phrase such as "outbound HTTP retry"), the layer the `themes` docs
+deferred to item 8.2 — and writes the summary and a landing order. The
+deliverable is a standalone `phpdup-audit` JSON document (schema
+`phpdup-audit`): the analyze report shapes never grow a field, so every
+existing consumer and the Golden snapshots are untouched by this
+command's existence.
+
+| Option              | Default | Description                                                            |
+|---------------------|---------|------------------------------------------------------------------------|
+| `--audit FILE`      | —       | **Required.** Write the `phpdup-audit` document to FILE. Written atomically (tmp+rename); a missing parent directory or an unwritable target is a loud error and exit `1`. Paths carrying control bytes are refused at admission (exit `2`). |
+| `--dry-run-packs`   | off     | Inventory the evidence packs on stdout (rank, finding id, pack bytes, batch plan) and write the document with every annotation pending — ZERO transport calls even when `llm_url` is armed. The cost gate before the first real run. |
+
+The endpoint is configured exclusively through the root config file
+(there are deliberately **no `--llm-*` flags** — analyze never consumes
+these keys, and a per-run argv arm would fork the endpoint mid-cohort):
+`llm_url` (base URL; the paths `/annotate` and `/themes` are appended),
+`llm_model`, `llm_max_findings` (annotation scope, default 100) and
+`llm_allow_private` (SSRF opt-in for a private-range sidecar; public
+https needs nothing). The bearer rides `PHPDUP_LLM_TOKEN` (env-only, see
+[Environment variables](#environment-variables)). Verdicts are cached by
+evidence-pack content hash under `<cache_dir>/llm-annotations/` (keys
+bind host + model + prompt version), so **reruns pay only for changed
+findings**; cached judgments are re-validated through the same shape
+guards as fresh ones, and a corrupt entry degrades to a miss. Failure
+anywhere in the judgment layer (no token, transport down, refused
+shapes) ships the un-annotated document with honest `notes[]` and leaves
+the **drive exit code unchanged** — `audit` never launders or invents
+exit codes; a tripped CI gate still exits `3` with its document written.
+`--apply`, `--tui` and `--watch` are refused at the door (exit `2`): the
+audit posture is read-only. All other `analyze` flags — including
+`--diff-base`, `--history`, `--themes`, `--scope-labels` — pass through
+and behave exactly as documented above.
+
 ## `serve` — options
 
 The endpoint map, security model and operation notes live in
@@ -618,6 +660,7 @@ exceed `4 × detected CPUs`, whatever was requested (see `--workers` above).
 | Variable          | Effect                                                                                  |
 |-------------------|-----------------------------------------------------------------------------------------|
 | `PHPDUP_WORKERS`  | **Seed, not override** (lower precedence than `-j` / `--workers`). Seeds the CPU auto-detection used when the worker count is automatic, and therefore moves the pool ceiling too; an explicit `--workers N` (N ≥ 1) always wins. Non-numeric or ≤ 0 values are ignored. |
+| `PHPDUP_LLM_TOKEN` | Bearer credential for `phpdup audit`'s endpoint (config key `llm_url`). ENV-ONLY by design: reports embed the resolved config section, so a token in any config surface would ship in every artifact — the audit document records only the boolean `token_present`. Never required (an endpoint without a credential ships the un-annotated document with a loud note), never logged, never written to disk except as the live request header. |
 | `COLUMNS`         | Override terminal-width detection for the CLI report.                                   |
 | `SHELL`           | Consulted by `phpdup completion` when no `shell` argument is supplied.                  |
 

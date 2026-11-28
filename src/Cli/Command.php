@@ -83,8 +83,17 @@ use Symfony\Component\Console\Output\OutputInterface;
  *  6. buildPipelineFactory() — build the Pipeline with resolved options.
  *  7. dispatch()             — run the pipeline directly, via TUI, or via
  *                             watch-mode, and return the process exit code.
+ *
+ * Item 8.2: NOT final anymore, deliberately. `phpdup audit`
+ * (src/Cli/AuditCommand.php) inherits this command's two protected
+ * seams — admitAnalysis() (every admission door) and runAnalysis() (the
+ * default-arm pipeline driver) — so the audit drive IS analyze's drive,
+ * not a re-implementation of it. The extraction that unlocked this is
+ * byte-identical behavior (see the batch-1 identity proof in the 8.2
+ * report); widening the seam beyond those two protected methods stays
+ * out of scope.
  */
-final class Command extends SymfonyCommand
+class Command extends SymfonyCommand
 {
     /**
      * once-S26: bounded-read cap for the auto-tune probe's forgiving

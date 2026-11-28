@@ -51,6 +51,7 @@ final class DocFlagParityTest extends TestCase
     /** @var array<string, class-string<SymfonyCommand>> command label => class */
     private const COMMANDS = [
         'analyze' => Command::class,
+        'audit' => \Phpdup\Cli\AuditCommand::class,
         'serve' => ServeCommand::class,
         'init' => InitCommand::class,
         'self:update' => UpdateCommand::class,
