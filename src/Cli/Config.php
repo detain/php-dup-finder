@@ -330,6 +330,16 @@ final class Config
         // disclosed lone-giant residual stays invisible to v1 windowing:
         // summary.blocks_oversized.
         public readonly bool $windowOversized = true,
+        // Item 5.2's .gitignore leg (W2a): respect .gitignore files — the
+        // scan root's and every nested one the descent reaches — while
+        // walking. Root config + CLI flag only (`honor_gitignore` /
+        // --honor-gitignore; refused per-directory, a whole-run stance):
+        // the exclude-list channel keeps priority and the two never
+        // override each other. Default OFF — the historical walk is
+        // byte-identical until the operator asks; the flag is what "auto-
+        // excluding vendored cruft" means for a repo that ships its own
+        // ignore rules.
+        public readonly bool $honorGitignore = false,
         // Item 5.4: coverage ceiling above which a cluster's signature is
         // marked `re_expressed` and a hole-free `hole_fragment` is surfaced
         // (config-file key `max_hole_coverage`, CLI --max-hole-coverage,
@@ -682,6 +692,7 @@ final class Config
             // max_ted_size; refused at discovery in
             // ConfigLoader::discoverPerDirectoryOverrides()).
             windowOversized:                 $this->windowOversized,
+            honorGitignore:                  $this->honorGitignore,
             // Item 5.4: root-only, copied — never replaced — per-directory
             // (same silent-misfeed class as max_ted_size; refused at
             // discovery in ConfigLoader::discoverPerDirectoryOverrides()).

@@ -464,6 +464,18 @@ final class PreprocessStage implements CooperativeStageInterface
             // invalidation of every existing .idx tree, disclosed in the
             // lane report.
             $config->windowOversized,
+            // Item 5.2 .gitignore leg (W2a): honor_gitignore decides which
+            // files reach the store at all. The flag never alters a stored
+            // file's block CONTENT, so this binding is prophylactic — the
+            // allowedKinds/windowOversized doctrine applied to the whole
+            // file-membership question: a snapshot set minted under one
+            // posture must not masquerade as the other posture's output.
+            // Key-namespace change only: no PARSER_VERSION bump
+            // (fingerprintIdMode precedent); consequence is a one-time
+            // invalidation of every existing .idx tree (shell-S18 header
+            // gate: clean miss into a fresh save), disclosed in the lane
+            // report.
+            $config->honorGitignore,
             // shell-027: --low-memory rewrites every stored n-gram bag
             // into CompactNgramBag's int-keyed 63-bit form (and folds the
             // canonical AST through the shared node pool). A low-memory

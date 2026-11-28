@@ -66,6 +66,42 @@ use Phpdup\Util\PathCanonical;
  * {@see inertWatchPatterns()} reports each never-matched pattern — once, on
  * the same 'phpdup: warning:' stderr voice as every skip. A typo'd exclude
  * can no longer quietly expose the tree it was meant to hide.
+ *
+ * .gitignore honoring (item 5.2's named missing leg, W2a): when built with
+ * honorGitignore: true the walk additionally consults `.gitignore` files —
+ * the scan root's own plus every nested one it reaches while descending.
+ * The dialect is gitignore(5) core: last-matching-line-wins per file,
+ * `!` negation, directory-only trailing `/`, root-anchoring leading `/`
+ * (any interior slash also anchors a pattern to its own directory), the
+ * `**` forms {@see tokenizeGlob()} already compiles, `[...]` character
+ * classes, and backslash escapes. A pattern without a slash matches the
+ * entry's LAST PATH SEGMENT at any depth. Across files, the deepest
+ * .gitignore that answers wins — a negation in /sub re-includes what the
+ * root file excluded. A directory the verdict excludes is pruned before
+ * descent, so its inner .gitignore files are never read and no negation
+ * revives a path under an excluded parent: git's own documented
+ * limitation, mirrored here on purpose. The two channels never override
+ * each other — an exclude-list pruned entry stays pruned silently and
+ * can neither be revived by `!` nor grow a governing ignore file.
+ * `.git/info/exclude` and `core.excludesFile` are out of scope (the doc
+ * letter names .gitignore files), as is walking above the scan root: run
+ * phpdup at the root whose ignores you mean to honor. Verdicts are silent
+ * per path (a vendor-sized tree would blow memory on note bytes); each
+ * drained root instead adds ONE aggregate count to the honest-scan
+ * channel ({@see skipNotes()}) and {@see gitignoreSkippedCount()} answers
+ * for the run. Hostile inputs stay bounded: file-size and line-count caps
+ * fail CLOSED for that file (visibly, like an over-budget exclude pattern),
+ * and cache caps fail OPEN once (visibly too — refusing a whole repo at
+ * the 5,001st ignore file would destroy more trust than it protects).
+ * Default OFF: without the flag the walk stays byte-identical to every
+ * historical pin.
+ *
+ * @phpstan-type GitignoreClasses array<int, array{0: bool, 1: list<array{0: int, 1: int}>}>
+ * @phpstan-type GitignoreMatch array{source: string, regex: string, tokens: list<array{0: int, 1: string}>, pcre: bool, classes?: GitignoreClasses}
+ * @phpstan-type GitignoreRule array{negate: bool, dirOnly: bool, anchored: bool, match: GitignoreMatch}
+ * @psalm-type GitignoreClasses = array<int, array{0: bool, 1: list<array{0: int, 1: int}>}>
+ * @psalm-type GitignoreMatch = array{source: string, regex: string, tokens: list<array{0: int, 1: string}>, pcre: bool, classes?: GitignoreClasses}
+ * @psalm-type GitignoreRule = array{negate: bool, dirOnly: bool, anchored: bool, match: GitignoreMatch}
  */
 final class FileScanner
 {
@@ -75,6 +111,21 @@ final class FileScanner
     private const TOKEN_STAR = 2;    // [^/]*  (within one segment)
     private const TOKEN_SEG = 3;     // (?:[^/]*/)*  (zero or more whole segments)
     private const TOKEN_ANY = 4;     // .*  (trailing **, crosses segments)
+    private const TOKEN_CLASS = 5;   // [abc] / [!abc] (single byte, gitignore classes)
+
+    /**
+     * .gitignore honoring budgets (W2a). A planted ignore file is hostile
+     * input on the once-095 theory, so size/line caps fail CLOSED for that
+     * one file — the subtree is excluded and the note says so, the same
+     * "treated as excluded, loudly" posture as an undecidable exclude
+     * pattern. The caches are operational bounds, not safety verdicts:
+     * past them later files are simply not honored, noted once, because
+     * silently devouring a legitimately huge tree would be the worse lie.
+     */
+    public const GITIGNORE_BYTES_CAP = 1_048_576;   // 1 MiB per file
+    public const GITIGNORE_LINES_CAP = 10_000;      // lines parsed per file
+    public const GITIGNORE_FILES_CAP = 5_000;       // parsed ignore files per scan()
+    public const GITIGNORE_MISS_CAP = 100_000;      // cached "no file here" answers
 
     /**
      * Upper bound on path length × pattern tokens one automaton match may
@@ -108,6 +159,466 @@ final class FileScanner
     /** @var list<string> human-readable notes for every skipped path */
     private array $skipNotes = [];
 
+    /**
+     * Entries the .gitignore verdict excluded across every scan() this
+     * instance ran (W2a). Directories count once — their pruned descendants
+     * were never visited, exactly like the walk itself. Honest accounting
+     * without a per-path note: a vendor-sized tree would otherwise mint a
+     * note per file and blow the memory the notes exist to protect.
+     */
+    public function gitignoreSkippedCount(): int
+    {
+        return $this->gitignoreSkipped;
+    }
+
+    /**
+     * The .gitignore verdict for one walked entry (W2a / item 5.2): walk the
+     * ancestor chain of directories whose `.gitignore` files govern the
+     * entry, deepest first, and let the first file that answers decide —
+     * within one file, the LAST matching line wins (git's precedence rules,
+     * gitignore(5)). A directory entry's chain starts at its PARENT: a
+     * directory's own .gitignore governs its contents, never the directory
+     * itself.
+     *
+     * The test frame follows the dialect: an unanchored pattern (no slash
+     * once the leading-slash/ dir-marker strips are done) matches the
+     * entry's LAST PATH SEGMENT at any depth; an anchored pattern (leading
+     * '/', or any slash in the pattern body after the strips) matches the
+     * entry path RELATIVE TO THE GOVERNING FILE'S DIRECTORY — which for a
+     * directory entry is the basename form WITHOUT a trailing slash, so
+     * `build` matches a directory `build` exactly like git, and `build/`
+     * matches it via dirOnly in the same frame.
+     *
+     * @param array<string, ?list<GitignoreRule>> $cache
+     * @param array{files: int, filesNoted: bool, misses: int} $stats
+     */
+    private function gitignoredPath(string $rel, bool $isDir, string $root, array &$cache, array &$stats): bool
+    {
+        $slash = strrpos($rel, '/');
+        $base = $slash === false ? $rel : substr($rel, $slash + 1);
+        // dirname() already answers BOTH entry kinds correctly: for a file,
+        // its own directory is the deepest governing file; for a directory,
+        // dirname is its PARENT — a directory's own .gitignore governs its
+        // contents, never itself (git's rule).
+        $dir = $slash === false ? '' : substr($rel, 0, $slash);
+        for (;;) {
+            $rules = $this->gitignoreRules($dir, $root, $cache, $stats);
+            if ($rules !== null) {
+                // git's within-file precedence: the LAST matching line wins,
+                // negation included — scan reversed and stop at the first hit.
+                for ($i = count($rules) - 1; $i >= 0; $i--) {
+                    $rule = $rules[$i];
+                    if ($rule['dirOnly'] && !$isDir) {
+                        continue; // a directory-only pattern never answers for a file
+                    }
+                    if ($rule['anchored']) {
+                        $subject = $dir === '' || !str_starts_with($rel, $dir . '/')
+                            ? $rel
+                            : substr($rel, strlen($dir) + 1);
+                    } else {
+                        $subject = $base;
+                    }
+                    if ($this->matchesPattern($rule['match'], $subject)) {
+                        return !$rule['negate'];
+                    }
+                }
+            }
+            if ($dir === '') {
+                break;
+            }
+            $up = strrpos($dir, '/');
+            $dir = $up === false ? '' : substr($dir, 0, $up);
+        }
+
+        return false;
+    }
+
+    /**
+     * The parsed rule list for one directory's .gitignore, or null when no
+     * usable file governs it. Absent/unreadable files answer null and are
+     * cached as such under a hard miss cap — the caches are operational
+     * bounds with visible cap notes, not safety verdicts (class docblock):
+     * unreadable = environmental, the NN2 skip-with-note posture;
+     * over-budget CONTENT = hostile input, once-095 fail-closed posture
+     * (the whole file is replaced by a single `*` exclusion plus a note) —
+     * reading only the first N lines of a last-match-wins dialect would
+     * silently mis-apply it, the exact fail-open sugar-ignore minted.
+     *
+     * @param array<string, ?list<GitignoreRule>> $cache
+     * @param array{files: int, filesNoted: bool, misses: int} $stats
+     * @return ?list<GitignoreRule>
+     */
+    private function gitignoreRules(string $dir, string $root, array &$cache, array &$stats): ?array
+    {
+        if (array_key_exists($dir, $cache)) {
+            return $cache[$dir];
+        }
+        $file = $root . ($dir === '' ? '' : '/' . $dir) . '/.gitignore';
+        if (!is_file($file)) {
+            if ($stats['misses'] < self::GITIGNORE_MISS_CAP) {
+                $cache[$dir] = null;
+                $stats['misses']++;
+            }
+            return null;
+        }
+        if ($stats['files'] >= self::GITIGNORE_FILES_CAP) {
+            if (!$stats['filesNoted']) {
+                $stats['filesNoted'] = true;
+                $this->addSkipNote(
+                    'gitignore: only the first ' . self::GITIGNORE_FILES_CAP
+                    . ' ignore files are honored; later ones under scan root ' . $root . ' are not'
+                );
+            }
+            return null; // uncached: the cap answers per call, one note total
+        }
+        $stats['files']++;
+
+        $size = @filesize($file);
+        if ($size !== false && $size > self::GITIGNORE_BYTES_CAP) {
+            return $this->gitignoreBlockedAll($file, 'exceeds the ' . self::GITIGNORE_BYTES_CAP . '-byte budget');
+        }
+        $text = @file_get_contents($file);
+        if ($text === false) {
+            $this->noteSkip($file, 'ignore rules could not be read and are treated as absent');
+            if ($stats['misses'] < self::GITIGNORE_MISS_CAP) {
+                $cache[$dir] = null;
+                $stats['misses']++;
+            }
+            return null;
+        }
+
+        $truncated = false;
+        $rules = self::parseGitignore($text, $truncated);
+        if ($truncated) {
+            return $this->gitignoreBlockedAll($file, 'exceeds the ' . self::GITIGNORE_LINES_CAP . '-line budget');
+        }
+        if ($rules === []) {
+            if ($stats['misses'] < self::GITIGNORE_MISS_CAP) {
+                $cache[$dir] = null;
+                $stats['misses']++;
+            }
+            return null;
+        }
+        $cache[$dir] = $rules;
+
+        return $rules;
+    }
+
+    /**
+     * The fail-CLOSED answer for one over-budget ignore file: a lone `*`
+     * exclusion — non-anchored, both entry kinds — so every path BELOW the
+     * file's directory is excluded until some deeper file's `!` revives it,
+     * and the note says why. Replacing the file with 'its first N lines'
+     * would be the quiet-wrong answer; excluding everything is the loud one.
+     *
+     * @return non-empty-list<GitignoreRule>
+     */
+    private function gitignoreBlockedAll(string $file, string $why): array
+    {
+        $this->addSkipNote('gitignore file ' . $file . ' ' . $why . '; paths below it are treated as excluded');
+        $tokens = self::tokenizeGlob('*');
+        return [[
+            'negate' => false,
+            'dirOnly' => false,
+            'anchored' => false,
+            'match' => [
+                'source' => '*',
+                'regex' => self::regexFor($tokens),
+                'tokens' => $tokens,
+                'pcre' => self::backtracksSafely($tokens),
+            ],
+        ]];
+    }
+
+    /**
+     * Parse one .gitignore body into ordered rules (order = file order; the
+     * verdict loop scans reversed for last-match-wins). Line dialect,
+     * gitignore(5):
+     *  • blank lines and leading-# comments are skipped (a mid-line # is a
+     *    literal byte);
+     *  • trailing spaces are trimmed unless backslash-escaped;
+     *  • CR is stripped (a CRLF-written ignore file still works);
+     *  • a leading ! negates; \# and \! spell the literal first bytes;
+     *  • a trailing / marks directory-only; a leading / anchors to this
+     *    file's directory, and ANY slash left in the body anchors too
+     *    (git's "if there is a separator at the beginning or middle, the
+     *    pattern is relative to the directory level of the particular
+     *    .gitignore file");
+     *  • the body matches through the SAME segment-safe glob engine as the
+     *    exclude lists — `*`/`?`/the `**` forms — plus `[...]` classes and
+     *    backslash escapes, which the exclude dialect never sees.
+     * Declined (each defensible, all rare-to-pathological): .git/info/exclude
+     * and core.excludesFile (out of the doc letter), POSIX class collations
+     * [:alpha:] (git's own wildmatch lacks them), and a ']' as the FIRST
+     * class member is literal, matching git/wildmatch byte-for-byte.
+     *
+     * @param-out bool $truncated
+     * @return list<GitignoreRule>
+     */
+    private static function parseGitignore(string $text, bool &$truncated): array
+    {
+        $lines = explode("\n", $text);
+        $truncated = count($lines) > self::GITIGNORE_LINES_CAP;
+        if ($truncated) {
+            return [];
+        }
+        $rules = [];
+        foreach ($lines as $line) {
+            $body = self::trimGitignoreSpaces(rtrim($line, "\r"));
+            if ($body === '' || $body[0] === '#') {
+                continue;
+            }
+            $negate = false;
+            if ($body[0] === '!') {
+                $negate = true;
+                $body = substr($body, 1);
+                if ($body === '') {
+                    continue; // a lone '!' is no pattern
+                }
+            }
+            $dirOnly = false;
+            if (strlen($body) > 1 && $body[strlen($body) - 1] === '/' && !self::gitignoreByteEscaped($body, strlen($body) - 1)) {
+                $dirOnly = true;
+                $body = substr($body, 0, -1);
+            }
+            $anchored = false;
+            if ($body !== '' && $body[0] === '/') {
+                $anchored = true;
+                $body = substr($body, 1);
+            }
+            if ($body === '' || $body === '/') {
+                continue;
+            }
+            if (str_contains($body, '/')) {
+                $anchored = true;
+            }
+            [$tokens, $classes] = self::tokenizeGitignore($body);
+            if ($tokens === []) {
+                continue;
+            }
+            $rules[] = [
+                'negate' => $negate,
+                'dirOnly' => $dirOnly,
+                'anchored' => $anchored,
+                'match' => [
+                    'source' => $body,
+                    'regex' => self::regexFor($tokens),
+                    'tokens' => $tokens,
+                    'pcre' => self::backtracksSafely($tokens),
+                    'classes' => $classes,
+                ],
+            ];
+        }
+
+        return $rules;
+    }
+
+    /**
+     * Trailing-space trim per gitignore(5): spaces count as trimmed while
+     * UNESCAPED — an odd number of immediately preceding backslashes pins
+     * the space as data instead.
+     */
+    private static function trimGitignoreSpaces(string $line): string
+    {
+        $end = strlen($line);
+        while ($end > 0 && $line[$end - 1] === ' ' && !self::gitignoreByteEscaped($line, $end - 1)) {
+            $end--;
+        }
+
+        return substr($line, 0, $end);
+    }
+
+    /**
+     * Is byte $at preceded by an odd (escaping) number of backslashes?
+     */
+    private static function gitignoreByteEscaped(string $text, int $at): bool
+    {
+        $backslashes = 0;
+        for ($j = $at - 1; $j >= 0 && $text[$j] === '\\'; $j--) {
+            $backslashes++;
+        }
+
+        return $backslashes % 2 === 1;
+    }
+
+    /**
+     * Tokenize a slash-anchored .gitignore body for the shared matchers.
+     * Same star trichotomy as {@see tokenizeGlob()} (this file's `**` forms
+     * are already exactly the glob dialect), plus the two gitignore-only
+     * features that dialect lacks: backslash escapes (any metabyte becomes
+     * a literal) and `[...]` character classes. Classes arrive as a
+     * prebuilt PCRE group payload plus a position-keyed membership map for
+     * the backtrack-free automaton — the two matchers keep one source of
+     * truth, so they cannot drift (the same law regexFor enforces for globs).
+     *
+     * @return array{0: list<array{0: int, 1: string}>, 1: array<int, array{0: bool, 1: list<array{0: int, 1: int}>}>}
+     */
+    private static function tokenizeGitignore(string $body): array
+    {
+        $tokens = [];
+        $classes = [];
+        $i = 0;
+        $len = strlen($body);
+        while ($i < $len) {
+            $c = $body[$i];
+            if ($c === '\\') {
+                if ($i + 1 < $len) {
+                    $tokens[] = [self::TOKEN_LITERAL, $body[$i + 1]]; // escaped: '*','?','#','!','[',space…
+                    $i += 2;
+                } else {
+                    $tokens[] = [self::TOKEN_LITERAL, '\\']; // trailing lone backslash is data
+                    $i++;
+                }
+                continue;
+            }
+            if ($c === '*') {
+                if ($i + 1 < $len && $body[$i + 1] === '*') {
+                    while ($i < $len && $body[$i] === '*') {
+                        $i++;
+                    }
+                    if ($i >= $len) {
+                        $tokens[] = [self::TOKEN_ANY, ''];
+                    } elseif ($body[$i] === '/') {
+                        $i++;
+                        $lastType = $tokens === [] ? null : $tokens[count($tokens) - 1][0];
+                        if ($lastType !== self::TOKEN_SEG) {
+                            $tokens[] = [self::TOKEN_SEG, ''];
+                        }
+                    } else {
+                        $tokens[] = [self::TOKEN_STAR, '']; // ** off-boundary = one *
+                    }
+                } else {
+                    $tokens[] = [self::TOKEN_STAR, ''];
+                    $i++;
+                }
+                continue;
+            }
+            if ($c === '?') {
+                $tokens[] = [self::TOKEN_ONE, ''];
+                $i++;
+                continue;
+            }
+            if ($c === '[') {
+                $class = self::parseGitignoreClass($body, $i, $len);
+                if ($class === null) {
+                    // fnmatch(7)/git-wildmatch posture: an unterminated '['
+                    // is a literal '[' byte, not a compile error.
+                    $tokens[] = [self::TOKEN_LITERAL, '['];
+                    $i++;
+                    continue;
+                }
+                $classes[count($tokens)] = [$class[1], $class[2]];
+                $tokens[] = [self::TOKEN_CLASS, $class[0]];
+                $i = $class[3];
+                continue;
+            }
+            $tokens[] = [self::TOKEN_LITERAL, $c];
+            $i++;
+        }
+
+        return [$tokens, $classes];
+    }
+
+    /**
+     * Read one bracket class at $start ('['), git/wildmatch semantics:
+     * negation is a leading ! (NOT '^' — doc-exact), a ']' as the FIRST
+     * member is data, '-' between members is a byte range, backslash pins
+     * bytes inside the class. A reversed range matches nothing (git's
+     * NOMATCH), expressed to PCRE as the never-group (?!) and to the map as
+     * an empty range list. Unclosed (or memberless) → null → caller keeps
+     * the '[' as a literal byte.
+     *
+     * @return ?array{0: string, 1: bool, 2: list<array{0: int, 1: int}>, 3: int}
+     *   [regex group text, negated, ranges, index after the closing ']']
+     */
+    private static function parseGitignoreClass(string $body, int $start, int $len): ?array
+    {
+        $i = $start + 1;
+        $neg = $i < $len && $body[$i] === '!';
+        if ($neg) {
+            $i++;
+        }
+        $ranges = [];
+        $first = true;
+        $never = false;
+        while ($i < $len) {
+            $c = $body[$i];
+            if ($c === ']' && !$first) {
+                if ($ranges === []) {
+                    return null;
+                }
+                $group = '[' . ($neg ? '^' : '');
+                foreach ($ranges as [$lo, $hi]) {
+                    $group .= $lo === $hi
+                        ? self::gitignoreClassByte($lo)
+                        : self::gitignoreClassByte($lo) . '-' . self::gitignoreClassByte($hi);
+                }
+                return [$group . ']', $neg, $ranges, $i + 1];
+            }
+            if ($c === '\\' && $i + 1 < $len) {
+                $lo = ord($body[$i + 1]);
+                $i += 2;
+            } else {
+                $lo = ord($c);
+                $i++;
+            }
+            if ($i < $len && $body[$i] === '-' && $i + 1 < $len && $body[$i + 1] !== ']') {
+                if ($body[$i + 1] === '\\' && $i + 2 < $len) {
+                    $hi = ord($body[$i + 2]);
+                    $i += 3;
+                } else {
+                    $hi = ord($body[$i + 1]);
+                    $i += 2;
+                }
+                if ($hi < $lo) {
+                    // reversed range: git's wildmatch answers NOMATCH for the
+                    // whole class (negation included — the range itself is
+                    // the error, POSIX leaves it undefined, we mirror git).
+                    $never = true;
+                    break;
+                }
+                $ranges[] = [$lo, $hi];
+            } else {
+                $ranges[] = [$lo, $lo];
+            }
+            $first = false;
+        }
+        if ($never) {
+            // Skip to the closing ']' so no stray class bytes leak out as
+            // tokens; the group is the closed never-lookahead and the map
+            // entry matches it: no byte advances.
+            while ($i < $len && $body[$i] !== ']') {
+                if ($body[$i] === '\\' && $i + 1 < $len) {
+                    $i += 2;
+                    continue;
+                }
+                $i++;
+            }
+            if ($i < $len && $body[$i] === ']') {
+                return ['(?!)', false, [], $i + 1];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * A byte rendered safe inside a PCRE class (bracket metas escaped,
+     * non-printables as \xHH; high bytes pass raw — the matcher is
+     * byte-semantics, git's own dialect).
+     */
+    private static function gitignoreClassByte(int $byte): string
+    {
+        if ($byte === 0x5B || $byte === 0x5D || $byte === 0x5E || $byte === 0x2D || $byte === 0x5C) {
+            return '\\' . chr($byte);
+        }
+        if ($byte < 0x20 || $byte === 0x7F) {
+            return '\x' . strtoupper(dechex($byte));
+        }
+
+        return chr($byte);
+    }
+
     /** @var list<array{dir: string, patterns: list<array{source: string, regex: string, tokens: list<array{0: int, 1: string}>, pcre: bool}>, reset: bool}> */
     private array $layers = [];
 
@@ -129,6 +640,13 @@ final class FileScanner
     private array $watchMatched = [];
 
     private int $walkedSubjects = 0;
+
+    /**
+     * Entries the .gitignore verdict excluded during every scan() this
+     * instance has run (W2a). Directories count once — their pruned
+     * descendants were never visited, exactly like the walk itself.
+     */
+    private int $gitignoreSkipped = 0;
 
     /**
      * The overlay layers bound to the root currently being walked, anchored
@@ -156,11 +674,24 @@ final class FileScanner
      *                                 `exclude_reset`) discards everything
      *                                 inherited below it. scan() only — see
      *                                 the class docblock.
+     * @param bool           $honorGitignore consult `.gitignore` files while
+     *                                 walking (W2a / item 5.2): the scan
+     *                                 root's own plus every nested one the
+     *                                 descent reaches. Runs AFTER the
+     *                                 exclude-list verdict (a config-excluded
+     *                                 entry is a silent prune on the config
+     *                                 channel and no `!` rule revives it);
+     *                                 verdicts never enter skipNotes() per
+     *                                 path — one aggregate note per drained
+     *                                 root and gitignoreSkippedCount() carry
+     *                                 the honest accounting. Off by default:
+     *                                 the historical walk is untouched.
      */
     public function __construct(
         array $excludeGlobs,
         private readonly bool $warnOnSkip = true,
         array $perDirExcludes = [],
+        private readonly bool $honorGitignore = false,
     ) {
         $this->patterns = array_map([$this, 'compilePattern'], $excludeGlobs);
         foreach ($perDirExcludes as $dir => $layer) {
@@ -356,10 +887,19 @@ final class FileScanner
         // discovery may have keyed a directory through either.
         $this->activeLayers = $this->bindLayers($root, $rootReal);
 
+        // W2a: .gitignore state for THIS scan() call only. The rule cache is
+        // keyed by root-relative directory, so it is root-bound by
+        // construction and fresh per call; consumers drain one root's
+        // generator before starting the next (the ScanningStage per-root
+        // loop), so no interleaving can observe a half-built cache.
+        $gitignoreCache = [];
+        $gitignoreStats = ['files' => 0, 'filesNoted' => false, 'misses' => 0];
+        $gitignoreRootSkipped = 0;
+
         $iter = new \RecursiveIteratorIterator(
             new \RecursiveCallbackFilterIterator(
                 $dirIterator,
-                function (\RecursiveDirectoryIterator|\SplFileInfo|string $current) use ($root, $rootReal): bool {
+                function (\RecursiveDirectoryIterator|\SplFileInfo|string $current) use ($root, $rootReal, &$gitignoreCache, &$gitignoreStats, &$gitignoreRootSkipped): bool {
                     // Psalm models every value the inner iterator may hand a
                     // RecursiveCallbackFilterIterator callback; only
                     // SplFileInfo carries paths/permissions, anything else
@@ -394,6 +934,16 @@ final class FileScanner
                         if ($this->excludesWalkPath($rel, true) && !$this->hasResetAtOrBelow($rel)) {
                             return false;
                         }
+                        if ($this->honorGitignore
+                            && $this->gitignoredPath($rel, true, $root, $gitignoreCache, $gitignoreStats)) {
+                            // W2a: verdict precedes descent on purpose — the
+                            // directory's own .gitignore is never consulted
+                            // for itself, and no rule below it gets a chance
+                            // to revive it (git's documented limitation,
+                            // mirrored here). Counted, not noted per path.
+                            $gitignoreRootSkipped++;
+                            return false;
+                        }
                         // NN2: prune unreadable branches BEFORE descending,
                         // so the common chmod-000 case never even races the
                         // iterator. (Traversal needs the x bit; isReadable()
@@ -405,6 +955,11 @@ final class FileScanner
                         return true;
                     }
                     if ($this->excludesWalkPath($rel, false)) {
+                        return false;
+                    }
+                    if ($this->honorGitignore
+                        && $this->gitignoredPath($rel, false, $root, $gitignoreCache, $gitignoreStats)) {
+                        $gitignoreRootSkipped++;
                         return false;
                     }
                     // once-S37 (once-080 / QA-M8): the per-file mate of the
@@ -441,6 +996,19 @@ final class FileScanner
             // SPL iterator cannot resume, so this root ends here — paths
             // already yielded stay yielded. Note and move on.
             $this->noteSkip($root, 'scan truncated by a permission error mid-descent: ' . $e->getMessage());
+        }
+
+        if ($this->honorGitignore && $gitignoreRootSkipped > 0) {
+            // W2a honest accounting: the walk's verdicts are silent per path
+            // (a vendor-sized tree would mint a note per file); the drained
+            // root instead contributes ONE aggregate line to the skipNotes
+            // channel and the run-total accessor below.
+            $this->gitignoreSkipped += $gitignoreRootSkipped;
+            $this->addSkipNote(
+                'gitignore: ' . $gitignoreRootSkipped . ' path'
+                . ($gitignoreRootSkipped === 1 ? '' : 's')
+                . ' excluded by .gitignore rules under scan root ' . $root
+            );
         }
     }
 
@@ -676,7 +1244,7 @@ final class FileScanner
      * Does one compiled pattern exclude $relPath? Exact — never a silent
      * "no" from a resource limit (once-095).
      *
-     * @param array{source: string, regex: string, tokens: list<array{0: int, 1: string}>, pcre: bool} $pattern
+     * @param GitignoreMatch $pattern
      */
     private function matchesPattern(array $pattern, string $relPath): bool
     {
@@ -719,7 +1287,7 @@ final class FileScanner
      * `(?:[^/]+/)*` group does not, which is the one place this port
      * deliberately diverges from the upstream Automaton.
      *
-     * @param array{source: string, regex: string, tokens: list<array{0: int, 1: string}>, pcre: bool} $pattern
+     * @param GitignoreMatch $pattern
      */
     private function automatonMatch(array $pattern, string $subject): ?bool
     {
@@ -730,6 +1298,10 @@ final class FileScanner
             return null;
         }
 
+        // The DFA cache is keyed by the compiled regex, which FULLY
+        // determines the byte language — class payloads are part of that
+        // text, so two records sharing a regex share a (correct) automaton
+        // even when their NFA token shapes differ.
         $key = $pattern['regex'];
         $automaton = $this->automata[$key] ?? null;
         if ($automaton === null || $automaton['sets'] === [] || count($automaton['sets']) > self::STATE_CAP) {
@@ -741,7 +1313,7 @@ final class FileScanner
             self::intern($automaton, $start, $m);
         }
 
-        $walk = self::walkAutomaton($automaton, $subject, $tokens, $m);
+        $walk = self::walkAutomaton($automaton, $subject, $tokens, $m, $pattern['classes'] ?? []);
         $this->automata[$key] = $walk[1];
         return $walk[0];
     }
@@ -755,9 +1327,10 @@ final class FileScanner
      *
      * @param array{ids: array<string, int>, sets: list<list<int>>, accepts: list<bool>, next: array<int, array<string, int>>} $automaton
      * @param list<array{0: int, 1: string}> $tokens
+     * @param array<int, array{0: bool, 1: list<array{0: int, 1: int}>}> $classes position-keyed bracket-class members (gitignore rules only)
      * @return array{0: bool, 1: array{ids: array<string, int>, sets: list<list<int>>, accepts: list<bool>, next: array<int, array<string, int>>}}
      */
-    private static function walkAutomaton(array $automaton, string $subject, array $tokens, int $m): array
+    private static function walkAutomaton(array $automaton, string $subject, array $tokens, int $m, array $classes = []): array
     {
         $n = strlen($subject);
         $state = 0;
@@ -767,7 +1340,7 @@ final class FileScanner
                 return [true, $automaton];
             }
             if (!isset($automaton['next'][$state][$byte])) {
-                $live = self::stepAutomaton($automaton['sets'][$state], $byte, $tokens, $m);
+                $live = self::stepAutomaton($automaton['sets'][$state], $byte, $tokens, $m, $classes);
                 $automaton['next'][$state][$byte] = self::intern($automaton, $live, $m);
             }
             $state = $automaton['next'][$state][$byte];
@@ -788,9 +1361,10 @@ final class FileScanner
      *
      * @param list<int> $states
      * @param list<array{0: int, 1: string}> $tokens
+     * @param array<int, array{0: bool, 1: list<array{0: int, 1: int}>}> $classes
      * @return array<int, true>
      */
-    private static function stepAutomaton(array $states, string $byte, array $tokens, int $m): array
+    private static function stepAutomaton(array $states, string $byte, array $tokens, int $m, array $classes = []): array
     {
         $next = [];
         foreach ($states as $state) {
@@ -816,6 +1390,24 @@ final class FileScanner
                     self::closeEpsilon($next, $state, $tokens, $m);
                 } else {
                     $next[$m + 1 + $state] = true;
+                }
+                continue;
+            }
+            if ($type === self::TOKEN_CLASS) {
+                // Byte membership, git/wildmatch semantics; the map entry
+                // mirrors the class's PCRE group (same parse, one truth),
+                // and an empty list with neg=false is the never-class.
+                [$negated, $ranges] = $classes[$state] ?? [false, []]; // absent map = never-match (conservative, mirrors the empty-range row)
+                $ord = ord($byte);
+                $inside = false;
+                foreach ($ranges as [$lo, $hi]) {
+                    if ($ord >= $lo && $ord <= $hi) {
+                        $inside = true;
+                        break;
+                    }
+                }
+                if ($inside !== $negated) {
+                    self::closeEpsilon($next, $state + 1, $tokens, $m);
                 }
                 continue;
             }
@@ -886,7 +1478,7 @@ final class FileScanner
      * sanitized for stderr: a hostile pattern must not steer the terminal
      * that reports it.
      *
-     * @param array{source: string, regex: string, tokens: list<array{0: int, 1: string}>, pcre: bool} $pattern
+     * @param GitignoreMatch $pattern
      */
     private function noteUndecidable(array $pattern): void
     {
@@ -1057,6 +1649,10 @@ final class FileScanner
                 self::TOKEN_STAR => '[^/]*',
                 self::TOKEN_SEG => '(?:[^/]*/)*',
                 self::TOKEN_ANY => '.*',
+                // A gitignore character class carries its prebuilt PCRE group
+                // as the payload ({@see tokenizeGitignore()}); the glob
+                // dialect never mints one, so existing regexes are untouched.
+                self::TOKEN_CLASS => $payload,
                 default => throw new \LogicException('unknown glob token kind ' . $type),
             };
         }

@@ -179,6 +179,12 @@ final class Command extends SymfonyCommand
             ->addOption('trinity-collapse', null, InputOption::VALUE_NONE, 'Detect the canonical CRUD trinity (read → mutate → save) and rewrite the
                 three-statement sequence as a single __DB_UPSERT__("entity") synthetic call so ORM
                 upserts cluster with raw UPDATE queries. Composes with --db-aware. Off by default.')
+            ->addOption('honor-gitignore', null, InputOption::VALUE_NONE, 'Respect .gitignore files while scanning: the scan-root file plus every
+                nested one the descent reaches (git precedence: deepest file wins, last matching line wins, !
+                negation, dir-only trailing /, root-anchored leading /). Vendored/generated cruft hidden by
+                repo ignore rules is auto-excluded; excluded paths are counted in the scan notes. Config
+                exclude lists keep priority — nothing is revived — and the JSON summary shape is unchanged.
+                Off by default.')
             ->addOption('scorer', null, InputOption::VALUE_REQUIRED, 'Scoring tier set: default | ir. "ir" enables the IR-tier fallback — when AST
                 Jaccard / TED / containment all reject a pair, lift both blocks to the canonical IR
                 (Phpdup\\Ir\\IrLifter) and Jaccard their token bags. Pairs at or above --ir-threshold
@@ -268,7 +274,7 @@ Options grouped by category:
     --min-impact, --min-safety, --fail-on-impact, --max-clusters,
     --score-mode, --max-hole-coverage,
     --exact-only, --kinds, --auto-tune,
-    --ted-weights, --db-aware, --trinity-collapse,
+    --ted-weights, --db-aware, --trinity-collapse, --honor-gitignore,
     --scorer, --ir-threshold,
     --ml-pair-url, --ml-pair-threshold,
     --profile
@@ -1236,6 +1242,11 @@ HELP;
         }
         if ($input->getOption('trinity-collapse')) {
             $overrides['trinity_collapse'] = true;
+        }
+        if ($input->getOption('honor-gitignore')) {
+            // W2a / item 5.2: rides the flat resolver like window_oversized;
+            // root-only key, so a per-dir .phpdup.json cannot carry it.
+            $overrides['honor_gitignore'] = true;
         }
         if ($input->getOption('apply')) {
             $overrides['apply'] = true;

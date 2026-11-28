@@ -125,6 +125,14 @@ final class ClusterStage implements CooperativeStageInterface
             // consequence is a one-time invalidation of every existing
             // .cluster snapshot, disclosed in the lane report.
             $config->windowOversized,
+            // Item 5.2 .gitignore leg (W2a): same three-key-law argument —
+            // honor_gitignore shapes the block population (files absent from
+            // the scan are absent from every cluster), so the pair store's
+            // key must move with it. Prophylactic binding, key-namespace
+            // change only: no PARSER_VERSION bump (fingerprintIdMode
+            // precedent); one-time invalidation of existing .cluster
+            // snapshots, disclosed in the lane report.
+            $config->honorGitignore,
         ]));
     }
 

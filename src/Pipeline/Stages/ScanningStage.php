@@ -79,7 +79,7 @@ final class ScanningStage implements CooperativeStageInterface
         // excluded subtree never enters the scan census below, and a
         // resetting subtree re-roots. Configs without either key produce no
         // layer and cannot change the walk.
-        $scanner = new FileScanner($config->exclude, perDirExcludes: self::excludeLayers($config));
+        $scanner = new FileScanner($config->exclude, perDirExcludes: self::excludeLayers($config), honorGitignore: $config->honorGitignore);
 
         // once-S37 (php-dup-finder-once-041): arm the exclude-typo census
         // with the globs the USER owns (see userExcludeGlobs) — a misspelled
