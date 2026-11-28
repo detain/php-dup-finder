@@ -310,12 +310,10 @@ final class ShapeFingerprint
             }
             return implode($type instanceof Node\UnionType ? '|' : '&', $parts);
         }
-        // DNF types (ParenthesizedType) delegate; any other exotic
+        // Nullable/Union/Intersection are the only concrete ComplexType
+        // subclasses in php-parser 5 (all handled above); any other exotic
         // shape prints its class short-name (stable + visible in the
         // table rather than silently dropped).
-        if ($type instanceof Node\ComplexType) {
-            return self::typeName($type->type) ?? '?';
-        }
         return substr(strrchr('\\' . $type::class, '\\'), 1);
     }
 }
