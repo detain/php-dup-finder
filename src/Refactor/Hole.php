@@ -40,6 +40,18 @@ namespace Phpdup\Refactor;
  * exactly as far as the data can: on an optional hole, a MISSING row
  * with degraded:false is a verified absence, and with degraded:true
  * the hole states honestly that some MISSING rows were never observed.
+ *
+ * Since item 4.1 the row list has a scalar sidecar: {@see
+ * self::$descriptors}, positionally aligned with $observedValues,
+ * carrying an {@see ObservationDescriptor} per observation. It draws
+ * the per-row distinction the hole-wide degraded flag cannot: a
+ * MISSING row whose descriptor type is ObservationDescriptor::ABSENT_TYPE
+ * is a WITNESSED absence even on a degraded hole, while a MISSING row
+ * with a null descriptor is ambiguous (never-gathered pad or pre-4.1
+ * legacy) and no consumer may claim against it. Holes built without
+ * the sidecar (older fixtures, hand-made test holes) simply carry
+ * fewer descriptor rows — {@see self::descriptorAt()} answers null
+ * there, which reads exactly as "unwitnessed".
  */
 final class Hole
 {
@@ -66,6 +78,29 @@ final class Hole
      *                                                 evidence and reporters say so instead of
      *                                                 inventing text.
      */
+    /**
+     * Item 4.1: scalar observation descriptors, positionally aligned
+     * with $observedValues. One entry per row: the observed node's
+     * {@see ObservationDescriptor}, the ABSENT marker of a witnessed
+     * optional-segment absence, or null (never-gathered gap, or a
+     * legacy row written before the sidecar existed).
+     *
+     * @var list<array{type: string, callNames: list<string>, containsExit: bool, scalar: ?string}|null>
+     */
+    public array $descriptors = [];
+
+    /**
+     * Item 4.1: descriptor of the TEMPLATE-side node this hole diverges
+     * on, captured at hole birth where the node is in hand (null for
+     * whole-array collapses, which have no template node, and for holes
+     * built outside AntiUnifier). It is what lets the drift analyzer
+     * state "the guard the cluster's template holds" without the (often
+     * stripped, cached-run) generalizedAst.
+     *
+     * @var array{type: string, callNames: list<string>, containsExit: bool, scalar: ?string}|null
+     */
+    public ?array $templateDescriptor = null;
+
     public function __construct(
         public readonly string $placeholder,
         public readonly string $kind,
@@ -74,15 +109,17 @@ final class Hole
     ) {
     }
 
-    public function appendObserved(string $repr): void
+    public function appendObserved(string $repr, ?array $descriptor = null): void
     {
         $this->observedValues[] = $repr;
+        $this->descriptors[]    = $descriptor;
     }
 
     /** Record "no node at the hole path" for the next member (item 5.4). */
     public function appendMissing(): void
     {
         $this->observedValues[] = self::MISSING;
+        $this->descriptors[]    = null;
         $this->degraded         = true;
     }
 
@@ -101,6 +138,36 @@ final class Hole
     public function isDegraded(): bool
     {
         return $this->degraded;
+    }
+
+    /**
+     * Item 4.1: the descriptor of row $memberIndex, null when the row
+     * was never witnessed (gap pad), carries no sidecar (legacy or
+     * hand-built hole), or the index is out of range.
+     *
+     * @return array{type: string, callNames: list<string>, containsExit: bool, scalar: ?string}|null
+     */
+    public function descriptorAt(int $memberIndex): ?array
+    {
+        return $this->descriptors[$memberIndex] ?? null;
+    }
+
+    /**
+     * Item 4.1: was member $memberIndex WITNESSED absent at this hole —
+     * the row is the canonical absence marker AND carries the absent
+     * descriptor recorded at the alignment site? This is the strong
+     * reading of {@see self::MISSING}: unlike the degraded flag (a
+     * hole-wide hedge), it licenses a per-member absence claim even on
+     * a degraded alignment. MISSING-without-marker stays ambiguous.
+     */
+    public function isVerifiedAbsent(int $memberIndex): bool
+    {
+        $row = $this->observedValues[$memberIndex] ?? self::MISSING;
+        if ($row !== self::MISSING) {
+            return false;
+        }
+        $descriptor = $this->descriptorAt($memberIndex);
+        return $descriptor !== null && $descriptor['type'] === ObservationDescriptor::ABSENT_TYPE;
     }
 
     public function uniqueValueCount(): int

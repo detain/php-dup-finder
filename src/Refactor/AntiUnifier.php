@@ -249,6 +249,9 @@ final class AntiUnifier
                 array_fill(0, $count, Hole::MISSING),
                 degraded: true,
             );
+            // item 4.1: aligned sidecar — all rows are unobserved, so
+            // all descriptors are the ambiguous null, never a witness.
+            $sentinel->descriptors = array_fill(0, $count, null);
             $cluster->holes = [$sentinel];
             $ctx->holePaths[self::CAP_SENTINEL] = [];
         }
@@ -306,12 +309,19 @@ final class AntiUnifier
                 = [$clusterOfSlot[$seedIdx], $clusterOfSlot[0]];
         }
         foreach ($cluster->holes as $hole) {
-            $rows = $hole->observedValues;
-            $out  = array_fill(0, $count, Hole::MISSING);
+            $rows  = $hole->observedValues;
+            $descs = $hole->descriptors;
+            $out   = array_fill(0, $count, Hole::MISSING);
+            // item 4.1: every slot the walk did not own — including the
+            // counted tail — lands a NULL descriptor, the ambiguous
+            // absence, never a witness it did not see.
+            $outDesc = array_fill(0, $count, null);
             foreach ($clusterOfSlot as $slot => $position) {
-                $out[$position] = $rows[$slot] ?? Hole::MISSING;
+                $out[$position]     = $rows[$slot] ?? Hole::MISSING;
+                $outDesc[$position] = $descs[$slot] ?? null;
             }
             $hole->observedValues = $out;
+            $hole->descriptors    = $outDesc;
             // belt: a routed cluster always has an unobserved tail, so
             // every hole — even one whose representative rows are complete
             // — states incomplete evidence.
@@ -371,9 +381,11 @@ final class AntiUnifier
             }
             foreach ($cluster->holes as $hole) {
                 $rows = $hole->observedValues;
+                $descs = $hole->descriptors;
                 /** @var array<string, int> id => next occurrence to consume */
                 $taken = [];
                 $rebuilt = [];
+                $rebuiltDesc = [];
                 foreach ($ids as $id) {
                     $n    = $taken[$id] ?? 0;
                     $taken[$id] = $n + 1;
@@ -382,8 +394,13 @@ final class AntiUnifier
                     // members' rows, never steal one.
                     $slot = $slotsById[$id][$n] ?? null;
                     $rebuilt[] = $slot === null ? Hole::MISSING : ($rows[$slot] ?? Hole::MISSING);
+                    // item 4.1: descriptors ride the same address law — a
+                    // moved row moves its witness, an unaddressable slot
+                    // lands null (ambiguous), never a stale row/desc pair.
+                    $rebuiltDesc[] = $slot === null ? null : ($descs[$slot] ?? null);
                 }
                 $hole->observedValues = $rebuilt;
+                $hole->descriptors    = $rebuiltDesc;
             }
             return;
         }
@@ -394,8 +411,15 @@ final class AntiUnifier
                 while (count($hole->observedValues) <= $seedIdx) {
                     $hole->appendMissing();
                 }
+                // belt: same law for the item-4.1 sidecar — keep
+                // positions aligned, pad with the ambiguous null.
+                while (count($hole->descriptors) <= $seedIdx) {
+                    $hole->descriptors[] = null;
+                }
                 [$hole->observedValues[0], $hole->observedValues[$seedIdx]]
                     = [$hole->observedValues[$seedIdx], $hole->observedValues[0]];
+                [$hole->descriptors[0], $hole->descriptors[$seedIdx]]
+                    = [$hole->descriptors[$seedIdx], $hole->descriptors[0]];
             }
         }
     }
@@ -822,7 +846,11 @@ final class AntiUnifier
                 // the row, so the hole does NOT degrade (appendMissing
                 // would degrade it for what is not a gap). Reporters
                 // project this row as absent/gap from (kind, degraded).
-                $existing->appendObserved(Hole::MISSING);
+                // Item 4.1: the absent descriptor is the row-level
+                // witness of that claim — it survives a later hole-wide
+                // degradation and is the only licence the drift
+                // analyzer accepts for naming a deficient member.
+                $existing->appendObserved(Hole::MISSING, ObservationDescriptor::absent());
             } else {
                 // output-018 leg 4: a value hole records VERIFIED ABSENCE
                 // nowhere — this path is a recorded divergence, not an
@@ -835,6 +863,13 @@ final class AntiUnifier
         }
         $holeId = '__O' . ($ctx->holeCounter++);
         $hole   = new Hole($holeId, 'optional_block');
+        // Item 4.1: the template-side statement is in hand at birth —
+        // its descriptor is what lets the drift analyzer recognize the
+        // hole's segment as a guard (If_/loop containing an exit) even
+        // in cache-warm runs where the generalizedAst is stripped.
+        if ($tStmt !== null) {
+            $hole->templateDescriptor = ObservationDescriptor::build($tStmt);
+        }
         for ($i = 0; $i < $memberIdx; $i++) {
             if ($i === 0 || isset($ctx->passedByMember[$i][$key])) {
                 // Seed (always) or a member that walked this exact path
@@ -853,7 +888,8 @@ final class AntiUnifier
         // output-S27: the member verifiably lacks this segment — the
         // canonical absence row, recorded WITHOUT degrading (the walk
         // saw the slot; it was empty).
-        $hole->appendObserved(Hole::MISSING);
+        // Item 4.1: witness descriptor, same as the append-side branch.
+        $hole->appendObserved(Hole::MISSING, ObservationDescriptor::absent());
         $ctx->holes[$holeId]      = $hole;
         $ctx->holesByPath[$key]   = $hole;
         $ctx->holePaths[$holeId]  = $path->toPathList();
@@ -869,6 +905,12 @@ final class AntiUnifier
         }
         $holeId = '__P' . ($ctx->holeCounter++);
         $hole   = new Hole($holeId, $kind);
+        // Item 4.1: template descriptor at birth, when a template node
+        // exists. Whole-array/null-slot collapses (tNode null) keep
+        // null — there is no template statement to describe.
+        if ($tNode !== null) {
+            $hole->templateDescriptor = ObservationDescriptor::build($tNode);
+        }
         for ($i = 0; $i < $memberIdx; $i++) {
             if ($tNode !== null && ($i === 0 || isset($ctx->passedByMember[$i][$key]))) {
                 // The seed itself, or a member whose walk proved its node at
@@ -951,7 +993,13 @@ final class AntiUnifier
             $hole->appendMissing();
             return;
         }
-        $hole->appendObserved($this->repr($node));
+        // Item 4.1: the descriptor is computed right here, where the
+        // node is in hand — plain scalars, so the row (and the whole
+        // hole) stays socketpair-safe and cache-neutral. A null-node
+        // gap gets no descriptor at all (appendMissing): the absence
+        // was never witnessed, and the drift analyzer must not claim
+        // against it.
+        $hole->appendObserved($this->repr($node), ObservationDescriptor::build($node));
     }
 
     private function repr(Node $node): string
