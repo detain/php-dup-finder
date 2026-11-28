@@ -72,6 +72,32 @@ final class Block
      */
     public string $scope = '';
 
+    /**
+     * Item 2.1: fragment identity fields, set by the shared miner ONLY on
+     * 'fragment'-kind blocks (list-consistent statement-run metadata; the
+     * regular per-block fields above carry the window's own fold). All
+     * public-mutable like every other field here, and ALL are persisted
+     * with the cached Block list — a warm replay must recompute suppression
+     * from fields alone (never from a re-walk), which is what keeps
+     * cold/warm cluster output equal by construction.
+     *
+     * $fragmentKey: '~'-joined {@see \Phpdup\Util\StmtHash} keys of the
+     * window's statements, taken from the whole-list normalization (so two
+     * identical runs at different offsets agree). $fragmentPos is the
+     * 0-based statement offset of the run's first statement inside its
+     * list; $fragmentSize the number of statements. $fragmentPrev /
+     * $fragmentNext are the list's neighbor statement keys ('' at the
+     * list edge) — the maximality suppression's one-step witnesses.
+     * $fragmentWhole flags a run equal to its entire list (suppressed: a
+     * whole declaration body is already minted as that declaration).
+     */
+    public string $fragmentKey = '';
+    public string $fragmentPrev = '';
+    public string $fragmentNext = '';
+    public int $fragmentPos = 0;
+    public int $fragmentSize = 0;
+    public bool $fragmentWhole = false;
+
     public function __construct(
         public string $file,
         public LineRange $range,

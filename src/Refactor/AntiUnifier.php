@@ -10,8 +10,8 @@ use Phpdup\Extraction\Block;
 use Phpdup\Extraction\BlockAstLoader;
 use Phpdup\Normalization\Normalizer;
 use Phpdup\Util\AstSerializer;
-use Phpdup\Util\Delimiters;
 use Phpdup\Util\NodePath;
+use Phpdup\Util\StmtHash;
 
 /**
  * Computes the most-specific generalization of a cluster's members.
@@ -751,7 +751,10 @@ final class AntiUnifier
 
     private function stmtHash(Node $stmt): string
     {
-        return sha1(implode(Delimiters::HASH_JOIN, AstSerializer::tokens($stmt)));
+        // §5c single fold-key law: the formula is exactly one function
+        // (item 2.1 extracted it); AntiUnifier and the fragment miner share
+        // it so cross-stage statement identity cannot drift.
+        return StmtHash::hash($stmt);
     }
 
     /**
