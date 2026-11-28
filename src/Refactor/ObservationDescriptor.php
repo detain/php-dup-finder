@@ -134,12 +134,6 @@ final class ObservationDescriptor
         if ($node instanceof Node\Expr\Throw_ || $node instanceof Node\Expr\Exit_) {
             return true;
         }
-        // Belt for parser minors that keep the statement form as its own
-        // class (the bundled v5 lowers `exit;` to Expr\Exit_ in a
-        // Stmt\Expression — pinned by the tests above).
-        if ($node instanceof Node\Stmt\Exit_) {
-            return true;
-        }
         if ($node instanceof Node\Expr\FuncCall && $node->name instanceof Node\Name) {
             $lower = strtolower($node->name->toString());
             return $lower === 'exit' || $lower === 'die';

@@ -65,20 +65,6 @@ final class Hole
     public string $suggestedName = '';
 
     /**
-     * @param list<string>           $observedValues one row per cluster member,
-     *                                               in cluster order; '' entries
-     *                                               are the canonical absence —
-     *                                               a structural gap (item 5.4),
-     *                                               a never-gathered row (output-S26),
-     *                                               or a verified optional-segment
-     *                                               absence (output-S27; those do
-     *                                               not degrade — see class doc).
-     * @param bool                   $degraded       true once any observation was recorded as a
-     *                                                 structural gap — the value set is incomplete
-     *                                                 evidence and reporters say so instead of
-     *                                                 inventing text.
-     */
-    /**
      * Item 4.1: scalar observation descriptors, positionally aligned
      * with $observedValues. One entry per row: the observed node's
      * {@see ObservationDescriptor}, the ABSENT marker of a witnessed
@@ -101,6 +87,17 @@ final class Hole
      */
     public ?array $templateDescriptor = null;
 
+    /**
+     * @param list<string> $observedValues one row per cluster member,
+     *        in cluster order; '' entries are the canonical absence —
+     *        a structural gap (item 5.4), a never-gathered row
+     *        (output-S26), or a verified optional-segment absence
+     *        (output-S27; those do not degrade — see class doc).
+     * @param bool         $degraded       true once any observation was recorded as a
+     *                                      structural gap — the value set is incomplete
+     *                                      evidence and reporters say so instead of
+     *                                      inventing text.
+     */
     public function __construct(
         public readonly string $placeholder,
         public readonly string $kind,
@@ -109,6 +106,13 @@ final class Hole
     ) {
     }
 
+    /**
+     * Record one observation (or, with {@see Hole::MISSING} plus a null
+     * descriptor, an unwitnessed gap) — keeping rows and descriptors
+     * positionally aligned.
+     *
+     * @param array{type: string, callNames: list<string>, containsExit: bool, scalar: ?string}|null $descriptor
+     */
     public function appendObserved(string $repr, ?array $descriptor = null): void
     {
         $this->observedValues[] = $repr;

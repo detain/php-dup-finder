@@ -198,7 +198,7 @@ final class DriftAnalyzer implements ArchitecturalAnalyzer
                     '%s: present in %d of %d members, verifiably absent in %s%s — the copies drifted apart',
                     $what,
                     count($present),
-                    $present === [] ? 0 : count($present) + count($deficient) + $ambiguous,
+                    count($present) + count($deficient) + $ambiguous,
                     $this->memberList($cluster, $deficient),
                     $ambiguous > 0 ? sprintf(' (%d further members unobserved at this row)', $ambiguous) : ''
                 ),
@@ -270,7 +270,10 @@ final class DriftAnalyzer implements ArchitecturalAnalyzer
         return $out;
     }
 
-    /** @param list<string> $sanitizers @param list<string> $auth */
+    /**
+     * @param list<string> $sanitizers
+     * @param list<string> $auth
+     */
     private function sanitizerCallDivergence(Cluster $cluster, Hole $hole, array $sanitizers, array $auth): ?Finding
     {
         $raw        = [];
@@ -417,9 +420,9 @@ final class DriftAnalyzer implements ArchitecturalAnalyzer
             return null;
         }
         $value = $sibling->value;
-        if ($value instanceof Node\Name) {
-            return $value->toString();
-        }
+        // Arg values are Exprs: a bare Name can never sit here (barewords
+        // parse as ConstFetch), so only that and string literals name an
+        // option.
         if ($value instanceof Node\Expr\ConstFetch) {
             return $value->name->toString();
         }
@@ -648,13 +651,17 @@ final class DriftAnalyzer implements ArchitecturalAnalyzer
         return array_map('strval', $path);
     }
 
-    /** One-line snippet of the present-side repr for the message. */
+    /**
+     * One-line snippet of the present-side repr for the message.
+     *
+     * @param list<int> $presentIndexes
+     */
     private function rowSnippet(Hole $hole, array $presentIndexes): string
     {
         foreach ($presentIndexes as $i) {
             $row = $hole->observedValues[$i] ?? '';
             $line = strtok($row, "\n");
-            if (is_string($line) && $line !== '') {
+            if ($line !== false) {
                 return $line;
             }
         }
