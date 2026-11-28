@@ -423,6 +423,33 @@ final class ReportStage implements CooperativeStageInterface
             }
         }
 
+        // Item 4.2 (git-history correlation): opt-in blame/log sidecar.
+        // Runs on the SAME cluster set the report carries (post-baseline-
+        // split $mainClusters — suppressed appendix rows are not report
+        // claims and get no history) and AFTER the architecture pass, so
+        // a 4.1 DriftAnalyzer finding on the cluster is visible to the
+        // corroboration leg of the lone-fix message. Armed-only: the
+        // default path takes zero new yields, git never runs, and the
+        // report byte-shape is untouched (§8.4 opt-in zero churn). Every
+        // git failure mode fails open to unmeasurable rows + scan notes
+        // (skip-with-note law; exit code never moves, BaselineStore's
+        // code-2 door below is untouched by this block).
+        $clusterHistory = null;
+        if ($config->history) {
+            $state->currentTask = 'correlating git history';
+            if ($pump() >= $pumpDue) {
+                $state->stageProgress = min(0.999, ++$unitsDone / $unitTotal);
+                yield Stage::Reporting;
+                $pumpDue = $pump() + self::YIELD_BUDGET_SECONDS;
+            }
+            $historyAnalyzer = new \Phpdup\Git\ClusterHistoryAnalyzer($config);
+            $clusterHistory  = $historyAnalyzer->correlate($mainClusters);
+            $historyAnalyzer->annotateClusters($mainClusters);
+            foreach ($clusterHistory->notes as $note) {
+                $state->scanNotes[] = $note;
+            }
+        }
+
         // once-S59: carry the run's real wall-clock window on the Report.
         // A state driven by Pipeline::iter() knows when the scan began; a
         // hand-driven stage run (library-style callers) does not, and then
@@ -476,6 +503,10 @@ final class ReportStage implements CooperativeStageInterface
             // reporter's conditional key is what keeps default payloads
             // byte-identical.
             idiomCensus: $state->sequenceIndex?->idiomCensus(),
+            // Item 4.2: the git sidecar crossed the same seam — null on
+            // the unarmed path, so every default payload stays byte-
+            // identical and the conditional key never opens unasked.
+            clusterHistory: $clusterHistory,
         );
         $state->report   = $report;
         $state->clusters = $clusters;

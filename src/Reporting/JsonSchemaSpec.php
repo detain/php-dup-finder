@@ -242,10 +242,16 @@ final class JsonSchemaSpec
      *     so an unarmed payload carrying it stays the pin-failure it is
      *     (item 3.1 ingestion, MINE-D; the 2.3 class_shape precedent one
      *     level down).
+     * @param bool $historyArmed true asks for the item-4.2 armed shape:
+     *     the trailing conditional `cluster_history` block (after
+     *     idiom_census when both arm), same demand-armed law — an unarmed
+     *     payload carrying it stays a pin-failure (MINE-D §4 ruling:
+     *     demand-armed keys ride the current schema with the armed shape
+     *     spelled here; NO SCHEMA_VERSION change).
      *
      * @return array<string, string>
      */
-    public static function summaryShape(bool $armed = false): array
+    public static function summaryShape(bool $armed = false, bool $historyArmed = false): array
     {
         $shape = [
             'files'                => 'int',   // = files scanned (historical key)
@@ -267,6 +273,9 @@ final class JsonSchemaSpec
         ];
         if ($armed) {
             $shape['idiom_census'] = 'object  // item 3.1 ingestion: the census block (see censusBlockShape()); present ONLY on idiom_mining-armed runs — an unarmed payload never grows this key (frozen goldens, 2.3 class_shape posture)';
+        }
+        if ($historyArmed) {
+            $shape['cluster_history'] = 'object  // item 4.2: the git-history correlation block (see historyBlockShape()); present ONLY on history-armed runs — an unarmed payload never grows this key (frozen goldens, same demand-armed posture as idiom_census)';
         }
         return $shape;
     }
@@ -291,6 +300,46 @@ final class JsonSchemaSpec
             'sites'  => 'int  // total occurrences counted (pre-suppression)',
             'rows'   => 'list<object{hash:string,abstract:string,nodes:int,root:string,sites:int,files:int,locations:list<string>}>',
         ];
+    }
+
+    /**
+     * Shape of the conditional `summary.cluster_history` block (item 4.2,
+     * git-history correlation). `window_months` echoes the tuning bound;
+     * `clusters` counts the rows presented (every cluster spanning >= 2
+     * files); `omitted` is the MAX_ROWS presentation cap, never a
+     * counting bound. Each row answers the doc's four questions for one
+     * cluster: per-member last committed touch (abbreviated sha +
+     * UTC date; null = uncommitted member), the member's latest ALONE
+     * commit inside the window with its fix|security|bug match, and the
+     * same-commit co-change pair counts. Verdicts are the closed taxonomy
+     * recent_lone_fix | recently_diverged | in_sync | long_drifted |
+     * unmeasurable; `reason` is non-null only on unmeasurable rows (and
+     * the dates-only degraded divergence), naming the fail-open cause:
+     * no_repository, untracked_files, git_unavailable, git_timeout,
+     * history_unparseable, uncommitted_member, cross_repository_cluster,
+     * unresolvable_files, dates_only_divergence.
+     *
+     * @return array<string, string>
+     */
+    public static function historyBlockShape(): array
+    {
+        return [
+            'window_months' => 'int  // the "last N months" bound (config history_window_months)',
+            'clusters'      => 'int  // rows presented (>=2 distinct member files per cluster)',
+            'omitted'       => 'int  // clusters beyond the MAX_ROWS presentation cap',
+            'rows'          => 'list<' . self::historyRowTypeName() . '>',
+        ];
+    }
+
+    /** The row object type reused by historyBlockShape(). */
+    public static function historyRowTypeName(): string
+    {
+        return 'object{cluster:string,'
+            . 'verdict:string,'
+            . 'reason:string|null,'
+            . 'members:list<object{file:string,last_sha:string|null,last_date:string|null,'
+            . 'lone:object{sha:string,date:string,subject:string,fix:bool}|null}>,'
+            . 'co_change:list<object{a:string,b:string,times:int}>}';
     }
 
     /**

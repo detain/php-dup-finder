@@ -244,6 +244,18 @@ final class Command extends SymfonyCommand
             ->addOption('pager', null, InputOption::VALUE_REQUIRED, 'Page CLI report through $PAGER (default `less -R`). Modes: auto|never|always. auto pages when stdout is a TTY and the rendered output exceeds ~60 lines.', 'never')
             ->addOption('sort', null, InputOption::VALUE_REQUIRED, 'Cluster sort: KEY[:asc|desc]. Keys: impact|members|block-size|lines|similarity|confidence|name|file|id. Aliases: size→members, count→members. Default impact:desc.')
             ->addOption('stats', null, InputOption::VALUE_NONE, 'Show pipeline statistics')
+            ->addOption('history', null, InputOption::VALUE_NONE, 'Item 4.2 git-history correlation: answer the doc\'s "one twin was fixed in March, the
+                other was last touched two years ago" for every cross-file clone cluster. One
+                `git blame --porcelain` per member file (cached under cache_dir/history/) plus ONE
+                `git log -M --name-only --since` per repo give per-member last-changed dates, which
+                members changed ALONE inside the window (config history_window_months, default 12),
+                whether a lone commit message matches fix|security|bug, and same-commit co-change
+                counts. A lone fix raises a WARNING finding (history-lone-fix; notes for plain
+                divergence). Purely report-side: clustering bytes never move, and the JSON summary
+                gains the conditional cluster_history key ONLY when armed (schema 1.8, no bump).
+                Fails open on everything: non-repo targets, untracked files, missing git, corrupt
+                history, or a 15s command timeout all answer unmeasurable with a scan note — never a
+                fatal, never an exit-code change. Off by default. Config: history.')
             ->addOption('debug-log', null, InputOption::VALUE_REQUIRED, 'Append all debug (vvv) messages to FILE');
 
         // ── Performance / runtime ──────────────────────────────────────────
@@ -296,7 +308,7 @@ Options grouped by category:
     --graphviz, --plantuml,
     --refactor-patch, --refactor-tests,
     --diff, --patch, --apply, --dry-run, --limit, --sort, --stats,
-    --summary-only, --clusters, --scope, --pager, --debug-log
+    --summary-only, --clusters, --scope, --pager, --debug-log, --history
 
   <comment>CI / Baseline</comment>
     --baseline, --baseline-out
@@ -1263,6 +1275,12 @@ HELP;
             // Item 3.4 (S4): rides the flat resolver like honor_gitignore;
             // root-only key, so a per-dir .phpdup.json cannot carry it.
             $overrides['symbols_forced'] = true;
+        }
+        if ($input->getOption('history')) {
+            // Item 4.2: same posture (flat resolver, root-only key). The
+            // window months is deliberately flag-less (max_ted_size numeric
+            // precedent) — this flag only arms; phpdup.json tunes.
+            $overrides['history'] = true;
         }
         if ($input->getOption('apply')) {
             $overrides['apply'] = true;

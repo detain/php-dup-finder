@@ -238,6 +238,16 @@ final class JsonReporter
         if ($report->idiomCensus !== null) {
             $payload['summary']['idiom_census'] = self::censusPayload($report->idiomCensus);
         }
+        // Item 4.2 (git-history correlation): the conditional trailing
+        // summary key, same MINE-D demand-armed family — present ONLY
+        // when the run armed `history`; absent otherwise, so every frozen
+        // payload stays byte-identical (no SCHEMA_VERSION move: the
+        // default run's bytes do not change). Declared by
+        // JsonSchemaSpec::summaryShape(historyArmed: true) /
+        // historyBlockShape().
+        if ($report->clusterHistory !== null) {
+            $payload['summary']['cluster_history'] = self::historyPayload($report->clusterHistory);
+        }
         return $payload;
     }
 
@@ -274,6 +284,26 @@ final class JsonReporter
             'hashes' => $census->hashCount(),
             'sites'  => $census->sitesTotal(),
             'rows'   => $rows,
+        ];
+    }
+
+    /**
+     * The armed history block (item 4.2): window bound, measured count,
+     * presentation cap, and the per-cluster verdict rows. The analyzer
+     * already capped rows (ClusterHistoryAnalyzer::MAX_ROWS) and co-change
+     * pairs (MAX_COCHANGE) and abbreviated shas, so this leg is pure
+     * pass-through — the reporter never re-runs git, and the row shape is
+     * declared by JsonSchemaSpec::historyBlockShape().
+     *
+     * @return array<string, mixed>
+     */
+    private static function historyPayload(\Phpdup\Git\ClusterHistory $history): array
+    {
+        return [
+            'window_months' => $history->windowMonths,
+            'clusters'      => count($history->rows),
+            'omitted'       => $history->omitted,
+            'rows'          => $history->rows,
         ];
     }
 

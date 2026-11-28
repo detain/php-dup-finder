@@ -165,6 +165,7 @@ final class ConfigLoader
             'optional_blocks_containment',
             'baseline', 'baseline_out', 'diff_base', 'apply',
             'candidate_mass_filter',
+            'history', 'history_window_months',
         ];
         $resolver = new OverrideResolver($flatKeys);
         // shell-S24 (php-dup-finder-shell-014): optional_blocks.containment
@@ -236,6 +237,8 @@ final class ConfigLoader
             'diff_base' => $base->diffBase,
             'apply' => $base->apply,
             'candidate_mass_filter' => $base->candidateMassFilter,
+            'history' => $base->history,
+            'history_window_months' => $base->historyWindowMonths,
         ]));
 
         $report = is_array($data['report'] ?? null) ? $data['report'] : [];
@@ -455,6 +458,14 @@ final class ConfigLoader
             // so an armed load without it exits 2 before any file is
             // parsed; the demand can never half-arm either).
             helperAdoption:                $flat['helper_adoption'],
+            // Item 4.2 (git-history correlation): same flat-resolver route
+            // as honor_gitignore (root-only, refused per-directory, default
+            // OFF; --history injects the true, phpdup.json tunes both). The
+            // window months is deliberately flag-less (max_ted_size numeric
+            // precedent) and its >= 1 domain is pinned by the door below
+            // and mirrored in NUMERIC_KEYS coercion.
+            history:                       (bool)$flat['history'],
+            historyWindowMonths:           (int)$flat['history_window_months'],
             // Item 4.4 APPLY half: root-only accepted-decision register.
             // No CLI override leg (deliberate: suppressions belong to the
             // committed config + baseline file, not ephemeral flags), so
@@ -495,6 +506,9 @@ final class ConfigLoader
         // shell-S24 (shell-014): the type-3 containment knob rides the same
         // [0,1] domain validate() pins for optional_blocks.containment.
         'optional_blocks_containment' => ['float', 0.0, 1.0],
+        // item 4.2: the history window bound — same >= 1 domain validate()
+        // pins (a zero/negative window gates every verdict to nothing).
+        'history_window_months' => ['int', 1, null],
     ];
 
     /**
@@ -1283,16 +1297,18 @@ final class ConfigLoader
         'diff_base', 'apply',
         'accepted',
         'drift_flags',
+        'history',
+        'history_window_months',
     ];
 
     /**
      * once-S67 (php-dup-finder-once-077): the admission-totality roster —
-     * the 31 KNOWN_KEYS members that per-directory `.phpdup.json` files may
+     * the 33 KNOWN_KEYS members that per-directory `.phpdup.json` files may
      * NOT carry, refused loudly by {@see discoverPerDirectoryOverrides()}.
-     * The equation the belt pins: KNOWN_KEYS (52) = the 11 parents
+     * The equation the belt pins: KNOWN_KEYS (54) = the 11 parents
      * shapeOverrides() admits (exclude, exclude_reset, min_block_size,
      * max_block_size, normalization_mode, ngram_size, kinds, db_symbols,
-     * db_aware, trinity_collapse, low_memory) + these 31 + the 10 with
+     * db_aware, trinity_collapse, low_memory) + these 33 + the 10 with
      * dedicated era arms above the roster check (fingerprint_id_mode, scope,
      * score_mode, max_ted_size, max_hole_coverage, ml_pair_allow_private,
      * baseline, baseline_out, diff_base, debug_log). A new KNOWN_KEYS member
@@ -1310,6 +1326,13 @@ final class ConfigLoader
      * tree — a subtree config choosing which findings vanish from the
      * report is exactly the attacker-controlled-suppression hazard the
      * path/ref family above was carved for. Root phpdup.json only.
+     *
+     * Item 4.2 adds 'history' + 'history_window_months' to the refused
+     * set: the git correlation arms a whole-report sidecar (one blame/log
+     * census per run over every cluster member); a per-directory flip
+     * would mint a half-armed census — some members answerable, others
+     * silently not — the same quiet-misfeed family as idiom_mining. Root
+     * phpdup.json only (--history is the CLI arm, never a subtree stance).
      */
     private const REFUSED_PER_DIRECTORY = [
         'paths', 'similarity_threshold', 'tree_threshold', 'min_cluster_impact',
@@ -1327,6 +1350,8 @@ final class ConfigLoader
         'helper_adoption',
         'accepted',
         'drift_flags',
+        'history',
+        'history_window_months',
     ];
 
     /**
@@ -1570,6 +1595,17 @@ final class ConfigLoader
             // helper re-implementations (a typo trading a full adoption
             // ledger for a quiet none is the misfeed this family refuses).
             throw new \RuntimeException("helper_adoption must be a boolean$where");
+        }
+        if (array_key_exists('history', $data) && !is_bool($data['history'])) {
+            // Item 4.2 (git-history correlation): same voice as the bool
+            // family — a 'true'-ish typo must not silently arm git
+            // subprocesses and a conditional summary key.
+            throw new \RuntimeException("history must be a boolean$where");
+        }
+        if (array_key_exists('history_window_months', $data)) {
+            // The 'last N months' bound; >= 1 because a zero/negative
+            // window would gate every history verdict to nothing.
+            $assertInt($data['history_window_months'], 'history_window_months', 1);
         }
         if (array_key_exists('scorer', $data)) {
             $assertEnum($data['scorer'], 'scorer', ['default', 'ir']);

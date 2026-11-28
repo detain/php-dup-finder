@@ -97,6 +97,15 @@ final class Report
         // reads its deterministic views (rows()/maximalRows()/hashCount()/
         // sitesTotal()), never its internals.
         public readonly ?\Phpdup\Census\SubtreeCensus $idiomCensus = null,
+        // Item 4.2 (git-history correlation): the per-cluster blame/log
+        // sidecar ReportStage computes when `history` is armed — handed
+        // over at the state→Report seam like the §5f carriers before it
+        // (trailing-param law). Null = "no correlation was asked for"
+        // (default posture, or any producer that never ran the armed leg);
+        // JsonReporter emits the conditional `summary.cluster_history`
+        // block ONLY when this is non-null, so the default payload stays
+        // byte-identical and the goldens hold (§8.4: opt-in zero churn).
+        public readonly ?\Phpdup\Git\ClusterHistory $clusterHistory = null,
     ) {
     }
 

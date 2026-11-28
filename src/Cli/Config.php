@@ -440,6 +440,22 @@ final class Config
         // the inert default: DriftAnalyzer produces zero findings without
         // a non-empty 'predicates' list, so no-profile runs are unchanged.
         public readonly array $driftVocabulary = [],
+        // Item 4.2 (git-history correlation): correlate clone clusters
+        // against git blame/log — "one twin was fixed in March, the other
+        // was last touched two years ago". Opt-in and default OFF: the
+        // sidecar only ever exists when armed, so default runs stay
+        // byte-identical (zero golden/cache churn, §8.4 bump-ride law).
+        // Root config only (refused per-directory: history is a whole-
+        // report question, not a subtree stance) — and there is no
+        // per-path git state to consult anyway: the analyzer answers for
+        // every member file of a cluster at once.
+        public readonly bool $history = false,
+        // The doc's "last N months" window for lone-change and activity
+        // claims. Deliberately CLI-less (max_ted_size precedent: a numeric
+        // report-tuning knob is a config-file key; --history arms the
+        // feature, phpdup.json tunes it). Must be >= 1: a zero/negative
+        // window would gate every history verdict to nothing.
+        public readonly int $historyWindowMonths = 12,
     ) {
         if (!in_array($normalizationMode, ['strict', 'default', 'aggressive'], true)) {
             throw new \InvalidArgumentException("Invalid normalization mode: $normalizationMode");
@@ -547,6 +563,9 @@ final class Config
         }
         if ($maxClusters < 0) {
             throw new \InvalidArgumentException("max_clusters must be >= 0");
+        }
+        if ($historyWindowMonths < 1) {
+            throw new \InvalidArgumentException("history_window_months must be >= 1 (a zero or negative window would gate every history verdict)");
         }
     }
 
@@ -821,6 +840,11 @@ final class Config
             // per-directory (one adoption ledger per run; the knob is
             // refused at discovery in ConfigLoader::REFUSED_PER_DIRECTORY).
             helperAdoption:                  $this->helperAdoption,
+            // item 4.2: root-only git correlation stance — copied, never
+            // replaced, per-directory (history answers for a whole report;
+            // refused at discovery, same posture as idiom_mining/scope).
+            history:                         $this->history,
+            historyWindowMonths:             $this->historyWindowMonths,
         );
     }
 
