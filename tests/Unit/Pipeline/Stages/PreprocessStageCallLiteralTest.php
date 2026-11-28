@@ -181,7 +181,7 @@ final class PreprocessStageCallLiteralTest extends TestCase
 
             $payload  = (new JsonReporter())->build($state->report);
             $armedKey = array_keys($payload['summary']);
-            $this->assertSame(array_keys(JsonSchemaSpec::summaryShape(true, true, true)), $armedKey,
+            $this->assertSame(array_keys(JsonSchemaSpec::summaryShape(armed: true, callsArmed: true, literalsArmed: true)), $armedKey,
                 'armed summary = frozen keys plus the three conditional trailing blocks in schema order');
             $this->assertSame(array_keys(JsonSchemaSpec::callBlockShape()), array_keys($payload['summary']['call_sequences']));
             $this->assertSame(array_keys(JsonSchemaSpec::literalBlockShape()), array_keys($payload['summary']['literal_census']));

@@ -1338,12 +1338,12 @@ final class ConfigLoader
 
     /**
      * once-S67 (php-dup-finder-once-077): the admission-totality roster —
-     * the 33 KNOWN_KEYS members that per-directory `.phpdup.json` files may
+     * the 35 KNOWN_KEYS members that per-directory `.phpdup.json` files may
      * NOT carry, refused loudly by {@see discoverPerDirectoryOverrides()}.
-     * The equation the belt pins: KNOWN_KEYS (54) = the 11 parents
+     * The equation the belt pins: KNOWN_KEYS (56) = the 11 parents
      * shapeOverrides() admits (exclude, exclude_reset, min_block_size,
      * max_block_size, normalization_mode, ngram_size, kinds, db_symbols,
-     * db_aware, trinity_collapse, low_memory) + these 33 + the 10 with
+     * db_aware, trinity_collapse, low_memory) + these 35 + the 10 with
      * dedicated era arms above the roster check (fingerprint_id_mode, scope,
      * score_mode, max_ted_size, max_hole_coverage, ml_pair_allow_private,
      * baseline, baseline_out, diff_base, debug_log). A new KNOWN_KEYS member
