@@ -1,0 +1,93 @@
+{
+    "description": "Text-twins bench corpus (item 7.1 native token tier): 4 keyed families \u2014 type-1 JS copies, renamed-id .tpl twins, a .yml/.yaml compose pair, and one CROSS-language pair (identical statement core in a .js and a .tpl file, keyword-free so both language profiles project it onto the same blanked stream). Members of a family are the twins; negative_files reuse the families' vocabulary in unique shapes \u2014 detections there are false positives.",
+    "clusters": [
+        [
+            {
+                "file": "buy_license.js",
+                "start": 1,
+                "end": 11
+            },
+            {
+                "file": "buy_license2.js",
+                "start": 2,
+                "end": 12
+            },
+            {
+                "file": "buy_license3.js",
+                "start": 2,
+                "end": 12
+            }
+        ],
+        [
+            {
+                "file": "promo_banner.tpl",
+                "start": 2,
+                "end": 15
+            },
+            {
+                "file": "sale_banner.tpl",
+                "start": 1,
+                "end": 14
+            }
+        ],
+        [
+            {
+                "file": "deploy_api.yml",
+                "start": 2,
+                "end": 20
+            },
+            {
+                "file": "deploy_web.yaml",
+                "start": 2,
+                "end": 20
+            }
+        ],
+        [
+            {
+                "file": "totals.js",
+                "start": 3,
+                "end": 9
+            },
+            {
+                "file": "totals_block.tpl",
+                "start": 2,
+                "end": 8
+            }
+        ]
+    ],
+    "negative_files": [
+        "control_tax.js",
+        "control_layout.tpl"
+    ],
+    "families": [
+        {
+            "desc": "type-1 JS copies (buy_license story); v3 is a renamed-id type-2 copy",
+            "files": [
+                "buy_license.js",
+                "buy_license2.js",
+                "buy_license3.js"
+            ]
+        },
+        {
+            "desc": "renamed-id twin blocks in .tpl (tier blanks identifiers)",
+            "files": [
+                "promo_banner.tpl",
+                "sale_banner.tpl"
+            ]
+        },
+        {
+            "desc": "copied compose/workflow YAML twin across .yml and .yaml",
+            "files": [
+                "deploy_api.yml",
+                "deploy_web.yaml"
+            ]
+        },
+        {
+            "desc": "CROSS-LANGUAGE pair: identical statement core in a .js and a .tpl file",
+            "files": [
+                "totals.js",
+                "totals_block.tpl"
+            ]
+        }
+    ]
+}

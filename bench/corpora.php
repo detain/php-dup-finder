@@ -17,6 +17,18 @@
  * advisory note. Refreshing a pin means re-deriving it with the exact
  * recipe documented in the pin file and committing the new value.
  *
+ * A second planted corpus, `text-twins`, is the bench substrate of the
+ * native token tier (item 7.1): JS / .tpl / YAML twin families — with
+ * one deliberately CROSS-language pair (the same statement core planted
+ * verbatim into a .js and a .tpl file) and negative controls — plus an
+ * answer key in the same `.ground-truth.json` shape. It exists because
+ * no downloaded corpus speaks these languages, and the interim jscpd
+ * comparator leg (bench/text-tier-acceptance.php, CI job
+ * `text-tier-bench`) needs keyed truth to score native text-tier recall
+ * against. Same supply-chain law as synthetic-fuzz: deterministic
+ * planter, committed manifest, [text-twins] pin block re-verified on
+ * every materialization.
+ *
  * The synthetic corpus is always (re)generated here by the planter
  * below — NOT by Phpdup\Testing\FuzzCorpusGenerator (that generator
  * renders one fixed method shape regardless of template name, which
@@ -34,6 +46,7 @@
  * Usage:
  *   php bench/corpora.php                   # download missing, regenerate synthetic, verify all
  *   php bench/corpora.php --synthetic-only  # regenerate synthetic only (no network for OSS)
+ *   php bench/corpora.php --text-twins-only # plant+verify the text-tier corpus only (no network)
  *   php bench/corpora.php --list            # print the planned corpora and exit
  *   php bench/corpora.php --refresh         # force re-clone everything
  *   php bench/corpora.php --verify-only     # verify what exists; clone nothing, plant nothing
@@ -103,6 +116,7 @@ function main(array $argv): int
             printf("%-40s %s @ %s%s\n", $p['name'], $p['url'], $p['ref'], $p['sparse'] ? " (sparse: {$p['sparse']})" : '');
         }
         echo "synthetic-fuzz                           (generated locally)\n";
+        echo "text-twins                               (generated locally)\n";
         return 0;
     }
 
@@ -114,6 +128,7 @@ function main(array $argv): int
 
     $verifyOnly    = in_array('--verify-only', $argv, true);
     $syntheticOnly = in_array('--synthetic-only', $argv, true);
+    $textTwinsOnly = in_array('--text-twins-only', $argv, true);
     $forceRefresh  = in_array('--refresh', $argv, true);
     /** @var list<string> $failures */
     $failures = [];
@@ -137,7 +152,7 @@ function main(array $argv): int
 
         $present = is_dir($target) && countPhpFiles($target) > 0;
 
-        if ($verifyOnly || $syntheticOnly) {
+        if ($verifyOnly || $syntheticOnly || $textTwinsOnly) {
             if ($present) {
                 $err = verifyPinnedTree($pin, $name, $target);
                 if ($err !== null) {
@@ -147,7 +162,7 @@ function main(array $argv): int
                     echo "[ok] {$name} present and pin-verified\n";
                 }
             } else {
-                echo "[skip] {$name} " . ($verifyOnly ? 'not materialized (--verify-only)' : 'untouched (--synthetic-only)') . "\n";
+                echo "[skip] {$name} " . ($verifyOnly ? 'not materialized (--verify-only)' : 'untouched (--synthetic-only/--text-twins-only)') . "\n";
             }
             continue;
         }
@@ -171,9 +186,20 @@ function main(array $argv): int
 
     if ($verifyOnly) {
         verifySynthetic($pins, $corporaDir . '/synthetic-fuzz', $failures);
+        verifyTextTwins($pins, $corporaDir . '/text-twins', $failures);
     } else {
-        generateSynthetic($corporaDir . '/synthetic-fuzz');
-        verifySynthetic($pins, $corporaDir . '/synthetic-fuzz', $failures);
+        if ($textTwinsOnly) {
+            echo "[skip] synthetic-fuzz untouched (--text-twins-only)\n";
+        } else {
+            generateSynthetic($corporaDir . '/synthetic-fuzz');
+            verifySynthetic($pins, $corporaDir . '/synthetic-fuzz', $failures);
+        }
+        if ($syntheticOnly) {
+            echo "[skip] text-twins untouched (--synthetic-only)\n";
+        } else {
+            generateTextTwins($corporaDir . '/text-twins');
+            verifyTextTwins($pins, $corporaDir . '/text-twins', $failures);
+        }
     }
 
     verifyReportDigests($pinsFile, $failures);
@@ -820,6 +846,401 @@ function plantMember(string $dir, string $slug, int $index, string $methodText):
 
     file_put_contents($dir . '/' . $fileName, $text);
     return ['file' => $fileName, 'start' => $start, 'end' => $end];
+}
+
+/**
+ * Plant the text-twins corpus — the keyed substrate for the native
+ * token tier (item 7.1) and its interim jscpd comparator leg.
+ *
+ * Four ground-truth families of two or three members each:
+ *  - license:  the mission's `buy_license.js ≡ buy_license2.js` story
+ *    (type-1 JS copies, filler lines differ per member);
+ *  - banner:   renamed-id twin blocks in .tpl (twig-ish bodies; the
+ *    tier blanks identifiers, jscpd has no .tpl format at all);
+ *  - deploy:   a copied compose/workflow YAML pair across .yml/.yaml;
+ *  - cross:    ONE statement core planted verbatim into a .js AND a
+ *    .tpl file — the cross-language pair the blanked-window tier
+ *    catches and a per-format comparator structurally cannot.
+ * The core lines avoid every word in `LangProfiles`' js/twig keyword
+ * tables, so the two profiles project it onto the SAME blanked token
+ * stream; anything keyword-shaped sits outside the keyed region.
+ *
+ * Negative controls reuse the families' vocabulary (total/grand/
+ * badge/replicas…) in structurally unique shapes — detections over
+ * them are false positives the scorer actually sees.
+ *
+ * Ground truth: one cluster per family, member ranges computed from
+ * the rendered text between start/end markers (no magic line numbers),
+ * paths corpus-relative — the exact shape bench/score.php consumes for
+ * synthetic-fuzz.
+ */
+function generateTextTwins(string $dir): void
+{
+    if (is_dir($dir)) {
+        passthru('rm -rf ' . escapeshellarg($dir));
+    }
+    @mkdir($dir, 0o775, true);
+
+    // The license family: one exact function body, copied verbatim into
+    // three files (type-1, the buy_license story). Fillers are comments
+    // (stripped by the .js profile) or unique code lines OUTSIDE the
+    // keyed function so the files are not byte-identical while the
+    // keyed region stays an exact window match.
+    $licenseBody = <<<'JS'
+function computeLicenseTotal(items, tax) {
+    var total = 0;
+    for (var i = 0; i < items.length; i++) {
+        var line = items[i];
+        total += line.price * line.quantity;
+        if (line.taxable) {
+            total += total * tax;
+        }
+    }
+    return Math.round(total * 100) / 100;
+}
+JS;
+    // v3 renames the loop variable and a literal — still exact under the
+    // tier's blanked stream (identifiers -> I, numbers -> N); filler and
+    // rename mark it a hand-maintained copy, not a byte clone.
+    $licenseBodyV3 = str_replace(
+        ['for (var i = 0; i < items.length; i++)', 'items[i]', 'total * 100'],
+        ['for (var k = 0; k < items.length; k++)', 'items[k]', 'total * 1000'],
+        $licenseBody,
+    );
+
+    // The banner family: identical block shape, EVERY identifier
+    // suffixed on the second member (type-2 — the tier blanks
+    // identifiers, a per-format comparator sees neither .tpl at all).
+    $bannerBody = <<<'TPL'
+{%- block banner_totals %}
+    {%- set banner_total = 0 %}
+    {%- for row in rows %}
+        {%- set banner_total = banner_total + row.price * row.qty %}
+        {%- if row.featured %}
+            {%- set featured_count = featured_count + 1 %}
+        {%- endif %}
+    {%- endfor %}
+    {%- if featured_count > 3 %}
+        {%- set badge = 'hot' %}
+    {%- else %}
+        {%- set badge = 'cool' %}
+    {%- endif %}
+{%- endblock %}
+TPL;
+    $bannerBodySale = $bannerBody;
+    foreach (['banner_total', 'featured_count', 'row', 'rows'] as $word) {
+        $bannerBodySale = preg_replace('/\b' . $word . '\b(?!_)/', $word . '_sale', $bannerBodySale) ?? $bannerBodySale;
+    }
+
+    // The deploy family: one compose service copied across .yml/.yaml
+    // (identical key/value spellings; only a number and outside-region
+    // comments/sections differ).
+    $deployBody = <<<'YML'
+version: "3.8"
+services:
+  release-app:
+    image: registry.local/release-app:2.14
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.5"
+        reservations:
+          memory: 256M
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+    environment:
+      APP_ENV: production
+      LOG_LEVEL: warning
+YML;
+
+    // The cross family: ONE statement core, byte-identical, planted in
+    // a .js file inside a real function and in a .tpl file inside a
+    // block. Every word in the core is outside both the js and the twig
+    // keyword tables, so both profiles project it onto the SAME blanked
+    // token stream — this is the pairing a per-format comparator
+    // structurally cannot produce.
+    $crossCore = <<<'CORE'
+rate = base * (margin + uplift);
+totals[index] = qty * rate - discount;
+grand = grand + totals[index];
+stamp = (grand > ceiling) ? "over" : "under";
+output.push([grand, stamp, precision]);
+report[dept] = report[dept] + grand;
+summary = emit(grand, report, stamp);
+CORE;
+
+    /** @var list<array{members:list<array{file:string,text:string}>, start:string, end:string, endLast:bool, desc:string}> $families */
+    $families = [
+        [
+            'members' => [
+                ['file' => 'buy_license.js',   'text' => $licenseBody . "\n"],
+                [
+                    'file' => 'buy_license2.js',
+                    'text' => "// checksum: mirrored from buy_license.js during the 4.14 sync\n"
+                        . $licenseBody . "\n// legacy copy — remove after migration window\n",
+                ],
+                [
+                    'file' => 'buy_license3.js',
+                    'text' => "// hand-maintained variant (loop var renamed, rounding widened)\n"
+                        . $licenseBodyV3 . "\n",
+                ],
+            ],
+            'start'   => 'function computeLicenseTotal',
+            'end'     => '}',
+            'endLast' => true,
+            'desc'    => 'type-1 JS copies (buy_license story); v3 is a renamed-id type-2 copy',
+        ],
+        [
+            'members' => [
+                [
+                    'file' => 'promo_banner.tpl',
+                    'text' => "{# campaign layout #}\n" . $bannerBody . "\n{# end campaign #}\n",
+                ],
+                [
+                    'file' => 'sale_banner.tpl',
+                    'text' => $bannerBodySale . "\n{# sale variant footer hook #}\n",
+                ],
+            ],
+            'start'   => '{%- block banner_totals %}',
+            'end'     => '{%- endblock %}',
+            'endLast' => true,
+            'desc'    => 'renamed-id twin blocks in .tpl (tier blanks identifiers)',
+        ],
+        [
+            'members' => [
+                [
+                    'file' => 'deploy_api.yml',
+                    'text' => "# api fleet release definition\n" . $deployBody . "\n",
+                ],
+                [
+                    'file' => 'deploy_web.yaml',
+                    'text' => "# web fleet mirror of deploy_api.yml\n"
+                        . $deployBody .
+                        "\nvolumes:\n  - /srv/web-data:/data\n",
+                ],
+            ],
+            'start'   => 'version: "3.8"',
+            'end'     => 'LOG_LEVEL: warning',
+            'endLast' => false,
+            'desc'    => 'copied compose/workflow YAML twin across .yml and .yaml',
+        ],
+        [
+            'members' => [
+                [
+                    'file' => 'totals.js',
+                    'text' => "function summarize(dept, ceiling) {\n    var grand = 0;\n"
+                        . $crossCore . "\n    return summary;\n}\n",
+                ],
+                [
+                    'file' => 'totals_block.tpl',
+                    'text' => "{% block totals %}\n" . $crossCore . "\n{% endblock %}\n",
+                ],
+            ],
+            'start'   => 'rate = base *',
+            'end'     => 'summary = emit(',
+            'endLast' => false,
+            'desc'    => 'CROSS-LANGUAGE pair: identical statement core in a .js and a .tpl file',
+        ],
+    ];
+
+    $clusters = [];
+    foreach ($families as $family) {
+        $members = [];
+        foreach ($family['members'] as $member) {
+            $members[] = plantTextMember(
+                $dir,
+                $member['file'],
+                $member['text'],
+                $family['start'],
+                $family['end'],
+                $family['endLast'],
+            );
+        }
+        $clusters[] = [
+            'members' => $members,
+            'desc'    => $family['desc'],
+            'files'   => array_column($family['members'], 'file'),
+        ];
+    }
+
+    $negativeTemplates = [
+        'control_tax.js' => <<<'JS'
+function applyTaxRate(lines, country) {
+    switch (country) {
+        case 'DE':
+            return lines.map(function (row) { return row * 1.19; });
+        case 'UK':
+            return lines.map(function (row) { return row * 1.20; });
+        default:
+            return lines;
+    }
+}
+JS,
+        'control_layout.tpl' => <<<'TPL'
+{%- extends 'base.tpl' %}
+{%- block header %}<header class="layout">{% endblock %}
+{%- block main %}<main>{% include 'nav.tpl' %}</main>{% endblock %}
+TPL,
+    ];
+    $negativeFiles = [];
+    foreach ($negativeTemplates as $fileName => $template) {
+        $body = $template . "\n";
+        file_put_contents($dir . '/' . $fileName, $body);
+        $negativeFiles[] = $fileName;
+    }
+
+    file_put_contents(
+        $dir . '/.ground-truth.json',
+        json_encode([
+            'description' => 'Text-twins bench corpus (item 7.1 native token tier): 4 keyed families — type-1 JS '
+                . 'copies, renamed-id .tpl twins, a .yml/.yaml compose pair, and one CROSS-language pair '
+                . '(identical statement core in a .js and a .tpl file, keyword-free so both language profiles '
+                . 'project it onto the same blanked stream). Members of a family are the twins; negative_files '
+                . 'reuse the families\' vocabulary in unique shapes — detections there are false positives.',
+            'clusters' => array_map(static fn(array $f): array => $f['members'], $clusters),
+            'negative_files' => $negativeFiles,
+            'families' => array_map(static fn(array $f): array => [
+                'desc'  => $f['desc'],
+                'files' => $f['files'],
+            ], $clusters),
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n",
+    );
+
+    printf(
+        "[ok] text-twins generated (%d family files + %d negative controls, %d ground-truth clusters)\n",
+        array_sum(array_map(static fn(array $f): int => count($f['files']), $clusters)),
+        count($negativeFiles),
+        count($clusters)
+    );
+}
+
+/**
+ * Write one text corpus file and return its ground-truth member entry,
+ * with the keyed region's line range computed from the rendered text:
+ * start = first line beginning with $startNeedle, end = last (or first,
+ * when !$endLast) line whose trimmed form begins with $endNeedle.
+ *
+ * @return array{file:string, start:int, end:int}
+ */
+function plantTextMember(
+    string $dir,
+    string $fileName,
+    string $text,
+    string $startNeedle,
+    string $endNeedle,
+    bool $endLast,
+): array {
+    $body = $text;
+    if (!str_ends_with($body, "\n")) {
+        $body .= "\n";
+    }
+
+    $lines = explode("\n", rtrim($body, "\n"));
+    $start = 0;
+    $end   = 0;
+    foreach ($lines as $i => $line) {
+        if ($start === 0 && str_starts_with(trim($line), $startNeedle)) {
+            $start = $i + 1;
+        }
+    }
+    foreach ($lines as $i => $line) {
+        if (str_starts_with(trim($line), $endNeedle)) {
+            if ($endLast || $end === 0) {
+                $end = $i + 1;
+            }
+        }
+    }
+    if ($start === 0 || $end < $start) {
+        fwrite(STDERR, "[fail] could not locate keyed region markers in {$fileName}\n");
+        exit(1);
+    }
+
+    file_put_contents($dir . '/' . $fileName, $body);
+    return ['file' => $fileName, 'start' => $start, 'end' => $end];
+}
+
+/**
+ * Sorted corpus-relative paths of every planted text file (the
+ * ground-truth manifest itself excluded) — the analog of
+ * collectPhpPaths() for the non-PHP tier corpora.
+ *
+ * @return list<string>
+ */
+function collectCorpusTextPaths(string $dir): array
+{
+    $out = [];
+    $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS));
+    foreach ($it as $file) {
+        if (!$file->isFile() || $file->getFilename() === '.ground-truth.json') {
+            continue;
+        }
+        $rel = substr($file->getPathname(), strlen($dir) + 1);
+        $out[] = str_replace(DIRECTORY_SEPARATOR, '/', $rel);
+    }
+    sort($out);
+    return $out;
+}
+
+function textTreeDigest(string $dir): string
+{
+    $h = hash_init('sha256');
+    foreach (collectCorpusTextPaths($dir) as $rel) {
+        hash_update($h, $rel . "\n" . (string)file_get_contents($dir . '/' . $rel));
+    }
+    return hash_final($h);
+}
+
+/**
+ * [text-twins] enforcement — same teeth as verifySynthetic(): committed
+ * manifest digest + planted-tree file-list and content digests. An
+ * un-materialized tree is [absent], never a false mismatch.
+ *
+ * @param array<string,array<string,string>> $pins
+ * @param list<string> $failures
+ */
+function verifyTextTwins(array $pins, string $dir, array &$failures): void
+{
+    $pin = $pins['text-twins'] ?? null;
+    if ($pin === null) {
+        echo "[fail] text-twins has no [text-twins] pin block — refusing\n";
+        $failures[] = 'text-twins: no [text-twins] block in bench/corpus-pins.txt';
+        return;
+    }
+    $gtFile = $dir . '/.ground-truth.json';
+    if (!is_file($gtFile) || collectCorpusTextPaths($dir) === []) {
+        echo "[absent] text-twins not materialized (--text-twins-only to plant)\n";
+        return;
+    }
+    $gtSha = hash_file('sha256', $gtFile);
+    if (!hash_equals(strtolower($pin['ground-truth-sha256'] ?? ''), $gtSha)) {
+        echo "[fail] text-twins ground-truth digest mismatch (got {$gtSha}, pinned " . ($pin['ground-truth-sha256'] ?? '') . ")\n";
+        $failures[] = 'text-twins: .ground-truth.json digest mismatch — planter drift vs committed truth';
+    }
+    $paths      = collectCorpusTextPaths($dir);
+    $listDigest = hash('sha256', implode("\n", $paths) . "\n");
+    if (!hash_equals(strtolower($pin['text-filelist-sha256'] ?? ''), $listDigest)) {
+        $msg = "text-twins: file-list digest mismatch (found " . count($paths) . " files, {$listDigest}; pinned " . ($pin['text-filelist-sha256'] ?? '') . ")";
+        echo "[fail] {$msg}\n";
+        $failures[] = $msg;
+    }
+    if (isset($pin['text-files']) && (int)$pin['text-files'] !== count($paths)) {
+        $msg = 'text-twins: file count ' . count($paths) . " != pinned {$pin['text-files']}";
+        echo "[fail] {$msg}\n";
+        $failures[] = $msg;
+    }
+    $content = textTreeDigest($dir);
+    if (!hash_equals(strtolower($pin['text-content-sha256'] ?? ''), $content)) {
+        $msg = "text-twins: content digest mismatch (got {$content}, pinned " . ($pin['text-content-sha256'] ?? '') . ')';
+        echo "[fail] {$msg}\n";
+        $failures[] = $msg;
+    }
+    if ($failures === [] && $gtSha !== '') {
+        echo "[ok] text-twins manifest + file list + content digests verified\n";
+    }
 }
 
 // Executing this file runs materialization; defining

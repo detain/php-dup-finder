@@ -55,6 +55,40 @@ php-content-sha256     = 1a3a83920a5977f07ebbc3d775768b8fec006ca73aa644b13a599de
 #   find . -type f -name '*.php' | sed 's|^\./||' | LC_ALL=C sort | sha256sum
 #   for f in $(find . -type f -name '*.php' | sed 's|^\./||' | LC_ALL=C sort); do printf '%s\n' "$f"; cat "$f"; done | sha256sum
 
+[text-twins]
+# The text-tier bench corpus (bench/corpora.php generateTextTwins) is
+# deterministic; the committed ground truth and the planted tree are
+# byte-pinned here exactly like [synthetic-fuzz] — planter drift vs the
+# committed manifest fails materialization loudly.
+ground-truth-sha256    = b15b6d5ff0ee782a9133e61196df4c137c474133561c3c51f85f1ec2c23a1d4a
+text-files             = 11
+text-filelist-sha256   = f18404b99d49e4df5404e1999368b5f29b15c948af4a99ddc22dddcd9da2ccb5
+text-content-sha256    = 6f295da32f48a64e6bcd67f87296d597a8e3d7d9cbc6ab21e0688014336b593c
+# verification (paths relative to bench/corpora/text-twins, manifest excluded):
+#   sha256sum .ground-truth.json
+#   find . -type f ! -name '*.ground-truth.json' ! -name '.ground-truth.json' | sed 's|^\./||' | LC_ALL=C sort | sha256sum
+#   for f in $(find . -type f ! -name '.ground-truth.json' | sed 's|^\./||' | LC_ALL=C sort); do printf '%s\n' "$f"; cat "$f"; done | sha256sum
+
+[jscpd-rust]
+# The interim text-tier comparator (CI job text-tier-bench): the jscpd 5.x
+# SELF-CONTAINED Rust release binary — no Node/npm needed. The CI step
+# fetches only the asset whose target matches the runner arch and hard-reds
+# on a complete-download digest mismatch (unverified bytes are never
+# executed); a transport failure skips the comparator leg green with an
+# honest notice because the native keyed-recall gate stands alone.
+# refresh recipe: download <url-base>/<asset>, `sha256sum` the tarball,
+# and cross-check the value against the release's checksums.txt.
+# NOTE the upstream asset names carry NO version (jscpd-<target>.tar.gz).
+# darwin digests (manual dev use, v5.4.3): x86_64
+#   7e5b81a0b30f1d261bf9cd8d8e72be43f0ce55a54a9374f1111123bb29362362
+# arm64  e119c4c5388118ad348a799c478589f7ad0fa707c0b7c819d6febc94f6f98522
+version                = 5.4.3
+url-base               = https://github.com/kucherenko/jscpd/releases/download/v5.4.3
+asset-linux-x64-gnu    = jscpd-linux-x64-gnu.tar.gz
+sha256-linux-x64-gnu   = a19d719331b21a047a7537f982566dabcf6d6e5f51581c3b80d9c420979cc92c
+asset-linux-arm64-gnu  = jscpd-linux-arm64-gnu.tar.gz
+sha256-linux-arm64-gnu = 221a62a254ab4cc42f26e076943ca79ecd311ae41646a76a08e4b790ed8c5fbe
+
 [oss-symfony-console]
 url                 = https://github.com/symfony/console.git
 tag                 = v6.4.0
