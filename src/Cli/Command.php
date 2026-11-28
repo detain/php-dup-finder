@@ -187,6 +187,13 @@ final class Command extends SymfonyCommand
                 repo ignore rules is auto-excluded; excluded paths are counted in the scan notes. Config
                 exclude lists keep priority — nothing is revived — and the JSON summary shape is unchanged.
                 Off by default.')
+            ->addOption('symbols', null, InputOption::VALUE_NONE, 'Item 3.4 duplicate-symbol lane: compare same-name and same-file-basename
+                declarations regardless of the similarity heuristics. Pairs sharing a (case-folded) function/method
+                name across owners, twin short class names, and named blocks from files sharing a basename are fed
+                to scoring even when the ngram bags never meet; every forced pair still rides the normal scoring
+                pass, so a below-floor pair is reported as measured evidence, never merged into a cluster. The JSON
+                report gains a conditional symbol_duplicates summary block when armed. Magic "__" names pair only
+                through the twin-class route. Off by default — the default report is untouched.')
             ->addOption('scorer', null, InputOption::VALUE_REQUIRED, 'Scoring tier set: default | ir. "ir" enables the IR-tier fallback — when AST
                 Jaccard / TED / containment all reject a pair, lift both blocks to the canonical IR
                 (Phpdup\\Ir\\IrLifter) and Jaccard their token bags. Pairs at or above --ir-threshold
@@ -276,7 +283,7 @@ Options grouped by category:
     --min-impact, --min-safety, --fail-on-impact, --max-clusters,
     --score-mode, --max-hole-coverage,
     --exact-only, --kinds, --auto-tune,
-    --ted-weights, --db-aware, --trinity-collapse, --honor-gitignore,
+    --ted-weights, --db-aware, --trinity-collapse, --honor-gitignore, --symbols,
     --scorer, --ir-threshold,
     --ml-pair-url, --ml-pair-threshold,
     --profile
@@ -1249,6 +1256,11 @@ HELP;
             // W2a / item 5.2: rides the flat resolver like window_oversized;
             // root-only key, so a per-dir .phpdup.json cannot carry it.
             $overrides['honor_gitignore'] = true;
+        }
+        if ($input->getOption('symbols')) {
+            // Item 3.4 (S4): rides the flat resolver like honor_gitignore;
+            // root-only key, so a per-dir .phpdup.json cannot carry it.
+            $overrides['symbols_forced'] = true;
         }
         if ($input->getOption('apply')) {
             $overrides['apply'] = true;

@@ -158,6 +158,7 @@ final class ConfigLoader
             'window_oversized',
             'honor_gitignore',
             'idiom_mining',
+            'symbols_forced',
             'ir_threshold', 'ml_pair_threshold', 'debug_log',
             'low_memory', 'fail_on_impact', 'max_clusters',
             'optional_blocks_containment',
@@ -220,6 +221,7 @@ final class ConfigLoader
             'window_oversized' => $base->windowOversized,
             'honor_gitignore' => $base->honorGitignore,
             'idiom_mining' => $base->idiomMining,
+            'symbols_forced' => $base->symbolsForced,
             'ir_threshold' => $base->irThreshold,
             'ml_pair_threshold' => $base->mlPairThreshold,
             'debug_log' => $base->debugLog,
@@ -440,6 +442,11 @@ final class ConfigLoader
             // without it exits 2 with the Config message before any file
             // is parsed — the demand can never half-arm.
             idiomMining:                   $flat['idiom_mining'],
+            // Item 3.4: forced-symbol demand. Boolean, no coercion entry —
+            // rides the flat resolver like honor_gitignore/idiom_mining.
+            // The argv leg exists here (Command::configure's --symbols),
+            // unlike the config-only idiom precedent.
+            symbolsForced:                 $flat['symbols_forced'],
             // Item 4.4 APPLY half: root-only accepted-decision register.
             // No CLI override leg (deliberate: suppressions belong to the
             // committed config + baseline file, not ephemeral flags), so
@@ -1261,6 +1268,7 @@ final class ConfigLoader
         'window_oversized',
         'honor_gitignore',
         'idiom_mining',
+        'symbols_forced',
         'baseline',
         'baseline_out',
         'diff_base', 'apply',
@@ -1272,10 +1280,10 @@ final class ConfigLoader
      * once-S67 (php-dup-finder-once-077): the admission-totality roster —
      * the 29 KNOWN_KEYS members that per-directory `.phpdup.json` files may
      * NOT carry, refused loudly by {@see discoverPerDirectoryOverrides()}.
-     * The equation the belt pins: KNOWN_KEYS (50) = the 11 parents
+     * The equation the belt pins: KNOWN_KEYS (51) = the 11 parents
      * shapeOverrides() admits (exclude, exclude_reset, min_block_size,
      * max_block_size, normalization_mode, ngram_size, kinds, db_symbols,
-     * db_aware, trinity_collapse, low_memory) + these 29 + the 10 with
+     * db_aware, trinity_collapse, low_memory) + these 30 + the 10 with
      * dedicated era arms above the roster check (fingerprint_id_mode, scope,
      * score_mode, max_ted_size, max_hole_coverage, ml_pair_allow_private,
      * baseline, baseline_out, diff_base, debug_log). A new KNOWN_KEYS member
@@ -1303,6 +1311,10 @@ final class ConfigLoader
         'candidate_budget', 'candidate_mass_filter', 'window_oversized',
         'honor_gitignore',
         'idiom_mining',
+        // Item 3.4 (S4): one forced-symbol index per run — pairs span
+        // directories, so a per-directory flip would arm the injection for
+        // some subtrees only. Same refused family as idiom_mining.
+        'symbols_forced',
         'accepted',
         'drift_flags',
     ];
@@ -1533,6 +1545,14 @@ final class ConfigLoader
             // census (an armed run reprocesses every file; flipping by
             // typo would trade a full census for a warm-replay zero).
             throw new \RuntimeException("idiom_mining must be a boolean$where");
+        }
+        if (array_key_exists('symbols_forced', $data) && !is_bool($data['symbols_forced'])) {
+            // Item 3.4 (S4): same voice — a non-boolean must not silently
+            // flip whether the run injects forced-symbol pairs into
+            // candidate generation (an armed run changes which clusters
+            // exist; flipping by typo trades a deterministic corpus for a
+            // different one).
+            throw new \RuntimeException("symbols_forced must be a boolean$where");
         }
         if (array_key_exists('scorer', $data)) {
             $assertEnum($data['scorer'], 'scorer', ['default', 'ir']);

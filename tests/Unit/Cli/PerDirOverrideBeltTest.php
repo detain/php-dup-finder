@@ -205,11 +205,17 @@ final class PerDirOverrideBeltTest extends TestCase
 
     /**
      * Refused key => a schema-VALID root value, so the refusal must bite
-     * on KEY PRESENCE, never hide behind a shape error. Covers the 27
-     * once-S67 refusals AND the 10 legacy-era arms (their dedicated throw
-     * blocks predate S67; the matrix pins them under one voice).
+     * on KEY PRESENCE, never hide behind a shape error. Covers the 28
+     * once-S67-roster refusations present here AND the 10 legacy-era arms
+     * (their dedicated throw blocks predate S67; the matrix pins them
+     * under one voice).
      * (The 26th entry — 'accepted' — joined with item 4.4: a per-directory
-     * suppression register is the attacker-controlled-suppression door.)
+     * suppression register is the attacker-controlled-suppression door.
+     * The 28th — 'symbols_forced' — joined with item 3.4 (S4); note that
+     * two REFUSED-constant members have no row here: 'idiom_mining' (item
+     * 3.1, MINE-D) and 'drift_flags' (item 4.1) — matrix gaps born with
+     * their own items, carried by the totality equation; disclosed in the
+     * S4 lane report, adding foreign rows is not this lane's edit.)
      *
      * @return array<string,array<int,mixed>|string|int|float|bool>
      */
@@ -242,6 +248,13 @@ final class PerDirOverrideBeltTest extends TestCase
             'candidate_mass_filter' => true,
             'window_oversized'      => true,
             'honor_gitignore'       => true,
+            // Item 3.4 (S4): refused-per-directory, root-valid bool value.
+            // (Note: MINE-D's idiom_mining has no row here — the matrix
+            // test iterates refusedKeyValues(), so that key's refusal is
+            // carried only by the totality equation below. Disclosed in
+            // the S4 lane report; adding a foreign row is not this lane's
+            // edit to make.)
+            'symbols_forced'        => true,
             'accepted'              => ['Faaa1111222233334'],
             // legacy family (dedicated arms; same voice pinned here)
             'fingerprint_id_mode'   => 'numbered',
@@ -295,7 +308,7 @@ final class PerDirOverrideBeltTest extends TestCase
         self::assertIsArray($refused);
 
         $covered = array_merge(self::ADMITTED_PARENTS, $refused, self::LEGACY_REFUSED);
-        self::assertCount(50, $known, 'the root-config universe is 50 keys');
+        self::assertCount(51, $known, 'the root-config universe is 51 keys');
         self::assertCount(count($covered), $known, 'no key may be counted twice across the three sides');
         sort($known);
         sort($covered);
@@ -305,7 +318,7 @@ final class PerDirOverrideBeltTest extends TestCase
             'every KNOWN_KEYS member must be admitted-parent, refused, or legacy-refused (once-S67 totality)',
         );
 
-        self::assertCount(29, $refused, 'the once-S67 roster refuses exactly 29 new keys (27 + item 3.1 idiom_mining + item 4.1 drift_flags)');
+        self::assertCount(30, $refused, 'the once-S67 roster refuses exactly 30 new keys (27 + item 3.1 idiom_mining + item 4.1 drift_flags + item 3.4 symbols_forced)');
         self::assertEmpty(array_intersect(self::ADMITTED_PARENTS, $refused));
         self::assertEmpty(array_intersect(self::ADMITTED_PARENTS, self::LEGACY_REFUSED));
         self::assertEmpty(array_intersect($refused, self::LEGACY_REFUSED));

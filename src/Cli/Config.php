@@ -390,6 +390,22 @@ final class Config
         // emit NO mined rows (the warm asymmetry law) and a partial census
         // served as complete would lie.
         public readonly bool $idiomMining = false,
+        // Item 3.4 (--symbols): the duplicate-symbol demand knob (config
+        // file key `symbols_forced`, JSON bool; CLI flag --symbols flips it).
+        // True: ClusterStage builds a SymbolIndex over the final BlockIndex
+        // and injects its forced pairs ahead of the natural candidate stream
+        // (same-name / same-class-twin / same-basename pairs bypass the
+        // bag/df prefilters but ride normal scoring), and the JSON report
+        // gains the conditional trailing `summary.symbol_duplicates` block —
+        // every forced pair with its MEASURED similarities, linked/unlinked
+        // verdicts against the run's clusters. Works on the default kinds
+        // roster: symbol identity (name/class/file) is resident on every
+        // named-declaration block, so — unlike idiom_mining — there is no
+        // fragment precondition to enforce. Root config only (refused
+        // per-directory: pairs span directories, one index per run — the
+        // candidate_mass_filter/idiom_mining class) and bound into the
+        // cluster cache key: flipping changes which clusters exist.
+        public readonly bool $symbolsForced = false,
         // Item 4.4 APPLY half: root-only phpdup.json "accepted" list of
         // stable finding ids the team decided to keep. Suppressed from
         // the main report into the baseline appendix (BaselineFilter);
@@ -764,6 +780,9 @@ final class Config
             // per-directory (refused at discovery; the report-level stance
             // family, same posture as scope/score_mode/accepted).
             driftVocabulary:                 $this->driftVocabulary,
+            // Item 3.4: root-only, copied — pairs span directories, one
+            // forced-symbol index per run (refused per-directory).
+            symbolsForced:                   $this->symbolsForced,
         );
     }
 
