@@ -40,7 +40,9 @@ final class DriftAnalyzerTest extends TestCase
         ],
         'sanitizers' => ['real_escape', 'sanitize', 'mysql_real_escape_string', 'intval'],
         'auth'       => ['require_auth', 'reauth', 'check_admin', 'is_admin'],
-        'options'    => [],
+        // r1 m-2: the option arm is SCOPE-gated by this list — the fire
+        // pins need the enumerated security-relevant constant present.
+        'options'    => ['CURLOPT_SSL_VERIFYPEER', 'CURLOPT_SSL_VERIFYHOST'],
     ];
 
     // ------------------------------------------------------------- guard-drift
@@ -200,11 +202,13 @@ final class DriftAnalyzerTest extends TestCase
         self::assertStringContainsString('false vs true', $findings[0]->message);
     }
 
-    public function testOptionDivergenceSurvivesAstrippedTemplate(): void
+    public function testOptionDivergenceStaysSilentWhenTheOptionNameIsUnresolvable(): void
     {
-        // Cache-warm runs ship the cluster without its generalizedAst: the
-        // note must survive on descriptors alone, honestly without the
-        // option name.
+        // r1 m-2 scoping: cache-warm runs ship the cluster without its
+        // generalizedAst, so the divergent position's NAME cannot be
+        // resolved — and an unnamed constant cannot be proven
+        // security-relevant. The arm earns no claim without the name
+        // at hand (the note shape only exists for ENUMERATED options).
         $cluster = $this->unifyFixture('options');
         $cluster->generalizedAst = null;
         foreach ($cluster->members as $member) {
@@ -213,10 +217,31 @@ final class DriftAnalyzerTest extends TestCase
 
         $findings = (new DriftAnalyzer(self::VOCAB))->analyze($cluster);
 
-        self::assertCount(1, $findings);
-        self::assertSame('drift-option-divergence', $findings[0]->code);
-        self::assertStringNotContainsString('CURLOPT', $findings[0]->message,
-            'the option name needs the template AST — claimed only when at hand');
+        $codes = array_map(static fn(Finding $f): string => $f->code, $findings);
+        self::assertNotContains('drift-option-divergence', $codes,
+            'no resolvable name means no scoping evidence — the arm must not fire on shape alone');
+    }
+
+    public function testOptionDivergenceRefusesANonEnumeratedOptionConstant(): void
+    {
+        // r1 m-2 scoping: a trio diverging on CURLOPT_RETURNTRANSFER —
+        // real option-shaped arguments, but NOT a security-relevant
+        // option from the vocabulary — must not earn the note. (The
+        // odd-one-out predicate may still name the minority row: that
+        // is honest value-drift, a different claim; what must be absent
+        // is drift-option-divergence.)
+        $on  = 'public function handle($ch) { curl_setopt($ch, CURLOPT_RETURNTRANSFER, true); return $ch; }';
+        $off = 'public function handle($ch) { curl_setopt($ch, CURLOPT_RETURNTRANSFER, false); return $ch; }';
+        $cluster = $this->inlineCluster([$on, $on, $off]);
+
+        (new AntiUnifier(null, true, 3))->unify($cluster);
+
+        $codes = array_map(
+            static fn(Finding $f): string => $f->code,
+            (new DriftAnalyzer(self::VOCAB))->analyze($cluster)
+        );
+        self::assertNotContains('drift-option-divergence', $codes,
+            'off-vocabulary constants are not security-relevant option evidence (§4.1 letter)');
     }
 
     public function testOptionControlOnUniformCluster(): void

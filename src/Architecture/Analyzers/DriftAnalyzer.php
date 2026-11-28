@@ -85,8 +85,11 @@ final class DriftAnalyzer implements ArchitecturalAnalyzer
      * @param array<string,mixed> $vocab profile `drift_flags` shape:
      *        predicates: list<string> of enabled predicate codes;
      *        sanitizers/auth: list<string> of lower-cased call names;
-     *        options: list<string> of security-relevant option names
-     *        (reserved for finding scoping — arms fire on shape today).
+     *        options: list<string> of security-relevant option names.
+     *        SCOPED CONSUMPTION (§4.1 letter, r1 m-2): the option arm
+     *        fires only when the divergent argument position's option
+     *        name — resolved from the generalized template — is one of
+     *        these; an unresolvable or off-list name earns no claim.
      */
     public function __construct(private readonly array $vocab = [])
     {
@@ -341,6 +344,14 @@ final class DriftAnalyzer implements ArchitecturalAnalyzer
     /** @param list<int|string> $path */
     private function optionDivergence(Cluster $cluster, Hole $hole, array $path): ?Finding
     {
+        // §4.1 scoping law (r1 m-2): shape alone is not option evidence.
+        // The arm needs an enumerated security-relevant option vocabulary
+        // and the divergent position's NAME to be on that list — an
+        // unresolvable (AST-stripped) or off-list constant earns no claim.
+        $optionVocab = $this->nameList('options');
+        if ($optionVocab === []) {
+            return null; // no enumerated security-relevant option ⇒ no scoping evidence
+        }
         $present = [];
         foreach ($hole->observedValues as $i => $row) {
             if ($row === Hole::MISSING) {
@@ -356,13 +367,16 @@ final class DriftAnalyzer implements ArchitecturalAnalyzer
             return null;
         }
         $option = $this->optionName($cluster, $path);
+        if ($option === null || !in_array(strtolower($option), $optionVocab, true)) {
+            return null; // only enumerated security-relevant constants may claim (§4.1 letter)
+        }
         $values = implode(' vs ', array_slice(array_keys($present), 0, 4));
         return new Finding(
             analyzer: self::ANALYZER,
             code:     'drift-option-divergence',
             message: sprintf(
-                'option divergence%s: same call receives different arguments (%s)',
-                $option === null ? '' : " on {$option}",
+                'option divergence on %s: same call receives different arguments (%s)',
+                $option,
                 $values
             ),
             severity: Finding::SEVERITY_NOTE,
