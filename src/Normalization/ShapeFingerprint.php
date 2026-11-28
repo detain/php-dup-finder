@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Phpdup\Normalization;
 
-use PhpParser\Identifier;
+use PhpParser\Node\Identifier;
 use PhpParser\Node;
 use Phpdup\Extraction\Block;
 use Phpdup\Util\LineRange;
@@ -116,7 +116,7 @@ final class ShapeFingerprint
         }
         $out = [self::declarationRow($classLike)];
 
-        foreach ($classLike->getStmts() as $member) {
+        foreach ($classLike->stmts ?? [] as $member) {
             if ($member instanceof Node\Stmt\ClassConst) {
                 $vis = self::visibility($member->flags);
                 foreach ($member->consts as $const) {
