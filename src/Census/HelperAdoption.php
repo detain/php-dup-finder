@@ -94,6 +94,12 @@ final class HelperAdoption
         }
         unset($members);
 
+        // Item 3.2 follow-on (MINE-E): the caller half of the doc's
+        // "6 callers, 9 inline re-implementations" rides the 3.5 census
+        // when — and only when — the run armed call_sequence too. Null
+        // is preserved into the rows (honest absence, never a 0-lie).
+        $calls = $index->callCensus();
+
         $rows = [];
         foreach ($blocks as $block) {
             if (!in_array($block->kind, self::HELPER_KINDS, true) || $block->name === null || $block->name === '') {
@@ -104,7 +110,7 @@ final class HelperAdoption
                 continue;
             }
             foreach ($groups as $members) {
-                $copy = self::groupFor($block, $stmts, $members, $census);
+                $copy = self::groupFor($block, $stmts, $members, $census, $calls);
                 if ($copy !== null) {
                     $rows[] = $copy;
                 }
@@ -193,7 +199,7 @@ final class HelperAdoption
      *
      * @param list<IdiomRow> $members exact-ascending (representative first)
      */
-    private static function groupFor(Block $block, int $stmts, array $members, SubtreeCensus $census): ?HelperCopy
+    private static function groupFor(Block $block, int $stmts, array $members, SubtreeCensus $census, ?CallSequenceCensus $calls): ?HelperCopy
     {
         $file      = $block->file;
         $sites     = 0;
@@ -234,6 +240,22 @@ final class HelperAdoption
         sort($locations);
 
         $first = $members[0];
+        $callers          = null;
+        $callerLocations  = [];
+        if ($calls !== null) {
+            // Receiver-blind v1 join (census documents the matching
+            // rules): count the helper's NAME being called outside its
+            // own body span. Method-form labels match any `::method`
+            // writing plus the bare spelling; function labels match the
+            // bare spelling (and any same-named `::method` — the fold
+            // is deliberately generous, disclosed over-count territory).
+            $label = $block->qualifiedName();
+            $pos   = strrpos($label, '::');
+            $name  = $pos === false ? $label : substr($label, $pos + 2);
+            $answer = $calls->sitesForMethod($name, $file, $block->range->start, $block->range->end);
+            $callers         = $answer['callers'];
+            $callerLocations = $answer['locations'];
+        }
         return new HelperCopy(
             helperLabel:     $block->qualifiedName(),
             defFile:         $file,
@@ -250,6 +272,8 @@ final class HelperAdoption
             inlineSites:     $sites - $def,
             inlineFiles:     $copies,
             copyLocations:   array_slice($locations, 0, self::COPY_SAMPLE_CAP),
+            callers:         $callers,
+            callerLocations: $callerLocations,
         );
     }
 

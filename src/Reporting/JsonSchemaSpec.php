@@ -254,11 +254,24 @@ final class JsonSchemaSpec
      *     arm is an armed --scope run (info-doc §5.2: "auto-demote
      *     vendored↔vendored under --scope"), and an unarmed payload
      *     carrying it stays a pin-failure (NO SCHEMA_VERSION change).
+     * @param bool $callsArmed true asks for the item-3.5 armed shape
+     *     (MINE-E): the trailing conditional `call_sequences` block
+     *     (after vendored_duplicates when all arm), same demand-armed
+     *     law; likewise $literalsArmed for the item-3.3
+     *     `literal_census` block trailing last. OFF payloads carry
+     *     neither, so no SCHEMA_VERSION bit moves. Callers should pass
+     *     named arguments — five positional booleans is exactly the
+     *     shape this family must not silently shuffle.
      *
      * @return array<string, string>
      */
-    public static function summaryShape(bool $armed = false, bool $historyArmed = false, bool $vendoredArmed = false): array
-    {
+    public static function summaryShape(
+        bool $armed = false,
+        bool $historyArmed = false,
+        bool $vendoredArmed = false,
+        bool $callsArmed = false,
+        bool $literalsArmed = false,
+    ): array {
         $shape = [
             'files'                => 'int',   // = files scanned (historical key)
             'blocks'               => 'int',
@@ -285,6 +298,12 @@ final class JsonSchemaSpec
         }
         if ($vendoredArmed) {
             $shape['vendored_duplicates'] = 'object  // item 5.2 (W2b): the vendored-duplicates demotion section (see vendoredBlockShape()); present ONLY on --scope-armed runs (an unarmed or scope=all payload never grows this key — frozen goldens, same demand-armed posture as idiom_census/cluster_history)';
+        }
+        if ($callsArmed) {
+            $shape['call_sequences'] = 'object  // item 3.5 (MINE-E): the call-protocol block (see callBlockShape()); present ONLY on call_sequence-armed runs';
+        }
+        if ($literalsArmed) {
+            $shape['literal_census'] = 'object  // item 3.3 (MINE-E): the literal/constant census block (see literalBlockShape()); present ONLY on literal_census-armed runs';
         }
         return $shape;
     }
@@ -377,6 +396,55 @@ final class JsonSchemaSpec
             'lines'    => 'int  // their total distinct source lines (union spans)',
             'omitted'  => 'int  // demoted clusters beyond the MAX_ROWS presentation cap',
             'rows'     => 'list<object{id:string,kind:string,members:int,files:int,lines:int,signals:list<string>,locations:list<string>}>',
+        ];
+    }
+
+    /**
+     * Shape of the conditional `summary.call_sequences` block (item 3.5,
+     * MINE-E). `windows`/`sites` are the census's corpus-complete
+     * counters; `rows` is the top-ranked list of MAXIMAL call-protocol
+     * windows (§5c nested-family suppression applied — same shared rule
+     * as the idiom census; order sites desc / files desc / names asc),
+     * capped at JsonReporter::CENSUS_TOP_ROWS (presentation bound only).
+     * `arg_diff` tables the constant arguments that DIFFER per slot —
+     * counts are corpus-complete (the 79-false/1-true story renders in
+     * full), `none` counts hole occurrences, at most
+     * CallProtocolRow::ARG_VALUES_PER_SLOT tokens listed per slot.
+     *
+     * @return array<string, string>
+     */
+    public static function callBlockShape(): array
+    {
+        return [
+            'windows' => 'int  // distinct enumerated windows (length 2..4) counted across the corpus',
+            'sites'   => 'int  // total window occurrences counted (pre-suppression)',
+            'rows'    => 'list<object{names:list<string>,length:int,sites:int,files:int,locations:list<string>,arg_diff:list<object{slot:int,call:string,values:list<object{token:string,sites:int}>,none:int}>}>',
+        ];
+    }
+
+    /**
+     * Shape of the conditional `summary.literal_census` block (item 3.3,
+     * MINE-E). `kinds` gives per-bucket totals for every bucket of the
+     * item letter (string/array/number/skeleton/const); `sites` is the
+     * census-wide occurrence counter; `rows` lists entries whose support
+     * passed the per-bucket report gate (number additionally requires two
+     * files), ordered kind asc / sites desc / files desc / hash asc and
+     * capped at JsonReporter::CENSUS_TOP_ROWS. `roles` is the 'const'
+     * bucket's decl/enum_case/use tally (single "" key elsewhere).
+     * `families` clusters near-duplicate string samples by a bounded
+     * edit-distance pass; `families_computed` is false exactly when the
+     * pass was skipped over its distinct-entry cap (honest empty).
+     *
+     * @return array<string, string>
+     */
+    public static function literalBlockShape(): array
+    {
+        return [
+            'kinds'             => 'array<string,array{entries:int,sites:int}>  // per-bucket totals, always the five bucket keys',
+            'sites'             => 'int  // total literal occurrences counted across all buckets',
+            'rows'              => 'list<object{kind:string,hash:string,sample:string,roles:array<string,int>,sites:int,files:int,locations:list<string>}>',
+            'families'          => 'list<object{members:list<string>,sites:int,files:int}>  // near-duplicate string families (drifted copies)',
+            'families_computed' => 'bool  // false = family pass skipped by its cap (rows stay exact; families empty)',
         ];
     }
 

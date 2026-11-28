@@ -262,6 +262,20 @@ final class JsonReporter
         if ($report->vendoredDuplicates !== null) {
             $payload['summary']['vendored_duplicates'] = $report->vendoredDuplicates;
         }
+
+        // Items 3.5/3.3 (MINE-E): same conditional trailing-key law
+        // (MINE-D r1 §4 ruling) — each key present ONLY when its
+        // demand was armed and the census object exists; OFF runs emit
+        // neither, keeping every frozen payload byte-identical with no
+        // SCHEMA_VERSION move. Declared by
+        // JsonSchemaSpec::summaryShape(callsArmed/literalsArmed) +
+        // callBlockShape()/literalBlockShape().
+        if ($report->callSequences !== null) {
+            $payload['summary']['call_sequences'] = self::callSequencePayload($report->callSequences);
+        }
+        if ($report->literalCensus !== null) {
+            $payload['summary']['literal_census'] = self::literalPayload($report->literalCensus);
+        }
         return $payload;
     }
 
@@ -318,6 +332,77 @@ final class JsonReporter
             'clusters'      => count($history->rows),
             'omitted'       => $history->omitted,
             'rows'          => $history->rows,
+        ];
+    }
+
+    /**
+     * The armed call-protocol census block (item 3.5): same bounded-row
+     * posture as the idiom block — corpus totals plus top maximal
+     * protocols in the census's deterministic order. Each row carries
+     * the ordered callee names and, per the item letter, the table of
+     * constant arguments that DIFFER per slot ({slot, call, values of
+     * {token, sites}, none} — holes count in `none`; the tables are
+     * corpus-complete, the location samples are the two-pass witness
+     * set).
+     *
+     * @return array<string, mixed>
+     */
+    private static function callSequencePayload(\Phpdup\Census\CallSequenceCensus $census): array
+    {
+        $rows = [];
+        foreach ($census->maximalRows() as $row) {
+            if (count($rows) >= self::CENSUS_TOP_ROWS) {
+                break;
+            }
+            $rows[] = [
+                'names'     => $row->names,
+                'length'    => $row->length,
+                'sites'     => $row->sites,
+                'files'     => $row->files,
+                'locations' => $row->locations,
+                'arg_diff'  => $row->argDiff,
+            ];
+        }
+        return [
+            'windows' => $census->windowCount(),
+            'sites'   => $census->sitesTotal(),
+            'rows'    => $rows,
+        ];
+    }
+
+    /**
+     * The armed literal-census block (item 3.3): per-bucket totals
+     * (every bucket line of the item letter has its own kind), the
+     * repeated entries in the census's deterministic order, and the
+     * edit-distance family view over string entries —
+     * `families_computed` states honestly when the quadratic family
+     * pass was skipped by its distinct-entry cap.
+     *
+     * @return array<string, mixed>
+     */
+    private static function literalPayload(\Phpdup\Census\LiteralCensus $census): array
+    {
+        $rows = [];
+        foreach ($census->rows() as $row) {
+            if (count($rows) >= self::CENSUS_TOP_ROWS) {
+                break;
+            }
+            $rows[] = [
+                'kind'      => $row->kind,
+                'hash'      => $row->hash,
+                'sample'    => $row->sample,
+                'roles'     => $row->roles,
+                'sites'     => $row->sites,
+                'files'     => $row->files,
+                'locations' => $row->locations,
+            ];
+        }
+        return [
+            'kinds'              => $census->bucketTotals(),
+            'sites'              => $census->sitesTotal(),
+            'rows'               => $rows,
+            'families'           => $census->families(),
+            'families_computed'  => $census->familiesComputed(),
         ];
     }
 

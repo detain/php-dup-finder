@@ -567,6 +567,11 @@ final class ReportStage implements CooperativeStageInterface
             // never asked for), a zero-shaped array when it was armed
             // over a vendored-free corpus (measured, not fabricated).
             vendoredDuplicates: $vendoredDuplicates,
+            // Items 3.5/3.3 (MINE-E): same state→Report seam, same
+            // null-means-unarmed posture — the two new conditional
+            // summary keys ride this carrier pair.
+            callSequences: $state->sequenceIndex?->callCensus(),
+            literalCensus: $state->sequenceIndex?->literalCensus(),
         );
         $state->report   = $report;
         $state->clusters = $clusters;

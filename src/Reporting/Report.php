@@ -118,6 +118,19 @@ final class Report
         // block ONLY when non-null — no default payload moves, no
         // SCHEMA_VERSION event (demand-armed conditional key, MINE-D §4).
         public readonly ?array $vendoredDuplicates = null,
+        // Item 3.5 (MINE-E): the CallSequenceCensus the armed
+        // PreprocessStage ingests through the same SequenceIndex attach
+        // point (§5f trailing-param law). Null = no 'calls' census was
+        // taken; JsonReporter then omits summary.call_sequences and the
+        // default payload stays byte-identical (goldens hold). Rows are
+        // read through maximalRows()/windowCount()/sitesTotal() only.
+        public readonly ?\Phpdup\Census\CallSequenceCensus $callSequences = null,
+        // Item 3.3 (MINE-E): the LiteralCensus, same posture —
+        // summary.literal_census is a conditional armed-only key riding
+        // the current schema (MINE-D r1 §4 ruling: opt-in keys move no
+        // SCHEMA_VERSION bit as long as the armed shape is declared in
+        // JsonSchemaSpec and OFF bytes never change).
+        public readonly ?\Phpdup\Census\LiteralCensus $literalCensus = null,
     ) {
     }
 

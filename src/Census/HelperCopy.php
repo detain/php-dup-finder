@@ -28,12 +28,24 @@ namespace Phpdup\Census;
  *    the others count as its copies. That is honest per-helper
  *    accounting; the group-level dedupe view is `patternsFound()` on
  *    {@see HelperAdoption}.
+ *
+ * Item 3.2 follow-on (MINE-E, closes the "call-site attribution is
+ * MINE-E territory" line above): `callers` answers the OTHER half of
+ * the doc's `Env::bool() — 6 callers, 9 inline re-implementations`.
+ * Null means the call-sequence census was not armed on the run (the
+ * honest absence); an int means it was, and counts call-site
+ * OCCURRENCES of this helper's method name outside its own body span,
+ * via the census's receiver-blind v1 join (see
+ * {@see CallSequenceCensus::sitesForMethod} for the exact matching
+ * rules and their over-count caveats). `callerLocations` rides the
+ * same canonical sample cap as copy sites.
  */
 final class HelperCopy
 {
     /**
      * @param array<string,int> $inlineFiles file => copy occurrences (all files with count > 0)
      * @param list<string>      $copyLocations canonical 'file:line' samples of copy sites (<= sample cap)
+     * @param list<string>      $callerLocations canonical 'file:line' samples of call sites (<= sample cap; only when census armed)
      */
     public function __construct(
         public readonly string $helperLabel,
@@ -51,6 +63,8 @@ final class HelperCopy
         public readonly int $inlineSites,
         public readonly array $inlineFiles,
         public readonly array $copyLocations,
+        public readonly ?int $callers = null,
+        public readonly array $callerLocations = [],
     ) {
         if ($defStart < 1 || $defEnd < $defStart) {
             throw new \InvalidArgumentException('helper body range must be a positive ascending span, got ' . $defStart . '-' . $defEnd);
