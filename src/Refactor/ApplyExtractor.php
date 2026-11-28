@@ -324,6 +324,16 @@ final class ApplyExtractor
             if ($member->kind === \Phpdup\Extraction\BlockExtractor::CLASS_KIND) {
                 throw ClassKindApplyRefusal::forCluster($cluster, 'ApplyExtractor::apply()');
             }
+            // Item 7.2b law (html-script twin of the posture above): a
+            // template-window fold mixes raw markup with PHP statements —
+            // there is no honest extraction target and no AST anchor in
+            // HTML for the call-site rewrite. Zero-write pre-refusal;
+            // detection, signatures and holes stay evidence, and unlike
+            // the folds above the loader can even SERVE the fold
+            // (positional re-derivation) — what is refused is the action.
+            if ($member->kind === \Phpdup\Extraction\BlockExtractor::HTML_SCRIPT_KIND) {
+                throw HtmlFragmentApplyRefusal::forCluster($cluster, 'ApplyExtractor::apply()');
+            }
             // output-002 (S46): a Closure/arrow member has no declaration
             // to keep. The only node-local rewrite would replace the
             // callable ITSELF with an immediate call — running the

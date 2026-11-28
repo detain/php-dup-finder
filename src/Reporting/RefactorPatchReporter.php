@@ -252,6 +252,12 @@ final class RefactorPatchReporter
                 if ($member->kind === \Phpdup\Extraction\BlockExtractor::CLASS_KIND) {
                     throw \Phpdup\Refactor\ClassKindApplyRefusal::forCluster($cluster, 'RefactorPatchReporter');
                 }
+                // Item 7.2b: html_script window folds likewise ride the
+                // whole-surface refusal (mixed-language sequence — a patch
+                // has no honest PHP target for raw-markup members; v1 NO-GO).
+                if ($member->kind === \Phpdup\Extraction\BlockExtractor::HTML_SCRIPT_KIND) {
+                    throw \Phpdup\Refactor\HtmlFragmentApplyRefusal::forCluster($cluster, 'RefactorPatchReporter');
+                }
             }
         }
 
