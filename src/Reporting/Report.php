@@ -24,6 +24,7 @@ final class Report
      * @param list<string> $scanNotes
      * @param list<array{file:string,message:string}> $parseFailures
      * @param null|array<string, mixed> $vendoredDuplicates Item 5.2 (W2b): the demoted 'vendored duplicates' section (null = scope unarmed, key never opens).
+     * @param null|array<string, mixed> $rollups
      */
     public function __construct(
         public readonly int $files,
@@ -131,6 +132,15 @@ final class Report
         // SCHEMA_VERSION bit as long as the armed shape is declared in
         // JsonSchemaSpec and OFF bytes never change).
         public readonly ?\Phpdup\Census\LiteralCensus $literalCensus = null,
+        // Item 2.2 (ROLLUP), EMITTED at schema 1.9: the corpus-awareness
+        // rollups (see {@see RollupAnalyzer::analyze()} for the shape and
+        // the f08 design law behind every field). Recomputed at report
+        // time — nothing here is persisted, so no cache key moves and no
+        // Block field is added. null = the producer never ran the pass
+        // (legacy library/server/hand-built reports), distinct from an
+        // empty corpus that was measured — same tracked-not-fabricated
+        // law as the counters above.
+        public readonly ?array $rollups = null,
     ) {
     }
 

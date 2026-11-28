@@ -720,7 +720,7 @@ final class ConfigLoaderTest extends TestCase
         // is legitimate — twin.php genuinely declares it.)
         self::assertSame([], $this->fabricatedMembers($json),
             'the planted blob must not surface — arming-after-dispatch flips RED here');
-        self::assertStringNotContainsString('real.php', $json,
+        self::assertStringNotContainsString('real.php', $this->payloadWithoutRollups($json),
             'the victim stays out of every reported member when reads are refused');
 
         // ── opt-in legacy posture: decoy served (in-test non-vacuity) ──
@@ -742,7 +742,7 @@ final class ConfigLoaderTest extends TestCase
                 'the notice arms pre-fork; workers must inherit it — RED if arming moves after dispatch');
             self::assertStringContainsString('shared_util', $json);
             self::assertSame([], $this->fabricatedMembers($json), 'forked reads honour the gate');
-            self::assertStringNotContainsString('real.php', $json);
+            self::assertStringNotContainsString('real.php', $this->payloadWithoutRollups($json));
         }
     }
 
@@ -1050,6 +1050,27 @@ final class ConfigLoaderTest extends TestCase
         }
 
         return $fabricated;
+    }
+
+    /**
+     * Item 2.2 scoping for the whole-JSON 'real.php' purity tripwires:
+     * corpus-awareness rollups (summary.rollups) honestly name EVERY
+     * scanned file in the per-file census, so the blanket string check
+     * cannot extend into that channel without failing on a file that
+     * served nothing fabricated. Everything except summary.rollups is
+     * still scanned verbatim; the fabrication assertions proper
+     * (fabricatedMembers over the cluster section) are untouched, so
+     * both arming mutants still flip RED in-test.
+     */
+    private function payloadWithoutRollups(string $json): string
+    {
+        $decoded = json_decode($json, true);
+        if (is_array($decoded) && is_array($decoded['summary'] ?? null)) {
+            unset($decoded['summary']['rollups']);
+            return (string) json_encode($decoded);
+        }
+
+        return $json;
     }
 
     /**

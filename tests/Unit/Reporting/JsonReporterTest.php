@@ -38,9 +38,13 @@ final class JsonReporterTest extends TestCase
         );
         $payload = (new JsonReporter())->build($report);
 
-        $this->assertSame('1.8', $payload['schema_version']);
+        $this->assertSame('1.9', $payload['schema_version']);
         $summary = $payload['summary'];
         $this->assertSame(array_keys(JsonSchemaSpec::summaryShape()), array_keys($summary));
+        // Item 2.2 (ROLLUP): a hand-built legacy-shaped Report never ran
+        // the rollup pass — null posture, never a fabricated zero-shaped
+        // object (the same honesty law as the 1.8 carriers below).
+        $this->assertNull($summary['rollups']);
         // Item 4.3: trailing key, present even for producers that never
         // ran the analyzer (default [] on Report).
         $this->assertSame(array_keys(JsonSchemaSpec::topLevelShape()), array_keys($payload));
@@ -335,7 +339,7 @@ final class JsonReporterTest extends TestCase
             parseFailures: [['file' => '/tmp/x/broken.php', 'message' => 'Syntax error, unexpected ";" on line 2']],
             clustersReplayed: true,
         ));
-        $this->assertSame('1.8', $payload['schema_version']);
+        $this->assertSame('1.9', $payload['schema_version']);
         $this->assertSame(array_keys(JsonSchemaSpec::summaryShape()), array_keys($payload['summary']));
         $this->assertSame(
             ['skipped unreadable path /tmp/x (directory is not readable)'],

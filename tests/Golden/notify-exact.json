@@ -1,6 +1,6 @@
 {
     "phpdup_version": "0.1.0",
-    "schema_version": "1.8",
+    "schema_version": "1.9",
     "summary": {
         "files": 1,
         "blocks": 8,
@@ -16,7 +16,64 @@
         "scan_notes": [],
         "parse_failures": [],
         "clusters_replayed": false,
-        "ml_status": null
+        "ml_status": null,
+        "rollups": {
+            "totals": {
+                "functions": 0,
+                "methods": 5,
+                "classes": 2,
+                "interfaces": 0,
+                "traits": 0,
+                "enums": 0,
+                "expressions": 33,
+                "call_sites": 3,
+                "sql_refs": 0,
+                "sql_tableless": 0,
+                "file_lines": 66,
+                "declarations": 7,
+                "files": 1,
+                "blocks": 8,
+                "comparable_lines": 56,
+                "distinct_calls": 1,
+                "distinct_sql_tables": 0,
+                "twin_file_pairs": 0,
+                "mirrored_directories": 0,
+                "declared_only_pairs": 0,
+                "direct_comparisons": 0,
+                "seed_candidates_dropped": 0
+            },
+            "top_files": [
+                {
+                    "id": "0894dc75ae7283d8",
+                    "root": "notify",
+                    "path": "Notify.php",
+                    "blocks": 8,
+                    "comparable_lines": 56,
+                    "file_lines": 66,
+                    "declarations": {
+                        "functions": 0,
+                        "methods": 5,
+                        "classes": 2,
+                        "interfaces": 0,
+                        "traits": 0,
+                        "enums": 0
+                    },
+                    "distinct_declarations": 7,
+                    "expressions": 33,
+                    "call_sites": 3,
+                    "distinct_calls": 1,
+                    "sql_refs": 0,
+                    "distinct_sql_tables": 0
+                }
+            ],
+            "files_truncated": 0,
+            "twin_pairs": [],
+            "pairs_truncated": 0,
+            "mirrored_directories": [],
+            "dirs_truncated": 0,
+            "declared_only_pairs": [],
+            "declared_only_truncated": 0
+        }
     },
     "config": {
         "min_block_size": 8,

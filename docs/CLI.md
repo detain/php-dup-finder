@@ -115,7 +115,7 @@ Naming posture for the generated-code surfaces (`--apply`, `--refactor-patch`, `
 
 `analyze` buckets **every scanned file into exactly one** category. The
 preprocess summary line, the CLI `files …` accounting line and the JSON
-`summary` object (schema 1.8; `JsonSchemaSpec::summaryShape()`) all label
+`summary` object (schema 1.9; `JsonSchemaSpec::summaryShape()`) all label
 these buckets identically:
 
 | Bucket    | Summary / accounting label | JSON key                          | Meaning                                                                                   |
@@ -192,6 +192,48 @@ is unchanged. A warm run that
 replayed whole clusters from the cluster cache now says so at default
 verbosity (`phpdup: clusters replayed from the cluster cache — …`), because
 such a report's member line ranges came from the saving run's bytes.
+
+#### Corpus-awareness rollups (item 2.2, schema 1.9)
+
+`summary.rollups` is a report-stage, read-only census computed over every
+scanned file — it never mutates clusters and changes no detection, so the
+cluster list is byte-identical with or without it (membership is pinned by
+the goldens). It answers "how much of this corpus is even comparable, and
+where does it mirror?" independently of what clustered.
+
+- `totals` — corpus-wide counts: declaration species (`functions`,
+  `methods`, `classes`, `interfaces`, `traits`, `enums`), `expressions`,
+  `call_sites` (the `CallGraph` set: function/method/static calls;
+  property fetches, `new` and nullsafe chains are deliberately not call
+  sites), distinct call labels, SQL references / distinct tables via the
+  same `SqlTableExtractor` the pattern recognizers use, plus `files`,
+  `blocks`, `comparable_lines` (interval union of block ranges — a nesting
+  never double-counts), `file_lines`, `twin_file_pairs`,
+  `mirrored_directories`, `declared_only_pairs`, `direct_comparisons` and
+  `seed_candidates_dropped`.
+- `top_files` — the `TOP_FILES` files by comparable lines, each with its
+  declaration/expression/call/SQL tallies, distinct counts and a
+  content-derived `id` (rel path + sorted structural hashes — line-shifts
+  and unrelated files elsewhere do not churn it). `files_truncated` says
+  how many fell off the cap.
+- `twin_pairs` / `mirrored_directories` — file pairs where coverage runs
+  both ways past the twin threshold: linked (cluster members carry the
+  overlap) or seed-direct (same relative path or basename seeding, then a
+  retained-ngram Jaccard/containment compare). Clusters the declarative
+  demotion (item 6.2) hard-flags are exempt from twin numerators, so a
+  mega-cluster of `toArray` clones cannot fake-inflate coverage.
+  `pairs_truncated` / `dirs_truncated` bound the row lists.
+- `declared_only_pairs` — same-path/same-name seeds with nothing
+  comparable on one side: declaration-only mirror candidates, reported
+  (not silently dropped), with `declared_only_truncated`.
+
+The CLI prints one compact `rollups …` line (files, comparable lines,
+declarations, call sites, twin pairs, mirrored dirs) in the trailer, on
+clean zero-cluster runs included; legacy emitters that never ran the
+analyzer report `summary.rollups = null` and print no line. Rollups derive
+at report time from bytes already in memory plus one throwaway parse pass
+per file — nothing is persisted and no cache key takes them, so warm and
+cold runs always show the same census.
 
 ### Runtime
 

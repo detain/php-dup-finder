@@ -100,6 +100,10 @@ final class CliReporter
             // the appendix names every suppression even when the main
             // payload is empty.
             $this->renderBaselineAppendix($report, $theme, $out);
+            // Item 2.2: the clean path is exactly where corpus awareness
+            // earns its keep — "no clusters" says more when the rollup
+            // line next to it states how much was comparable at all.
+            $this->renderRollups($report, $theme, $out);
             return;
         }
 
@@ -145,6 +149,7 @@ final class CliReporter
         ), $theme));
         $this->renderFileAccounting($report, $theme, $out);
         $this->renderBaselineAppendix($report, $theme, $out);
+        $this->renderRollups($report, $theme, $out);
     }
 
     /**
@@ -226,6 +231,35 @@ final class CliReporter
 
             $out->writeln(implode('  ', $bits));
         }
+    }
+
+    /**
+     * Item 2.2 (ROLLUP): one compact corpus-awareness line — how much of
+     * the corpus was comparable at all, how many file pairs mirror each
+     * other, and how many directory pairs re-implement themselves. Emitted
+     * whenever the producer ran the rollup pass (the pipeline Report);
+     * legacy library/worker reports carry null and this says nothing —
+     * tracked-not-fabricated, the same posture as the file-accounting line
+     * above. It rides the trailer, so the one line is identical across all
+     * verbosity modes (the trailer law), and only the JSON payload carries
+     * the per-file detail.
+     */
+    private function renderRollups(Report $report, Theme $theme, OutputInterface $out): void
+    {
+        $rollups = $report->rollups;
+        if ($rollups === null) {
+            return;
+        }
+        $totals = $rollups['totals'];
+        $out->writeln(StatusLine::info(sprintf(
+            'rollups  %d files · %d comparable lines · %d declarations · %d call sites · %d twin file pairs · %d mirrored dirs',
+            $totals['files'],
+            $totals['comparable_lines'],
+            $totals['declarations'],
+            $totals['call_sites'],
+            $totals['twin_file_pairs'],
+            $totals['mirrored_directories'],
+        ), $theme));
     }
 
     /**

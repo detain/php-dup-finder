@@ -67,6 +67,25 @@ namespace Phpdup\Reporting;
 final class JsonSchemaSpec
 {
     /**
+     * 1.9 (minor, additive — item 2.2 corpus-awareness rollups, filing
+     * f08): ONE TRAILING key in `summary`. Every 1.8 field keeps its
+     * name, type and position, so 1.8 consumers parse 1.9 payloads
+     * untouched.
+     *
+     *   summary: `rollups` (null|the RollupAnalyzer payload — totals of
+     *   per-file comparable lines / declarations by species /
+     *   expressions / call sites / SQL tables, a bounded top_files
+     *   table, both-direction twin file pairs with the f08 seed-direct
+     *   leg and declared-only rows, and mirrored directory pairs; null =
+     *   a producer that never ran the rollup pass, the legacy library /
+     *   server / hand-built Reports — a measured empty corpus is the
+     *   zero-shaped object, never null).
+     *
+     * The key set rides {@see JsonSchemaSpec::summaryShape()} and the
+     * emit is pure reporting addition: cluster lists, ids and every
+     * other key are byte-identical to 1.8 (the non-regression proof the
+     * item's default-ON posture is pinned by).
+     *
      * 1.8 (minor, additive — the owner-opened 1.7→1.8 emit window,
      * improve_logic items 0.6/1.2 + rulings row 3): five TRAILING keys
      * in `summary` and four in the `config` echo. Every 1.7 field keeps
@@ -166,7 +185,7 @@ final class JsonSchemaSpec
      * files_without_blocks). Every 1.1 field keeps its name and type, so
      * 1.1 consumers parse 1.2 payloads untouched.
      */
-    public const SCHEMA_VERSION = '1.8';
+    public const SCHEMA_VERSION = '1.9';
 
     /**
      * Top-level shape of {@see JsonReporter::build()} output. This is
@@ -289,6 +308,8 @@ final class JsonSchemaSpec
             'parse_failures'       => 'list<object{file:string,message:string}>  // per-file parse errors (once-S37 carrier, emitted since 1.8)',
             'clusters_replayed'    => 'bool|null  // cluster-cache replay happened (once-S37 carrier); null = untracked',
             'ml_status'            => "string|null  // master-side ML pair client: 'off'|'idle'|'reachable'|'unreachable'; null = no client wired (fork-zone dials invisible — E2 disclose)",
+            // 1.9 trailing (item 2.2 ROLLUP — corpus-awareness rollups):
+            'rollups'              => "null|array{totals:array<string,int>, top_files:list<array<string,mixed>>, files_truncated:int, twin_pairs:list<array<string,mixed>>, pairs_truncated:int, mirrored_directories:list<array<string,mixed>>, dirs_truncated:int, declared_only_pairs:list<array<string,mixed>>, declared_only_truncated:int}  // per-file comparable/declaration/call/SQL facts, both-direction twin file pairs (f08 seed-direct + declared-only legs), mirrored directory pairs; null = producer never ran the rollup pass (legacy library/server/hand-built Reports)",
         ];
         if ($armed) {
             $shape['idiom_census'] = 'object  // item 3.1 ingestion: the census block (see censusBlockShape()); present ONLY on idiom_mining-armed runs — an unarmed payload never grows this key (frozen goldens, 2.3 class_shape posture)';

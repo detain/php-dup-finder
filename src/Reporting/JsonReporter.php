@@ -201,6 +201,18 @@ final class JsonReporter
                 'parse_failures'       => $report->parseFailures,
                 'clusters_replayed'    => $report->clustersReplayed,
                 'ml_status'            => $report->mlStatus,
+                // 1.9 trailing (item 2.2 ROLLUP): the corpus-awareness
+                // rollups — per-file comparable/declaration/call/SQL
+                // facts, both-direction twin file pairs (with the f08
+                // seed-direct leg), mirrored directory pairs and the
+                // totals that bound them. null = a producer that never
+                // ran the pass (legacy library/server/hand-built
+                // Reports); a measured empty corpus is the zero-shaped
+                // object, never null. Cluster lists, ids, and every
+                // other key are byte-identical to 1.8 — the rollup is a
+                // separate read-only output (f08 §2 law: never mutate
+                // clusters from here).
+                'rollups'              => $report->rollups,
             ],
             // Echo of the run config — key set governed by
             // JsonSchemaSpec::configShape() (once-S55); the three knobs
